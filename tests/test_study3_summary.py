@@ -1116,11 +1116,13 @@ def test_closure_writes_a_way_out_chosen_by_its_run(world, summary, monkeypatch)
         "other_commit", None)  # fmt: skip
 
 
-def test_closure_has_none_to_write_for_a_technical_mark_outside_the_qualification(
-    world, summary, monkeypatch
-) -> None:
-    """A technical validation run's route is its engineering cycle: the step names no closure,
-    and ``closure`` writes none."""
+def test_closure_writes_the_after_cycle_closure_from_the_step(world, summary, monkeypatch):
+    """A technical validation run before the candidate's engineering cycle takes the cycle: the
+    step names no closure, and ``closure`` writes none. After the cycle (here qualify.py's own
+    supersession record, on disk) the mark is unresolved after it: the step names its closure
+    (its last end line, the reason ``unresolved_after_cycle``, the supersession record by its
+    sha256), which ``closure`` writes and the schema accepts; once written, the route ends with
+    the technical feasibility report."""
     study = Study()
     study.through_validation()
     run_id = run_of(study, "validation", "F", "u", 10304)
@@ -1132,15 +1134,39 @@ def test_closure_has_none_to_write_for_a_technical_mark_outside_the_qualificatio
     end = end_lines(world.root)[run_id]
     study.technical(run_id, log=end["path"], line=end["line"])
     study.ends[run_id]["line_sha256"] = end["line_sha256"]
-    step = study.advance()["step"]
-    assert (step["kind"], step["reason"]) == ("blocked", "engineering_cycle")
     summary.core(study)
     monkeypatch.setattr(
         summary.script, "git_state", lambda repo=None: {"commit": "a" * 40, "dirty": False}
     )
-    refused(summary.run("closure", "--runs-root", world.root, "--candidate", 1, "--arm", "F"),
-            "names no closure record closure-c1-F", "engineering_cycle")  # fmt: skip
+    argv = ["closure", "--runs-root", world.root, "--candidate", 1, "--arm", "F"]
+    assert study.advance()["step"]["reason"] == "engineering_cycle"
+    refused(summary.run(*argv), "names no closure record closure-c1-F", "engineering_cycle")
     assert not decision_path(world.root, "closure-c1-F").exists()
+    bridge = world.root / "qualification" / "c1" / "supersede-1.json"
+    bridge.parent.mkdir(parents=True)
+    bridge.write_text(json.dumps({"candidate": 1, "supersession": 1}))
+    cited = {"path": "qualification/c1/supersede-1.json",
+             "sha256": hashlib.sha256(bridge.read_bytes()).hexdigest()}  # fmt: skip
+    study.cycle()
+    study.cycles[1][0].update(path=str(bridge), sha256=cited["sha256"])
+    step = study.advance()["step"]
+    assert (step["kind"], step["reason"]) == ("blocked", "unresolved_after_cycle")
+    (way,) = [w for w in step["ways_out"] if "closure" in w]
+    code, printed, error = summary.run(*argv)
+    assert code == 0, error
+    path = decision_path(world.root, "closure-c1-F")
+    assert printed.strip() == str(path)
+    record, problems = read_decision(world.root, "closure-c1-F", repo=world.repo)
+    assert problems == []
+    assert {key: record[key] for key in FIELDS} == way["closure"]["fields"]
+    assert (record["line"], record["reason"], record["cycle"]) == (
+        {"kind": "end", **{k: end[k] for k in ("path", "line", "line_sha256")}},
+        "unresolved_after_cycle", cited)  # fmt: skip
+    study.entries["closure-c1-F"] = {"kind": "closure-c1-F", "state": "failed", "record": record,
+                                     "path": str(path), "problems": []}  # fmt: skip
+    result = study.advance()
+    assert (result["outcome"], result["reason"]) == (
+        "technical_feasibility_report", "unresolved_after_cycle")  # fmt: skip
 
 
 def test_closure_writes_the_closure_of_a_run_under_another_commit(world, summary,

@@ -902,15 +902,94 @@ def test_an_outside_mark_offers_the_cycle_and_the_recovery_round(step, arm) -> N
 
 def test_once_the_candidates_cycle_is_spent_no_second_is_offered() -> None:
     """One engineering cycle per candidate: once a supersession record of the candidate exists
-    (qualify.py's or a cycle's bridge), the step offers no cycle."""
+    (qualify.py's or a cycle's bridge), the step offers no cycle: the mark is unresolved after
+    it."""
     study = Study()
     study.through_validation()
     broken = study.technical(run_of(study, "validation", "F", "u", 10304))
     study.cycle()  # the candidate's cycle, recorded by qualify.py
     step = study.advance()["step"]
-    assert (step["kind"], step["reason"]) == ("blocked", CYCLE)
+    assert (step["kind"], step["reason"]) == ("blocked", "unresolved_after_cycle")
     assert [w["run_id"] for w in step["ways_out"]] == [broken.run_id]
     assert not [w for w in step["ways_out"] if "cycle" in w]
+
+
+SEED = {"search": 10102, "validation": 10304, "confirmation": 10402}  # a mark's seed per stage
+
+
+def at_stage(step: str) -> Study:
+    """Candidate 1 at the stage of a mark outside the qualification: its search (the
+    engineering and simulation records passed), through its validation, or at its
+    confirmation's sixth block (the n record, five blocks run)."""
+    study = Study()
+    if step == "search":
+        study.ready()
+        study.search()
+        return study
+    study.through_validation()
+    if step == "confirmation":
+        study.n(N=60)
+        study.confirmation(count=5)
+    return study
+
+
+@pytest.mark.parametrize("step", ["search", "validation", "confirmation"])
+@pytest.mark.parametrize("arm", ["A", "F", "P"])
+def test_after_the_cycle_an_outside_mark_is_closed_unresolved(step, arm) -> None:
+    """Once the candidate's one engineering cycle is spent, a technical mark outside the
+    qualification is unresolved after it ("Failure routes"): the step is blocked, technical,
+    with the reason ``unresolved_after_cycle``, and offers the mark's closure record (its last
+    end line, that reason, the candidate's supersession record as its cycle) beside its
+    recovery round. Once the closure is written, A or F ends with the technical feasibility
+    report, and P closes P–F."""
+    study = at_stage(step)
+    study.cycle()  # the candidate's cycle is spent
+    if step == "confirmation":
+        study.n(N=60)  # the n record under the fix's code, as one written after the cycle
+    broken = study.technical(run_of(study, step, arm, "u", SEED[step]),
+                             log=f"launch/study3-c1-{step}.jsonl")  # fmt: skip
+    step_ = study.advance()["step"]
+    assert (step_["kind"], step_["reason"]) == ("blocked", "unresolved_after_cycle")
+    (way,) = [w for w in step_["ways_out"] if "closure" in w]
+    assert way["closure"]["fields"]["cycle"]["path"] == "qualification/c1/supersede-1.json"
+    assert "recovery" in way
+    study.closure(broken.run_id, reason="unresolved_after_cycle",
+                  cycle=way["closure"]["fields"]["cycle"])  # fmt: skip
+    result = study.advance()
+    if arm == "P":
+        assert "P-F" not in result["active"]["comparisons"] and result["outcome"] is None
+    else:
+        assert (result["outcome"], result["reason"]) == (
+            "technical_feasibility_report", "unresolved_after_cycle")  # fmt: skip
+
+
+def test_a_qualification_cycle_spends_the_cycle_for_later_marks() -> None:
+    study = Study()
+    study.ready()
+    study.search()
+    study.cycle()  # qualify.py's own record
+    study.numerical()
+    study.validation()
+    study.technical(run_of(study, "validation", "F", "u", 10304))
+    assert study.advance()["step"]["reason"] == "unresolved_after_cycle"
+
+
+def test_an_after_cycle_closure_must_cite_the_candidates_cycle() -> None:
+    """The closure of a mark left unresolved after the cycle carries that reason and cites the
+    candidate's supersession record by its sha256; another cycle, or the launcher's outcome as
+    its reason, closes nothing."""
+    study = at_stage("validation")
+    study.cycle()
+    broken = study.technical(run_of(study, "validation", "F", "u", 10304))
+    (way,) = [w for w in study.advance()["step"]["ways_out"] if "closure" in w]
+    cycle = way["closure"]["fields"]["cycle"]
+    study.closure(broken.run_id, reason="unresolved_after_cycle",
+                  cycle={**cycle, "sha256": "0" * 64})  # fmt: skip
+    result = study.advance()
+    assert (result["step"]["kind"], result["outcome"]) == ("blocked", None)
+    study.closure(broken.run_id, cycle=cycle)  # the launcher's outcome as its reason
+    result = study.advance()
+    assert (result["step"]["kind"], result["outcome"]) == ("blocked", None)
 
 
 def test_an_invalid_cycle_record_blocks_the_candidate_from_the_search_on() -> None:

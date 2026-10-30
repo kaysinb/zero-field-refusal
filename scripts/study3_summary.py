@@ -95,10 +95,13 @@ file through ``study3_decisions.write_decision``, which validates it against the
 names and the records it answers: written once, never over another; a refusal prints its reasons.
 
 **closure** writes the closure record closure-c<N>-<ARM> with exactly the fields the state's step
-gives: a held run's decision step, or the way out of a run under another commit (its last end
-line, or its start line, with its uncounted reason). Any other technical mark outside the
-qualification takes its engineering cycle (``engineering_cycle``, below): the step names no
-closure for it, and none is written. It refuses when the step names no closure of
+gives: a held run's decision step, the way out of a run under another commit (its last end
+line, or its start line, with its uncounted reason), or, once candidate N's engineering cycle is
+spent, the way out of a technical mark outside the qualification left unresolved after it (its
+last end line, or its start line, with the reason ``unresolved_after_cycle`` and the candidate's
+supersession record, ``qualification/c<N>/supersede-<n>.json``, by its sha256: "Failure routes").
+Before the cycle such a mark takes its engineering cycle (``engineering_cycle``, below): the step
+names no closure for it, and none is written. It refuses when the step names no closure of
 that candidate and arm, and, when the step names several (two runs of the arm), unless --run-id
 chooses the run. The record's state is ``failed`` (a terminal technical
 outcome) and its code HEAD's commit and that commit's GPU code.

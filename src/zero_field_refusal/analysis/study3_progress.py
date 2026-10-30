@@ -42,7 +42,8 @@ outcome (``TERMINAL``, below). ``candidate``.
   (``engineering_failed``), an unresolved technical mark in A or F: a held run closed
   (``held_run``), a run under another commit closed (its uncounted reason id,
   ``study3_versions.UNCOUNTED_REASONS``), a qualification technical after the candidate's
-  engineering cycle (``unresolved_after_cycle``);
+  engineering cycle, or a mark outside it closed after that cycle
+  (``unresolved_after_cycle``);
 - ``design_stop``: the confirmation cannot start as designed: the simulation record failed (no
   level passed, or its verification failed: ``simulation_failed``), or the n record failed, its
   cap beyond the reserved confirmation seeds (``cap_beyond_reserved_seeds``);
@@ -74,10 +75,11 @@ that needs it (a ``decision`` step, not a problem).
 **A stage's decision**, the same at the search, the qualification, the repair, the validation
 and (for its technical marks) the confirmation (the arms are the active ones; a terminal or route
 decision is taken only on settled evidence, so that no later record of the stage can reverse it):
-1. A or F with an unresolved technical mark ("After a technical mark"): a held run or a run under
-   another commit with its closure record, or a qualification technical after the candidate's
-   engineering cycle: the technical feasibility report, and candidate 2 is not taken ("the
-   failure lies in the code"). A held run without its closure: the step names it.
+1. A or F with an unresolved technical mark ("After a technical mark"): a held run, a run under
+   another commit or a mark outside the qualification after the candidate's engineering cycle,
+   with its closure record, or a qualification technical after that cycle: the technical
+   feasibility report, and candidate 2 is not taken ("the failure lies in the code"). A held run
+   without its closure: the step names it.
 2. P with such a mark: P–F closes (P with it, for the rest of the study), and A–F goes on.
 3. A run technical, awaiting its diagnosis, in any active arm: the stage stays at its step,
    ``technical``, with the case named (in the qualification, the registered engineering cycle
@@ -224,11 +226,28 @@ counts them, ``study3_records.attempts_left``), for a validation or confirmation
 ``study3_summary.py check`` passes. Each way out gives the command (``recovery_command``):
 ``launch.py <campaign file> --only <label> --max-attempts 1 --recovery "<a reason no earlier round
 of the label gave>"`` with the incident (``--incident-time``, ``--cause``, ``--evidence``). Until
-a way out is taken, no closure is offered for such a mark, nothing is voided, no outcome is reached
-and no cell is issued
+a way out is taken, no closure is offered for such a mark before the cycle, nothing is voided, no
+outcome is reached and no cell is issued
 (the confirmation's guard and its writer refuse a new block). A closure record that names such a
-mark is not accepted: a problem that blocks (``study3_decisions.NOT_ACCEPTED``: a closure
-carries its route's reason, never the launcher's outcome), and it decides nothing.
+mark before the cycle is not accepted: a problem that blocks (``study3_decisions.NOT_ACCEPTED``:
+a closure carries its route's reason, never the launcher's outcome), and it decides nothing.
+
+*After the cycle* ("Failure routes": a mark still unresolved after the candidate's one
+engineering cycle takes the route of any unresolved technical mark, "After a technical mark").
+The cycle is spent once the candidate has a supersession record, whichever path wrote it
+(``qualify.py``'s own, from a part record, or a cycle's bridge: ``records.cycles``). A technical
+mark outside the qualification met after that is unresolved after the cycle, and no second cycle
+is offered: the step is ``blocked``, ``technical``, with the reason id ``unresolved_after_cycle``
+(``reason``) and each mark's ways out, its closure record and, beside it, the infrastructure
+recovery round where the launcher would open one (the attempt is then ``recovered``, and its next
+attempt decides). The closure (``closure-c<N>-<arm>``) cites the run's last ``end`` line, or its
+start line when the launcher never ended it, with the reason ``unresolved_after_cycle`` and
+``cycle`` the candidate's supersession record (its path under RUNS_DIR,
+``qualification/c<N>/supersede-<n>.json``, and its sha256); the step gives its fields exactly as
+the closure schema takes them. Once the closure is valid (it names the mark, with that reason and
+that record), A or F ends with the technical feasibility report (``unresolved_after_cycle``), and
+P closes P–F, the stage going on with A and F. A closure with another reason or another cycle
+closes nothing, and blocks.
 
 A validation or confirmation run under another commit (above) is a technical mark of its arm too,
 read before the rest of its stage, but no cycle case: launched from the wrong checkout, it needs no
@@ -320,6 +339,7 @@ from .study3_decisions import (
     DIRECTORY,
     NOT_ACCEPTED,
     SUPPORTED_AT,
+    UNRESOLVED_AFTER_CYCLE,
     budget_reason,
     cap_of,
     closures,
@@ -1349,7 +1369,10 @@ class _Walk:
         if technical:
             step = {"kind": "blocked", "technical": True, "reasons": technical}
             marks = [run for c in conditions.values() for run in c.closable]
-            if marks:  # technical marks outside the qualification: the candidate's cycle
+            if any("after_cycle" in run for run in marks):  # unresolved after the cycle
+                step = {**step, "reason": UNRESOLVED_AFTER_CYCLE,
+                        "ways_out": [self._way_out(run) for run in marks]}  # fmt: skip
+            elif marks:  # technical marks outside the qualification: the candidate's cycle
                 step = {**step, "reason": ENGINEERING_CYCLE, "why": ENGINEERING_CYCLE_WHY,
                         "ways_out": [*(self._way_out(run) for run in marks),
                                      *self._cycle_way(stage, marks)]}  # fmt: skip
@@ -1406,30 +1429,60 @@ class _Walk:
     def _mark(self, e: Endpoint, uncounted: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """A technical mark outside the qualification: its run, cell and ways out (a recovery
         round where the launcher would open one, its closure record). ``uncounted``: a run under
-        another commit (``uncounted_runs``' entry): its reason and commit, and no recovery round
-        for a run whose outcome is published."""
+        another code (``uncounted_runs``' entry, or ``other_gpu_code``'s): its reason and commit,
+        and no recovery round for a run whose outcome is published. Any other mark, once the
+        candidate's cycle is spent, is unresolved after it (``after_cycle``: the supersession
+        record its closure cites)."""
         recovery = e.run_id in self.records.recoverable
         mark = {"run_id": e.run_id, "label": e.label, "candidate": e.candidate,
                 "step": e.cell.step, "arm": e.arm, "rate": e.lr, "seed": e.seed,
                 "recovery": recovery and (uncounted is None or e.state not in ENDED)}  # fmt: skip
         if uncounted is not None:
             mark |= {"uncounted": uncounted.get("reason"), "commit": uncounted.get("commit")}
-        # a closure only for a run under another commit: any other mark's route is its cycle's
-        mark["closure"] = self._closure_of(mark) if uncounted is not None else None
+        else:
+            spent = self._spent_cycle()
+            if spent is not None:
+                mark["after_cycle"] = spent
+        # a closure for a run under another code, or for a mark unresolved after the cycle; any
+        # other mark's route is its cycle's
+        closable = uncounted is not None or "after_cycle" in mark
+        mark["closure"] = self._closure_of(mark) if closable else None
         self.marks.add(e.run_id)
-        if uncounted is None:
+        if not closable:
             self.pending_route.add(e.run_id)
         return mark
+
+    def _spent_cycle(self) -> dict[str, Any] | None:
+        """The candidate's one engineering cycle once it is spent (module docstring, "After the
+        cycle"), whichever path wrote it: its supersession record (``qualify.py``'s own, or a
+        cycle's bridge; ``records.cycles``) as a closure cites it, its ``path`` under RUNS_DIR
+        (``qualification/c<N>/supersede-<n>.json``) and its ``sha256`` (None when it cannot be
+        read); None while the candidate has none."""
+        found = list(self.records.cycles.get(self.candidate) or [])
+        if not found:
+            return None
+        path = PurePosixPath(str(found[0].get("path")).replace("\\", "/"))
+        return {"path": PurePosixPath(*path.parts[-3:]).as_posix(),
+                "sha256": found[0].get("sha256")}  # fmt: skip
 
     def _technical_run(self, c: _Arm, e: Endpoint) -> None:
         """A run outside the qualification that the readers count as a technical mark: its
         registered route is the candidate's engineering cycle (``_cycle_way``), beside the
         recovery round where the launcher would open one; no closure is offered (module
-        docstring, "Technical marks outside the qualification")."""
+        docstring, "Technical marks outside the qualification"). Once the cycle is spent, the
+        mark is unresolved after it: its closure record, beside its recovery round ("After the
+        cycle")."""
         mark = self._mark(e)
         c.closable.append(mark)
         way = (f"; a recovery round of {e.label} with its documented cause reruns it: "
                f"{recovery_command(e.label)}" if mark["recovery"] else "")  # fmt: skip
+        if "after_cycle" in mark:
+            closure = ("its closure record closes it" if mark["closure"] is None else
+                       f"its closure record ({mark['closure']['record']}) closes it")  # fmt: skip
+            c.technical.append(f"{e.run_id} ({e.label}, {e.arm}, {e.cell.step}): {e.state}, a "
+                               "technical mark outside the qualification unresolved after the "
+                               f"candidate's engineering cycle: {closure}{way}")  # fmt: skip
+            return
         c.technical.append(f"{e.run_id} ({e.label}, {e.arm}, {e.cell.step}): {e.state}, a "
                            "technical mark outside the qualification: its route is the "
                            f"candidate's engineering cycle{way}")  # fmt: skip
@@ -1458,11 +1511,17 @@ class _Walk:
             "command": cycle_command(candidate, stage, stages)}}]  # fmt: skip
 
     def _closure_of(self, mark: Mapping[str, Any]) -> dict[str, Any] | None:
-        """The closure record of a run under another commit, with the fields the closure schema
-        accepts: its last end line, or its start line when the launcher never ended it, and the
-        run's uncounted reason; None when the run's cell or line is unknown (or the mark is no
-        such run: no other technical mark outside the qualification has a closure)."""
-        reason = mark.get("uncounted")
+        """The closure record of a run under another code, or of a mark unresolved after the
+        candidate's cycle, with the fields the closure schema accepts: its last end line, or its
+        start line when the launcher never ended it; the run's uncounted reason and no cycle, or
+        ``unresolved_after_cycle`` and the candidate's supersession record. None when the run's
+        cell or line is unknown, the supersession record cannot be read, or the mark is neither
+        (any other technical mark outside the qualification takes its cycle)."""
+        reason, cycle = mark.get("uncounted"), None
+        if reason is None and mark.get("after_cycle") is not None:
+            reason, cycle = UNRESOLVED_AFTER_CYCLE, dict(mark["after_cycle"])
+            if cycle.get("sha256") is None:
+                return None
         if reason is None or None in (mark["candidate"], mark["arm"], mark["rate"], mark["seed"]):
             return None
         end, start = self.records.ends.get(mark["run_id"]), self.records.starts.get(mark["run_id"])
@@ -1477,15 +1536,16 @@ class _Walk:
             "candidate": mark["candidate"], "arm": mark["arm"], "rate": mark["rate"],
             "seed": mark["seed"], "run_id": mark["run_id"],
             "line": {k: line[k] for k in ("kind", "path", "line", "line_sha256")},
-            "cycle": None, "reason": reason,
+            "cycle": cycle, "reason": reason,
             "decision": "close_pf" if mark["arm"] == "P" else TECHNICAL_REPORT}}  # fmt: skip
 
     def _way_out(self, mark: Mapping[str, Any]) -> dict[str, Any]:
         """A technical mark's own ways out, only those that apply: a recovery round of its label
         when no terminal record was published (the launcher opens one only then), for a
         validation or confirmation run after ``study3_summary.py check`` passes; for a run under
-        another commit, its reason, commit and closure record; for any other mark, its arm and
-        step (its cycle is the step's way out: ``_cycle_way``; no decision, no closure)."""
+        another code, its reason, commit and closure record; for any other mark, its arm and
+        step, and once the candidate's cycle is spent its closure record (before it, its cycle is
+        the step's way out: ``_cycle_way``; no decision, no closure)."""
         out: dict[str, Any] = {"run_id": mark["run_id"], "label": mark["label"]}
         if "uncounted" in mark:  # a run under another commit: its reason and commit
             out |= {"reason": mark["uncounted"], "commit": mark["commit"]}
@@ -1545,11 +1605,17 @@ class _Walk:
         wanted = "held" if line.get("kind") == "held" else "mark"  # an end or a start line
         match = next((m for kind_, m in marks if kind_ == wanted
                       and m["run_id"] == record.get("run_id")), None)  # fmt: skip
-        if match is not None and wanted == "mark" and "uncounted" not in match:
+        if (match is not None and wanted == "mark" and "uncounted" not in match
+                and "after_cycle" not in match):  # fmt: skip
             raise _Stop(self._blocked(stage, [_not_accepted(entry["path"], match["run_id"])]))
-        reason = None  # the closure of a run under another commit carries the run's own reason
+        # the closure of a run under another code carries the run's own reason; that of a mark
+        # unresolved after the cycle, unresolved_after_cycle and the candidate's supersession
+        # record by its path and sha256
+        reason, cycle = None, None
         if match is not None and wanted == "mark":
-            reason = match.get("uncounted")
+            reason = match.get("uncounted") or UNRESOLVED_AFTER_CYCLE
+            cycle = None if "uncounted" in match else match["after_cycle"]
+        cited = record.get("cycle") if isinstance(record.get("cycle"), Mapping) else {}
         if match is None or not (
             record.get("seed") == match["seed"]
             and record.get("arm") == match["arm"]
@@ -1557,6 +1623,10 @@ class _Walk:
             and isinstance(record.get("rate"), int | float)
             and math.isclose(record["rate"], match["rate"], rel_tol=RATE_TOLERANCE)
             and (wanted != "mark" or record.get("reason") == reason)
+            and (
+                cycle is None
+                or (cited.get("path"), cited.get("sha256")) == (cycle["path"], cycle["sha256"])
+            )
         ):
             raise _Stop(
                 self._blocked(
@@ -1564,8 +1634,9 @@ class _Walk:
                     [
                         f"{entry['path']}: it names {record.get('run_id')} ({record.get('arm')}, "
                         f"{record.get('rate')}, {record.get('seed')}, its {line.get('kind')} "
-                        f"line, reason {record.get('reason')}), not a mark of candidate "
-                        f"{self.candidate}'s {arm} at its {stage}: "
+                        f"line, reason {record.get('reason')}"
+                        + (f", cycle {cited.get('path')} {cited.get('sha256')}" if cycle else "")
+                        + f"), not a mark of candidate {self.candidate}'s {arm} at its {stage}: "
                         f"{[(kind_, m['run_id'], m['rate'], m['seed']) for kind_, m in marks]}"
                     ],
                 )
@@ -1574,8 +1645,12 @@ class _Walk:
         if arm == "P":
             self._close_p(stage, kind)
             return True
-        reason = match.get("uncounted") or "held_run"
-        what = "a run under another commit, " if match.get("uncounted") else ""
+        reason = match.get("uncounted") or (
+            UNRESOLVED_AFTER_CYCLE if "after_cycle" in match else "held_run"
+        )
+        what = ("a run under another code, " if match.get("uncounted") else
+                "unresolved after the candidate's engineering cycle, "
+                if "after_cycle" in match else "")  # fmt: skip
         self.route.append(self._event(stage, "report", [arm], kind))
         raise _Stop(self._report(TECHNICAL_REPORT, reason, [
             f"{kind}: {record['run_id']} ({line.get('kind')} line): {what}an unresolved technical "
