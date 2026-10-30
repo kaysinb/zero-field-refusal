@@ -128,6 +128,7 @@ def origin(tmp_path_factory) -> Path:
     roots, theta0 = study2_runs(base)
     with pytest.MonkeyPatch.context() as mp:
         patch(mp)
+        mp.setenv("RUNS_DIR", str(base / "runs"))
         script = script_module(SIMULATE, "study3_simulate")
         mp.setattr(script, "REPO", repo)
         script.main(["inputs", "--roots", *map(str, roots), "--theta0", str(theta0)])
@@ -220,6 +221,11 @@ def test_the_inputs_and_the_fixation_were_written_and_committed(origin) -> None:
     assert set(fixation["scenarios"][0]["calibration"]) == {"1", "2"}
     inputs = (origin / INPUTS_PATH).read_text()
     assert len(json.loads(inputs)["vectors"]) == 25 and SENTINEL not in inputs
+    # study 2's runs are named relative to RUNS_DIR: no home directory or login is committed
+    record = json.loads(inputs)
+    assert record["sources"] == list(STUDY2_ROOTS)
+    assert record["theta0"]["path"] == "study2_theta0/20261014T192927Z-theta0-s2000-abb703a1-a1"
+    assert str(origin.parent) not in inputs and str(Path.home()) not in inputs
     assert git(origin, "show", "--name-only", "--format=", "HEAD") == SIMULATION_FIXATION
 
 
@@ -417,6 +423,17 @@ def test_the_script_prints_no_harm_number(world, tmp_path) -> None:
 def test_the_inputs_command_refuses_a_second_inputs_record(world) -> None:
     repo, runs, simulate = world
     refused(simulate("inputs", "--roots", runs, "--theta0", runs), "written once")
+
+
+def test_the_inputs_command_refuses_runs_outside_runs_dir(world, tmp_path, monkeypatch) -> None:
+    repo, runs, simulate = world
+    monkeypatch.setenv("RUNS_DIR", str(runs))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    out = tmp_path / "inputs.json"
+    refused(simulate("inputs", "--roots", elsewhere, "--theta0", runs / "x", "--out", out),
+            "not under RUNS_DIR")  # fmt: skip
+    assert not out.exists()
 
 
 def test_the_fixation_command_refuses_a_second_fixation(world) -> None:

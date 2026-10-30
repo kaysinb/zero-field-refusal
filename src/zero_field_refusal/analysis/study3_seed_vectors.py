@@ -52,7 +52,8 @@ linear in ln K through the same points, extended beyond them with the arm's pool
 slope (least squares with one intercept per seed, ``utility_slopes``).
 
 **The record** (``INPUTS_PATH``): ``kind`` (``study3-simulation-inputs``), ``description``,
-``sources`` (the roots), ``theta0`` (``path`` and the two accuracies), ``vectors`` (per seed,
+``sources`` (the roots) and ``theta0`` (``path`` and the two accuracies), each path relative to
+RUNS_DIR, so that the committed record names no home directory, ``vectors`` (per seed,
 ``arms``: per arm the points' ``rate``, ``K``, ``mmlu_loss_pp``, ``factual_loss_pp`` and
 ``run_id``, sorted by rate), ``excluded`` (reason → count, ``incomplete_seed`` included) and
 ``duplicates`` (``count`` and ``largest_relative_k_difference``, null without one). Its schema
@@ -77,7 +78,7 @@ import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
@@ -533,6 +534,14 @@ def read_inputs(path: Path) -> tuple[list[Vector], dict[str, tuple[float, float]
     return vectors, slopes, hashlib.sha256(data).hexdigest()
 
 
+def _relative(path: Any) -> bool:
+    """A path the record may name: relative (to RUNS_DIR), below it, never absolute."""
+    if not isinstance(path, str) or not path.strip():
+        return False
+    found = PurePosixPath(path)
+    return not found.is_absolute() and ".." not in found.parts and "\\" not in path
+
+
 def _record_problems(record: Any) -> list[str]:
     """What departs from the record's closed schema."""
     if not isinstance(record, dict):
@@ -546,19 +555,20 @@ def _record_problems(record: Any) -> list[str]:
     if not isinstance(record["description"], str):
         problems.append("a description that is not text")
     sources = record["sources"]
-    if not (isinstance(sources, list) and sources and all(isinstance(s, str) for s in sources)):
-        problems.append("sources must be a non-empty list of paths")
+    if not (isinstance(sources, list) and sources and all(map(_relative, sources))):
+        problems.append("sources must be a non-empty list of paths relative to RUNS_DIR")
     theta0 = record["theta0"]
     if not (
         isinstance(theta0, dict)
         and set(theta0) == {"path", "benchmark_accuracy", "factual_accuracy"}
-        and isinstance(theta0["path"], str)
+        and _relative(theta0["path"])
         and all(
             _finite(theta0[k]) and 0 <= theta0[k] <= 1
             for k in ("benchmark_accuracy", "factual_accuracy")
         )
     ):
-        problems.append("theta0 must be its path and its two accuracies, fractions in [0, 1]")
+        problems.append("theta0 must be its path (relative to RUNS_DIR) and its two accuracies, "
+                        "fractions in [0, 1]")  # fmt: skip
     vectors = record["vectors"]
     if not (isinstance(vectors, list) and vectors):
         problems.append("no vectors")

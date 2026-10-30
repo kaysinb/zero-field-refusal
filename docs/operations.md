@@ -2330,9 +2330,11 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
 
 - **The order.**
   1. `inputs` writes study 2's whole seed vectors, `docs/study3-simulation-inputs.json`, from
-     the two study-2 roots under `RUNS_DIR` (`--roots`) and θ₀'s evaluation (`--theta0`). It
-     reads of a run only its config, terminal record and step-25 evaluation (K and the
-     utility), never a response, a label or a judge output. Commit it.
+     the two study-2 roots under `RUNS_DIR` (`--roots`) and θ₀'s evaluation (`--theta0`), each
+     named in the record relative to `RUNS_DIR` (a path outside it is refused), so that the
+     committed record holds no home directory. It reads of a run only its config, terminal
+     record and step-25 evaluation (K and the utility), never a response, a label or a judge
+     output. Commit it.
   2. `fixation` needs a clean checkout with the inputs record tracked. It calibrates every
      scenario at every candidate it can run (f, the safe shifts, σ at the Δ = 0 offsets and the
      offsets, through the selection, over `--workers` processes), enumerates the coverage tests

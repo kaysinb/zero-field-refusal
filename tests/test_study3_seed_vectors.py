@@ -467,8 +467,8 @@ def test_read_inputs_refuses_an_unknown_field_and_round_trips(tmp_path):
     record = sv.inputs_record(
         vectors,
         {**excluded, **skipped},
-        theta0={"path": str(theta0), **THETA0},
-        sources=[str(r) for r in roots],
+        theta0={"path": theta0.relative_to(tmp_path).as_posix(), **THETA0},
+        sources=[r.relative_to(tmp_path).as_posix() for r in roots],
     )
     assert record["kind"] == "study3-simulation-inputs"
     assert record["excluded"] == {
@@ -509,6 +509,9 @@ def test_read_inputs_refuses_an_unknown_field_and_round_trips(tmp_path):
         {**record, "theta0": {"path": "x", "benchmark_accuracy": 1.5, "factual_accuracy": 0.8}},
         {**record, "vectors": []},
         {k: v for k, v in record.items() if k != "duplicates"},
+        {**record, "sources": [str(r) for r in roots]},  # absolute: not relative to RUNS_DIR
+        {**record, "theta0": {**record["theta0"], "path": str(theta0)}},
+        {**record, "sources": ["../study2_short"]},
     ):
         path.write_text(json.dumps(broken))
         with pytest.raises(ValueError):

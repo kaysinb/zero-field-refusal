@@ -16,8 +16,9 @@ engineering stage, before the search); the models and the values the researcher 
 1. **inputs** writes study 2's whole seed vectors (``analysis.study3_seed_vectors``) to --out
    (``docs/study3-simulation-inputs.json`` in the checkout by default) from --roots (by default
    ``$RUNS_DIR/study2_short`` and ``$RUNS_DIR/study2_stage_a``) and θ₀'s evaluation --theta0
-   (study 2's, under RUNS_DIR, by default); it prints the vectors, the exclusions and the
-   record's sha256. The researcher commits it.
+   (study 2's, under RUNS_DIR, by default), each under RUNS_DIR and named in the record
+   relative to it (refused otherwise); it prints the vectors, the exclusions and the record's
+   sha256. The researcher commits it.
 2. **fixation** needs a clean checkout of a known commit with the inputs record tracked and
    unchanged; it calibrates every scenario at every candidate it can run (through the
    selection, ``calibrate_all``, over --workers processes), enumerates the coverage tests and
@@ -157,15 +158,26 @@ def inputs(args: argparse.Namespace) -> None:
     out = args.out if args.out.is_absolute() else REPO / args.out
     if out.exists():
         refuse("inputs", f"{out} exists: the inputs record is written once")
-    roots = args.roots or [runs_root() / name for name in STUDY2_ROOTS]
-    theta0 = args.theta0 or runs_root() / THETA0_RUN
+    runs = runs_root()
+    roots = args.roots or [runs / name for name in STUDY2_ROOTS]
+    theta0 = args.theta0 or runs / THETA0_RUN
+
+    def under_runs(path: Path) -> str:
+        """``path`` relative to RUNS_DIR, as the record names it (no home directory)."""
+        try:
+            return path.resolve().relative_to(runs.resolve()).as_posix()
+        except ValueError:
+            refuse("inputs", f"{path} is not under RUNS_DIR ({runs}): the inputs record names "
+                   "study 2's runs relative to it")  # fmt: skip
+
+    named = {"theta0": under_runs(theta0), "sources": [under_runs(r) for r in roots]}
     try:
         points, excluded = study2_points(roots, theta0)
         vectors, skipped = seed_vectors(points)
         baseline = read_theta0(theta0)
         record = inputs_record(vectors, {**excluded, **skipped},
-                               theta0={"path": str(theta0), **baseline},
-                               sources=[str(r) for r in roots])  # fmt: skip
+                               theta0={"path": named["theta0"], **baseline},
+                               sources=named["sources"])  # fmt: skip
     except ValueError as exc:
         refuse("inputs", str(exc))
     write("inputs", out, record)
