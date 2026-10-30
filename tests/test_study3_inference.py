@@ -1,5 +1,7 @@
 import json
 import math
+import subprocess
+import sys
 from fractions import Fraction
 
 import numpy as np
@@ -159,15 +161,15 @@ def at(lower_pp, upper_pp):
         resamples=100_000,
         lower=lower_pp / 100,
         upper=upper_pp / 100,
-        infinite_low=0,
-        infinite_high=0,
-        zero_se=0,
+        infinite_low=int(upper_pp == math.inf),
+        infinite_high=int(lower_pp == -math.inf),
+        zero_se=int(upper_pp == math.inf) + int(lower_pp == -math.inf),
         undetermined=False,
     )
 
 
 UNDETERMINED = inf.Interval(
-    n=5,
+    n=60,
     mean=0.02,
     sd=0.0,
     se=0.0,
@@ -263,6 +265,12 @@ BAD_RECORDS = [
     {"zero_se": 200_000},
     {"lower": -0.01, "upper": -0.02},
     {"undetermined": True},
+    {"sd": None},
+    {"sd": -1.0},
+    {"n": 1},
+    {"lower": "-inf", "infinite_high": 0},
+    {"upper": "+inf", "infinite_low": 0},
+    {"undetermined": 0},
 ]
 
 
@@ -287,3 +295,25 @@ def _py(change):
 def test_a_huge_integer_in_a_float_field_is_a_value_error():
     with pytest.raises(ValueError):
         inf.Interval.from_json(at(-2.0, -1.0).to_json() | {"sd": 10**400})
+
+
+@pytest.mark.parametrize("keys", [(), ("a",), ("S", 3, "x")])
+def test_stream_is_the_simulations_derivation(keys):
+    from zero_field_refusal.analysis import study2_short_sim
+
+    want = study2_short_sim.seed_sequence(20261031, "study3", *keys).entropy
+    assert (inf.stream(20261031, *keys).entropy == want).all()
+
+
+def test_the_module_imports_no_torch_or_transformers():
+    code = (
+        "import sys; import zero_field_refusal.analysis.study3_inference; "
+        "sys.exit(any(m.split('.')[0] in ('torch', 'transformers') for m in sys.modules))"
+    )
+    assert subprocess.run([sys.executable, "-c", code]).returncode == 0
+
+
+def test_combined_reading_needs_one_level_resamples_and_n():
+    other = inf.Interval.from_json(at(-2, -1).to_json() | {"level": 0.98})
+    with pytest.raises(ValueError):
+        inf.combined_reading([at(-2, -1), at(-2, -1), other])

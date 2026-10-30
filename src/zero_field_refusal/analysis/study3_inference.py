@@ -17,7 +17,10 @@ resamples is ceil(M·p) − 1, with p = (1 ∓ L)/2 computed in ``fractions.Frac
 ``Fraction(str(level))`` (so 0.975 is 975/1000, not its binary neighbour). ``numpy.quantile`` is
 never used. ``tail_ranks`` returns (k_lo, k_hi); lower = d̄ − t*[k_hi]·SE, upper = d̄ − t*[k_lo]·SE.
 
-**Streams.** ``stream`` names a SeedSequence by the bootstrap seed and keys. The indices are drawn
+**Streams.** ``stream`` names a SeedSequence by the bootstrap seed and keys: the full SHA-256
+digest of the JSON key list [seed, "study3", *keys], the same derivation as the simulation's
+``seed_sequence`` (a test compares them), written out here so that this module imports only numpy
+and the standard library (no torch, no transformers). The indices are drawn
 chunk by chunk from one ``default_rng(seed)``, which gives the same draws as a single call, so the
 result does not depend on ``chunk`` (only the memory does).
 
@@ -42,14 +45,14 @@ removes both.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from fractions import Fraction
 
 import numpy as np
-
-from zero_field_refusal.analysis import study2_short_sim
 
 MARGINS = (0.025, 0.05)
 _FLOAT_FIELDS = ("mean", "sd", "se", "level", "lower", "upper")
@@ -58,7 +61,8 @@ _INT_FIELDS = ("n", "resamples", "infinite_low", "infinite_high", "zero_se")
 
 def stream(bootstrap_seed: int, *keys: object) -> np.random.SeedSequence:
     """The stream of study 3 named by ``keys`` under the bootstrap seed."""
-    return study2_short_sim.seed_sequence(bootstrap_seed, "study3", *keys)
+    blob = json.dumps([bootstrap_seed, "study3", *keys]).encode()
+    return np.random.SeedSequence(np.frombuffer(hashlib.sha256(blob).digest(), dtype=np.uint32))
 
 
 def _is_int(value: object) -> bool:
@@ -109,6 +113,8 @@ class Interval:
 
     def __post_init__(self) -> None:
         """Refuse a record no computation can produce (a from_json record included)."""
+        if not isinstance(self.undetermined, bool):
+            raise ValueError(f"undetermined must be a boolean, not {self.undetermined!r}")
         lo_nan, hi_nan = math.isnan(self.lower), math.isnan(self.upper)
         if self.undetermined != (lo_nan and hi_nan) or lo_nan != hi_nan:
             raise ValueError("an interval is undetermined exactly when both bounds are NaN")
@@ -117,6 +123,14 @@ class Interval:
                 raise ValueError(f"lower {self.lower!r} lies above upper {self.upper!r}")
             if self.lower == self.upper and math.isinf(self.lower):
                 raise ValueError("both ends are infinite on the same side")
+            if self.n < 2 or not math.isfinite(self.mean):
+                raise ValueError("a determined interval needs n >= 2 and a finite mean")
+            if not (math.isfinite(self.sd) and math.isfinite(self.se)) or min(self.sd, self.se) < 0:
+                raise ValueError("a determined interval needs a finite SD and SE of at least 0")
+            if self.lower == -math.inf and self.infinite_high < 1:
+                raise ValueError("a -inf lower bound needs resamples with t* = +inf")
+            if self.upper == math.inf and self.infinite_low < 1:
+                raise ValueError("a +inf upper bound needs resamples with t* = -inf")
         if not 0 < self.level < 1:
             raise ValueError(f"the level must lie strictly between 0 and 1, not {self.level!r}")
         if self.n < 1 or self.resamples < 1:
@@ -275,6 +289,8 @@ def combined_reading(intervals: Sequence[Interval]) -> Reading:
     computation has one. An undetermined computation removes both."""
     if len(intervals) != 3:
         raise ValueError(f"exactly three intervals are combined, not {len(intervals)}")
+    if len({(i.level, i.resamples, i.n) for i in intervals}) != 1:
+        raise ValueError("the three computations must share the level, resamples and n")
     rs = [reading(i) for i in intervals]
     direction = rs[0].direction if len({r.direction for r in rs}) == 1 else None
     magnitude = min(r.magnitude_lower for r in rs) if direction else None  # type: ignore[type-var]
