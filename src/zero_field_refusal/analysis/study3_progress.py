@@ -13,6 +13,7 @@ or a judge output: the result holds numbers, ids, paths and hashes only.
   the active arms and comparisons, the closures, the problems and, for a terminal stage, the
   outcome; and ``prescribed``, the cells the route has issued so far, per step key.
 - ``progress``: the thin reader. It reads the records under RUNS_DIR and calls ``advance``.
+- ``read_state``: the same reading, with the endpoints it read (none when it reads no run).
 - ``confirmation_state``: the confirmation's blocks, counters, cohorts, stop and readings; the
   campaign driver's between-block guard calls it.
 
@@ -397,14 +398,14 @@ class Records:
 # ------------------------------------------------------------------ the reader
 
 
-def progress(
+def read_state(
     runs_root: str | Path,
     *,
     repo: str | Path = REPO_ROOT,
     expected_code: str,
     theta0: str | Path | None = None,
     settings: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[Endpoint]]:
     """The state of study 3 under ``runs_root`` (module docstring). ``expected_code``: the GPU
     code's sha256 the qualification and every decision record must carry; ``theta0``: θ₀'s
     evaluation (study 2's, ``THETA0_RUN`` under ``runs_root``, by default); ``settings``:
@@ -449,14 +450,14 @@ def progress(
     except ValueError as exc:
         why = (f"{exc}: θ₀'s evaluation is the utility losses' baseline, and no run record is "
                "read without it")  # fmt: skip
-        return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
+        return advance(Records(problems=(why,), **fixed), expected_code=expected_code), []
     try:  # one snapshot of the run records, read once whatever cells it is read under
         reader = EndpointReader(
             root, theta0=theta0, cycles=checks, restarts=qualification_records.restart_checks(root)
         )
     except (OSError, ValueError) as exc:
         why = f"{root}: the run records cannot be read ({type(exc).__name__})"
-        return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
+        return advance(Records(problems=(why,), **fixed), expected_code=expected_code), []
     try:
         every = _bound(reader.read({})[0])  # every cell a run binds: each outcome is read
         endpoints, problems = reader.read(every)
@@ -466,12 +467,30 @@ def progress(
         recoverable = _recoverable(reader, endpoints)
     except (OSError, ValueError) as exc:
         why = f"{root}: the run records cannot be read ({type(exc).__name__})"
-        return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
+        return advance(Records(problems=(why,), **fixed), expected_code=expected_code), []
     from .study3_versions import uncounted_runs  # each run's own commit, against the checkout's
 
     uncounted = uncounted_runs(endpoints, repo=repo)
-    return advance(Records(tuple(endpoints), tuple(problems), recoverable=recoverable,
-                           uncounted=uncounted, **fixed), expected_code=expected_code)  # fmt: skip
+    state = advance(Records(tuple(endpoints), tuple(problems), recoverable=recoverable,
+                            uncounted=uncounted, **fixed), expected_code=expected_code)  # fmt: skip
+    return state, list(endpoints)
+
+
+def progress(
+    runs_root: str | Path,
+    *,
+    repo: str | Path = REPO_ROOT,
+    expected_code: str,
+    theta0: str | Path | None = None,
+    settings: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The state of study 3 under ``runs_root`` (module docstring). ``expected_code``: the GPU
+    code's sha256 the qualification and every decision record must carry; ``theta0``: θ₀'s
+    evaluation (study 2's, ``THETA0_RUN`` under ``runs_root``, by default); ``settings``:
+    configs/experiments/qualification.yaml as loaded (by default, this checkout's); ``repo``: the
+    checkout the decision records' ``repo`` evidence is relative to."""
+    return read_state(runs_root, repo=repo, expected_code=expected_code, theta0=theta0,
+                      settings=settings)[0]  # fmt: skip
 
 
 def _recoverable(reader: EndpointReader, endpoints: Iterable[Endpoint]) -> frozenset[str]:
