@@ -1180,7 +1180,11 @@ class _JitterGrid:
 # The jitter quadratures by what they depend on: the vector's points of the arm (as shifted),
 # the arm, the rates, K*, the slopes and the quadrature's settings
 _GRIDS: dict[tuple, _JitterGrid] = {}
-_GRIDS_LIMIT = 40_000
+# A grid takes about 40 kB. One-off truths (a worker's studies) keep a few thousand; a jitter
+# scenario's calibration keeps every grid its σ and offset steps need (its three arms' pairs of
+# rates × the vectors, some 40 000 at 10 000 selections), and forgets them when it ends
+GRIDS_KEPT, CALIBRATION_GRIDS = 4_000, 200_000
+_GRIDS_LIMIT = GRIDS_KEPT
 
 
 def _grid_key(vector: Vector, arm: str, rates: Mapping[str, float],
@@ -2679,6 +2683,31 @@ def _starting_calibration(scenario: Scenario, setup: Setup, candidate: int) -> C
 
 
 def calibrate_scenario(
+    scenario: Scenario,
+    setup: Setup,
+    candidate: int,
+    seed: np.random.SeedSequence,
+    *,
+    studies: int = CALIBRATION_STUDIES,
+    mapper: Callable | None = None,
+) -> Calibration:
+    """``_calibrate_scenario``; a jitter scenario's keeps its truths' quadratures across its σ
+    and offset steps (up to ``CALIBRATION_GRIDS``) and forgets them when it ends."""
+    global _GRIDS_LIMIT
+    if not scenario.jitter:
+        return _calibrate_scenario(scenario, setup, candidate, seed, studies=studies,
+                                   mapper=mapper)  # fmt: skip
+    _GRIDS.clear()
+    _GRIDS_LIMIT = CALIBRATION_GRIDS
+    try:
+        return _calibrate_scenario(scenario, setup, candidate, seed, studies=studies,
+                                   mapper=mapper)  # fmt: skip
+    finally:
+        _GRIDS_LIMIT = GRIDS_KEPT
+        _GRIDS.clear()
+
+
+def _calibrate_scenario(
     scenario: Scenario,
     setup: Setup,
     candidate: int,

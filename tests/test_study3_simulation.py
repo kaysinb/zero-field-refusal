@@ -1635,9 +1635,10 @@ def test_the_scan_stops_at_the_first_n_with_the_power(tiny, tmp_path) -> None:
     assert decisions._n_min(scan, True, ["C16"]) == (63, [])
 
 
-def test_the_calibration_does_not_depend_on_the_workers(vectors) -> None:
-    """Every scenario's calibration, one pair per worker and C12's truths over the pool, is the
-    same with one worker and with four."""
+def test_the_calibration_does_not_depend_on_the_workers(vectors, monkeypatch) -> None:
+    """Every scenario's calibration, one pair per worker and C12's truths over a pool of their
+    own, is the same with one worker and with four; C12's calibration builds each of its jitter
+    quadratures once (kept across its σ and offset steps) and forgets them when it ends."""
     from zero_field_refusal.analysis.study3_seed_vectors import utility_slopes
 
     few = world_vectors(count=6)
@@ -1645,7 +1646,18 @@ def test_the_calibration_does_not_depend_on_the_workers(vectors) -> None:
                       levels=LEVELS, validation_blocks=28)  # fmt: skip
     pairs = [(sim.SCENARIOS_BY_NAME[n], 1) for n in ("C02", "C12", "G1")]
     sim.clear_caches()
+    built = []
+    real = sim._JitterGrid.__init__
+
+    def counted(self, vector, arm, rates, *args, **kwargs):
+        built.append((vector.seed, vector.arms[arm], arm, rates["l"], rates["u"]))
+        real(self, vector, arm, rates, *args, **kwargs)
+
+    monkeypatch.setattr(sim._JitterGrid, "__init__", counted)
     one = sim.calibrate_all(setup, 41, pairs=pairs, workers=1, studies=400)
+    monkeypatch.setattr(sim._JitterGrid, "__init__", real)
+    assert built and len(built) == len(set(built))  # each built once, none again
+    assert sim._GRIDS == {} and sim._GRIDS_LIMIT == sim.GRIDS_KEPT
     sim.clear_caches()
     four = sim.calibrate_all(setup, 41, pairs=pairs, workers=4, studies=400)
     assert one == four and set(one) == set(pairs)
