@@ -2734,6 +2734,28 @@ def test_a_successor_carries_the_fix_and_names_a_record_the_cycle_made_stale(wor
         other.write("n-c1-2", other.n(kind="n-c1-2", supersedes=supersedes(other, "n-c1")))
 
 
+def test_after_a_cycle_its_candidates_records_are_written_under_the_fix_alone(world) -> None:
+    """Once candidate 1 has a cycle record, an n or budget record of it is written only under the
+    cycle's fix, the code in force for its runs: one of the old code written after the cycle (a
+    first n record the cycle could not list, or a budget record) is refused, and nothing is
+    written; under the fix the first record and the in-force successor are accepted. So what the
+    cycle lists as stale changes after it only when a file is tampered with."""
+    world.chain(through="simulation")
+    published_cycle(world, stale=())
+    with pytest.raises(DecisionRefused, match="not candidate 1's code in force"):
+        world.write("n-c1", world.n())  # the old code, after the cycle
+    assert not decision_path(world.runs, "n-c1").exists()
+    assert world.write("n-c1", world.n(code=FIXED)).name == "n-c1.json"
+    with pytest.raises(DecisionRefused, match="not candidate 1's code in force"):
+        world.write("budget-c1", world.budget(N=75))
+    assert not decision_path(world.runs, "budget-c1").exists()
+    other = World(world.runs.parent / "other")
+    other.chain()  # n-c1 under the old code, before the cycle: the cycle lists it as stale
+    published_cycle(other)
+    succ = other.n(code=FIXED, kind="n-c1-2", supersedes=supersedes(other, "n-c1"))
+    assert other.write("n-c1-2", succ).name == "n-c1-2.json"
+
+
 def test_after_the_confirmation_started_an_n_successor_changes_only_its_code(world) -> None:
     """Once a block of the candidate's confirmation has started, an n successor differs from its
     predecessor only in its code, written_at and supersedes: N, the cap, the cohort or anything

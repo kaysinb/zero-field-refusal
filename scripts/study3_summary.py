@@ -101,7 +101,11 @@ names and the records it answers: written once, never over another; a refusal pr
 After candidate N's cycle an n or budget record is written only when the state's step names it:
 the first record, or, the record in force stale through the cycle, its next successor
 (``n-c<N>-<k>``, ``budget-c<N>-<k>``; the file carries ``supersedes``), its content checked
-first (after the confirmation has started, N, the cap and the cohort stand).
+first (after the confirmation has started, N, the cap and the cohort stand). Once candidate N has
+a cycle record, its n and budget records, its fixations and a versions record naming its fixation
+are written only under the cycle's fix (the code in force for N's runs), and no record under the
+old code of any candidate's cycle (``study3_decisions.after_cycle_code``): what a cycle lists as
+stale then changes after it only when a file is tampered with.
 
 **After a cycle** ("Voiding and supersession", "Sample size from validation", "Seeds and order").
 The write-once records of the old GPU code are stale; their successors come in the registered
@@ -208,6 +212,7 @@ from zero_field_refusal.analysis.study3_decisions import (  # its sealed-path ru
     _problems,
     _publish,
     _under_sealed,
+    after_cycle_code,
     chain,
     confirmation_started,
     cycle_path,
@@ -236,6 +241,7 @@ from zero_field_refusal.analysis.study3_records import (
 )
 from zero_field_refusal.analysis.study3_search import ARM_ORDER
 from zero_field_refusal.analysis.study3_versions import (
+    _FIXATION_NAME,
     RecordRefused,
     confirmation_fixation,
     fixation_chain,
@@ -643,6 +649,11 @@ def write_versions(args: argparse.Namespace) -> None:
             refuse("versions", f"{own} supersedes {versions_name(k - 1)}, the record before "
                    f"it, not {args.supersedes}")  # fmt: skip
     root = args.runs_root if args.runs_root is not None else runs_root()  # read with a fixation
+    code = head_code("versions", clean=False)
+    stale = after_cycle_code(root, code["gpu_code_sha256"],
+                             candidate=fixation_candidate(args.fixation), repo=REPO)  # fmt: skip
+    if stale:
+        refuse("versions", "; ".join(stale))
     try:
         record = versions_record(REPO / own, runs_root=root, fixation=args.fixation,
                                  reason=args.reason, supersedes_reason=args.supersedes_reason,
@@ -650,6 +661,19 @@ def write_versions(args: argparse.Namespace) -> None:
     except RecordRefused as exc:
         refuse("versions", str(exc))
     publish("versions", REPO / own, record)
+
+
+def fixation_candidate(path: Path | None) -> int | None:
+    """The candidate of the fixation record a versions record names (``--fixation``), or None
+    (none named, or no fixation record's name in the checkout)."""
+    if path is None:
+        return None
+    try:
+        name = (REPO / path).resolve().relative_to(REPO.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+    found = _FIXATION_NAME.fullmatch(name)
+    return int(found.group(2)) if found else None
 
 
 def write_fixation(args: argparse.Namespace) -> None:
@@ -679,6 +703,10 @@ def write_fixation(args: argparse.Namespace) -> None:
     if path.exists() or path.is_symlink():
         refuse("fixation", f"{path} exists: a fixation record is written once")
     code = head_code("fixation", clean=True)
+    stale = after_cycle_code(args.runs_root, code["gpu_code_sha256"], candidate=candidate,
+                             repo=REPO)  # fmt: skip
+    if stale:
+        refuse("fixation", "; ".join(stale))
     try:
         if step == "validation":
             record = validation_fixation(args.runs_root, candidate, code=code, repo=REPO,

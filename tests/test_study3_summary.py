@@ -922,6 +922,32 @@ def test_the_validation_fixation_is_written_with_the_route_after_it_in_place(che
     assert (study.repo / sv.fixation_name("validation", 1)).is_file()
 
 
+def test_after_a_cycle_the_fixation_and_versions_records_carry_the_code_in_force(
+    checkout, monkeypatch
+) -> None:
+    """Once the candidate has a cycle record, a fixation and a versions record naming its
+    fixation are written only under the code in force: the writer asks
+    ``study3_decisions.after_cycle_code`` with HEAD's GPU code and the candidate, and writes
+    nothing it refuses."""
+    study, summary = checkout
+    study.ready(real=True)
+    asked = []
+
+    def after_cycle_code(runs_root, code, *, candidate=None, repo=None):
+        asked.append((code, candidate))
+        return [f"its GPU code {code} is not candidate 1's code in force"]
+
+    monkeypatch.setattr(summary.script, "after_cycle_code", after_cycle_code)
+    refused(summary.run(*fixation_argv(study, "validation", "--theta0", study.runs.theta0)),
+            "code in force")  # fmt: skip
+    assert not (study.repo / VALIDATION_C1).exists()
+    refused(summary.run("versions", "--out", FIRST, "--reason", "validation_c1", "--fixation",
+                        VALIDATION_C1, "--runs-root", study.root), "code in force")  # fmt: skip
+    assert not (study.repo / FIRST).exists()
+    head = study.now()["gpu_code_sha256"]
+    assert asked == [(head, 1), (head, 1)]
+
+
 def test_the_fixation_command_refuses_what_its_builders_refuse(checkout) -> None:
     study, summary = checkout
     study.ready()

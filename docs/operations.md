@@ -2369,9 +2369,13 @@ before each command below.
   that names it and the cycle (`supersedes`: its path, its sha256, the reason `cycle_c<N>` and the
   cycle record), and carries the fix: `docs/study3-fixation-validation-c<N>-2.json`,
   `docs/study3-fixation-confirmation-c<N>-2.json`, `study3/decisions/n-c<N>-2.json` (the
-  `n-c<N>-2` record) and `budget-c<N>-2.json`. The search is never rerun after the fixation
-  (`search=reuse`), and the fixed rates stand: a repair the re-qualified runs would call for is
-  listed (`repair_not_applied`) and never issued. The successors come in this order, each written
+  `n-c<N>-2` record) and `budget-c<N>-2.json`. Once the candidate has a cycle record, its n and
+  budget records, its fixations and a versions record naming its fixation are written only under
+  the cycle's fix (the code in force for its runs), and nothing is written under the old code of
+  any cycle: `record`, `fixation` and `versions` refuse it, so what the cycle lists as stale
+  changes only when a file is tampered with (the cycle then reads invalid). The search is never
+  rerun after the fixation (`search=reuse`), and the fixed rates stand: a repair the re-qualified
+  runs would call for is listed (`repair_not_applied`) and never issued. The successors come in this order, each written
   when the state's step names it and committed alone (one written out of turn is refused with
   the step the state names):
   1. the validation fixation's successor (`study3_summary.py fixation validation`, once the

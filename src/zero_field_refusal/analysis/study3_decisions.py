@@ -193,7 +193,10 @@ one before it), a gap (a missing number), a link changed since its successor nam
 successor of a record that is not stale is a problem of the chain. Only the link in force is
 checked in full; the earlier links for their integrity (there, of the sha256 their successor
 names, unchanged under the campaigns that named them: ``immutable``). A budget successor
-answers the n record's successor.
+answers the n record's successor. Once a candidate has a cycle record, ``write_decision``
+writes its n and budget records only under the cycle's fix, the code in force for its runs, and
+no record under the old code of any candidate's cycle (``after_cycle_code``): the records a cycle
+lists as stale then change after it only when a file is tampered with.
 
 *The confirmation boundary* ("Validation, confirmation and stopping", "Confirmation": the
 confirmation never triggers a new candidate). Once the candidate's confirmation has started (a
@@ -839,12 +842,55 @@ def write_decision(
     except (TypeError, ValueError) as exc:
         raise DecisionRefused(f"{kind}: not a JSON record ({exc})") from exc
     problems = _problems(Path(runs_root), kind, record, Path(repo))
+    family, candidate = kind_of(kind) if _KIND.fullmatch(str(kind)) else (None, None)
+    if family in ("n", "budget"):  # a record a cycle lists as stale: under the code in force
+        code = record.get("code") if isinstance(record, dict) else None
+        sha = code.get("gpu_code_sha256") if isinstance(code, dict) else None
+        problems += after_cycle_code(runs_root, sha, candidate=candidate, repo=repo)
     if problems:
         raise DecisionRefused(f"{kind}: not written, {len(problems)} problem(s): "
                               + "; ".join(problems))  # fmt: skip
     path.parent.mkdir(parents=True, exist_ok=True)
     _publish(path, serialized(record))
     return path
+
+
+def after_cycle_code(
+    runs_root: str | Path,
+    code: Any,
+    *,
+    candidate: int | None = None,
+    repo: str | Path = REPO_ROOT,
+) -> list[str]:
+    """Why a write-once record under GPU code ``code`` is not written now (module docstring,
+    "Successors"): once ``candidate`` has a cycle record outside the qualification, its record
+    carries the cycle's fix, the code in force for its runs (a cycle record that is there and not
+    valid refuses it until it is valid); and no record is written under the old code of any
+    candidate's valid cycle record. The records a cycle lists as stale (``affected.records``:
+    the fixations, the n and budget records and the versions record of its old code there when it
+    was written) then change after it only when a file is tampered with. No problem before any
+    cycle."""
+    out: list[str] = []
+    for c in (1, 2):
+        path = cycle_path(runs_root, c)
+        if not (path.exists() or path.is_symlink()):
+            continue
+        record, problems = read_decision(runs_root, f"cycle-c{c}", repo=repo)
+        if record is None:
+            if c == candidate:
+                out.append(f"candidate {c}'s cycle record {path} is not valid ("
+                           + "; ".join(problems[:3]) + f"): no record of candidate {c} is "
+                           "written until it is")  # fmt: skip
+            continue
+        fix, old = record["code"]["gpu_code_sha256"], record["old_code"]
+        if c == candidate and code != fix:
+            out.append(f"its GPU code {code} is not candidate {c}'s code in force, {fix} (the fix "
+                       f"of its cycle): after the cycle a record of candidate {c} carries the "
+                       "fix")  # fmt: skip
+        elif code == old:
+            out.append(f"its GPU code {code} is the old code of candidate {c}'s cycle: no record "
+                       "is written under it after the cycle")  # fmt: skip
+    return out
 
 
 def _publish(path: Path, data: bytes) -> None:
