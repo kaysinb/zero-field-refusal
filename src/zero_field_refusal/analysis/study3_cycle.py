@@ -25,6 +25,8 @@ journal repair and re-qualification carry it out, unchanged.
 - ``read_cycle``, ``bridge_problems`` and ``cycle_problems``: the published cycle read back
   (reading no run record), its bridge against it, and its lists against their derivation in the
   pre-cycle view.
+- ``rebuild_bridge``: the bridge of a published cycle record whose bridge is missing.
+- ``journal_problems``: why the launch journal is not whole, as the launcher refuses it.
 
 **Claims** ("Failure routes": each earlier stage is reused or rerun according to what the fix
 changes). A stage is ``reuse`` (its runs keep counting under the old code) or ``rerun`` with the
@@ -854,6 +856,97 @@ def publish_cycle(
     except DecisionRefused as exc:
         raise CycleRefused(str(exc)) from exc
     return path, bridge_path
+
+
+def rebuild_bridge(
+    runs_root: str | Path,
+    record: Mapping[str, Any],
+    *,
+    fix_identity: Mapping[str, Any],
+    run_codes: Mapping[str, str | None],
+    settings: Mapping[str, Any],
+    host: str,
+) -> dict:
+    """The bridge of a published cycle record (a valid decision record) whose bridge is missing,
+    as ``derive_cycle`` built it: the record's diagnosis, fix, codes and time (``written_at``,
+    the bridge's ``superseded_at``), its affected runs from their starts in its pinned prefix and,
+    under a rerun of the qualification, the qualification's entries re-derived as the readers
+    re-derive them (``_requalified``). ``CycleRefused`` when the fix's identity is not the
+    record's code, or the qualification's side is not the record's any more (a launcher run the
+    readers cannot settle, or other records): the record then stands without its bridge."""
+    root = Path(runs_root)
+    candidate = record["candidate"]
+    if fix_identity.get("sha256") != record["code"]["gpu_code_sha256"]:
+        raise CycleRefused(f"this checkout's GPU code {fix_identity.get('sha256')} is not the "
+                           f"cycle record's fix, {record['code']['gpu_code_sha256']}")  # fmt: skip
+    entries = None
+    if record["stages"].get("qualification", {}).get("action") == "rerun":
+        entries = _requalified(root, record, run_codes=run_codes, settings=settings)
+        if entries.unsettled or _qualification(root, entries) != record["affected"][
+                "qualification"]:  # fmt: skip
+            raise CycleRefused("the qualification's side of the cycle is not the record's any "
+                               "more: its bridge cannot be written from it")  # fmt: skip
+    bridge = build_bridge(root, candidate, cycle_file=cycle_path(root, candidate),
+                          cycle_sha256=hashlib.sha256(serialized(record)).hexdigest(),
+                          diagnosis=record["diagnosis"], fix=record["fix"],
+                          old_code=record["old_code"], fix_identity=fix_identity,
+                          entries=entries, stage_runs=_stage_runs(root, record), host=host,
+                          at=record["written_at"], commit=record["code"]["commit"])  # fmt: skip
+    return json.loads(json.dumps(bridge, allow_nan=False))
+
+
+_SUPERSESSION = re.compile(r"supersede-\d+\.json")
+_CASE_RESTART = re.compile(r"restart-\d+\.json")
+
+
+def journal_problems(runs_root: str | Path) -> list[str]:
+    """Why the launch journal is not whole, as the launcher and ``qualify.py`` refuse it (exit
+    12): a launch log that cannot be read or resolves under a sealed folder; a torn line that no
+    resolution names, the last of its log included (``JournalLog.refused``); and a line that a
+    published qualification record requires and no log holds (``launch.missing_lines``,
+    mirrored): a supersession record's ``superseded`` line of each run of its ``launchers`` and
+    ``held`` line of each run of its ``held`` (the same label, experiment and run id), a case
+    restart record's ``superseded`` line of its launcher run (by its run id). A record that
+    cannot be read may name a line, and is named too."""
+    root = Path(runs_root)
+    logs, unread = journal_lines(root)
+    problems = list(unread)
+    problems += [f"{log.path} line {number}: a torn line that no resolution names"
+                 for log in logs for number in log.refused]  # fmt: skip
+    records = [line.record for log in logs for line in log.lines if line.record is not None]
+    lines = {tuple(r.get(k) for k in ("event", "run", "experiment", "run_id")) for r in records}
+    superseded = {r.get("run_id") for r in records if r.get("event") == "superseded"}
+    out = root / "qualification"
+    found = [(path, "supersession") for path in sorted(out.glob("c*/supersede-*.json"))
+             if _SUPERSESSION.fullmatch(path.name)]  # fmt: skip
+    found += [(path, "restart") for path in sorted(out.glob("c*/*/s*/*/restart-*.json"))
+              if _CASE_RESTART.fullmatch(path.name)]  # fmt: skip
+    for path, kind in found:
+        where = path.relative_to(root).as_posix()
+        record = None
+        if not under_sealed(path, root):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                record = None
+        if not isinstance(record, dict):
+            problems.append(f"{where}: a record that cannot be read may name a journal line")
+            continue
+        if kind == "restart":
+            launcher = record.get("launcher")
+            run_id = launcher.get("run_id") if isinstance(launcher, Mapping) else None
+            if isinstance(run_id, str) and run_id not in superseded:
+                problems.append(f"{where}: no superseded line of {run_id}")
+            continue
+        for event, key in (("superseded", "launchers"), ("held", "held")):
+            entries = record.get(key) or []
+            for entry in entries if isinstance(entries, list) else [None]:
+                named = tuple(entry.get(k) for k in ("run", "experiment", "run_id")) if isinstance(
+                    entry, Mapping) else (None,)  # fmt: skip
+                if (event, *named) not in lines:
+                    shown = named[-1] if isinstance(named[-1], str) else "a run"
+                    problems.append(f"{where}: no {event} line of {shown}")
+    return problems
 
 
 # ------------------------------------------------------------------ reading the cycle back

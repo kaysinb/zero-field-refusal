@@ -16,6 +16,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from omegaconf import OmegaConf
@@ -47,9 +48,10 @@ from zero_field_refusal.analysis.study3_decisions import (
     serialized,
     start_lines,
 )
-from zero_field_refusal.analysis.study3_progress import _bound
+from zero_field_refusal.analysis.study3_progress import _bound, progress
 from zero_field_refusal.analysis.study3_records import COUNTING, GROSS_COLLAPSE, EndpointReader
 from zero_field_refusal.config import config_hash
+from zero_field_refusal.launch import load_campaign
 
 
 def sha(data) -> str:
@@ -715,11 +717,18 @@ class CycleRoute(Route):
         super().__init__(base, monkeypatch)
         self.monkeypatch = monkeypatch
         self.written_at = WRITTEN
+        self.old_code = self.code["gpu_code_sha256"]
+        self.fix_code: str | None = None
+        self.blank: str | None = None  # a stage whose justification ``cycle`` gives blank
 
     def build(self) -> None:
         assert self.step()["record"] == "engineering"
         self.engineering = self.campaign("engineering")
         self.launch(self.engineering)
+        # the engineering campaign file where the operator keeps it: RUNS_DIR/campaigns/
+        self.campaign_file = self.root / "campaigns" / f"{load_campaign(self.engineering)[0]}.yaml"
+        self.campaign_file.parent.mkdir(exist_ok=True)
+        self.campaign_file.write_bytes(self.engineering.read_bytes())
         self.record("engineering", self.records.engineering(code=self.code))
         self.record("simulation", self.records.simulation(code=self.code))
         assert self.step()["campaign"] == "search-round0"
@@ -734,6 +743,18 @@ class CycleRoute(Route):
             self.mark}  # fmt: skip
 
     # -- the readers
+
+    def state(self) -> dict:
+        """The real ``progress`` under this checkout's GPU code (the fix's, once committed)."""
+        return progress(self.root, repo=self.repo, expected_code=self.identity()["sha256"],
+                        theta0=self.runs.theta0)  # fmt: skip
+
+    def record(self, kind: str | None = None, record: dict | None = None):
+        """With a kind, the route's decision record written (``Route.record``); without one,
+        the published cycle record."""
+        if kind is not None:
+            return super().record(kind, record)
+        return self.record_()
 
     def endpoints(self, step: str):
         """The run records as they are now (the real reader, every bound cell)."""
@@ -765,6 +786,87 @@ class CycleRoute(Route):
 
     def affected(self) -> set[str]:
         return {run["run_id"] for run in self.record_()["affected"]["runs"]}
+
+    # -- the writer and the states it refuses
+
+    def commit_fix(self) -> "CycleRoute":
+        """A fix of train.py committed: HEAD's GPU code is the fix's (``fix_code``)."""
+        (self.repo / "src" / "zero_field_refusal" / "train.py").write_text("x = 2\n")
+        self.commit("the fix")
+        self.fix_code = self.identity()["sha256"]
+        assert self.fix_code != self.old_code
+        return self
+
+    def cycle(self, *stages: str, justification: str) -> SimpleNamespace:
+        """``study3_summary.py cycle`` run in process: each claim ``--stage``, each item that
+        starts with ``--`` as it is, and the justification (blank for ``blank``'s stage)."""
+        argv = ["cycle", "--runs-root", self.root, "--candidate", 1, "--diagnosis", DIAGNOSIS,
+                "--fix", FIX_TEXT, "--theta0", self.runs.theta0]  # fmt: skip
+        for item in stages:
+            argv += [item] if item.startswith("--") else ["--stage", item]
+        if self.blank is not None:
+            justification = f"{self.blank}=   "
+        ran = self.run("summary", *argv, "--justification", justification)
+        return SimpleNamespace(code=ran.code, out=ran.out, error=ran.err)
+
+    def campaigns(self, kind: str) -> SimpleNamespace:
+        """The campaign writer run for ``kind``."""
+        out = self.out / f"{kind}-{next(self.names)}.yaml"
+        ran = self.run("campaigns", kind, "--runs-root", self.root, "--candidate", 1, "--theta0",
+                       self.runs.theta0, "--out", out)  # fmt: skip
+        return SimpleNamespace(code=ran.code, out=ran.out, error=ran.err)
+
+    def bridge_path(self) -> Path:
+        return self.root / bridge_name(1)
+
+    def qualify_supersession(self) -> "CycleRoute":
+        """qualify.py's own supersession record of candidate 1 (its cycle from a part record)."""
+        path = self.root / bridge_name(1)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "candidate": 1, "supersession": 1, "diagnosis": "d", "fix": "f",
+            "old_record": {"path": "/runs/qualification/c1/numerical/s10200/adamw-5e-05/"
+                                   "baseline-attempt-1.json", "sha256": "0" * 64},
+            "old_gpu_code": {"sha256": self.old_code}, "fix_gpu_code": {"sha256": "e" * 64},
+            "cases_requalified": [], "attempts": [], "kept_cases": [], "kept": [],
+            "launchers": [], "held": []}, indent=1) + "\n")  # fmt: skip
+        return self
+
+    def drop_engineering_campaign(self) -> "CycleRoute":
+        self.campaign_file.unlink()
+        return self
+
+    def pending_search_run(self, arm: str, label: str) -> "CycleRoute":
+        """A search run of ``arm`` at its ``label`` rate on 10101 not ended: its end line gone,
+        its meta.json running, no terminal record."""
+        (run,) = [e for e in self.endpoints(step="search")
+                  if e.arm == arm and e.lr == START[arm][label] and e.seed == 10101]  # fmt: skip
+        (run.run_dir / "terminal.json").unlink()
+        meta = json.loads((run.run_dir / "meta.json").read_text())
+        (run.run_dir / "meta.json").write_text(json.dumps({**meta, "status": "running"}))
+        for log in self.root.glob("launch/*.jsonl"):
+            lines = log.read_text().splitlines(keepends=True)
+            ends = [json.loads(x) for x in lines]
+            kept = [x for x, r in zip(lines, ends, strict=True)
+                    if not (r.get("event") == "end" and r.get("run_id") == run.run_id)]  # fmt: skip
+            if kept != lines:
+                log.write_text("".join(kept))
+        return self
+
+    def blank_justification(self, stage: str) -> "CycleRoute":
+        self.blank = stage
+        return self
+
+    def remove_meta(self, run_id: str) -> None:
+        (self.root / meta_path(run_id)).unlink()
+
+    def garble(self, name: str) -> None:
+        """An A search run's record ``name`` (not the mark's) there and not JSON."""
+        (run,) = [e for e in self.endpoints(step="search")
+                  if e.arm == "A" and e.lr == START["A"]["u"] and e.seed == 10101]  # fmt: skip
+        path = run.run_dir / name
+        path.write_text("{not json")
+        self.garbled_sha = sha(path)
 
     # -- the cycle, its repair and the edits
 
@@ -848,6 +950,10 @@ class CycleRoute(Route):
         lines = path.read_bytes().split(b"\n")
         lines[number - 1] = json.dumps({**json.loads(lines[number - 1]), "x": 1}).encode()
         path.write_bytes(b"\n".join(lines))
+
+
+def meta_path(run_id: str) -> str:
+    return f"study3/{run_id}/meta.json"
 
 
 @pytest.fixture
@@ -1122,3 +1228,99 @@ def test_a_closed_arm_rests_only_on_a_closure_whose_line_lies_in_the_prefix():
     assert not cycle._in_prefix({"path": "launch/a.jsonl", "line": 3}, journal)
     assert not cycle._in_prefix({"path": "launch/b.jsonl", "line": 1}, journal)
     assert not cycle._in_prefix(None, journal)
+
+
+# ------------------------------------------------------------------ the writer, on files
+
+
+def written(root: Path) -> dict[str, bytes]:
+    """Every file under the qualification's and the decision records' folders, by path."""
+    return {p.relative_to(root).as_posix(): p.read_bytes()
+            for folder in (root / "qualification", root / "study3" / "decisions")
+            for p in sorted(folder.rglob("*")) if p.is_file()}  # fmt: skip
+
+
+def test_the_cycle_opens_the_new_chain_on_files_and_the_guards_stay(cycle_route):
+    """The right to a cycle is judged on the existing chain (the code in force), the fix
+    checked on its own: from the fix's checkout, before the cycle, the ordinary state reports
+    the chain problem and the campaign writer refuses; the cycle opens the chain at the fix."""
+    cycle_route.commit_fix()  # train.py changed: HEAD has a new GPU code
+    assert any("end of the chain" in p for p in cycle_route.state()["problems"])
+    assert cycle_route.campaigns("search-round0").code != 0  # the campaign writer still refuses
+    ran = cycle_route.cycle("search=rerun", justification="search=the fix changes every step")
+    assert ran.code == 0 and cycle_path(cycle_route.root, 1).exists(), ran.error
+    record = json.loads(cycle_path(cycle_route.root, 1).read_text())
+    codes_ = (record["old_code"], record["code"]["gpu_code_sha256"])
+    assert codes_ == (cycle_route.old_code, cycle_route.fix_code)
+    assert not [p for p in cycle_route.state()["problems"] if "end of the chain" in p]
+    lines = ran.out.splitlines()
+    assert lines[:2] == [str(cycle_path(cycle_route.root, 1)), str(cycle_route.bridge_path())]
+    repair = lines[2]
+    assert repair.startswith('project-run "$SRC" python scripts/qualify.py supersede --campaign ')
+    assert f"--campaign {cycle_route.campaign_file} --candidate 1 --engineering --case " in repair
+    assert f"--record {cycle_route.bridge()['old_record']['path']} " in repair
+    assert cycle_route.cycle_problems() == []
+
+
+@pytest.mark.parametrize("why, setup", [
+    ("no cycle", lambda r: None),                                            # R1: no fix
+    ("recorded already", lambda r: r.commit_fix().qualify_supersession()),   # R2
+    ("campaigns/", lambda r: r.commit_fix().drop_engineering_campaign()),    # R11
+    ("not ended", lambda r: r.commit_fix().pending_search_run("F", "l")),    # R4
+    ("justification", lambda r: r.commit_fix().blank_justification("search")),  # R5
+])  # fmt: skip
+def test_cycle_refuses(cycle_route, why, setup):
+    setup(cycle_route)
+    before = written(cycle_route.root)
+    ran = cycle_route.cycle("search=rerun", justification="search=x")
+    assert ran.code != 0 and why in ran.error, ran.error
+    assert not cycle_path(cycle_route.root, 1).exists()
+    assert written(cycle_route.root) == before  # nothing written, the bridge included
+
+
+def test_a_marked_run_without_meta_json_carries_an_absence_marker_and_is_no_r7(cycle_route):
+    """A mark with no meta.json has no GPU code: a mark of the code in force (R6 refuses only a
+    known other code), its file an absence marker, its journal start binding it."""
+    cycle_route.commit_fix()
+    cycle_route.remove_meta(cycle_route.mark)
+    ran = cycle_route.cycle("search=rerun", justification="search=x")
+    assert ran.code == 0, ran.error
+    runs = cycle_route.record()["affected"]["runs"]
+    (run,) = [r for r in runs if r["run_id"] == cycle_route.mark]
+    assert {"path": meta_path(cycle_route.mark), "absent": True} in run["records"]
+    assert run["gpu_code"] is None and run["start"]["line_sha256"]
+    assert cycle_route.cycle_problems() == []
+
+
+def test_an_unreadable_file_keeps_its_byte_hash(cycle_route):
+    cycle_route.commit_fix()
+    cycle_route.garble("terminal.json")  # present, not JSON
+    ran = cycle_route.cycle("search=rerun", justification="search=x")
+    assert ran.code == 0, ran.error
+    assert any(e.get("sha256") == cycle_route.garbled_sha
+               for r in cycle_route.record()["affected"]["runs"] for e in r["records"])  # fmt: skip
+
+
+def test_the_cycle_writes_only_a_missing_bridge_when_run_again(cycle_route):
+    cycle_route.commit_fix()
+    assert cycle_route.cycle("search=rerun", justification="search=x").code == 0
+    first = cycle_path(cycle_route.root, 1).read_bytes()
+    bridge = cycle_route.bridge_path().read_bytes()
+    cycle_route.bridge_path().unlink()
+    ran = cycle_route.cycle("search=rerun", justification="search=x")
+    assert ran.code == 0, ran.error
+    assert cycle_path(cycle_route.root, 1).read_bytes() == first
+    assert json.loads(cycle_route.bridge_path().read_bytes()) == json.loads(bridge)
+    assert "recorded already" in cycle_route.cycle("search=rerun",
+                                                   justification="search=other").error  # fmt: skip
+    cycle_route.bridge_path().unlink()  # run again with other claims over the record: refused
+    ran = cycle_route.cycle("search=rerun", justification="search=other")
+    assert "recorded already" in ran.error and not cycle_route.bridge_path().exists()
+
+
+def test_dry_run_writes_nothing(cycle_route):
+    cycle_route.commit_fix()
+    ran = cycle_route.cycle("search=rerun", "--dry-run", justification="search=x")
+    assert ran.code == 0 and '"kind": "cycle-c1"' in ran.out, ran.error
+    assert not cycle_path(cycle_route.root, 1).exists()
+    assert not cycle_route.bridge_path().exists()

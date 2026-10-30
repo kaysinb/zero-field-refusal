@@ -79,6 +79,7 @@ class Summary:
 
     def core(self, study: Study) -> None:
         self.monkeypatch.setattr(self.script, "progress", lambda *a, **k: study.advance())
+        self.monkeypatch.setattr(self.script, "read_records", lambda *a, **k: study.records())
 
     def versions(self, problems=()) -> None:
         def check(record, **kw):
