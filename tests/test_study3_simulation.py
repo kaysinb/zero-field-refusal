@@ -504,6 +504,63 @@ def test_a_truth_that_does_not_converge_is_refused(tiny_vectors) -> None:
         sim.truth(sc, cal, tiny_vectors, slopes, START_RATES, tol=1e-14, max_nodes=64)
 
 
+def nested_moments(vector, arm, rates, sc, cal, kstar_ln, tol=1e-6, max_nodes=512):
+    """(E[1_a], E[1_a·I_a]) by the one nested quadrature of the whole integrand (run 1's jitter
+    outer, run 2's inner, both shares inside), the form before the quadrature was split."""
+    m = sim._arm_means(vector, arm, rates, kstar_ln)
+    se = sim.JITTER_SD[arm]
+    terms = sim._arm_terms(vector, arm, m, se, kstar_ln, slopes, sc, cal)
+    crossings = sim._crossings(vector, arm, slopes, kstar_ln)
+
+    def outer(z1):
+        flat = z1.reshape(-1)
+        breaks = (sim._x_breaks_inner(m[0] + se * flat, crossings) - m[1]) / se
+        values = sim._piecewise(lambda z2: np.stack(terms(flat[:, None, None], z2)), breaks,
+                                tol=tol, max_nodes=max_nodes)  # fmt: skip
+        return values.reshape((2, *z1.shape))
+
+    breaks = np.array([[(x - m[0]) / se for x in sim._x_breaks_outer(crossings)]])
+    s, t = sim._piecewise(outer, breaks, tol=tol, max_nodes=max_nodes)[:, 0]
+    return float(s), float(t)
+
+
+def test_the_jitter_quadrature_is_reused_across_sigma_and_offsets(tiny_vectors,
+                                                                  monkeypatch) -> None:  # fmt: skip
+    """C12's moments at a new σ or offset reuse the jitter quadrature, which depends on neither:
+    no inner integral is computed again, the value is a fresh quadrature's and the nested
+    quadrature's of the whole integrand, and the outer rule is checked at every evaluation."""
+    sc = sim.SCENARIOS_BY_NAME["C12"]
+    kstar_ln = math.log(KSTAR)
+    rates = {"l": START_RATES["A"]["l"] * 1.05, "u": START_RATES["A"]["u"] * 0.97}
+    v = tiny_vectors[1]
+    sim.clear_caches()
+    inner = []
+    real = sim._piecewise
+    monkeypatch.setattr(sim, "_piecewise", lambda *a, **k: inner.append(1) or real(*a, **k))
+    first = sim._arm_moments(v, "A", rates, sc, calibration_for(sc, sigma_af=0.03), slopes,
+                             kstar_ln, tol=1e-6, max_nodes=512)  # fmt: skip
+    built = len(inner)
+    assert built > 0
+    moved = calibration_for(sc, sigma_af=0.045, offset_a=0.02)
+    second = sim._arm_moments(v, "A", rates, sc, moved, slopes, kstar_ln, tol=1e-6,
+                              max_nodes=512)  # fmt: skip
+    assert len(inner) == built  # the inner integrals are reused
+    assert second[0] == first[0] and second[1] != first[1]  # support: σ and offset free
+    monkeypatch.setattr(sim, "_piecewise", real)
+    sim.clear_caches()
+    assert sim._arm_moments(v, "A", rates, sc, moved, slopes, kstar_ln, tol=1e-6,
+                            max_nodes=512) == second  # fmt: skip
+    for value, whole in zip(second, nested_moments(v, "A", rates, sc, moved, kstar_ln),
+                            strict=True):  # fmt: skip
+        assert abs(value - whole) <= 1e-8
+    # the outer rule is checked at every evaluation: a kept quadrature refuses a tolerance
+    # no node count meets
+    grid = sim._grid(v, "A", rates, slopes, kstar_ln, tol=1e-6, max_nodes=512)
+    grid.tol, grid.max_nodes = 1e-15, 64
+    with pytest.raises(sim.TruthNotConverged):
+        grid.moments(sim._share("A", sc, moved))
+
+
 def boundary_case(where: str):
     """A jitter scenario and two vectors: one whose A and F endpoints sit within 0.01 in ln K
     of a support boundary (the bracket's low or high end, the 0.60 width, or a gross collapse),

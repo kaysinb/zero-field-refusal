@@ -988,29 +988,163 @@ def _arm_moments(
     max_nodes: int,
 ) -> tuple[float, float]:
     """(E[1_a], E[1_a·I_a]) of one arm in one vector over its runs' jitters, before the
-    failures."""
-    m = _arm_means(vector, arm, rates, kstar_ln)
+    failures: in closed form without jitter, else through the arm's jitter quadrature
+    (``_JitterGrid``, remembered: it depends on neither σ nor the offset), its outer rule
+    checked for convergence at this σ and offset."""
     sigma_e = JITTER_SD[arm] if scenario.jitter else 0.0
-    terms = _arm_terms(vector, arm, m, sigma_e, kstar_ln, slopes, scenario, calibration)
     if sigma_e == 0:
+        m = _arm_means(vector, arm, rates, kstar_ln)
+        terms = _arm_terms(vector, arm, m, sigma_e, kstar_ln, slopes, scenario, calibration)
         s, t = terms(np.array(0.0), np.array(0.0))
         return float(s), float(t)
-    crossings = _crossings(vector, arm, slopes, kstar_ln)
+    grid = _grid(vector, arm, rates, slopes, kstar_ln, tol=tol, max_nodes=max_nodes)
+    return grid.moments(_share(arm, scenario, calibration))
 
-    def outer(z1: np.ndarray) -> np.ndarray:
-        shape = z1.shape  # (1, P1, n1)
-        flat = z1.reshape(-1)
-        inner_breaks = (_x_breaks_inner(m[0] + sigma_e * flat, crossings) - m[1]) / sigma_e
+
+def _share(arm: str, scenario: Scenario, calibration: Calibration) -> Callable:
+    """x → p_a(E[h](x)), the arm's expected primary judged share at x = ln(K/K*) under the
+    calibration's block effect (σ and offset)."""
+    effect_sd, offset = calibration.sigma(arm), calibration.offset(arm)
+
+    def share(x: np.ndarray) -> np.ndarray:
+        mean = harm_curve(arm, x, scenario.curvature_scale) + offset
+        return judged_share(arm, expected_clipped(mean, effect_sd, scenario.shape), scenario)
+
+    return share
+
+
+class _JitterGrid:
+    """The jitter quadrature of one arm in one vector at one pair of rates (M8), which depends
+    on neither the block effects' σ nor their offset (only the shares do).
+
+    With x₁, x₂ the two runs' x = ln(K/K*), 1_a their support and w the weight,
+    I_a = c₁·p(x₁) + c₂·p(x₂), c₁ = 1 − w where run 1 is the lower and w where it is the upper
+    (c₂ = 1 − c₁). So E[1_a·I_a] = E₁[p(x₁)·A₁(x₁)] + E₂[p(x₂)·A₂(x₂)] and E[1_a] = E₁[S₁(x₁)],
+    with A_i(x_i) = E[1_a·c_i | x_i] and S₁(x₁) = E[1_a | x₁] integrals over the other run's
+    jitter alone. Each part (run i outer) is the nested quadrature of the module docstring: the
+    outer rule on run i's CDF scale between its breakpoints (the bracket, the width, a
+    collapse and the collapse ± the width) and ``SPLITS``, the inner integrals over the other
+    run between theirs (the bracket, the width, a tie, a collapse), each inner integral to
+    convergence (n and 2n nodes within the tolerance on every piece). The inner integrals at
+    each outer level are computed once and kept; the outer rule, with p, is checked for
+    convergence at every σ and offset it is evaluated at (n and 2n nodes on every piece, from 16
+    nodes, doubling up to the maximum; else ``TruthNotConverged``), refining with new inner
+    integrals where an offset needs it."""
+
+    def __init__(self, vector: Vector, arm: str, rates: Mapping[str, float],
+                 slopes: Mapping[str, tuple[float, float]], kstar_ln: float, *, tol: float,
+                 max_nodes: int) -> None:  # fmt: skip
+        self.vector, self.arm, self.kstar_ln = vector, arm, kstar_ln
+        self.slopes = {arm: tuple(slopes[arm])}
+        self.tol, self.max_nodes = tol, max_nodes
+        self.sigma_e = JITTER_SD[arm]
+        self.means = _arm_means(vector, arm, rates, kstar_ln)
+        self.crossings = _crossings(vector, arm, slopes, kstar_ln)
+        self.parts = []
+        for own in (0, 1):  # the outer run: run 1 (at η_l), then run 2 (at η_u)
+            breaks = np.array([[(x - self.means[own]) / self.sigma_e
+                                for x in _x_breaks_outer(self.crossings)]])  # fmt: skip
+            splits = np.broadcast_to(np.array(SPLITS), (1, len(SPLITS)))
+            u = np.sort(ndtr(np.concatenate([breaks, splits], axis=1)), axis=1)
+            edges = np.concatenate([np.zeros((1, 1)), u, np.ones((1, 1))], axis=1)
+            half = (edges[:, 1:] - edges[:, :-1]) / 2
+            mid = (edges[:, 1:] + edges[:, :-1]) / 2
+            kept = half[0] > 0  # a piece of length 0 adds exactly nothing
+            self.parts.append({"half": half[0, kept], "mid": mid[0, kept], "levels": {}})
+
+    def _usable(self, x: np.ndarray) -> np.ndarray:
+        return self.vector.losses_at(self.arm, self.kstar_ln + x, self.slopes)[0] <= COLLAPSE_AT_PP
+
+    def _level(self, own: int, n: int) -> tuple[np.ndarray, np.ndarray]:
+        """Run ``own``'s outer x at the n-node rule of each piece, (P, n), and the inner
+        integrals there, (2, P, n): E[1_a | x] and E[1_a·c | x] (c: the weight on run
+        ``own``'s share)."""
+        part = self.parts[own]
+        found = part["levels"].get(n)
+        if found is not None:
+            return found
+        t, _ = _legendre(n)
+        half, mid = part["half"][:, None], part["mid"][:, None]
+        z = ndtri(np.clip(mid + half * t, _U_LOW, _U_HIGH))  # (P, n)
+        x_own = self.means[own] + self.sigma_e * z
+        flat = x_own.reshape(-1)
+        other = self.means[1 - own]
+        inner_breaks = (_x_breaks_inner(flat, self.crossings) - other) / self.sigma_e
+        usable_own = self._usable(flat)[:, None, None]
 
         def inner(z2: np.ndarray) -> np.ndarray:
-            return np.stack(terms(flat[:, None, None], z2))
+            x_other = other + self.sigma_e * np.asarray(z2)
+            mine = flat[:, None, None]
+            x1, x2 = (mine, x_other) if own == 0 else (x_other, mine)
+            u1, u2 = (usable_own, self._usable(x_other)) if own == 0 else (
+                self._usable(x_other), usable_own)  # fmt: skip
+            x1, x2, u1, u2 = np.broadcast_arrays(x1, x2, u1, u2)
+            supported, _, _, w = _support(x1, x2, u1, u2)
+            lower = (x1 < x2) if own == 0 else (x2 < x1)  # run ``own`` is the lower
+            weight = np.where(lower, 1 - w, w)
+            return np.stack([supported.astype(float), np.where(supported, weight, 0.0)])
 
-        values = _piecewise(inner, inner_breaks, tol=tol, max_nodes=max_nodes)  # (2, B)
-        return values.reshape((2, *shape))
+        values = _piecewise(inner, inner_breaks, tol=self.tol, max_nodes=self.max_nodes)
+        found = part["levels"][n] = (x_own, values.reshape(2, *x_own.shape))
+        return found
 
-    outer_breaks = np.array([[(x - m[0]) / sigma_e for x in _x_breaks_outer(crossings)]])
-    s, t = _piecewise(outer, outer_breaks, tol=tol, max_nodes=max_nodes)[:, 0]
-    return float(s), float(t)
+    def _rule(self, own: int, n: int, share: Callable) -> np.ndarray:
+        """(E[S], E[p·A]) of run ``own``'s part per piece at the n-node outer rule, (2, P)."""
+        x, inner = self._level(own, n)
+        _, w = _legendre(n)
+        f = np.stack([inner[0], share(x) * inner[1]])
+        return (f * w).sum(axis=-1) * self.parts[own]["half"]
+
+    def moments(self, share: Callable) -> tuple[float, float]:
+        """(E[1_a], E[1_a·I_a]) at the shares ``share`` (x → p(x)): each part's outer rule from
+        16 nodes, doubling until n and 2n agree within the tolerance on every piece."""
+        out = []
+        for own in (0, 1):
+            n = FIRST_NODES
+            if 2 * n > self.max_nodes:
+                raise TruthNotConverged(f"{self.max_nodes} nodes cannot check {n} against {2 * n}")
+            coarse = self._rule(own, n, share)
+            while True:
+                fine = self._rule(own, 2 * n, share)
+                if np.all(np.abs(fine - coarse) <= self.tol):
+                    break
+                n *= 2
+                if 2 * n > self.max_nodes:
+                    worst = float(np.max(np.abs(fine - coarse)))
+                    raise TruthNotConverged(
+                        f"{n} and {n // 2} nodes differ by {worst:.3g} (tolerance "
+                        f"{self.tol:g}, at most {self.max_nodes} nodes)"
+                    )
+                coarse = fine
+            out.append(fine.sum(axis=-1))
+        return float(out[0][0]), float(out[0][1] + out[1][1])
+
+
+# The jitter quadratures by what they depend on: the vector's points of the arm (as shifted),
+# the arm, the rates, K*, the slopes and the quadrature's settings
+_GRIDS: dict[tuple, _JitterGrid] = {}
+_GRIDS_LIMIT = 40_000
+
+
+def _grid_key(vector: Vector, arm: str, rates: Mapping[str, float],
+              slopes: Mapping[str, tuple[float, float]], kstar_ln: float, tol: float,
+              max_nodes: int) -> tuple:  # fmt: skip
+    return (vector.seed, vector.arms[arm], arm, float(rates["l"]), float(rates["u"]), kstar_ln,
+            tuple(slopes[arm]), tol, max_nodes)  # fmt: skip
+
+
+def _grid(vector: Vector, arm: str, rates: Mapping[str, float],
+          slopes: Mapping[str, tuple[float, float]], kstar_ln: float, *, tol: float,
+          max_nodes: int) -> _JitterGrid:  # fmt: skip
+    """The arm's jitter quadrature, remembered (``_JitterGrid``)."""
+    key = _grid_key(vector, arm, rates, slopes, kstar_ln, tol, max_nodes)
+    found = _GRIDS.get(key)
+    if found is None:
+        if len(_GRIDS) >= _GRIDS_LIMIT:
+            _GRIDS.clear()
+        found = _GRIDS[key] = _JitterGrid(vector, arm, rates, slopes, kstar_ln, tol=tol,
+                                          max_nodes=max_nodes)  # fmt: skip
+    return found
 
 
 # (E[1_a], E[1_a·I_a]) per (vector, arm, rates, harm model, the arm's σ and offset, K*,
@@ -2018,7 +2152,7 @@ _DRAWS_LIMIT = 6
 def clear_caches() -> None:
     """Forget the remembered truths, shifted vectors, selections and calibration draws (each is
     recomputed identically)."""
-    for cache in (_MOMENTS, _SHIFTED, _SELECTIONS, _DRAWS):
+    for cache in (_MOMENTS, _GRIDS, _SHIFTED, _SELECTIONS, _DRAWS):
         cache.clear()
 
 
