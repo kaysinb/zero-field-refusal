@@ -22,6 +22,7 @@ from test_study3_labels import (
     REFUSAL_REPLY,
     TORN,
     ContentJudge,
+    stand_in_freeze,
     study3_run,
 )
 from test_study3_package2 import LEDGER_OPENERS, NamedOpens
@@ -46,6 +47,7 @@ from zero_field_refusal.analysis.study3_labels import (
     LabelingProblem,
     LabelsPending,
     LedgerError,
+    SealedPoint,
     diagnoses,
     labeling_problems,
     ledger_dir,
@@ -356,9 +358,10 @@ class BatchJudge:
 class World:
     """Candidate 1's validation runs ``r1``–``r3`` (test_study2_labels' runs, two responses each
     marked ``[h]``) under a runs root whose spread point is open (``study3_labels._state`` gives
-    the choice step, its cohort the three runs; the runs bound by ``_bound``); a calibration
-    folder of 40 marked items, all drawn into the checkout's control list; a stand-in validation
-    fixation pinning that list and this checkout's judge; and the fake judge server."""
+    the choice step, its cohort the three runs; the runs bound by ``_bound``, and the final
+    point's by ``_attempts``, as ``bound_runs`` lists them per step); a calibration folder of 40
+    marked items, all drawn into the checkout's control list; a stand-in validation fixation
+    pinning that list and this checkout's judge; and the fake judge server."""
 
     def __init__(self, tmp_path: Path, monkeypatch, capfd) -> None:
         self.monkeypatch, self.capfd = monkeypatch, capfd
@@ -382,7 +385,9 @@ class World:
         monkeypatch.setattr(study3_labels, "harmful_prompts", lambda cfg: PROMPTS)
         self.stage = "choice"
         monkeypatch.setattr(study3_labels, "_state", self.state)
+        self.bound_runs = {"validation": {"r1", "r2", "r3"}, "confirmation": set()}
         monkeypatch.setattr(study3_label_cli, "_bound", self.bound)
+        monkeypatch.setattr(study3_labels, "_attempts", self.attempts)
         self.judge, self.out = BatchJudge(), ""
         self.cfg = load_config("judge/wildguard")
         for name in ("r1", "r2", "r3"):
@@ -403,9 +408,12 @@ class World:
         }
 
     def bound(self, runs_root, state, step, candidate, run_ids, theta0=None) -> None:
-        unbound = [r for r in run_ids if r not in ("r1", "r2", "r3")]
-        if unbound or (step, candidate) != ("validation", 1):
-            raise BatchRefused(f"{unbound} are not candidate 1's validation runs")
+        unbound = [r for r in run_ids if r not in self.bound_runs.get(step, ())]
+        if unbound or candidate != 1:
+            raise BatchRefused(f"{unbound} are not candidate 1's {step} runs")
+
+    def attempts(self, runs_root, state, candidate, steps, theta0=None) -> frozenset[str]:
+        return frozenset(r for step in steps for r in self.bound_runs[step] if candidate == 1)
 
     def make_client(self, path: Path) -> JudgeClient:
         path = Path(path)
@@ -440,8 +448,8 @@ class World:
     def run(self, name: str) -> Path:
         return self.root / "study3" / name
 
-    def harm(self, name: str):
-        return run_harm(self.run(name), point="spread", candidate=1, runs_root=self.root,
+    def harm(self, name: str, point: str = "spread"):
+        return run_harm(self.run(name), point=point, candidate=1, runs_root=self.root,
                         repo_root=self.repo)  # fmt: skip
 
     def ledger(self):
@@ -877,10 +885,54 @@ def test_validation_runs_are_refused_outside_the_spread_window(world):
 
 
 def test_confirmation_runs_are_refused_until_the_final_point_opens(world):
-    # until the final point is wired to the freeze gate
-    with pytest.raises(BatchRefused, match="freeze gate"):
+    """The real freeze gate on a checkout with no analysis freeze: a confirmation batch is
+    refused, and nothing is sent or journaled."""
+    world.bound_runs["confirmation"].add("r1")
+    with pytest.raises(BatchRefused, match="freeze gate: the final point waits for candidate 1's "
+                       "freeze: 1 problem"):  # fmt: skip
         world.batch(["r1"], step="confirmation")
-    assert world.judge.attempts == 0
+    assert world.judge.attempts == 0 and not (world.ledger_dir / "journal.jsonl").exists()
+
+
+@pytest.fixture
+def freeze(monkeypatch) -> dict:
+    return stand_in_freeze(monkeypatch)
+
+
+def test_a_confirmation_batch_opens_with_the_final_point(freeze, world):
+    """A confirmation batch: refused while the freeze gate names a problem (nothing sent), then
+    labeled once it opens, its runs read at the final point and never at the spread."""
+    study3_run(world.root, "c1", unparseable=())
+    world.bound_runs["confirmation"].add("c1")
+    world.stage = "confirmation"  # the n record written: the spread point closed
+    with pytest.raises(BatchRefused, match="freeze gate: the final point waits for candidate 1's "
+                       "freeze: 1 problem"):  # fmt: skip
+        world.batch(["c1"], step="confirmation")
+    assert world.judge.attempts == 0 and not (world.ledger_dir / "journal.jsonl").exists()
+    assert freeze["calls"] == [(1, world.root, world.repo)]
+    freeze["problems"] = ()
+    out = world.batch(["c1"], step="confirmation")
+    assert (out.outcome, out.statuses) == ("accepted", {"c1": LABELED})
+    assert world.events("opened")[-1]["step"] == "confirmation"
+    assert (world.harm("c1", "final").harmful, world.harm("c1", "final").missing) == (2, 0)
+    with pytest.raises(SealedPoint, match="spread point is closed"):
+        world.harm("c1")
+
+
+def test_a_validation_run_left_unlabeled_at_the_spread_is_labeled_after_the_freeze(
+        freeze, world):  # fmt: skip
+    """A validation run not labeled while the spread point was open: refused once it closes
+    while the freeze gate names a problem, labeled once the final point opens, and read
+    there."""
+    assert world.batch(["r1"]).outcome == "accepted"  # at the spread
+    world.stage = "confirmation"  # the n record written: the spread point closed
+    with pytest.raises(BatchRefused, match="the spread point or the final point is open"):
+        world.batch(["r2"])
+    freeze["problems"] = ()
+    assert world.batch(["r2"]).outcome == "accepted"
+    assert world.harm("r2", "final").harmful == world.harm("r1", "final").harmful == 2
+    with pytest.raises(BatchRefused, match="confirmation runs"):  # r2 is a validation run
+        world.batch(["r3"], step="confirmation")
 
 
 def test_a_control_list_other_than_the_pinned_one_is_refused(world):

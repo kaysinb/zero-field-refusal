@@ -58,13 +58,14 @@ other: the same command, or no run ids). In order (steps 1–5 send nothing and 
    diagnosis refuses (naming the ``diagnose`` re-run), and the candidate's unresolved mark
    refuses every batch of it;
 3. *which batch*: the unfinished one (its step, candidate and runs), or a new one of the run ids;
-4. *the point*, every invocation: validation runs while the spread point is open
-   (``study3_labels.open_point``'s rule), each run id a plain name bound by the launch journal as
-   an attempt of the step and candidate, not refused (``_bound``); confirmation runs are refused
-   until the final point opens through the freeze gate. Only then is every ``superseded`` line
-   whose move is not done completed (the source's hashes checked first; any other state is
-   ambiguous and refuses): until the point opens, the ledger alone is opened, and nothing of a
-   run's folder;
+4. *the point*, every invocation (``study3_labels.open_point``'s rules): confirmation runs once
+   the final point is open (the freeze gate, ``study3_freeze.freeze_open``, names no problem);
+   validation runs while the spread point is open, and once the final point is (a validation run
+   left unlabeled at the spread); each run id a plain name bound by the launch journal as an
+   attempt of the step and candidate, not refused (``_bound``, through the final point's own
+   reading, ``study3_labels._attempts``). Only then is every ``superseded`` line whose move is not
+   done completed (the source's hashes checked first; any other state is ambiguous and refuses):
+   until the point opens, the ledger alone is opened, and nothing of a run's folder;
 5. *the pins*, every invocation: the candidate's in-force validation fixation
    (``study3_versions.read_validation_fixation``) without a problem, its control list's sha256
    the checkout's list now (and, on a resume, the batch's), the list clean, the fixation's judge
@@ -215,6 +216,8 @@ from .study3_labels import (
     Generation,
     LedgerError,
     SealedPoint,
+    _attempts,
+    _final,
     _receipt_sha256,
     _spread,
     append_event,
@@ -238,7 +241,7 @@ from .study3_pins import (
     control_list_problems,
     read_control_list,
 )
-from .study3_records import EXPERIMENT, RESERVED, EndpointReader, plain_name, under_sealed
+from .study3_records import EXPERIMENT, RESERVED, plain_name, under_sealed
 
 PROG = "python -m zero_field_refusal.analysis.study3_label_cli"
 CONTROL_PREFIX = "control/"  # a control item's id as the judge client sees it
@@ -570,13 +573,21 @@ class _Batch:
         if bad:
             raise BatchRefused(f"{bad[0]!r} is not a plain run id")
         if self.step == "confirmation":
-            raise BatchRefused("the final point opens through the freeze gate: confirmation runs "
-                               "are labeled once it is open")  # fmt: skip
-        try:
-            state, _ = _spread(self.candidate, self.root, self.repo)
-        except SealedPoint as exc:
-            raise BatchRefused(f"validation runs are labeled while the spread point is open: "
-                               f"{exc}") from None  # fmt: skip
+            try:
+                state = _final(self.candidate, self.root, self.repo)
+            except SealedPoint as exc:
+                raise BatchRefused(f"confirmation runs are labeled once the final point opens "
+                                   f"through the freeze gate: {exc}") from None  # fmt: skip
+        else:
+            try:
+                state, _ = _spread(self.candidate, self.root, self.repo)
+            except SealedPoint as spread:
+                try:
+                    state = _final(self.candidate, self.root, self.repo)
+                except SealedPoint as final:
+                    why = f"{spread}; {final}"
+                    raise BatchRefused(f"validation runs are labeled while the spread point or "
+                                       f"the final point is open: {why}") from None  # fmt: skip
         _bound(self.root, state, self.step, self.candidate, named)
 
     def _pins(self, ledger, batch: str | None) -> None:
@@ -917,21 +928,15 @@ def _left_out(ledger, run: str) -> str | None:
 def _bound(runs_root: Path, state: Mapping[str, Any], step: str, candidate: int,
            run_ids: Sequence[str], theta0: Path | None = None) -> None:  # fmt: skip
     """Raise ``BatchRefused`` unless every run id names an attempt the launch journal binds to
-    ``step`` and ``candidate``, not refused (``study3_records.EndpointReader`` under the state's
-    prescribed cells; θ₀ at its default place)."""
-    from .study3_progress import THETA0_RUN
-
-    root = Path(runs_root)
+    ``step`` and ``candidate``, not refused (``study3_labels._attempts``: the final point's
+    reading, ``study3_records.EndpointReader`` under the state's prescribed cells; θ₀ at its
+    default place)."""
     try:
-        reader = EndpointReader(root, theta0=root / THETA0_RUN if theta0 is None else theta0)
-        endpoints, _ = reader.read(state.get("prescribed") or {})
+        found = _attempts(runs_root, state, candidate, (step,), theta0)
     except (OSError, ValueError) as exc:
         raise BatchRefused(f"the run records cannot be read ({type(exc).__name__})") from None
-    found = {e.run_id: e for e in endpoints}
     for run in run_ids:
-        e = found.get(run)
-        if e is None or e.state == "refused" or e.cell.step != step or (
-                e.cell.candidate != candidate):  # fmt: skip
+        if run not in found:
             raise BatchRefused(f"{run} is not an attempt of candidate {candidate}'s {step} that "
                                "the launch journal binds (or it is refused): nothing is "
                                "labeled")  # fmt: skip

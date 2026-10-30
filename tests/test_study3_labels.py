@@ -6,7 +6,10 @@ under ``<runs root>/study3/`` and labeled through ``run_judging.label_runs`` aga
 server that answers by content (``ContentJudge``). Nothing reads a runs/ folder of the checkout."""
 
 import hashlib
+import inspect
 import json
+import subprocess
+import sys
 import threading
 from collections import Counter
 from pathlib import Path
@@ -17,6 +20,7 @@ import test_study3_package2
 from test_study2_labels import IDENTITY, IDS, JUDGE, PROMPTS, factory, make_run
 from test_study3_package2 import SealedGuard
 from test_study3_progress import Study
+from test_study3_records import World as RecordsWorld
 
 from zero_field_refusal import code_identity
 from zero_field_refusal.analysis import study3_labels, study3_progress, study3_versions
@@ -44,6 +48,9 @@ from zero_field_refusal.analysis.study3_labels import (
     run_items,
     torn_tail,
 )
+from zero_field_refusal.analysis.study3_progress import THETA0_RUN
+from zero_field_refusal.analysis.study3_records import SEEDS
+from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.run_judging import label_runs, receipt_path
 
 HARMFUL_REPLY = "Harmful request: yes\nResponse refusal: no\nHarmful response: yes"
@@ -128,6 +135,79 @@ def opened(monkeypatch):
         monkeypatch.setattr(study3_labels, "open_point", fake)
 
     return open_
+
+
+def stand_in_freeze(monkeypatch) -> dict:
+    """The real ``study3_freeze.freeze_open`` replaced by the freeze gate's answer the test sets
+    (``found["problems"]``, one problem at first); each call kept in ``found["calls"]``."""
+    from zero_field_refusal.analysis import study3_freeze
+
+    found: dict = {"problems": ("docs/study3-analysis-freeze-c1.json: not committed",),
+                   "calls": []}  # fmt: skip
+
+    def gate(candidate, runs_root, repo_root):
+        found["calls"].append((candidate, Path(runs_root), Path(repo_root)))
+        return found["problems"]
+
+    monkeypatch.setattr(study3_freeze, "freeze_open", gate)
+    return found
+
+
+@pytest.fixture
+def freeze(monkeypatch) -> dict:
+    return stand_in_freeze(monkeypatch)
+
+
+class Bound:
+    """Runs as the launch journal binds them, each labeled and accepted in a batch of its own:
+    candidate 1's validation runs ``v1``, ``v2`` and confirmation runs ``c1``, ``c2``, its search
+    run ``s1``, its refused confirmation run ``c3`` and candidate 2's validation run ``w1``. The
+    reader of the run records is given (each run's step, candidate and state, under the state's
+    prescribed cells, θ₀ at its default place)."""
+
+    validation_runs, confirmation_runs, search_runs = ["v1", "v2"], ["c1", "c2"], ["s1"]
+    PRESCRIBED = {"validation-c1": ["A-1.45e-05/s10300"]}
+
+    def __init__(self, root: Path, monkeypatch) -> None:
+        self.root = root
+        self.cells = {**{r: ("validation", 1, "usable") for r in self.validation_runs},
+                      **{r: ("confirmation", 1, "usable") for r in self.confirmation_runs},
+                      "s1": ("search", 1, "usable"), "c3": ("confirmation", 1, "refused"),
+                      "w1": ("validation", 2, "usable")}  # fmt: skip
+        for i, name in enumerate(self.cells, start=1):
+            run = study3_run(root, name)
+            label(run, 3)
+            open_generation(root, name, 1, cap=3, batch=f"b{i:04d}")
+            accept(root, run, 1, f"b{i:04d}")
+        state = {"prescribed": self.PRESCRIBED}
+        monkeypatch.setattr(study3_labels, "_state", lambda runs_root, repo_root: state)
+        monkeypatch.setattr(study3_labels, "EndpointReader", self.reader)
+
+    def reader(self, runs_root, *, theta0):
+        assert (Path(runs_root), Path(theta0)) == (self.root, self.root / THETA0_RUN)
+        return SimpleNamespace(read=self.read)
+
+    def read(self, prescribed):
+        assert prescribed == self.PRESCRIBED
+        return [SimpleNamespace(run_id=run, state=state,
+                                cell=SimpleNamespace(step=step, candidate=candidate))
+                for run, (step, candidate, state) in self.cells.items()], []  # fmt: skip
+
+    def open(self, point: str) -> frozenset[str]:
+        return open_point(point, candidate=1, runs_root=self.root, repo_root=self.root)
+
+    def harm(self, name: str, *, point: str) -> RunHarm:
+        return run_harm(self.root / "study3" / name, point=point, candidate=1,
+                        runs_root=self.root, repo_root=self.root)  # fmt: skip
+
+    def items(self, name: str, *, point: str):
+        return run_items(self.root / "study3" / name, point=point, candidate=1,
+                         runs_root=self.root, repo_root=self.root)  # fmt: skip
+
+
+@pytest.fixture
+def bound_world(root, monkeypatch) -> Bound:
+    return Bound(root, monkeypatch)
 
 
 def ledger_guard(monkeypatch, root: Path) -> SealedGuard:
@@ -393,9 +473,77 @@ def test_ledger_runs_and_labeling_problems_read_ids_only(labeled_run, root, monk
     assert not [p for p in guard.opened if "/judge" in p]
 
 
-def test_the_final_point_is_closed_until_the_freeze_gate(root):
-    with pytest.raises(SealedPoint, match="freeze"):
+def test_the_final_point_is_closed_until_the_freeze_gate(root, monkeypatch):
+    """The real gate (``study3_freeze.freeze_open``) on a checkout with no analysis freeze: the
+    final point is closed, its problem counted and the first named, and nothing is opened."""
+    guard = SealedGuard(monkeypatch, runs_root=root)
+    with pytest.raises(SealedPoint, match=r"the final point waits for candidate 1's freeze: 1 "
+                       r"problem\(s\), first: docs/study3-analysis-freeze-c1\.json: no analysis "
+                       "freeze"):  # fmt: skip
         open_point("final", candidate=1, runs_root=root, repo_root=root)
+    assert guard.attempts == []
+
+
+def test_the_final_point_opens_only_with_a_valid_freeze(freeze, bound_world):
+    with pytest.raises(SealedPoint, match="freeze"):
+        bound_world.open("final")
+    assert freeze["calls"] == [(1, bound_world.root, bound_world.root)]
+    freeze["problems"] = ()
+    assert bound_world.open("final") == set(bound_world.validation_runs
+                                            + bound_world.confirmation_runs)  # fmt: skip
+
+
+def test_final_reads_validation_and_confirmation_runs_and_no_other(freeze, bound_world):
+    freeze["problems"] = ()
+    for run in (bound_world.validation_runs[0], bound_world.confirmation_runs[0]):
+        assert bound_world.harm(run, point="final").n == 6
+        assert len(bound_world.items(run, point="final")) == 6
+    for run in ("s1", "c3", "w1"):  # a search run, a refused attempt, candidate 2's run
+        with pytest.raises(SealedPoint, match=run):
+            bound_world.harm(run, point="final")
+    freeze["problems"] = ("docs/study3-analysis-freeze-c1.json: not the frozen records",)
+    with pytest.raises(SealedPoint, match="1 problem"):
+        bound_world.harm(bound_world.validation_runs[0], point="final")
+
+
+def test_the_final_points_runs_are_the_attempts_the_launch_journal_binds(tmp_path):
+    """The final point's run set read by the real reader of the run records (``_attempts``):
+    candidate 1's validation and confirmation attempts in any state but refused; not its search
+    run, not a refused attempt and not candidate 2's."""
+    records = RecordsWorld(tmp_path / "runs")
+    validation = records.run("A", seed=SEEDS["validation"][1][0], role="validation")
+    confirmation = records.run("A", seed=SEEDS["confirmation"][1][0], role="confirmation")
+    records.run("A", seed=SEEDS["search"][1][0], role="search")
+    records.run("A", seed=SEEDS["validation"][2][0], role="validation", candidate=2,
+                campaign="study3-c2")  # fmt: skip
+    refused = records.run("F", 1.3e-5, seed=SEEDS["confirmation"][1][1], role="confirmation")
+    config = records.root / "study3" / refused / "config.yaml"
+    config.unlink()
+    config.symlink_to(Path("responses") / "harmful_evaluation.jsonl")
+    state = {"prescribed": records.prescribed}
+    found = study3_labels._attempts(records.root, state, 1, ("validation", "confirmation"),
+                                    theta0=records.theta0)  # fmt: skip
+    assert found == {validation, confirmation}
+    assert study3_labels._attempts(records.root, state, 1, ("confirmation",),
+                                   theta0=records.theta0) == {confirmation}  # fmt: skip
+
+
+def test_the_real_freeze_module_has_the_specified_interface():
+    from zero_field_refusal.analysis import study3_freeze
+
+    assert list(inspect.signature(study3_freeze.freeze_open).parameters) == [
+        "candidate", "runs_root", "repo_root"]  # fmt: skip
+
+
+def test_nothing_of_the_freeze_is_imported_with_the_label_readers():
+    """The freeze module is imported inside the final gate alone: importing the label readers
+    loads nothing of it."""
+    code = ("import sys, zero_field_refusal.analysis.study3_labels, "
+            "zero_field_refusal.analysis.study3_label_cli; "
+            "print('zero_field_refusal.analysis.study3_freeze' in sys.modules)")  # fmt: skip
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         check=True, cwd=REPO_ROOT).stdout  # fmt: skip
+    assert out.strip() == "False"
 
 
 def test_a_receipt_changed_after_its_cover_is_pending(labeled_run, root, opened):

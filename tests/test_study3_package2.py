@@ -1648,8 +1648,11 @@ class Points:
     """``test_study3_label_cli.World``'s runs ``r1``–``r3``, their responses holding the sentinel,
     labeled and covered in a batch at candidate 1's choice step; ``to(state)`` then puts the study
     at another state: ``no_fixation`` (the validation under way, no validation fixation),
-    ``validating`` (the same, the fixation written), ``choice`` (the spread point open) or
-    ``n_written`` (the confirmation under way). Every refusal and output is kept
+    ``validating`` (the same, the fixation written), ``choice`` (the spread point open),
+    ``n_written`` (the confirmation under way) or ``final_open`` (the same, the freeze gate's
+    answer given as ``()``, and ``r4``, its responses holding the sentinel too, a confirmation run
+    of candidate 1). The freeze gate is the real ``study3_freeze.freeze_open`` but at
+    ``final_open``: this checkout has no analysis freeze. Every refusal and output is kept
     (``everything_shown``)."""
 
     STATES = {
@@ -1662,6 +1665,8 @@ class Points:
                                                                                  "r3"]}}}},
         "n_written": {"stage": "confirmation", "step": {"kind": "campaign",
                                                         "campaign": "confirmation"}},
+        "final_open": {"stage": "confirmation", "step": {"kind": "campaign",
+                                                         "campaign": "confirmation"}},
     }  # fmt: skip
 
     def __init__(self, tmp_path: Path, monkeypatch, capfd) -> None:
@@ -1676,10 +1681,7 @@ class Points:
         self.labels = LabelWorld(tmp_path, monkeypatch, capfd)
         self.root, self.repo = self.labels.root, self.labels.repo
         for name in ("r1", "r2", "r3"):
-            path = self.labels.run(name) / "responses" / "harmful_evaluation.jsonl"
-            rows = [json.loads(line) for line in path.read_text().splitlines()]
-            path.write_text("".join(json.dumps({**row, "text": f"{row['text']} {SENTINEL}"})
-                                    + "\n" for row in rows))  # fmt: skip
+            self.seal(name)
         assert self.labels.batch(["r1", "r2", "r3"]).outcome == "accepted"
         self.cohort_run = self.labels.run("r1")
         self.script = spread_test.spread_module()
@@ -1687,6 +1689,13 @@ class Points:
         self.shown: list[str] = [self.labels.out]
         self.state = "choice"
         monkeypatch.setattr(study3_labels, "_state", self.state_of)
+
+    def seal(self, name: str) -> None:
+        """The run's responses hold the sentinel."""
+        path = self.labels.run(name) / "responses" / "harmful_evaluation.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        path.write_text("".join(json.dumps({**row, "text": f"{row['text']} {SENTINEL}"})
+                                + "\n" for row in rows))  # fmt: skip
 
     def state_of(self, runs_root, repo_root) -> dict:
         return {"candidate": 1, "problems": [], "prescribed": {}, **self.STATES[self.state]}
@@ -1696,6 +1705,13 @@ class Points:
         if state == "no_fixation":
             self.monkeypatch.setattr(self.labels, "fixation", None)
             (self.repo / sv.fixation_name("validation", 1)).unlink()
+        if state == "final_open":
+            from test_study3_labels import stand_in_freeze, study3_run
+
+            stand_in_freeze(self.monkeypatch)["problems"] = ()
+            study3_run(self.root, "r4", unparseable=())
+            self.seal("r4")
+            self.labels.bound_runs["confirmation"].add("r4")
 
     def _read(self, how: str, run: Path, point: str):
         from zero_field_refusal.analysis import study3_labels
@@ -1713,13 +1729,13 @@ class Points:
     def items(self, run: Path, *, point: str):
         return self._read("run_items", run, point)
 
-    def refused(self, command: str, step: str | None = None) -> bool:
-        """Whether the labeling command (a batch of ``r1`` at ``step``) or the spread refuses."""
+    def refused(self, command: str, step: str | None = None, runs=("r1",)) -> bool:
+        """Whether the labeling command (a batch of ``runs`` at ``step``) or the spread refuses."""
         from zero_field_refusal.analysis.study3_label_cli import BatchRefused
 
         try:
             if command == "label":
-                self.labels.batch(["r1"], step=step)
+                self.labels.batch(list(runs), step=step)
             else:
                 self.script.main(["--runs-root", str(self.root), "--candidate", "1"])
         except (BatchRefused, SystemExit) as exc:
@@ -1784,33 +1800,43 @@ def test_a_relabel_and_its_completed_move_open_sealed_paths_only_through_named_f
     assert guard.attempts == [] and any("/judge-superseded/" in p for p in guard.opened)
 
 
-@pytest.mark.parametrize("state", ["no_fixation", "validating", "choice", "n_written"])
+@pytest.mark.parametrize("state", ["no_fixation", "validating", "choice", "n_written",
+                                   "final_open"])  # fmt: skip
 def test_each_reader_refuses_before_its_point_opens(points_world, state, monkeypatch):
     """At each state of the study, every label reader refuses a closed point: ``run_harm`` and
-    ``run_items`` at ``final`` (closed until the freeze gate is wired) and, outside candidate 1's
-    choice step, at ``spread``; the labeling command for the confirmation always, and for the
-    validation and the spread outside the choice step. While the spread point is closed, nothing
-    of a run's sealed folders is opened (its responses, judge outputs or superseded copies) and
-    the labeling ledger is opened only by its own openers (``LEDGER_OPENERS``: the labeling command
-    reads its ledger under its lock before it checks the point); no sentinel is shown."""
+    ``run_items`` at ``spread`` outside candidate 1's choice step, and at ``final`` until the
+    freeze gate opens it (at ``final_open`` alone); the labeling command for the confirmation
+    until the final point opens (and then for a run that is no confirmation run), and for the
+    validation and the spread while both points are closed. Once the final point is open, a
+    confirmation batch is labeled, and the spread stays refused. While both points are closed,
+    nothing of a run's sealed folders is opened (its responses, judge outputs or superseded
+    copies) and the labeling ledger is opened only by its own openers (``LEDGER_OPENERS``: the
+    labeling command reads its ledger under its lock before it checks the point); no sentinel is
+    shown. While a point is open, every sealed open is inside a named opener."""
     from zero_field_refusal.analysis.study3_labels import POINTS, SealedPoint, ledger_dir
 
     points_world.to(state)
-    spread_open = state == "choice"
-    if spread_open:  # the spread's reads open the runs' labels, through the named openers alone
+    spread_open, final_open = state == "choice", state == "final_open"
+    if spread_open or final_open:  # the reads open the runs' labels, through the named openers
         guard = NamedOpens(monkeypatch, runs_root=points_world.root)
     else:
         guard = NamedOpens(monkeypatch, runs_root=points_world.root, openers=LEDGER_OPENERS,
                            under=ledger_dir(points_world.root))  # fmt: skip
     reads = (points_world.harm, points_world.items)  # run_harm, run_items
     for read, point in itertools.product(reads, POINTS):
-        if point == "final" or not spread_open:  # final: closed until the freeze gate
+        if (point, True) in (("spread", spread_open), ("final", final_open)):
+            assert read(points_world.cohort_run, point=point)
+        else:
             with pytest.raises(SealedPoint):
                 read(points_world.cohort_run, point=point)
-        else:
-            assert read(points_world.cohort_run, point=point)
-    assert points_world.refused("label", "confirmation")
-    if not spread_open:
+    assert points_world.refused("label", "confirmation")  # r1 is a validation run
+    if final_open:
+        assert not points_world.refused("label", "confirmation", runs=("r4",))
+        assert points_world.refused("spread")
+        with guard.off():
+            assert points_world.labels.events("opened")[-1]["step"] == "confirmation"
+        assert points_world.harm(points_world.labels.run("r4"), point="final")
+    if not (spread_open or final_open):
         assert points_world.refused("label", "validation") and points_world.refused("spread")
         assert guard.attempts == [] and SENTINEL not in points_world.everything_shown()
         under_runs = [p for p in guard.opened
@@ -1821,17 +1847,19 @@ def test_each_reader_refuses_before_its_point_opens(points_world, state, monkeyp
 
 
 def test_the_route_ends_with_every_point_closed(route, monkeypatch):
-    """On the route's files and its real ``progress`` (the n record written, the confirmation
-    under way, no freeze), every point is closed: ``run_harm`` raises ``SealedPoint`` at both and
-    opens nothing sealed. Its entry points are the real ones for this test (the route replaced
-    them with raisers)."""
+    """On the route's files, its real ``progress`` and the real freeze gate
+    (``study3_freeze.freeze_open``; the n record written, the confirmation under way, no
+    freeze), every point is closed: ``run_harm`` raises ``SealedPoint`` at both and opens
+    nothing sealed. Its entry points are the real ones for this test (the route replaced them
+    with raisers)."""
     from zero_field_refusal.analysis import study3_labels
 
     route.labels.lift(monkeypatch)
     guard = SealedGuard(monkeypatch, runs_root=route.root)  # real progress: n written, no freeze
     run = route.root / "study3" / route.validation_runs[0]
+    why = {"spread": "the spread point is closed", "final": "waits for candidate 1's freeze"}
     for point in study3_labels.POINTS:
-        with pytest.raises(study3_labels.SealedPoint):
+        with pytest.raises(study3_labels.SealedPoint, match=why[point]):
             study3_labels.run_harm(run, point=point, candidate=1, runs_root=route.root,
                                    repo_root=route.repo)  # fmt: skip
     assert guard.attempts == []

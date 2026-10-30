@@ -30,7 +30,15 @@ Importing loads torch through study 2's judge helpers; nothing GPU-side runs.
   the ids of that step's cohort (``fields.cohort.run_ids``) and closes once the n record is
   written: the state then moves past ``choice``. A committed validation fixation is not enough:
   it comes before validation.
-- ``final`` opens through the freeze gate only; it is closed here.
+- ``final`` opens only when the freeze gate,
+  ``study3_freeze.freeze_open(candidate, runs_root, repo_root)``, returns ``()``: candidate N's
+  analysis freeze is written, committed and still the records' (it checks the freeze itself, not
+  just its commit). The gate is imported when the point is asked for (``_final``), so nothing of
+  the freeze loads with this module; while it names a problem, ``SealedPoint`` counts them and
+  names the first. It opens the run ids of candidate N's validation and confirmation attempts,
+  in any state but refused, as the launch journal binds them (``_attempts``:
+  ``study3_records.EndpointReader`` under the state's prescribed cells, θ₀ at its default place;
+  the journal's step and candidate): validation's harm is reported after the final analysis.
 
 **The order of checks** of ``harm_many`` and ``run_items`` (``_gated``, shared, so that their
 gates and errors are the same; steps 1 and 2 open nothing sealed):
@@ -136,7 +144,14 @@ from . import study2_labels
 from .evidence import label_item_id, label_path
 from .study2_label_cli import STATUSES as STUDY2_STATUSES
 from .study2_label_cli import harmful_prompts
-from .study3_records import EXPERIMENT, LABELING, RESERVED, plain_name, torn_kind
+from .study3_records import (
+    EXPERIMENT,
+    LABELING,
+    RESERVED,
+    EndpointReader,
+    plain_name,
+    torn_kind,
+)
 
 JUDGE = "wildguard"
 HARMFUL_PROMPTS = 521
@@ -1011,17 +1026,47 @@ def _spread(candidate: int, runs_root: str | Path,
     return state, frozenset(cohort)
 
 
+def _final(candidate: int, runs_root: str | Path, repo_root: str | Path) -> dict[str, Any]:
+    """The study's state once candidate N's final point is open: the freeze gate
+    (``study3_freeze.freeze_open``, imported here) names no problem; ``SealedPoint`` while it
+    does. Nothing sealed is read to decide it."""
+    from .study3_freeze import freeze_open
+
+    problems = tuple(freeze_open(candidate, runs_root, repo_root))
+    if problems:
+        raise SealedPoint(f"the final point waits for candidate {candidate}'s freeze: "
+                          f"{len(problems)} problem(s), first: {problems[0]}")  # fmt: skip
+    return _state(runs_root, repo_root)
+
+
+def _attempts(runs_root: str | Path, state: Mapping[str, Any], candidate: int,
+              steps: Sequence[str], theta0: Path | None = None) -> frozenset[str]:  # fmt: skip
+    """The run ids of candidate N's attempts of ``steps`` that the launch journal binds, in any
+    state but refused (``study3_records.EndpointReader`` under the state's prescribed cells, θ₀ at
+    its default place): the run records alone, label-free. ``OSError`` or ``ValueError`` when
+    they cannot be read."""
+    from .study3_progress import THETA0_RUN
+
+    root = Path(runs_root)
+    reader = EndpointReader(root, theta0=root / THETA0_RUN if theta0 is None else theta0)
+    endpoints, _ = reader.read(state.get("prescribed") or {})
+    return frozenset(e.run_id for e in endpoints
+                     if e.state != "refused" and e.cell.step in steps
+                     and e.cell.candidate == candidate)  # fmt: skip
+
+
 def open_point(point: str, *, candidate: int, runs_root: str | Path,
                repo_root: str | Path) -> frozenset[str]:  # fmt: skip
-    """The run ids ``point`` opens (module docstring, "The points"); ``SealedPoint`` when it is
-    closed, ``ValueError`` for another point."""
+    """The run ids ``point`` opens (module docstring, "The points"): at ``spread`` the choice
+    step's cohort, at ``final`` candidate N's validation and confirmation attempts once its
+    freeze gate is open. ``SealedPoint`` when it is closed, ``ValueError`` for another point."""
     if point not in POINTS:
         raise ValueError(f"the point is one of {list(POINTS)}, not {point!r}")
     if candidate not in (1, 2):
         raise ValueError(f"the candidate is 1 or 2, not {candidate!r}")
     if point == "final":
-        raise SealedPoint("the final point opens through the freeze gate: it is closed until the "
-                          "cohorts and K*_h are frozen")  # fmt: skip
+        state = _final(candidate, runs_root, repo_root)
+        return _attempts(runs_root, state, candidate, STEPS)
     return _spread(candidate, runs_root, repo_root)[1]
 
 
