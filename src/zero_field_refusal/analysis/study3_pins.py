@@ -252,8 +252,8 @@ def _bound(tree: ast.Module) -> set[str]:
 def spread_pin(repo: Path, commit: str | None = None) -> list[dict[str, str]]:
     """The pin of the spread in the checkout ``repo``: ``SPREAD_SCRIPT`` and every file of its
     import closure, each ``{"path", "sha256"}``, in the order of their paths; read at ``commit``
-    (``git cat-file``) when one is given, else from the working tree. ``ValueError`` when the
-    closure cannot be shown."""
+    (``git ls-tree``, ``git cat-file``) when one is given, else from the working tree.
+    ``ValueError`` when the closure cannot be shown."""
     repo = Path(repo)
     source = _in_tree(repo) if commit is None else _at_commit(repo, commit)
     cache: dict[str, bytes | None] = {}
@@ -285,10 +285,21 @@ def _in_tree(repo: Path) -> Read:
 
 
 def _at_commit(repo: Path, commit: str) -> Read:
-    """A file at ``commit``; None when the commit does not hold it as a file."""
+    """A file at ``commit``; None when the commit does not hold it as a file. The commit's files
+    under ``src/`` and ``scripts/`` are listed once (``git ls-tree``), and a listed one alone is
+    read (``git cat-file``): a module looked for under another name costs no call."""
+    listed: set[str] = set()
+    if not commit.startswith("-"):
+        try:
+            out = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", commit, "--",
+                                  "src", "scripts"], cwd=repo, capture_output=True,
+                                 check=True).stdout  # fmt: skip
+            listed = set(out.decode("utf-8", "surrogateescape").split("\0")) - {""}
+        except (OSError, subprocess.CalledProcessError):
+            listed = set()
 
     def read(path: str) -> bytes | None:
-        if commit.startswith("-"):
+        if path not in listed:
             return None
         try:
             return subprocess.run(["git", "cat-file", "blob", f"{commit}:{path}"], cwd=repo,

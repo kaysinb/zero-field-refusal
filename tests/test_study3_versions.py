@@ -23,6 +23,7 @@ import pytest
 from test_qualification_records import qualify as qualify  # noqa: F401  (the fixture)
 from test_study3_decisions import World as DecisionWorld
 from test_study3_decisions import coverage_row, gates_with, pass_rate, seal, verified
+from test_study3_pins import control_list
 from test_study3_progress import numerical_runs, search_round0
 from test_study3_records import SENTINEL, tear
 from test_study3_records import World as RunWorld
@@ -32,6 +33,7 @@ from zero_field_refusal.analysis import qualification_records as qr
 from zero_field_refusal.analysis import study3_progress
 from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import cap_of
+from zero_field_refusal.analysis.study3_pins import CONTROLS, SPREAD_SCRIPT, spread_pin
 from zero_field_refusal.analysis.study3_records import SEEDS, TORN_LINE, Cell, Endpoint
 from zero_field_refusal.paths import REPO_ROOT
 
@@ -64,6 +66,16 @@ def has(problems, *words) -> bool:
 
 REAL_PROGRESS = study3_progress.progress
 REAL_READ = qr.read_qualification
+SPREAD_STAND_IN = "from zero_field_refusal import train\n"  # the spread's stand-in
+
+
+def stand_in(repo: Path) -> None:
+    """The files a validation fixation pins, written in the checkout ``repo``: a stand-in spread
+    script (``SPREAD_STAND_IN``) and the synthetic control list of the pins' tests."""
+    (repo / SPREAD_SCRIPT).parent.mkdir(parents=True, exist_ok=True)
+    (repo / SPREAD_SCRIPT).write_text(SPREAD_STAND_IN)
+    (repo / CONTROLS).parent.mkdir(parents=True, exist_ok=True)
+    (repo / CONTROLS).write_text(json.dumps(control_list(), indent=2) + "\n")
 
 
 def stage(candidate=1, arms=("A", "F", "P"), comparisons=None, rates=None, cells=None,
@@ -102,6 +114,9 @@ class Study:
         code = self.repo / "src" / "zero_field_refusal" / "train.py"
         code.parent.mkdir(parents=True)
         code.write_text("x = 1\n")
+        # the validation fixation's pins: a stand-in spread script, which imports the code above,
+        # and a synthetic control list
+        stand_in(self.repo)
         self.commit("the registration and the code")
         self.registered = self.head()
         self.code = self.now()
@@ -287,6 +302,8 @@ def test_the_validation_fixation_is_built_and_read(study) -> None:
         "level": 0.975,
         "engineering": {"path": "study3/decisions/engineering.json",
                         "sha256": study.records.digest("engineering")},
+        "spread": spread_pin(study.repo, study.code["commit"]),
+        "judge_controls": {"path": CONTROLS, "sha256": sha256(study.repo / CONTROLS)},
         "model": record["model"],
         "judge": record["judge"],
         "code": study.code,
@@ -297,6 +314,95 @@ def test_the_validation_fixation_is_built_and_read(study) -> None:
     assert study.read_validation() == (None, [])  # not written: absent
     study.put(VALIDATION_C1, record, commit=False)
     assert study.read_validation() == (record, [])
+
+
+def test_the_fixation_pins_the_spreads_closure_and_the_control_list(study) -> None:
+    study.ready(real=True)
+    record = study.fixation(written_at="2026-10-27T12:00:00+00:00")
+    assert record["spread"] == spread_pin(study.repo, study.code["commit"]) == [
+        {"path": "scripts/study3_spread.py",
+         "sha256": sha256(study.repo / "scripts/study3_spread.py")},
+        {"path": "src/zero_field_refusal/train.py",
+         "sha256": sha256(study.repo / "src/zero_field_refusal/train.py")}]  # fmt: skip
+    assert record["judge_controls"] == {"path": CONTROLS, "sha256": sha256(study.repo / CONTROLS)}
+    study.put(VALIDATION_C1, record, commit=False)
+    assert study.read_validation() == (record, [])
+
+
+def test_a_pin_that_is_not_the_closure_at_its_commit_is_refused(study) -> None:
+    study.ready()
+    record = study.fixation()
+    record["spread"] = record["spread"][:1]
+    study.put(VALIDATION_C1, record, commit=False)
+    assert has(study.read_validation()[1], "spread", "import closure", study.code["commit"])
+
+
+def test_a_later_change_of_a_pinned_file_leaves_the_fixation_valid(study) -> None:
+    """The fixation's pins are checked at its commit, never against the files now: a pinned file
+    changed since (the spread script, a module it imports, the control list) leaves it valid."""
+    study.ready()
+    record = study.fixation()
+    study.put(VALIDATION_C1, record)
+    (study.repo / "scripts/study3_spread.py").write_text("x = 2\n")
+    assert study.read_validation() == (record, [])
+    (study.repo / "src/zero_field_refusal/train.py").write_text("x = 3\n")
+    (study.repo / CONTROLS).write_text("{}\n")
+    study.commit("later changes")
+    assert study.read_validation() == (record, [])
+
+
+def test_a_broken_control_list_refuses_the_fixation(study) -> None:
+    study.ready()
+    (study.repo / CONTROLS).write_text("{}\n")
+    study.commit("broken", CONTROLS)
+    study.code = study.now()
+    with pytest.raises(sv.RecordRefused, match="judge_controls"):
+        study.fixation()
+
+
+@pytest.mark.parametrize("change", ["missing", "uncommitted", "spread uncommitted",
+                                    "spread missing", "spread broken"])  # fmt: skip
+def test_a_pinned_file_missing_changed_or_broken_refuses_the_fixation(study, change) -> None:
+    """The builder pins the files at the fixation's commit: a control list or a spread script
+    that is missing, differs from the commit, or does not read as one, is refused by name."""
+    study.ready()
+    if change == "missing":
+        (study.repo / CONTROLS).unlink()
+        study.commit("no control list", CONTROLS)
+        words = ("judge_controls", CONTROLS, "missing")
+    elif change == "uncommitted":
+        (study.repo / CONTROLS).write_text(json.dumps(control_list()) + "\n")
+        words = ("judge_controls", CONTROLS, "uncommitted")
+    elif change == "spread uncommitted":
+        (study.repo / SPREAD_SCRIPT).write_text(SPREAD_STAND_IN + "x = 1\n")
+        words = ("spread", "uncommitted")
+    elif change == "spread missing":
+        (study.repo / SPREAD_SCRIPT).unlink()
+        study.commit("no spread", SPREAD_SCRIPT)
+        words = ("spread", SPREAD_SCRIPT)
+    else:
+        (study.repo / SPREAD_SCRIPT).write_text("from zero_field_refusal import gone\n")
+        study.commit("a spread that imports what is not there", SPREAD_SCRIPT)
+        words = ("spread", "zero_field_refusal.gone")
+    study.code = study.now()
+    with pytest.raises(sv.RecordRefused) as refused:
+        study.fixation()
+    assert all(w in str(refused.value) for w in words), str(refused.value)
+
+
+def test_a_fixation_whose_control_list_at_its_commit_is_ill_formed_is_refused(study) -> None:
+    """A fixation written by hand over a commit whose control list is not one: its reader reads
+    the list at the fixation's commit and names its problems."""
+    study.ready()
+    record = study.fixation()
+    (study.repo / CONTROLS).write_text("{}\n")
+    study.commit("broken", CONTROLS)
+    study.code = study.now()
+    record["code"] = study.code
+    record["judge_controls"]["sha256"] = sha256(study.repo / CONTROLS)
+    study.put(VALIDATION_C1, record, commit=False)
+    found, problems = study.read_validation()
+    assert found is None and has(problems, "judge_controls", "has no field"), problems
 
 
 def test_p_closed_before_validation_is_not_fixed(study) -> None:
@@ -598,6 +704,19 @@ def test_a_fixation_record_has_a_closed_schema(study) -> None:
         ({"model": {**record["model"], "revision": "main"}}, ("model",)),
         ({"judge": {**record["judge"], "judge_revision": "other"}}, ("judge",)),
         ({"code": {"commit": "x"}}, ("code",)),
+        # a spread pin missing an entry of the closure, or with one more, or not a pin at all
+        ({"spread": record["spread"][:1]}, ("spread", "import closure", record["code"]["commit"])),
+        ({"spread": [*record["spread"], {"path": "src/zero_field_refusal/zz.py",
+                                         "sha256": "0" * 64}]}, ("spread", "import closure")),
+        ({"spread": []}, ("spread", "non-empty list")),
+        ({"spread": [{**record["spread"][0], "text": "x = 1"}, record["spread"][1]]},
+         ("spread", "[0]", "path and sha256")),
+        ({"judge_controls": {**record["judge_controls"], "path": "docs/other.json"}},
+         ("judge_controls.path", CONTROLS)),
+        ({"judge_controls": {**record["judge_controls"], "sha256": "0" * 64}},
+         ("judge_controls", CONTROLS, "sha256")),
+        ({"judge_controls": {**record["judge_controls"], "root": "repo"}},
+         ("judge_controls", "`root`")),
     ):  # fmt: skip
         study.put(VALIDATION_C1, {**record, **change}, commit=False)
         found, problems = study.read_validation()

@@ -85,7 +85,10 @@ the stage read as ``progress`` reads it, θ₀ from --theta0) or its confirmatio
 of agreements, integers in [0, 2³²), as "Inference" and "The audit" require), once, at its fixed
 path docs/study3-fixation-<step>-c<N>.json. It needs a clean checkout of a known commit: the
 record's code is HEAD's commit and that commit's GPU code, which the builders take as given. The
-record is then committed alone, before the next one is written.
+record is then committed alone, before the next one is written. The two files the validation
+fixation pins are committed before it: the spread's decision script scripts/study3_spread.py
+(with every file of its import closure under src/zero_field_refusal/) and the control list
+docs/study3-judge-controls.json; the fixation pins both as they are at its commit.
 
 **record** writes a decision record (engineering, simulation, n-c<N>, budget-c<N>) from a JSON
 file through ``study3_decisions.write_decision``, which validates it against the evidence it

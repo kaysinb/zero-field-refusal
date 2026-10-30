@@ -28,6 +28,7 @@ fails under ``SealedGuard``."""
 import builtins
 import contextlib
 import dataclasses
+import hashlib
 import importlib
 import inspect
 import io
@@ -66,6 +67,7 @@ from test_study3_versions import (
     SECOND,
     VALIDATION_C1,
     git,
+    stand_in,
 )
 from test_study3_versions import Study as VersionsStudy
 
@@ -73,6 +75,7 @@ from zero_field_refusal import code_identity
 from zero_field_refusal.analysis import qualification_records, study3_progress, study3_records
 from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import decision_path, decisions
+from zero_field_refusal.analysis.study3_pins import CONTROLS, spread_pin
 from zero_field_refusal.analysis.study3_progress import THETA0_RUN, progress
 from zero_field_refusal.analysis.study3_records import (
     SEEDS,
@@ -866,6 +869,7 @@ class Route(CampaignWorld):
         code = self.repo / "src" / "zero_field_refusal" / "train.py"
         code.parent.mkdir(parents=True)
         code.write_text("x = 1\n")
+        stand_in(self.repo)  # the spread script and the control list the fixation pins
         self.commit("the registration and the code")
         monkeypatch.setattr(code_identity, "gpu_code_identity", self.identity)
         head = git(self.repo, "rev-parse", "HEAD")
@@ -1187,6 +1191,13 @@ def test_the_route_runs_every_campaign_kind_and_summary_command_on_files(route) 
                             (10403, 0)]  # fmt: skip
     # the guard's state and versions check were the real ones, on the checkout's GPU code
     assert {code for _, code in route.readings} == {route.code["gpu_code_sha256"]}
+    # the validation fixation the summary command wrote pins the spread and the control list
+    fixation = json.loads((route.repo / VALIDATION_C1).read_text())
+    assert fixation["spread"] == spread_pin(route.repo, fixation["code"]["commit"])
+    assert [entry["path"] for entry in fixation["spread"]] == [
+        "scripts/study3_spread.py", "src/zero_field_refusal/train.py"]  # fmt: skip
+    controls = hashlib.sha256((route.repo / CONTROLS).read_bytes()).hexdigest()
+    assert fixation["judge_controls"] == {"path": CONTROLS, "sha256": controls}
     # the sentinel is in every sealed file and every judge output of the world
     sealed = [path for path in route.base.rglob("*") if path.is_file() and sealed_part(path, route)]
     assert len(sealed) > 400

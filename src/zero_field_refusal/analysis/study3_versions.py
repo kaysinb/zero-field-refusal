@@ -5,8 +5,9 @@ validation and the confirmation, as in study 2; the check fails closed: a run wi
 the launch journal does not count until the journal is restored; harm labels never enter a
 selection: after the fixation there are no new candidates, rates or K*), "Simulation before
 validation" (L and the validation size, recorded before validation), "Validation", "Sample size
-from validation" (the candidate, the rates, the numerical policy and the judge sealed; N, the cap
-and the decision on the money), "Inference" (the bootstrap's fixed seed, recorded in the fixation
+from validation" (the candidate, the rates, the numerical policy and the judge sealed; the decision
+script hashed before labeling; N, the cap and the decision on the money), "Judge and audit" (the 40
+fixed control items, pinned), "Inference" (the bootstrap's fixed seed, recorded in the fixation
 record before confirmation), "The audit" (the draw's seed and procedure, in the fixation record
 before any confirmation label is opened; the agreements checked on a draw with a recorded seed),
 "Confirmation" and "Voiding and supersession" (a validation or confirmation run under a commit
@@ -62,8 +63,13 @@ study 2's records give them, equal to this checkout's configs (``experiments/stu
    order of their paths, and the ``states`` of the fixed rates (per arm, ``lr_l`` and ``lr_u``),
    each ``qualified``; ``simulation`` and ``engineering``: the evidence of the decision records
    ``study3/decisions/simulation.json`` and ``study3/decisions/engineering.json``;
-   ``validation_blocks`` (28 or 40) and ``level`` (L), the simulation record's; ``model``,
-   ``judge`` and ``code``.
+   ``validation_blocks`` (28 or 40) and ``level`` (L), the simulation record's; ``spread``, the
+   pin of the spread (``study3_pins.spread_pin``): ``scripts/study3_spread.py`` and every file of
+   its static import closure under ``src/zero_field_refusal/``, each ``{"path", "sha256"}`` in the
+   order of its paths, as they are at the record's commit; ``judge_controls``, the control list
+   ``{"path": "docs/study3-judge-controls.json", "sha256"}`` at that commit (its closed schema,
+   ``study3_pins.read_control_list``); ``model``, ``judge`` and ``code``. Both files are
+   committed before the record is written.
 2. **The confirmation supplement**, ``docs/study3-fixation-confirmation-c<N>.json``, written once
    before candidate N's confirmation: ``kind`` (``fixation-confirmation``) and ``candidate``;
    ``written_at``; ``validation_fixation``: the first record's evidence (``"root": "repo"``);
@@ -96,7 +102,12 @@ study 2's records give them, equal to this checkout's configs (``experiments/stu
   later restart or supersession so shows as a changed state, a new input or a changed code in
   force; a rewritten verdict cache, a new ``checkpoints-removed`` record or a record added to the
   case of a rate the fixation does not fix (a closed arm's) changes nothing. Every pinned file
-  stays unchanged, whatever its case.
+  stays unchanged, whatever its case. The spread pin and the control list are checked at the
+  fixation's commit, never against the files now: the pin is the import closure of the spread
+  script there, and the control list has the pinned sha256 there and reads as one. The spread pin
+  is checked against the current files only when the n record is written, which keeps it as its
+  ``spread.code`` (``study3_decisions``); a later change of a pinned file leaves the fixation
+  valid.
 - The confirmation supplement: its schema; its evidence now; its candidate's validation fixation
   valid (its full reader); the n record valid and passed, of its N and cap, of the fixed L, of the
   fixed rates for the arms it names and of the fixation's GPU code; the budget record named
@@ -221,6 +232,7 @@ from .study3_decisions import (
     read_decision,
 )
 from .study3_decisions import UNCOUNTED_REASONS as UNCOUNTED_REASONS  # ``uncounted_runs``' reasons
+from .study3_pins import CONTROLS, SPREAD_SCRIPT, pin_problems, read_control_list, spread_pin
 from .study3_records import (
     COUNTING,
     EXPERIMENT,
@@ -270,8 +282,8 @@ AUDIT_PROCEDURE = "pps-with-replacement-400-400-200"
 SEED_LIMIT = 2**32  # a seed is an integer in [0, 2³²)
 FIELDS = {
     "validation": ("kind", "candidate", "written_at", "policy", "rates", "qualification",
-                   "simulation", "validation_blocks", "level", "engineering", "model", "judge",
-                   "code"),
+                   "simulation", "validation_blocks", "level", "engineering", "spread",
+                   "judge_controls", "model", "judge", "code"),
     "confirmation": ("kind", "candidate", "written_at", "validation_fixation", "n", "N", "cap",
                      "budget", "bootstrap", "audit", "code"),
     "versions": ("what", "written_at", "code", "model", "judge", "fixation", "supersedes",
@@ -646,8 +658,21 @@ class _Check(_Schema):
         if not (type(blocks) is int and blocks in VALIDATION_BLOCKS):
             self.add("validation_blocks", f"is {blocks!r}, not one of {list(VALIDATION_BLOCKS)}")
         self.level("level", top["level"])
+        self.pins(top)
         self.instruments(top)
         self.code(top["code"])
+
+    def pins(self, top: Mapping[str, Any]) -> None:
+        """The spread pin and the control list's reference, their form alone: they are checked at
+        the fixation's commit (``_pinned_files``), never against the files now, so they are not
+        evidence (``refs``)."""
+        for problem in pin_problems(top["spread"], REPO_ROOT, now=False):
+            self.add("spread", problem)
+        controls = self.object("judge_controls", top["judge_controls"], ("path", "sha256"))
+        if controls is not None:
+            if controls["path"] != CONTROLS:
+                self.add("judge_controls.path", f"is {controls['path']!r}, not {CONTROLS!r}")
+            self.pattern("judge_controls.sha256", controls["sha256"], _SHA256, "a sha256")
 
     def policy(self, value: Any) -> None:
         policy = self.object("policy", value, ("path", "commit", "sha256", "amendments"))
@@ -827,9 +852,36 @@ def _validation_problems(record: Any, candidate: int, root: Path, repo: Path,
     problems += [f"engineering: {p}" for p in _passed("engineering", engineering, found)]
     problems += _instrument_problems(record)
     problems += _code_problems(record["code"], candidate, root, repo, engineering)
+    problems += _pinned_files(record, repo)
     if engineering is not None:
         problems += _recomputed(record, candidate, root, engineering, settings)
     return problems
+
+
+def _pinned_files(record: Mapping[str, Any], repo: Path) -> list[str]:
+    """The spread pin and the control list at the fixation's commit (module docstring, "What
+    each reader checks"): the pin is the spread script's import closure there, and the control
+    list there has the pinned sha256 and reads as one. The files now are not read."""
+    commit = record["code"]["commit"]
+    found = []
+    try:
+        pin = spread_pin(repo, commit)
+    except ValueError as exc:
+        found.append(f"spread: the import closure of {SPREAD_SCRIPT} at commit {commit} cannot "
+                     f"be shown ({exc})")  # fmt: skip
+    else:
+        if record["spread"] != pin:
+            found.append(f"spread: is not the import closure of {SPREAD_SCRIPT} at commit "
+                         f"{commit}")  # fmt: skip
+    blob = _blob(repo, commit, CONTROLS)
+    if blob is None:
+        return [*found, f"judge_controls: {CONTROLS} cannot be read at commit {commit}"]
+    digest, pinned = hashlib.sha256(blob).hexdigest(), record["judge_controls"]["sha256"]
+    if digest != pinned:
+        found.append(f"judge_controls: {CONTROLS} has sha256 {digest} at commit {commit}, not "
+                     f"the recorded {pinned}")  # fmt: skip
+    found += [f"judge_controls: {p}" for p in read_control_list(repo, data=blob)[1]]
+    return found
 
 
 def _recomputed(record: Mapping[str, Any], candidate: int, root: Path,
@@ -1183,6 +1235,10 @@ def validation_fixation(
             problems += found
             if not ledger:
                 problems.append("qualification.ledger: the qualification took no record as input")
+    spread, found = _spread_now(repo, code["commit"])
+    problems += found
+    controls, found = _controls_now(repo, code["commit"])
+    problems += found
     if problems:
         raise RecordRefused(_refusal(KINDS["validation"], candidate, problems))
     model, judge = instruments()
@@ -1195,6 +1251,7 @@ def validation_fixation(
         "validation_blocks": simulation["validation_blocks"], "level": simulation["level"],
         "engineering": {"path": ENGINEERING_RECORD,
                         "sha256": _pin(decision_path(root, "engineering"), root)},
+        "spread": spread, "judge_controls": controls,
         "model": model, "judge": judge,
         "code": {"commit": code["commit"], "gpu_code_sha256": code["gpu_code_sha256"]},
     }  # fmt: skip
@@ -1203,6 +1260,47 @@ def validation_fixation(
     if problems:
         raise RecordRefused(_refusal(KINDS["validation"], candidate, problems))
     return record
+
+
+def _spread_now(repo: Path, commit: str) -> tuple[list[dict[str, str]] | None, list[str]]:
+    """The spread pin of the checkout's files (``study3_pins.spread_pin``), refused unless it is
+    the one at ``commit``: the spread script and its import closure are committed before the
+    fixation."""
+    try:
+        now = spread_pin(repo)
+    except ValueError as exc:
+        return None, [f"spread: {exc}"]
+    try:
+        committed = spread_pin(repo, commit)
+    except ValueError as exc:
+        return None, [f"spread: {SPREAD_SCRIPT} and its import closure are not committed at "
+                      f"{commit} ({exc})"]  # fmt: skip
+    if now != committed:
+        here = {e["path"]: e["sha256"] for e in now}
+        there = {e["path"]: e["sha256"] for e in committed}
+        changed = sorted(p for p in here.keys() | there.keys() if here.get(p) != there.get(p))
+        return None, [f"spread: {changed} of the spread's import closure have uncommitted "
+                      f"changes: the fixation pins them as committed at {commit}"]  # fmt: skip
+    return now, []
+
+
+def _controls_now(repo: Path, commit: str) -> tuple[dict[str, str] | None, list[str]]:
+    """The control list's reference, ``{"path", "sha256"}``, refused while it is missing, has
+    uncommitted changes against ``commit`` or does not read as a control list."""
+    path = repo / CONTROLS
+    if _under_sealed(path, repo):
+        return None, [f"judge_controls: {_sealed_problem(path)}"]
+    if not path.is_file():
+        return None, [f"judge_controls: {CONTROLS} is missing: the control list is committed "
+                      "before the validation fixation"]  # fmt: skip
+    blob, digest = _blob(repo, commit, CONTROLS), _digest(path)
+    if blob is None or hashlib.sha256(blob).hexdigest() != digest:
+        return None, [f"judge_controls: {CONTROLS} has uncommitted changes: the fixation pins it "
+                      f"as committed at {commit}"]  # fmt: skip
+    problems = read_control_list(repo, data=blob)[1]
+    if problems:
+        return None, [f"judge_controls: {p}" for p in problems]
+    return {"path": CONTROLS, "sha256": digest}, []
 
 
 Fixed = tuple[dict[str, dict[str, float]] | None, list[str]]  # fixed rates (None: none), problems
