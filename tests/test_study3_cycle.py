@@ -673,6 +673,8 @@ def test_qualifys_own_supersession_record_is_no_cycle_outside_the_qualification(
     found = cycle.read_cycle(world.root, 1)
     assert found["state"] == "invalid" and any("study3_summary.py cycle" in p
                                                for p in found["problems"])  # fmt: skip
+    path.write_text(json.dumps({k: v for k, v in record.items() if k != "old_record"}))
+    assert cycle.read_cycle(world.root, 1)["state"] == "missing"  # it names no cycle record
     path.write_text("{")
     assert cycle.read_cycle(world.root, 1)["state"] == "invalid"
 

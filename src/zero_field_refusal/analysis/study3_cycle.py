@@ -925,7 +925,7 @@ def _names_cycle_record(bridge: Mapping[str, Any]) -> bool:
     old = bridge.get("old_record")
     named = old.get("path") if isinstance(old, Mapping) else None
     if not isinstance(named, str):
-        return True  # no part record named: it cannot be told for qualify.py's
+        return False  # it names no cycle record: no bridge (its own check names what it lacks)
     parts = PurePosixPath(named.replace("\\", "/")).parts[-3:]
     return len(parts) == 3 and parts[:2] == (EXPERIMENT, "decisions") and bool(
         re.fullmatch(r"cycle-c\d+\.json", parts[2]))  # fmt: skip
