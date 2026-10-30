@@ -70,9 +70,8 @@ The engineering record's `checks.dry_run` is not marked passed: that needs Part 
   - GPU jobs took 88.6 min (1.48 h) on the second Pod. The incident ledger records 0.5 GPU-min more
     for the first.
   - The Pods ran 1.016 and 4.247 Pod-hours: 5.263 in all.
-- **Spend.** $5.90 billed for 2026-10-29: $1.14 for the first Pod and $4.77 for the second, GPU and
-  disk. The second Pod's stopped volume is in that amount up to midnight; its disk time from
-  midnight to its deletion is to be added from the billing of 2026-10-30.
+- **Spend.** $5.95 billed: $1.14 for the first Pod and $4.81 for the second, GPU and disk, the
+  second Pod's stopped volume included up to its deletion.
 - **Closing state.** No Pod of the repeat is left.
   - The second Pod, `jfvugtct592agr`, was stopped at 23:34:42Z (EXITED). It was deleted at
     2026-10-30T00:42Z, after addendum 1's 347 objects were checked in the bucket.
@@ -690,18 +689,19 @@ the first Pod's evidence, `pod1-2xyqxu4mgc0yos/`.
 | `jfvugtct592agr`, US-TX-4: the repeat | 19:19:53Z | 23:34:42Z | 4.247 |
 | **Total** | | | **5.263** |
 
-**Spend.** Runpod's pod billing for 2026-10-29, by day (`addendum-1/runpod/billing-20261029-day.json`,
-`addendum-1/stop-and-cost.md`):
+**Spend.** Runpod's pod billing by day, read after the buckets of 2026-10-30 had posted
+(`billing-final-20261030.json`, archived beside addendum 1; it supersedes the earlier read in
+`addendum-1/runpod/billing-20261029-day.json`, taken before the last hour of 2026-10-29 was final):
 
-| Pod | Billed 2026-10-29: GPU + disk = total |
+| Pod | Billed: GPU + disk = total |
 |---|---|
-| `2xyqxu4mgc0yos`, US-MO-1: unfit (incident 1) | $1.10 + $0.03 = $1.14 |
-| `jfvugtct592agr`, US-TX-4: the repeat | $4.63 + $0.14 = $4.77 |
-| **Total, 5.263 Pod-hours** | **$5.90** |
-| `jfvugtct592agr`'s stopped volume, disk time from 00:00Z to its deletion at 2026-10-30T00:42Z (its time from 23:34:42Z to midnight is in the 2026-10-29 amount above) | to be added from the billing of 2026-10-30 |
+| `2xyqxu4mgc0yos`, US-MO-1: unfit (incident 1), 2026-10-29 | $1.10 + $0.03 = $1.14 |
+| `jfvugtct592agr`, US-TX-4: the repeat, 2026-10-29 (its stopped volume included to midnight) | $4.63 + $0.15 = $4.78 |
+| `jfvugtct592agr`'s stopped volume, 2026-10-30, to its deletion at 00:42Z | $0 + $0.03 = $0.03 |
+| **Total, 5.263 Pod-hours** | **$5.95** |
 
 - The GPU amounts match the Pod-hours at $1.09/h: 1.013 h and 4.245 h.
-- The first Pod's total is rounded from the billed amounts, not summed from the rounded parts.
+- Each total is rounded from the billed amounts, not summed from the rounded parts.
 
 ## Archive and provenance
 
@@ -747,6 +747,8 @@ the first Pod's evidence, `pod1-2xyqxu4mgc0yos/`.
       `SHA256SUMS` over 345 files.
   - **`addendum-1-inventory-try1.tsv`**: the addendum's inventory (path, size, sha256), as its own
     object.
+  - **`billing-final-20261030.json`** (sha256 `a20d5416ca7378eb9d33512768a6a3c180bfb59c14be2e09ebfb8289ea7a815a`):
+    the final billing read, written after addendum 1 and archived beside it, read back equal.
 - **The checks in each.**
   - The snapshot's `logs/checks.tsv` holds 323 rows: 320 PASS, 3 FAIL.
   - The final log holds 346: 342 PASS, 4 FAIL.
