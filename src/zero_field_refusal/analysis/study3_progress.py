@@ -349,7 +349,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import re
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -368,6 +367,7 @@ from .study3_blocks import (
     block_state,
     utility_gate,
 )
+from .study3_cycle import _COMMIT  # a commit id: one pattern for the cycle and the walk
 from .study3_decisions import (
     DIRECTORY,
     NOT_ACCEPTED,
@@ -426,7 +426,6 @@ ENGINEERING_CYCLE = "engineering_cycle"
 # A counting search run under a GPU code the search does not count under: a technical mark
 # (module docstring, "A run under another GPU code"), the reason of its closure
 OTHER_GPU_CODE = "other_gpu_code"
-_COMMIT = re.compile(r"[0-9a-f]{40}")
 ENGINEERING_CYCLE_WHY = (
     "one engineering cycle at once: diagnosis, a fix that changes the GPU code, and a claim per "
     "stage (reuse or rerun, with its justification); a fix that leaves the GPU code unchanged is "
@@ -1411,8 +1410,10 @@ class _Walk:
             why = (f"its GPU code {code} is none the search counts under for candidate "
                    f"{candidate} ({', '.join(dict.fromkeys(allowed))})" if code is not None else
                    "its GPU code cannot be told (a dirty checkout, one whose cleanness is not "
-                   "recorded, or a commit the checkout cannot place), so it is not shown to be "
-                   "one the search counts under")  # fmt: skip
+                   "recorded, or, most often, a commit this checkout cannot place), so it is not "
+                   "shown to be one the search counts under: fetch its commit and read the state "
+                   "again before any closure is written (a closure of A or F is "
+                   "terminal)")  # fmt: skip
             marked.append((e, {"run_id": e.run_id, "label": e.label, "candidate": e.candidate,
                                "step": e.cell.step, "reason": OTHER_GPU_CODE, "commit": shown,
                                "dirty": dirty, "versions_record": None, "why": why}))  # fmt: skip
@@ -1590,8 +1591,12 @@ class _Walk:
         way = (f"; a recovery round of {e.label} with its documented cause reruns it: "
                f"{recovery_command(e.label)}" if mark["recovery"] else "")  # fmt: skip
         if "after_cycle" in mark:
-            closure = ("its closure record closes it" if mark["closure"] is None else
-                       f"its closure record ({mark['closure']['record']}) closes it")  # fmt: skip
+            spent = mark["after_cycle"]
+            closure = (f"its closure record ({mark['closure']['record']}) closes it"
+                       if mark["closure"] is not None else
+                       f"no closure can cite the candidate's supersession record {spent['path']}, "
+                       "which cannot be read: restore it" if spent.get("sha256") is None else
+                       "its closure record closes it")  # fmt: skip
             c.technical.append(f"{e.run_id} ({e.label}, {e.arm}, {e.cell.step}): {e.state}, a "
                                "technical mark outside the qualification unresolved after the "
                                f"candidate's engineering cycle: {closure}{way}")  # fmt: skip
@@ -1628,7 +1633,8 @@ class _Walk:
         candidate's cycle, with the fields the closure schema accepts: its last end line, or its
         start line when the launcher never ended it; the run's uncounted reason and no cycle, or
         ``unresolved_after_cycle`` and the candidate's supersession record. None when the run's
-        cell or line is unknown, the supersession record cannot be read, or the mark is neither
+        cell or line is unknown, the supersession record cannot be read (the step's reason names
+        it: ``_technical_run``), or the mark is neither
         (any other technical mark outside the qualification takes its cycle)."""
         reason, cycle = mark.get("uncounted"), None
         if reason is None and mark.get("after_cycle") is not None:

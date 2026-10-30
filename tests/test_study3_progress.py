@@ -1089,10 +1089,13 @@ def test_a_search_run_whose_gpu_code_cannot_be_told_is_a_mark() -> None:
         "attempt": 1,
         "run": "F",
     }  # its last end line
-    (way,) = study.advance()["step"]["ways_out"]
+    step = study.advance()["step"]
+    (way,) = step["ways_out"]
     assert (way["run_id"], way["reason"]) == (run, "other_gpu_code")
     assert way["closure"]["fields"]["reason"] == "other_gpu_code"
     assert way["closure"]["fields"]["cycle"] is None
+    # most often a commit this checkout cannot place: fetched before a terminal closure
+    assert any("fetch its commit and read the state again" in r for r in step["reasons"])
 
 
 def test_a_counting_run_of_a_rerun_stage_under_another_gpu_code_is_a_mark() -> None:
@@ -1157,6 +1160,19 @@ def through_validation_with_mark(arm: str, seed: int) -> Study:
     study.through_validation()
     study.technical(run_of(study, "validation", arm, "u", seed))
     return study
+
+
+def test_an_after_cycle_mark_whose_supersession_record_cannot_be_read_names_it() -> None:
+    """After the candidate's cycle, a mark whose closure would cite a supersession record that
+    cannot be read (no sha256): the step names that record, and offers no closure."""
+    study = through_validation_with_mark("F", 10304)
+    study.cycle()
+    study.cycles[1][0]["sha256"] = None
+    step = study.advance()["step"]
+    assert step["reason"] == "unresolved_after_cycle"
+    assert any("qualification/c1/supersede-1.json" in r and "cannot be read" in r
+               for r in step["reasons"])  # fmt: skip
+    assert all("closure" not in way for way in step["ways_out"])
 
 
 def qualification_reading(state: str) -> dict:

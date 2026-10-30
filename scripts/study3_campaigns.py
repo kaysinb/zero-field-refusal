@@ -482,21 +482,26 @@ def cell_hash(config: str, overrides: Sequence[str], seed: int) -> str:
 def reissue_commands(reader: EndpointReader, cells: Sequence[Mapping[str, Any]], *,
                      campaign: Path, cycle: Mapping[str, Any]) -> list[str]:  # fmt: skip
     """The recovery rounds of the labels a candidate's engineering cycle reissues (module
-    docstring, "Running"): for each launcher cell of the file ``campaign`` whose label has
-    attempts in the launch journal and none left under the cell's config hash as written
-    (``cell_hash``; ``EndpointReader.attempts_left`` at ``--max-attempts 1``), the command of
+    docstring, "Running"): for each launcher cell of the file ``campaign`` whose label's latest
+    attempt in the launch journal is one of the cycle's affected runs (``cycle["affected"]``) and
+    that has none left under the cell's config hash as written (``cell_hash``;
+    ``EndpointReader.attempts_left`` at ``--max-attempts 1``), the command of
     its own recovery round, the cycle (``progress``' ``cycle`` entry of the candidate) as its
     documented incident: ``--only`` the label at one attempt, the reason ``engineering cycle
     c<N>``, the cycle record's ``written_at`` as the incident's time, the fix's commit in the
     cause and the bridge as the evidence. A label with attempts left, or with none in the
-    journal (a new config hash is a new run), takes the plain launch."""
+    journal (a new config hash is a new run), takes the plain launch; so does a label whose
+    latest attempt the cycle did not affect: its incident is not the cycle's."""
     candidate = cycle.get("candidate")
     commit = (cycle.get("code") or {}).get("commit")
+    affected = {run.get("run_id") for run in cycle.get("affected") or []
+                if isinstance(run, Mapping)}  # fmt: skip
     out = []
     for cell in cells:
         for seed in cell["seeds"]:
             label = f"{cell['name']}/s{seed}"
-            if reader.latest_start(label) is None:
+            latest = reader.latest_start(label)
+            if latest is None or latest.get("run_id") not in affected:
                 continue
             if reader.attempts_left(label, cell_hash(cell["config"], cell["overrides"],
                                                      seed)) > 0:  # fmt: skip
@@ -623,6 +628,7 @@ def campaign(args: argparse.Namespace) -> None:
             refuse(kind, f"the campaign name {name} is already used (its launch log exists): a "
                    "campaign's name is new")  # fmt: skip
     written, reissued = [], {}
+    single: list[str] = []  # the recovery rounds of a campaign written as one file
     for name, (seed, path, chosen) in zip(names, files, strict=True):
         runs = sum(len(cells) for _, cells in chosen)
         cells = launcher_cells(candidate, step, round_, chosen, checkpoints)
@@ -639,6 +645,7 @@ def campaign(args: argparse.Namespace) -> None:
                 notes.append(f"Check: {check_command(root.absolute(), path.absolute())}")
             notes += [f"Recovery: {command}" for command in rounds]
             notes.append(f"Run: {run_command(kind, candidate, path.absolute())}")
+            single = rounds
         else:
             notes.append(f"Run by {args.out.absolute() / 'run.sh'}, after the between-block "
                          "guard.")  # fmt: skip
@@ -657,7 +664,7 @@ def campaign(args: argparse.Namespace) -> None:
     else:
         if kind == "validation":
             print(f"Check: {check_command(root.absolute(), args.out.absolute())}")
-        for command in rounds:
+        for command in single:
             print(f"Recovery: {command}")
         print(f"Run: {run_command(kind, candidate, args.out.absolute())}")
 

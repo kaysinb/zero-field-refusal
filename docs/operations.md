@@ -2363,7 +2363,9 @@ before each command below.
   of a dirty or unknown commit (its code cannot be told), is a technical mark with the reason
   `other_gpu_code`, before any cycle too; the scientific failures a cycle keeps are exempt. It
   is no cycle case: its ways out are its recovery round where the launcher opens one and its
-  closure record.
+  closure record. A code that cannot be told is most often a commit this checkout cannot place:
+  fetch that commit and read the state again before any closure is written, since a closure of
+  A or F is terminal.
 - **Holds and closures.** Four kinds of run are closed by a closure record: a run a candidate's
   engineering cycle held (an outcome nobody could resolve, [above](#study-3-numerical-qualification)),
   a run under another commit (above, "A run's own commit"; its uncounted reason), a search run

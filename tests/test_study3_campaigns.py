@@ -786,15 +786,19 @@ def validation_superseded_by_cycle(world, *, arm: str = "F", label: str = "u",
 
 
 def test_the_campaign_writer_prints_a_recovery_round_per_reissued_label(world) -> None:
-    """A validation cell its engineering cycle superseded, its label's attempt used up under the
-    cell's config hash: the writer prints, after the check and before the launch, the label's
+    """A validation cell its engineering cycle superseded, its label's latest attempt one the cycle
+    affected and used up under the cell's config hash: the writer prints, after the check and
+    before the launch, the label's
     own recovery round (``--only`` it at one attempt, the cycle as its reason, the cycle's time as
     the incident's, the fix as its cause, the bridge as its evidence), in the file's comments
     too; a label with no attempt, or under a new config hash (a new run), is launched plainly."""
-    _, label = validation_superseded_by_cycle(world)
+    study, label = validation_superseded_by_cycle(world)
     first = world.write("validation")  # the label never started: a plain launch
     assert "--recovery" not in printed(world)
-    world.launched(first)  # its run, under the cell's config hash
+    (launched,) = world.launched(first)  # its run, under the cell's config hash
+    world.write("validation")  # its latest attempt is no run the cycle affected: a plain launch
+    assert "--recovery" not in printed(world)
+    study.cycle_records[1]["record"]["affected"]["runs"][0]["run_id"] = launched
     out = world.write("validation")
     shown = printed(world).splitlines()
     (line,) = [x for x in shown if "--recovery" in x]
