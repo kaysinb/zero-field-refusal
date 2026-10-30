@@ -18,7 +18,8 @@ gate (``study3_freeze.freeze_open``) and raises ``SealedPoint`` with its problem
 is touched; the label reader's own functions (``study3_labels.harm_many``, ``run_harm`` and
 ``run_items``, at the point ``final``) keep their own gates, the final point's run set among them.
 
-- ``cohort_harm``: the harm of the cohort's runs, one ``harm_many`` call for them all, gated once.
+- ``cohort_harm``: the harm of the cohort's runs, one ``harm_many`` call for them all, gated once;
+  a run of the freeze's validation blocks only once the final analysis is written.
 - ``k_spread``: one endpoint's spread of K over prompts, the per-prompt means of its K samples.
 - ``item_labels``: runs' per-item labels (``run_items``), their counts checked against their harm.
 - ``blind_texts``: the prompt and step-25 response texts of named prompts of runs, once the final
@@ -48,8 +49,9 @@ refused.
 **What is opened, and where.** The sealed paths are opened only in the entries and their private
 helpers: the labels through ``study3_labels``' readers, a run's ``measurements.jsonl``
 (``_k_spread``) and its responses (``_texts``); ``_analysis_of`` reads the analysis and the
-freeze record, neither sealed. Nothing here prints or writes; what the entries return holds
-numbers, run ids and, for ``blind_texts`` alone, the texts its caller keeps sealed.
+freeze record, and ``_validation_runs`` the freeze record, none of them sealed. Nothing here
+prints or writes; what the entries return holds numbers, run ids and, for ``blind_texts`` alone,
+the texts its caller keeps sealed.
 
 **Rulings** where the registration leaves a detail open:
 - *The final point's runs.* ``cohort_harm`` reads the runs the caller names under the label
@@ -67,7 +69,10 @@ numbers, run ids and, for ``blind_texts`` alone, the texts its caller keeps seal
 - *The K samples' mean* is checked against the endpoint's K (the evaluation's K is that mean), so
   that the spread is the same measurement as the K the blocks were frozen on.
 - *Validation's harm after the analysis.* ``gather`` reads no validation run: validation's harm is
-  read after the final analysis and apart from it, by the caller, through ``cohort_harm``.
+  read after the final analysis and apart from it, by the caller, through ``cohort_harm``, which
+  reads a run of the freeze's validation blocks (the committed freeze's ``validation``) only with
+  ``analysis``, candidate N's analysis record at its place naming the committed freeze by its
+  sha256 now, as ``blind_texts`` does: before it is written, ``SealedPoint``, nothing opened.
 - *The blind texts* wait for the final analysis: the analysis file, at its place under
   RUNS_DIR/study3-final/c<N>/, must name the committed freeze by its sha256 now; a run's texts are
   read with the label reader's checks, its 521 prompts among them.
@@ -191,14 +196,45 @@ def _opened(run_dirs: Iterable[Path], candidate: int, runs_root: Path, repo: Pat
 
 
 def cohort_harm(
-    run_dirs: Mapping[str, Path], *, candidate: int, runs_root: Path, repo: Path
+    run_dirs: Mapping[str, Path],
+    *,
+    candidate: int,
+    runs_root: Path,
+    repo: Path,
+    analysis: Path | None = None,
 ) -> dict[str, RunHarm]:
     """The harm of each run of ``run_dirs`` (run id → its folder), by run id, from one
-    ``harm_many`` call at the point ``final``, gated once (module docstring). ``Pending`` names
-    every pending run and every technical labeling problem of the cohort when that reading raises
-    for one; ``ValueError`` for a folder not named by its run id or n ≠ 521."""
+    ``harm_many`` call at the point ``final``, gated once (module docstring). A run of the
+    freeze's validation blocks is read only once the final analysis is written: ``analysis``
+    must then be candidate N's analysis record at its place naming the committed freeze by its
+    sha256 now (``SealedPoint`` otherwise, before any label; an ``analysis`` given is checked
+    so in any case). ``Pending`` names every pending run and every technical labeling problem of
+    the cohort when that reading raises for one; ``ValueError`` for a folder not named by its run
+    id or n ≠ 521."""
     _gate(candidate, runs_root, repo)
-    return _harm(run_dirs, candidate, Path(runs_root), Path(repo))
+    runs_root, repo = Path(runs_root), Path(repo)
+    validation = sorted(set(run_dirs) & _validation_runs(candidate, repo))
+    if validation and analysis is None:
+        raise SealedPoint(f"validation's harm waits for candidate {candidate}'s final analysis: "
+                          f"{len(validation)} validation runs named ({validation[0]} first), no "
+                          "analysis given")  # fmt: skip
+    if analysis is not None:
+        _analysis_of(Path(analysis), candidate, runs_root, repo)
+    return _harm(run_dirs, candidate, runs_root, repo)
+
+
+def _validation_runs(candidate: int, repo: Path) -> set[str]:
+    """The run ids of the committed freeze's validation blocks (its ``validation``), read from the
+    checkout once the gate is open; ``SealedPoint`` for a freeze that does not give them."""
+    name = freeze_name(candidate)
+    try:
+        record = json.loads((repo / name).read_bytes())
+        entries = record["validation"].values()
+        return set(runs_of([block for entry in entries if entry is not None
+                            for block in entry["blocks"]]))  # fmt: skip
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise SealedPoint(f"{name} does not give validation's runs ({type(exc).__name__}): "
+                          "nothing is read") from exc  # fmt: skip
 
 
 def _harm(run_dirs: Mapping[str, Path], candidate: int, runs_root: Path,
@@ -212,7 +248,7 @@ def _harm(run_dirs: Mapping[str, Path], candidate: int, runs_root: Path,
     try:
         found = harm_many([dirs[run] for run in ids], point=POINT, candidate=candidate,
                           runs_root=runs_root, repo_root=repo)  # fmt: skip
-    except (study2_labels.LabelsPending, LabelingProblem) as exc:  # L1's pending, its base
+    except (study2_labels.LabelsPending, LabelingProblem) as exc:  # the label reader's pending
         pending = _culprits(dirs, exc, candidate, runs_root, repo)
         if pending is None:
             raise
@@ -395,7 +431,7 @@ def _analysis_of(analysis: Path, candidate: int, runs_root: Path, repo: Path) ->
     if under_sealed(analysis, runs_root):
         raise SealedPoint(f"{analysis} resolves under a sealed folder: never opened")
     if not analysis.is_file():
-        raise SealedPoint(f"the blind texts wait for candidate {candidate}'s final analysis: "
+        raise SealedPoint(f"this reading waits for candidate {candidate}'s final analysis: "
                           f"{analysis} is not written")  # fmt: skip
     name = freeze_name(candidate)
     frozen = {"path": name, "sha256": hashlib.sha256((repo / name).read_bytes()).hexdigest(),

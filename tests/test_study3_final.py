@@ -88,9 +88,18 @@ def world(tmp_path) -> Final:
     return Final(tmp_path)
 
 
-def open_freeze(world: Final, monkeypatch) -> list:
-    """The freeze gate opens (``freeze_open`` → ``()``); its calls kept."""
+def open_freeze(world: Final, monkeypatch, validation: tuple[str, ...] = ()) -> list:
+    """The freeze gate opens (``freeze_open`` → ``()``), over a stand-in freeze in the checkout
+    whose validation blocks hold the runs ``validation`` (A's two, then F's); its calls kept."""
     calls: list = []
+    blocks = [{"seed": 10300, "arms": {"A": {"lo": validation[0], "hi": validation[1]},
+                                       "F": {"lo": validation[2], "hi": validation[3]}}}
+              ] if validation else []  # fmt: skip
+    freeze = world.repo / freeze_name(1)
+    freeze.parent.mkdir(exist_ok=True)
+    validation_ = {"A-F": {"blocks": blocks}, "P-F": None}
+    freeze.write_text(json.dumps({"kind": "analysis-freeze", "candidate": 1,
+                                  "validation": validation_}))  # fmt: skip
 
     def gate(candidate, runs_root, repo_root):
         calls.append((candidate, Path(runs_root), Path(repo_root)))
@@ -297,6 +306,39 @@ def test_another_reading_error_stops_the_cohort_unchanged(world, monkeypatch) ->
     assert reads == []
 
 
+def test_validation_runs_wait_for_the_written_analysis(world, monkeypatch) -> None:
+    """Runs of the freeze's validation blocks are read only once the final analysis is written,
+    as the blind texts are: with no analysis given, or one not written yet, ``SealedPoint`` and
+    nothing read; with the analysis at its place naming the committed freeze, one reading."""
+    import hashlib
+
+    open_freeze(world, monkeypatch, validation=tuple(world.runs))
+    reads: list = []
+
+    def many(run_dirs, **kw):
+        reads.append([d.name for d in run_dirs])
+        return [RunHarm(harmful=1, missing=0, receipt_sha256="f" * 64) for _ in run_dirs]
+
+    monkeypatch.setattr(study3_final, "harm_many", many)
+    given = {"candidate": 1, "runs_root": world.root, "repo": world.repo}
+    with pytest.raises(SealedPoint, match="waits for candidate 1's final analysis: 4 validation"):
+        study3_final.cohort_harm(world.dirs(), **given)
+    with pytest.raises(SealedPoint, match="final analysis: .* is not written"):
+        study3_final.cohort_harm(world.dirs(), analysis=world.analysis, **given)
+    analysis_record(world, "0" * 64)  # another freeze
+    with pytest.raises(SealedPoint, match="committed freeze"):
+        study3_final.cohort_harm(world.dirs(), analysis=world.analysis, **given)
+    assert reads == []
+    freeze = world.repo / freeze_name(1)
+    analysis_record(world, hashlib.sha256(freeze.read_bytes()).hexdigest())
+    found = study3_final.cohort_harm(world.dirs(), analysis=world.analysis, **given)
+    assert set(found) == set(world.runs) and reads == [world.runs]
+    freeze.write_text('{"kind": "analysis-freeze"}')  # no validation: nothing is read
+    with pytest.raises(SealedPoint, match="does not give validation's runs"):
+        study3_final.cohort_harm(world.dirs(), analysis=world.analysis, **given)
+    assert reads == [world.runs]
+
+
 # ------------------------------------------------------------------ the spread of K
 
 
@@ -430,7 +472,6 @@ def test_the_blind_texts_wait_for_the_analysis_then_give_the_named_texts(world, 
     monkeypatch.setattr(study3_final, "harmful_prompts", lambda cfg: PROMPTS)
     monkeypatch.setattr(study3_final, "HARMFUL_PROMPTS", len(IDS))  # the run's prompts
     freeze = world.repo / freeze_name(1)
-    freeze.parent.mkdir()
     freeze.write_text('{"kind": "analysis-freeze"}\n')
     named = [IDS[4], IDS[1]]
     given = {"candidate": 1, "runs_root": world.root, "repo": world.repo,
@@ -468,7 +509,6 @@ def test_the_blind_texts_take_the_analysis_only_at_its_place(world, monkeypatch,
     run = make_run(world.root / "study3", steps=(5, 25), name="r-texts")
     open_runs(monkeypatch, [run.name])
     freeze = world.repo / freeze_name(1)
-    freeze.parent.mkdir()
     freeze.write_text('{"kind": "analysis-freeze"}\n')
     analysis_record(world, hashlib.sha256(freeze.read_bytes()).hexdigest())
     moved = world.root / where

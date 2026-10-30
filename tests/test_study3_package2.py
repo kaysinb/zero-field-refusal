@@ -1841,7 +1841,7 @@ def test_the_final_reader_opens_sealed_paths_only_through_named_functions(points
     (run / "observations").mkdir(exist_ok=True)
     k_rows(run)
     freeze = repo / freeze_name(1)
-    freeze.write_text('{"kind": "analysis-freeze"}\n')
+    freeze.write_text('{"kind": "analysis-freeze", "validation": {"A-F": null, "P-F": null}}\n')
     analysis = root / "study3-final" / "c1" / "analysis.json"
     analysis.parent.mkdir(parents=True)
     named = {"path": freeze_name(1), "sha256": hashlib.sha256(freeze.read_bytes()).hexdigest(),

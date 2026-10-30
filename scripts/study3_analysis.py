@@ -43,9 +43,9 @@ label. It reads no label: of the sealed folders it reads the labeling ledger's r
 6. ``analysis.json``, written; it prints its path, and each comparison's n and the row of the
    registered wording;
 7. only then validation's labels: the harm of validation's frozen runs, read through the final
-   reader (``study3_final.cohort_harm``), and validation's harm
-   (``study3_estimates.validation_harm``) in ``validation-harm.json``, which names the analysis
-   by its sha256; it prints that path.
+   reader (``study3_final.cohort_harm``, which refuses them until the analysis it is given is
+   written), and validation's harm (``study3_estimates.validation_harm``) in
+   ``validation-harm.json``, which names the analysis by its sha256; it prints that path.
 
 **report** writes the final report's facts (``study3_report.report_facts``) and their tables
 (``study3_report.tables``) once, into RUNS_DIR/study3-final/report-<UTC>/ (or ``--out``, a folder
@@ -375,13 +375,16 @@ def predecessor(path: Path, frozen: Mapping[str, str], inputs: Mapping[str, Any]
 
 
 def labels(freeze_: Mapping[str, Any], endpoints: Sequence[Any], root: Path,
-           run_dirs: Mapping[str, Path] | None = None) -> tuple[dict, dict]:  # fmt: skip
+           run_dirs: Mapping[str, Path] | None = None,
+           analysis: Path | None = None) -> tuple[dict, dict]:  # fmt: skip
     """Step 4 (``study3_final.gather``), or, with ``run_dirs``, the harm of those runs alone
-    (``study3_final.cohort_harm``: step 7's); every refusal names ids, counts and types only."""
+    (``study3_final.cohort_harm``: step 7's, validation's runs read under the written analysis
+    ``analysis``); every refusal names ids, counts and types only."""
     try:
         if run_dirs is not None:
             return study3_final.cohort_harm(run_dirs, candidate=freeze_["candidate"],
-                                            runs_root=root, repo=REPO), {}  # fmt: skip
+                                            runs_root=root, repo=REPO,
+                                            analysis=analysis), {}  # fmt: skip
         return study3_final.gather(freeze_, endpoints, runs_root=root, repo=REPO)
     except study3_final.Pending as exc:
         refuse("analyze", str(exc))
@@ -533,8 +536,8 @@ def resume(root: Path, candidate: int, code: Mapping[str, str], frozen: Mapping[
               for block in entry["blocks"]]  # fmt: skip
     experiment = root / EXPERIMENT
     run_dirs = {run: experiment / run for run in study3_final.runs_of(blocks)}
-    harm, _ = labels(freeze_, (), root, run_dirs)
     analysis, path = (folder / part for part in names(k))
+    harm, _ = labels(freeze_, (), root, run_dirs, analysis)
     validation = validation_record(candidate, code, frozen, inputs, freeze_, harm, analysis, data)
     publish("analyze", path, root, encoded(validation))
     print(path)
