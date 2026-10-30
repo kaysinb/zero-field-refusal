@@ -2344,7 +2344,7 @@ before each command below.
      `run.sh` runs it after the block's guard. A label under a new config hash is a new run and
      takes the plain launch. A validation or confirmation reissue under the fix needs a new
      versions record first: `check` refuses a descendant of the pinned commit that changes more
-     than the record (below, "After the validation fixation").
+     than the record (below, "A cycle after the validation fixation").
   8. **After the cycle.** The cycle is spent once the candidate has a supersession record,
      whichever path wrote it. A technical mark outside the qualification after that is unresolved
      after the cycle: the step is blocked and technical, with the reason `unresolved_after_cycle`,
@@ -2352,8 +2352,9 @@ before each command below.
      `unresolved_after_cycle`; its `cycle` the candidate's supersession record by its path and
      sha256), beside its recovery round where the launcher opens one ("Holds and closures",
      below).
-- **After the validation fixation.** A cycle moves the candidate's GPU code, so every
-  write-once record of the old code goes stale: the validation fixation, the confirmation
+- **A cycle after the validation fixation: its successor records.** A cycle moves the
+  candidate's GPU code, so every write-once record of the old code goes stale: the validation
+  fixation, the confirmation
   supplement, the n and budget records and the standing versions record (the cycle record lists
   each by its path and sha256). Each stale record stays as it was; its successor is a new file
   that names it and the cycle (`supersedes`: its path, its sha256, the reason `cycle_c<N>` and the
