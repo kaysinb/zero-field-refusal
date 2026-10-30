@@ -55,9 +55,10 @@ outside this.
    outcome the engineering cycle could not resolve), exits 11 (``HELD``) naming the run and the
    hold's reason, and the driver stops there; nothing here lifts a hold. For every case,
    ``control-only`` follows ``complete``'s no (below, "A case whose control alone is
-   outstanding"): its exit 9, for a case its recorded parts already mark technical, complete or
-   not (``established_technical``), runs step 7's export at once (``finish --kept``, the upload,
-   ``kept-check``), before any launcher call, and neither step 2 to 6 nor the control; its exit 0,
+   outstanding"): its exit 9, for an established technical case, complete or not
+   (``established_technical``: one of the three conditions below, "A technical case's kept
+   checkpoints"), runs step 7's export at once (``finish --kept``, the upload, ``kept-check``),
+   before any launcher call, and neither step 2 to 6 nor the control; its exit 0,
    for the case that holds its rate's same-path control, prints the launcher run's directory, and
    the driver runs ``part --part control --resume`` on it alone, then step 7; its exit 3 is the
    usual path, steps 2 to 7; any other exit stops the driver.
@@ -86,10 +87,10 @@ outside this.
    attempts and the harness's directory ``<dir>/harness/<case>/``), only once its records are
    published and valid; it exits 1 and keeps them for a case that is neither complete nor
    technical. A case whose verdict is technical (its own, or its same-path control's, the case
-   holding no scientific failure: ``technical_reasons``), or that is not complete but whose
-   recorded parts already mark it technical (an established technical case,
-   ``established_technical``), keeps them for the diagnosis, "Failure routes", and ``finish
-   --kept DIR`` exports them to the Pod's volume
+   holding no scientific failure: ``technical_reasons``), or an established technical case that
+   is not complete (``established_technical``: below, "A technical case's kept checkpoints"),
+   keeps them for the diagnosis, "Failure routes", and ``finish --kept DIR`` exports them to the
+   Pod's volume
    (below, "A technical case's kept checkpoints"); it never marks a case complete, so an
    established technical case stays incomplete and technical. It exits 9 (``TECHNICAL_CASE``) once
    every file still present has a verified copy there, 13 (``NOT_EXPORTED``) when the export was
@@ -117,20 +118,20 @@ durably (``qualification.publish``).
 for the diagnosis). The Pod's container disk goes with a Pod stop, so ``finish --kept DIR`` (the
 driver's ``--kept``: on a Pod ``/workspace/kept-checkpoints``, the volume) exports a technical
 case's evidence: a complete case whose verdict is technical, and an established technical case,
-complete or not: one whose recorded parts mark it technical in a way no part the verdict would still
+complete or not: one whose recorded parts make it technical in a way no part the verdict would still
 read can change (``established_technical``), when one of these holds: (1) its baseline's gate fails,
 or its baseline did not complete (failed, or ran nothing), so the verdict reads no rest for it; (2)
 a rest recorded and bound to that baseline makes the whole verdict technical, not scientific; (3)
 its same-path control is recorded technical, with every part the verdict still reads recorded (or
-not read: a baseline decided by itself, as in (1)). In each, the case holds no scientific failure
-(``scientific_failures``): a scientific verdict takes precedence (below, "A scientific case whose
-same-path control failed"). A complete baseline with only a technical comparison of its own, or a
-technical control, its rest due or interrupted, is none: the rest may turn the verdict scientific.
-Such a case is exported with the same files, copies, manifest (``lost`` included), receipts and
-exits; the case stays as it is, never marked complete. The driver exports an established technical
-case before any launcher call (``control-only``'s exit 9), so files the launcher would refuse (a
-corrupt checkpoint) are kept as they are. ``finish --kept`` copies the case's files, exactly those
-``finish --release`` would delete (``case_files``), to
+not read: a baseline decided by itself, whose verdict reads no rest, as in (1)). In each, the case
+holds no scientific failure (``scientific_failures``): a scientific verdict takes precedence (below,
+"A scientific case whose same-path control failed"). A complete baseline with only a technical
+comparison of its own, or a technical control, its rest due or interrupted, is none: the rest may
+turn the verdict scientific. Such a case is exported with the same files, copies, manifest (``lost``
+included), receipts and exits; the case stays as it is, never marked complete. The driver exports an
+established technical case before any launcher call (``control-only``'s exit 9), so files the
+launcher would refuse (a corrupt checkpoint) are kept as they are. ``finish --kept`` copies the
+case's files, exactly those ``finish --release`` would delete (``case_files``), to
 ``DIR/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout they have under the checkpoint
 directory: each written under a partial name, fsynced, renamed and its folder fsynced, the source
 hashed while read and the copy read back, verified when the two sha256 agree. A present checkpoint
@@ -237,9 +238,10 @@ provenance conflict, which stops the step and is kept for the diagnosis). The dr
 launcher run against the case and this process's numerics, its streams and v₀), and neither
 ``clear-stale``, the disk check, the launcher, ``locate``, the baseline, ``decided`` nor the
 rest; ``finish`` follows. The checks go in this order. First, for every case (the driver asks
-``control-only`` in each case block, AdamW's included), exit 9 (``TECHNICAL_CASE``): a case its
-recorded parts already mark technical, complete or not (``established_technical``), whatever its
-bindings: "a technical case: export its evidence"; the driver runs ``finish --kept``, the upload
+``control-only`` in each case block, AdamW's included), exit 9 (``TECHNICAL_CASE``): an
+established technical case, complete or not (``established_technical``: above, "A technical case's
+kept checkpoints", its three conditions), whatever its bindings: "an established technical case:
+export its evidence"; the driver runs ``finish --kept``, the upload
 and ``kept-check`` at once, before any launcher call, and neither the launcher, a part nor the
 control runs for it. Exit 3 (``NO``), the usual path: a case that holds no same-path control, a
 case whose control is not outstanding or with another part outstanding; then a case decided by
@@ -297,25 +299,32 @@ the earlier restarts' included, and the case's current launcher run is logged su
 launcher's further round with the new reason, and each part as its next attempt. A launcher run in
 flight at the loss (a start without an end, no settled directory) is no attempt to restart: the
 launcher settles it technical, and a round of its own with the documented reason is the whole route.
-Only an interrupted case is restarted: it is refused without a reason, when every attempt is named
-already, for a complete case, without evidence of an interruption (an interrupted attempt, or the
-launcher run's checkpoint gone from disk, unless ``finish`` removed it on purpose: its
-``checkpoints-removed-<n>.json`` records), when the launcher run itself is a completed failure (its
-declared instability stop, scientific, or another stop or a departing run, technical:
-``launcher_problems`` without the comparison with this process's environment), when any attempt is a
-completed failure (``attempt_failures``): a scientific one, which keeps counting ("no reruns to
-pass"), a technical one (the engineering cycle lifts it: below), or an unreadable record; an
-interrupted rest attempt counts by its trajectory results; when the launcher run's journal holds
-an end ``conflict`` that no lost container disk explains (``own_conflict_end``: an unsettled one,
-the launcher's own judgement of its attempt, or one whose problem is not the missing checkpoint);
-when ``control-only`` answers anything but its usual path (exit 0: it runs the control alone;
-exit 1: the recorded parts cannot be bound to the launcher run, a provenance problem); and when
-the launcher run's endpoint checkpoint is on disk with another sha256 than its recorded one
-(``checkpoint_conflict``): a provenance conflict, not a loss, which goes to the technical route even
-when an interrupted attempt would otherwise allow the restart. A recorded attempt that passes so far
-(the baseline, a control) depends on the lost run or checkpoint and is named with the others. The
-attempts it names are void: a part whose recorded attempts are all named is ``voided``, so the case
-is not complete; ``part --resume`` exits 8 for it, and ``part --attempt N`` takes its next attempt
+Only an interrupted case is restarted. It is refused, in this order: (1) without a reason; (2)
+for a case the engineering cycle kept on its launcher run (``resolution_of``); (3) with no attempt
+that a restart or supersession record does not name already, and the launcher run's checkpoint not
+lost; (4) for a complete case; (5) when any attempt is a completed failure (``attempt_failures``):
+a scientific one, which keeps counting ("no reruns to pass"), a technical one (the engineering
+cycle lifts it: below), or an unreadable record, an interrupted rest attempt counted by its
+trajectory results; (6) when ``control-only`` answers anything but its usual path, 3
+(``control_only_answer``, asked and never printed): 9, an established technical case, whose
+evidence is exported and whose technical failure goes to the engineering cycle; 0, a case whose
+control runs alone; 1, recorded parts that cannot be bound to the launcher run (a provenance
+problem), or any other answer, carried with its reason; (7) when the launcher run itself is a
+completed failure (its declared instability stop, scientific, or another stop or a departing run,
+technical: ``launcher_problems`` without the comparison with this process's environment); (8) when
+its numerics setup or its Rayleigh record departs behind a settled missing-checkpoint end
+(``after_checkpoint_problem``: a provenance conflict); (9) when the launcher run's journal holds an
+end ``conflict`` that no lost container disk explains (``own_conflict_end``: an unsettled one, the
+launcher's own judgement of its attempt, or one whose problem is not the missing checkpoint); (10)
+without evidence of an interruption (an interrupted attempt, or the launcher run's checkpoint gone
+from disk, unless ``finish`` removed it on purpose: its ``checkpoints-removed-<n>.json`` records);
+(11) when the launcher run's endpoint checkpoint is on disk with another sha256 than its recorded
+one (``checkpoint_conflict``): a provenance conflict, not a loss, which goes to the technical route
+even when an interrupted attempt would otherwise allow the restart. A recorded attempt that passes
+so far (the baseline, a control) depends on the lost run or checkpoint and is named with the others.
+The attempts it names are void: a part whose recorded attempts are all named is ``voided``, so the
+case is not complete; ``part --resume`` exits 8 for it (naming, for an interrupted attempt, the
+record that names it), and ``part --attempt N`` takes its next attempt
 with ``--infrastructure REASON`` (its record names the restart records); a rest waits for the
 baseline's new attempt. The named records are kept, listed, and voided in the verdict (with the
 reason, under ``restart``).
@@ -895,7 +904,7 @@ def technical_reasons(out: Path, p: Planned, scope: q.QualificationScope) -> lis
 
 def established_technical(out: Path, p: Planned, scope: q.QualificationScope) -> list[str]:
     """The technical marks of an established technical case (module docstring, "A technical
-    case's kept checkpoints"): a case whose recorded parts mark it technical in a way no part the
+    case's kept checkpoints"): a case whose recorded parts make it technical in a way no part the
     verdict would still read can change, complete or not. One of: (1) the latest baseline's
     verdict alone is technical and reads no rest (``case_verdict`` gives no ``REST_MISSING``: its
     gate failed, or the baseline did not complete); (2) a rest recorded and bound to that baseline
@@ -1098,8 +1107,8 @@ def control_only_answer(
     is its same-path control (module docstring, "A case whose control alone is outstanding":
     decided by its baseline, or with its baseline and rest recorded), not technical, for the
     driver to run that control on it, and neither the launcher nor any other part (0). In this
-    order: first, for every case, 9 (``TECHNICAL_CASE``) for one its recorded parts already mark
-    technical, complete or not (``established_technical``, whatever its bindings): the driver
+    order: first, for every case, 9 (``TECHNICAL_CASE``) for an established technical case,
+    complete or not (``established_technical``, whatever its bindings): the driver
     exports its evidence (``finish --kept``) before any launcher call, and nothing of it runs;
     then 3 (``NO``), the driver's usual path, for a case not in that state, then for a case
     decided by its launcher run's own declared instability stop; 1, naming why, for a case whose
@@ -1110,13 +1119,13 @@ def control_only_answer(
     def no(why: str) -> ControlOnly:
         return ControlOnly(NO, f"{name}: {why}: the usual path")
 
-    # First: a case its recorded parts already mark technical, complete or not, every case (AdamW's
-    # too): its evidence is exported before any launcher call, and nothing of it runs
+    # First: an established technical case, complete or not, every case asked (AdamW's too): its
+    # evidence is exported before any launcher call, and nothing of it runs
     technical = established_technical(out, p, scope)
     if technical:
-        return ControlOnly(TECHNICAL_CASE, f"{name}: a technical case ({'; '.join(technical)}): "
-                           "export its evidence (finish --kept) before any launcher call; nothing "
-                           "of it runs")  # fmt: skip
+        return ControlOnly(TECHNICAL_CASE, f"{name}: an established technical case "
+                           f"({'; '.join(technical)}): export its evidence (finish --kept) before "
+                           "any launcher call; nothing of it runs")  # fmt: skip
     if not p.control:
         return no("it holds no same-path control")
     resolution = resolution_of(out, p.case)
@@ -1784,6 +1793,12 @@ def part(args, planned: Planned, out: Path) -> None:
             mark = "--engineering-cycle" if cycle is not None else "--infrastructure REASON"
             why = ("was started and left no record" if state.state == "interrupted"
                    else "is named by the case's restart or supersession record")  # fmt: skip
+            if state.state == "interrupted":  # the record that names it, the last one
+                this = (name, state.attempt)
+                naming = [path for path, _, entry in _entries(case_folder(out, case))
+                          if (entry.get("part"), entry.get("attempt")) == this]  # fmt: skip
+                if naming:
+                    why += f", and {naming[-1].name} names it"
             print(f"{case.name} {name}: attempt {state.attempt} {why}: its next attempt is run "
                   f"by hand, --attempt {state.attempt + 1} {mark}", file=sys.stderr)  # fmt: skip
             sys.exit(INTERRUPTED)
@@ -1866,8 +1881,8 @@ def finish(
     """A complete case's checkpoints deleted (module docstring, step 7); a technical case's
     exported to ``kept`` instead (``export_kept``: exit 9, or 13), and deleted with ``release``
     only through that export, verified (``release_kept``). A technical case is a complete one
-    whose verdict is technical (``technical_reasons``), or one not complete whose recorded parts
-    already mark it technical (``established_technical``): it is exported, or released, all the
+    whose verdict is technical (``technical_reasons``), or an established technical case that is
+    not complete (``established_technical``): it is exported, or released, all the
     same, and never marked complete. A complete case with a scientific failure whose same-path
     control is recorded technical (``failed_control_reasons``) counts as scientific, and its
     checkpoints are kept as the failed control's evidence: exported the same way (exit 14, or 13)
@@ -2161,22 +2176,18 @@ def restart_case(
     names every attempt of the case's parts (the baseline, the rest and its control if it holds
     one), each recorded one with its record's sha256, and the infrastructure reason; the
     attempts it names are void, and the case's launcher run is then logged superseded. Refused
-    without a reason, for a complete case, with no attempt it does not name already, without
-    evidence of an interruption (an interrupted attempt, or the launcher run's checkpoint gone
-    from disk), when the launcher run itself is a completed failure (``launcher_problems``:
-    its declared instability stop, scientific; another stop or a departing run, technical),
-    when any attempt is a completed failure, scientific or technical, or unreadable
-    (``attempt_failures``), when ``control-only`` answers anything but its usual path, 3 (0: it
-    would run the control alone, nothing to void; 1: the recorded parts cannot be bound to the
-    launcher run, a provenance problem; any other exit: carried, never swallowed),
-    when the launcher run's numerics or Rayleigh record depart (``after_checkpoint_problem``, which
-    a settled missing-checkpoint end hides), when the launcher run has an end ``conflict`` in the
-    launch journal that a lost container disk does not explain (``own_conflict_end``: an unsettled
-    one, the launcher's own judgement of its attempt, or one whose problem is not the missing
-    checkpoint), and when the launcher run's checkpoint is on disk with another sha256 than its
-    recorded one (``checkpoint_conflict``: a provenance conflict, not a loss, whatever an
-    interrupted attempt would allow):
-    only an interrupted case is restarted. A launcher run whose
+    in the order of the module docstring's list, (1) to (11): without a reason; for a case the
+    engineering cycle kept; with no attempt it does not name already and the checkpoint not lost;
+    for a complete case; when any attempt is a completed failure (``attempt_failures``); when
+    ``control-only`` answers anything but its usual path, 3 (``control_only_answer``: 9, an
+    established technical case; 0, its control runs alone; 1 or any other answer, carried, never
+    swallowed); when the launcher run itself is a completed failure (``launcher_problems``); when
+    its numerics or Rayleigh record depart behind a settled missing-checkpoint end
+    (``after_checkpoint_problem``); when the launcher run has an end ``conflict`` that a lost
+    container disk does not explain (``own_conflict_end``); without evidence of an interruption;
+    and when the launcher run's checkpoint is on disk with another sha256 than its recorded one
+    (``checkpoint_conflict``, whatever an interrupted attempt would allow): only an interrupted
+    case is restarted. A launcher run whose
     checkpoint is lost is evidence enough, and restarts the case even before any attempt (the
     Pod stopped between the launch and the baseline). Run again after a stop between the record
     and the journal's line, it only writes that line."""
@@ -2208,11 +2219,11 @@ def restart_case(
                  "scientific one is never rerun (no reruns to pass); a technical one is lifted "
                  "only by an engineering cycle's supersession record (supersede)")  # fmt: skip
     answer = control_only_answer(planned, out, root, scope)  # asked, never printed
-    if answer.code == TECHNICAL_CASE:  # its recorded parts mark it technical
-        sys.exit(f"{case.name}: no restart: control-only answers {TECHNICAL_CASE}, a "
-                 "technical case by its recorded parts: its evidence is exported by the "
-                 "driver, or by finish --kept, and a technical failure goes to the "
-                 "engineering cycle, never a restart")  # fmt: skip
+    if answer.code == TECHNICAL_CASE:  # an established technical case
+        sys.exit(f"{case.name}: no restart: control-only answers {TECHNICAL_CASE}, an "
+                 "established technical case: its evidence is exported by the driver, or by "
+                 "finish --kept, and a technical failure goes to the engineering cycle, never a "
+                 "restart")  # fmt: skip
     if answer.code == 0:
         sys.exit(f"{case.name}: no restart: only its same-path control is outstanding, and "
                  "control-only runs it alone through the driver; a restart would void the "
@@ -3143,7 +3154,7 @@ def driver_script(
                  "a time: the launcher run alone (one attempt), the baseline part, then, unless "
                  "the baseline is already a scientific failure, the rest, and the FA rate's "
                  "same-path control, each in a fresh process (every case asks control-only "
-                 "first: a case its recorded parts already mark technical, complete or not, is "
+                 "first: an established technical case, complete or not, is "
                  "exported at once, before any launcher call, and nothing of it runs; a case "
                  "whose control alone is due, not technical, runs that control alone, not the "
                  "launcher, whose checkpoint the control does not read); then the case's "
@@ -3177,8 +3188,8 @@ def driver_script(
                  "or a case control-only cannot bind to its launcher run without the "
                  f"launcher; {INTERRUPTED} an interrupted attempt (or a part a case restart "
                  f"names); {TECHNICAL_CASE} a technical case, its checkpoints kept, on the volume "
-                 "and in the bucket, verified (a complete one after its finish; one its recorded "
-                 "parts already mark technical, complete or not, after control-only's "
+                 "and in the bucket, verified (a complete one after its finish; an established "
+                 "technical case, complete or not, after control-only's "
                  f"{TECHNICAL_CASE}, before any launcher call); finish's {CONTROL_KEPT}, a "
                  "scientific case whose same-path control failed, its evidence kept, is no exit: "
                  "the driver uploads and checks it, and goes on when both exit 0; "
@@ -3301,9 +3312,9 @@ def driver_script(
             "rc=0",
             f"RUN_DIR=$({RUN} control-only {common} {case}) || rc=$?",
             'case "$rc" in',
-            f'  {TECHNICAL_CASE}) echo "== {stamp} {p.case.name}: a technical case by its recorded '
-            "parts: its evidence is exported before any launcher call; neither the launcher nor "
-            'a part is called"',
+            f'  {TECHNICAL_CASE}) echo "== {stamp} {p.case.name}: an established technical case: '
+            "its evidence is exported before any launcher call; neither the launcher nor a part "
+            'is called"',
             *[f"     {line}" for line in export],
             "     ;;",
             *(alone if p.control else []),

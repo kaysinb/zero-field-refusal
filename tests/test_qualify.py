@@ -359,7 +359,7 @@ def test_a_decided_case_with_its_control_due_runs_the_control_alone(qualify, tmp
 def test_the_driver_exports_an_established_technical_case_before_any_launcher_call(
     qualify, tmp_path, monkeypatch
 ) -> None:
-    """``control-only`` exits 9 for a case its recorded parts already mark technical: the driver
+    """``control-only`` exits 9 for an established technical case: the driver
     runs the export at once (the routed ``finish --kept``, archive.py, ``kept-check --remote``,
     the sequence a complete technical case's ``finish`` takes) and stops with 9, or with 13 when
     the upload fails; neither ``clear-stale``, the launcher, ``locate`` nor a part is called. In
@@ -380,7 +380,7 @@ def test_the_driver_exports_an_established_technical_case_before_any_launcher_ca
                               f"kept-check {last.name}", "verdict"]  # fmt: skip
         assert code == (qualify.NOT_EXPORTED if folder == "pending" else qualify.TECHNICAL_CASE)
     output = (tmp_path / "adamw" / "driver.out").read_text()
-    assert f"{ADAMW.name}: a technical case by its recorded parts" in output
+    assert f"{ADAMW.name}: an established technical case" in output
 
 
 @pytest.mark.parametrize("command", ["complete", "control-only", "decided"])
@@ -3394,6 +3394,32 @@ def test_a_present_checkpoint_is_hashed_once(qualify, tmp_path, monkeypatch, com
     assert counted.count(str(checkpoint)) == 1, counted
 
 
+def test_an_interrupted_attempt_names_the_record_that_names_it(qualify, tmp_path, capsys) -> None:
+    """``part --resume`` on an interrupted attempt that a case restart names says which record
+    names it (exit 8); an interrupted attempt no record names keeps the message it had."""
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    log_end(root, path, run, "r-a1")  # done
+    settled_launcher(root, run, "r-a1")  # its recorded checkpoint, /x.pt, is absent
+    q.publish(out / (ADAMW.attempt_path("baseline", 1) + ".started"), {"started_at": "t"})
+    resume = ["part", *common(path), "--case", ADAMW.name, "--part", "baseline", "--resume",
+              "--run-dir", str(tmp_path / "run"), "--checkpoints", str(tmp_path / "h"),
+              "--device", "cpu"]  # fmt: skip
+    capsys.readouterr()
+    assert exit_code(qualify, resume) == qualify.INTERRUPTED
+    unnamed = (f"{ADAMW.name} baseline: attempt 1 was started and left no record: its next "
+               "attempt is run by hand, --attempt 2 --infrastructure REASON")  # fmt: skip
+    assert unnamed in capsys.readouterr().err
+    qualify.main(restart(path, ADAMW, RESTART))
+    assert (case_folder(out, ADAMW) / "restart-1.json").is_file()
+    capsys.readouterr()
+    assert exit_code(qualify, resume) == qualify.INTERRUPTED
+    assert (f"{ADAMW.name} baseline: attempt 1 was started and left no record, and restart-1.json "
+            "names it: its next attempt is run by hand, --attempt 2 --infrastructure REASON") in (
+        capsys.readouterr().err)  # fmt: skip
+
+
 def test_restart_case_keeps_its_refusal_of_a_decided_case(qualify, tmp_path) -> None:
     """A case its baseline decided keeps the refusal it had: the failure keeps counting."""
     path, root, out, run_dir = decided_world(tmp_path)
@@ -3589,7 +3615,7 @@ def test_a_technical_comparison_with_its_rest_due_takes_the_usual_path(
 
 
 def test_control_only_asks_every_case_first_whether_it_is_technical(qualify, tmp_path) -> None:
-    """``control-only`` asks first whether the case's recorded parts already mark it technical
+    """``control-only`` asks first whether the case is an established technical case
     (its baseline's verdict alone, the rest bound to it, its control), complete or not: AdamW's
     case, which holds no control, exits 9 then (its baseline's launcher check failed, its rest
     due), and 3, the usual path, when its baseline passes and its rest is due."""
