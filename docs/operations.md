@@ -826,13 +826,40 @@ only; judge labels are read by the looks, the final analyses and the audit alone
 
 ### Pods
 
-- **Created by the coordinator on request:** L40S, minCuda 13.0, not OC-AU-1, the dependency image
+- **Created on request:** L40S, minCuda 13.0, not OC-AU-1, the dependency image
   of [containers](#containers), a volume at `/workspace` (150 GB for S1 and S2), host RAM of at
   least 64 GB (80 GB preferred), and `scripts/pod_deadline_watch.py` in the start command with
   `ZFR_DEADLINE_EPOCH` as the cap and the deadline in `/workspace/zfr-deadline` (see
   "Deadlines between campaigns" above). Right after the start, check the watcher's log line
   `zfr-deadline … auth True`, the GPU and its driver, and the host memory the container may use
   (the cgroup's limit, which can be below the machine's).
+- **The Pod's fitness, checked right after the start.** This applies to every Pod that holds
+  records or runs a test selection. A Pod that fails any check is stopped and replaced, and the
+  stop counts as an infrastructure incident.
+  - **The volume.** `findmnt -no FSTYPE /workspace` must be `xfs` or `ext4`. A fuse volume (MooseFS)
+    was found on a US-MO-1 Pod in the dry run's [Part I repeat](reports/study3-dry-run-part-1-repeat.md).
+    It ignores the umask, so files come out mode 666, and its metadata is slow: the launch
+    journal's mode test fails there, and a test selection ran about 19 times slower than locally.
+  - **CPU and disk.** A loop of 3·10⁷ Python additions takes at most 3.0 s, and 200 small files,
+    each written and fsynced under `/workspace`, take at most 2 s:
+
+    ```bash
+    python3 -c 'import time
+    t = time.perf_counter(); s = 0
+    for i in range(3 * 10**7): s += i
+    d = time.perf_counter() - t; print(f"cpu loop {d:.2f} s"); raise SystemExit(d > 3.0)'
+    python3 -c 'import os, shutil, tempfile, time
+    d = tempfile.mkdtemp(dir="/workspace"); t = time.perf_counter()
+    for i in range(200):
+        fd = os.open(os.path.join(d, f"f{i}"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        os.write(fd, b"x" * 100); os.fsync(fd); os.close(fd)
+    ms = (time.perf_counter() - t) * 1000; shutil.rmtree(d); print(f"{ms:.0f} ms"); raise SystemExit(ms > 2000)'
+    ```
+
+  - **Throughput.** Once the code is checked out, run `tests/test_launch_journal.py` whole from the
+    checkout through `project-run`, with `CUDA_VISIBLE_DEVICES=` and with `RUNS_DIR`, `DATA_DIR`
+    and `TMPDIR` under `/workspace`. It must pass whole in at most 60 s of pytest time; it takes
+    about 18 s on a workstation and 46 s on a fit L40S Pod.
 - **The Pod's environment.** An SSH session does not see the Pod's environment variables: source
   `/etc/rp_environment` first (`pod_setup.sh` failed without it); the stage's drivers source it,
   and `/root/zfr-env.sh`, themselves.
@@ -1456,6 +1483,8 @@ same-path control); the settings are
 docstring holds the rules, and "A case restart" below has the complete list of the refusals of
 `restart-case`.
 
+- **The Pod.** As in [Pods](#pods), with its fitness checks right after the start, before any
+  campaign.
 - **The campaign.** One launcher campaign per candidate and stage, written whole by
   `scripts/study3_campaigns.py` ([below](#study-3-campaigns)): one cell per run, named
   `c<N>-<step>-<optimizer>-<rate:g>-s<seed>` with label `<cell>/s<seed>`, config
