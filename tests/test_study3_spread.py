@@ -25,7 +25,12 @@ from test_study3_versions import git
 from zero_field_refusal.analysis import study3_labels, study3_versions
 from zero_field_refusal.analysis.study3_blocks import interpolated
 from zero_field_refusal.analysis.study3_decisions import decision_path, read_decision, sample_size
-from zero_field_refusal.analysis.study3_labels import LabelingProblem, LabelsPending, RunHarm
+from zero_field_refusal.analysis.study3_labels import (
+    LabelingProblem,
+    LabelsPending,
+    LedgerError,
+    RunHarm,
+)
 from zero_field_refusal.analysis.study3_pins import SPREAD_SCRIPT, spread_pin
 from zero_field_refusal.analysis.study3_records import SEEDS
 from zero_field_refusal.analysis.study3_search import CANDIDATES
@@ -301,16 +306,41 @@ def test_a_short_power_raises_n_in_the_record(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "error",
+    "error,said",
     [
-        LabelsPending("r-pending: not labeled yet"),
-        LabelingProblem("r-problem: its 3 labeling rounds are spent"),
+        (lambda root, run: LabelsPending(f"{run}: not labeled yet"), "are not read for the spread"),
+        (lambda root, run: LabelingProblem(f"{run}: its 3 labeling rounds are spent"),
+         "are not read for the spread"),
+        (lambda root, run: ValueError(f"{root / 'study3' / run}: not a study-3 training run"),
+         "cannot be read"),
+        (lambda root, run: FileNotFoundError(2, "No such file or directory",
+                                             str(root / "study3" / run / "judge" / "x.jsonl")),
+         "cannot be read"),
     ],
-)
-def test_labels_pending_or_a_labeling_problem_refuse_and_write_nothing(world, error):
+)  # fmt: skip
+def test_labels_pending_or_a_labeling_problem_refuse_and_write_nothing(world, error, said):
+    """The reader's exception refuses with its type and the cohort run it names (the first word
+    of its message, or an OSError's file), never the rest of its message; nothing is written."""
+    world.at_choice()
+    run = world.endpoints[5].run_id
+    world.fail = error(world.root, run)
+    kind = type(world.fail).__name__
+    assert world.main_refused(rf"^study3_spread.py: the labels {said} \({kind}\): run "
+                              rf"{re.escape(run)}$")  # fmt: skip
+    assert not world.output().exists() and world.read("n-c1") == (None, [])
+
+
+@pytest.mark.parametrize(
+    "error",
+    [LedgerError("the ledger's line 3 does not parse"),
+     LabelsPending("r-elsewhere: not labeled yet")],
+)  # fmt: skip
+def test_a_reading_error_naming_no_cohort_run_refuses_with_its_type_alone(world, error):
     world.at_choice()
     world.fail = error
-    assert world.main_refused(str(error).split(":")[0])
+    kind = type(error).__name__
+    assert world.main_refused(rf"^study3_spread.py: the labels are not read for the spread "
+                              rf"\({kind}\)$")  # fmt: skip
     assert not world.output().exists() and world.read("n-c1") == (None, [])
 
 

@@ -54,8 +54,9 @@ naming ids, counts, paths and hashes, never a label, a text, a mean or a per-blo
 4. *the blocks*: ``study3_records.read_endpoints`` under the state's prescribed cells, and
    ``study3_blocks.block_state`` of A and F per cohort seed: each block's A–F supported, and the A
    and F runs at both endpoints exactly the step's cohort run ids (refused with the counts);
-5. *the labels*, ``study3_labels.harm_many`` at the point ``spread``: pending labels or a labeling
-   problem refuse, naming the run; nothing is written;
+5. *the labels*, ``study3_labels.harm_many`` at the point ``spread``: pending labels, a labeling
+   problem or a reading error refuse with the exception's type and the cohort run it names, never
+   the reader's message; nothing is written;
 6. *the code again*, just before writing: a pinned file changed during the run refuses, and nothing
    is written;
 7. *the output*, then *the n record*: ``write_decision`` checks the pin against the current files
@@ -77,6 +78,7 @@ import contextlib
 import hashlib
 import json
 import math
+import os
 import statistics
 import sys
 from collections.abc import Mapping, Sequence
@@ -252,16 +254,37 @@ def cohort_blocks(runs_root: Path, state: Mapping[str, Any], candidate: int,
 
 
 def labels(runs_root: Path, candidate: int, run_ids: Sequence[str]) -> dict[str, RunHarm]:
-    """Step 5: each cohort run's harm, read at the spread point (``harm_many``)."""
+    """Step 5: each cohort run's harm, read at the spread point (``harm_many``). A refusal shows
+    the exception's type and the cohort run it names (``named_run``), never the reader's
+    message."""
     dirs = [Path(runs_root) / EXPERIMENT / run for run in run_ids]
     try:
         found = harm_many(dirs, point="spread", candidate=candidate, runs_root=Path(runs_root),
                           repo_root=REPO)  # fmt: skip
     except (LabelsPending, LabelingProblem, SealedPoint, LedgerError) as exc:
-        refuse(f"the labels are not read for the spread ({type(exc).__name__}): {exc}")
+        refuse(f"the labels are not read for the spread ({type(exc).__name__})"
+               f"{named_run(exc, runs_root, run_ids)}")  # fmt: skip
     except (OSError, ValueError) as exc:
-        refuse(f"the labels cannot be read ({type(exc).__name__}): {exc}")
+        refuse(f"the labels cannot be read ({type(exc).__name__})"
+               f"{named_run(exc, runs_root, run_ids)}")  # fmt: skip
     return dict(zip(run_ids, found, strict=True))
+
+
+def named_run(exc: BaseException, runs_root: Path, run_ids: Sequence[str]) -> str:
+    """``": run <id>"`` for the cohort run a reader's exception names, else ``""``: the first word
+    of its message (a run id, or a path in a run's folder) or an ``OSError``'s file, when it is
+    one of the cohort's ids or lies in the folder of one. Nothing else of the message is shown."""
+    texts = [word.rstrip(":") for word in str(exc).split(maxsplit=1)[:1]]
+    if isinstance(exc, OSError) and exc.filename is not None:
+        texts.append(os.fsdecode(exc.filename))
+    ids, experiment = set(run_ids), Path(runs_root) / EXPERIMENT
+    for text in texts:
+        path = Path(text)
+        parts = path.relative_to(experiment).parts if path.is_relative_to(experiment) else ()
+        for name in (text, *parts[:1]):
+            if name in ids:
+                return f": run {name}"
+    return ""
 
 
 def published(runs_root: Path, candidate: int, data: bytes) -> dict[str, str]:
