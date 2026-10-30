@@ -2329,7 +2329,7 @@ def test_read_state_gives_the_state_and_the_endpoints_it_read(worlds) -> None:
     )
     assert state == read(records, runs)
     assert sorted(e.run_id for e in endpoints if e.cell.step == "search") == sorted(
-        p.name for p in (runs.root / "study3").iterdir() if p.name != "decisions"
+        p.name for p in (runs.root / "study3").iterdir() if p.name not in RESERVED
     )
     broken = study3_progress.read_state(
         runs.root, repo=records.repo, expected_code=EXPECTED, theta0=runs.root / "nowhere"
