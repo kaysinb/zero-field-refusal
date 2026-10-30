@@ -213,6 +213,7 @@ import math
 import numbers
 import os
 import re
+import subprocess
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -345,10 +346,11 @@ MAX_DRAWS_FACTOR = 4  # a test draws at most 4·M studies
 NOT_ATTAINABLE = "not_attainable"
 POWER_REQUIRED, POWER_LEVEL = REQUIRED_GATES["power_af"], LEVELS[0]  # the power without an L
 COVERAGE_ROLES, POWER_ROLES = ("coverage", "coverage_power"), ("coverage_power", "power")
-FIXATION_FIELDS = ("kind", "written_at", "code", "policy", "inputs", "M", "resamples", "streams",
-                   "levels", "n_points", "p0", "gate_replicates", "max_draws_factor", "rules",
-                   "curvature", "scenarios", "tests", "J", "thresholds",
+FIXATION_FIELDS = ("kind", "written_at", "code", "machine", "policy", "inputs", "M", "resamples",
+                   "streams", "levels", "n_points", "p0", "gate_replicates", "max_draws_factor",
+                   "rules", "curvature", "scenarios", "tests", "J", "thresholds",
                    "detection_power")  # fmt: skip
+MACHINE_FIELDS = ("platform", "cpu", "numpy")  # where the fixation was calibrated (reported)
 FIXATION_RULES = ("screen_simplifications", "pf_verification", "joint_verification",
                   "draw_bound")  # fmt: skip
 CURVATURE_FIELDS = ("A", "F", "P", "unit", "nominal_bias_af_pp", "source", "note")
@@ -1435,6 +1437,9 @@ def _fixation_schema(f: Any) -> list[str]:
     if code is not None and not (_text_matches(code["commit"], _COMMIT)
                                  and _text_matches(code["gpu_code_sha256"], _SHA256)):  # fmt: skip
         check.add("code", "is not a commit (40 hexadecimal digits) and a sha256")
+    machine = check.object("machine", f["machine"], MACHINE_FIELDS)
+    for name in MACHINE_FIELDS if machine is not None else ():
+        check.text(f"machine.{name}", machine[name])
     check.object("policy", f["policy"], ("path", "commit", "sha256", "amendments"))
     inputs = check.object("inputs", f["inputs"], ("path", "sha256"))
     if inputs is not None and not _text_matches(inputs["sha256"], _SHA256):
@@ -1462,11 +1467,16 @@ def _fixation_schema(f: Any) -> list[str]:
                                      and isinstance(rule["source"], str)
                                      and _DECIDED.fullmatch(rule["source"])):  # fmt: skip
             check.add(f"rules.{name}.source", "does not end in 'M<n>, decided'")
+    if rules is not None and f["rules"] != simulation.RULES:
+        check.add("rules", "are not the procedure's rules (study3_simulation.RULES)")
     curvature = check.object("curvature", f["curvature"], CURVATURE_FIELDS)
     if curvature is not None:
         for arm in ("A", "F", "P"):
             check.real(f"curvature.{arm}", curvature[arm])
         check.real("curvature.nominal_bias_af_pp", curvature["nominal_bias_af_pp"])
+        if f["curvature"] != simulation.curvature_record():
+            check.add("curvature", "is not study 1's base curvature with its disclosure "
+                      "(study3_simulation.curvature_record)")  # fmt: skip
     coverage = []
     scenarios = f["scenarios"]
     if not (isinstance(scenarios, list) and scenarios):
@@ -1483,6 +1493,10 @@ def _fixation_schema(f: Any) -> list[str]:
             if not (isinstance(calibrations, dict) and calibrations
                     and str(scenario.candidate) in calibrations):  # fmt: skip
                 raise ValueError(f"a calibration at its candidate {scenario.candidate} is needed")
+            if scenario.role in COVERAGE_ROLES and scenario.candidate == 1 and "2" not in (
+                    calibrations):  # fmt: skip
+                raise ValueError("a coverage scenario at candidate 1 needs a calibration at "
+                                 "candidate 2: the verification falls back to it")  # fmt: skip
             for candidate, value in calibrations.items():
                 if simulation.calibration_from_json(value).candidate != int(candidate):
                     raise ValueError(f"the calibration of candidate {candidate} is another's")
@@ -1850,23 +1864,61 @@ def _against_simulation(root: Path, record: Mapping[str, Any], candidate: int,
     return found
 
 
+# The J check's findings, by everything they depend on: the checkout's HEAD and files, the record,
+# the results and the constants it recomputes with (progress reads the record several times)
+_J_CHECKS: dict[tuple, list[str]] = {}
+
+
 def _against_fixation(root: Path, record: Mapping[str, Any], repo: Path) -> list[str]:
+    """The J check of a simulation record against its fixation and its results
+    (``_j_check``), remembered by the checkout's HEAD, the record's, the fixation's and the
+    results' sha256, the paths and the constants it recomputes with."""
+    key = _j_key(root, record, repo)
+    if key is not None and key in _J_CHECKS:
+        return list(_J_CHECKS[key])
+    found = _j_check(root, record, repo)
+    if key is not None:
+        if len(_J_CHECKS) >= 256:
+            _J_CHECKS.clear()
+        _J_CHECKS[key] = list(found)
+    return found
+
+
+def _j_key(root: Path, record: Mapping[str, Any], repo: Path) -> tuple | None:
+    """What the J check of ``record`` depends on, or None when it cannot be told (no Git HEAD)."""
+    from . import study3_versions as versions  # lazy: it loads the configs
+
+    try:
+        head = versions._git(repo, "rev-parse", "HEAD").decode().strip()
+    except (OSError, subprocess.CalledProcessError):  # no HEAD: nothing is remembered
+        return None
+
+    def digest(path: Path) -> str | None:
+        try:
+            return _digest(path) if path.is_file() else None
+        except OSError:
+            return None
+
+    text = json.dumps(record, sort_keys=True, allow_nan=False, default=str)
+    return (str(Path(repo).resolve()), str(Path(root).resolve()), head,
+            hashlib.sha256(text.encode()).hexdigest(), digest(repo / SIMULATION_FIXATION),
+            digest(root / SIMULATION_RESULTS), COVERAGE_RUNS, POWER_REQUIRED,
+            MAX_DRAWS_FACTOR)  # fmt: skip
+
+
+def _j_check(root: Path, record: Mapping[str, Any], repo: Path) -> list[str]:
     """The J check of a simulation record against its fixation and its results; it fails
     closed, and checks, in order:
     1. the references: ``fixation`` is exactly ``SIMULATION_FIXATION`` under the checkout and
        ``inputs.results`` exactly ``SIMULATION_RESULTS`` under the runs directory;
     2. the fixation (``fixation_problems``): committed once, alone and unchanged, its schema
-       closed and its tests exactly the identities of its coverage scenarios;
-    3. the results' header: their ``fixation`` is that path, its sha256 and its commit; that
-       commit is the results' ``code.commit`` or an ancestor of it (the fixation preceded the
-       first draw); M is ``COVERAGE_RUNS``, J, the streams and the resamples are the fixation's;
-    4. the identities: the results' tests are the fixation's, in its order, none twice, none
-       missing, none that it does not list;
-    5. the recomputation (``coverage_decisions``): the record equals it in every coverage row's
-       level, J, M, tests, counts, thresholds and pass, and in its level, verification, gates,
-       validation size and state."""
-    from . import study3_versions as versions  # lazy: it loads the configs
-
+       closed and its tests exactly the identities of its coverage scenarios; and
+       ``inputs.seed_vectors`` is the fixation's inputs record (its path in the checkout and its
+       sha256);
+    3.–5. the results (``results_problems``): their header, their identities and the
+       recomputation (``coverage_decisions``), which the record must equal in every coverage
+       row's level, J, M, tests, counts, thresholds and pass, and in its level, verification,
+       gates, validation size and state."""
     problems = []
     fixation_ref, results_ref = record["fixation"], record["inputs"].get("results")
     if fixation_ref.get("path") != SIMULATION_FIXATION or fixation_ref.get("root") != "repo":
@@ -1882,6 +1934,11 @@ def _against_fixation(root: Path, record: Mapping[str, Any], repo: Path) -> list
     fixation, commit, found = fixation_problems(repo)
     if fixation is None:
         return found
+    inputs = fixation["inputs"]
+    want = {"path": inputs["path"], "sha256": inputs["sha256"], "root": "repo"}
+    if record["inputs"].get("seed_vectors") != want:
+        problems.append(f"inputs.seed_vectors is {record['inputs'].get('seed_vectors')!r}, not "
+                        f"the fixation's inputs record {want}")  # fmt: skip
     path = root / SIMULATION_RESULTS
     if _under_sealed(path, root):
         return [f"inputs.results: {path} {sealed_why(path, root)}: never opened"]
@@ -1889,9 +1946,32 @@ def _against_fixation(root: Path, record: Mapping[str, Any], repo: Path) -> list
         results = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return [f"inputs.results: {path} is unreadable ({type(exc).__name__})"]
+    decided, found = results_problems(results, fixation, commit, repo)
+    problems += found
+    if decided is None:
+        return problems
+    return problems + _against_decided(record, decided)
+
+
+def results_problems(results: Any, fixation: Mapping[str, Any], commit: str,
+                     repo: str | Path) -> tuple[dict[str, Any] | None, list[str]]:  # fmt: skip
+    """The J check's steps 3–5 on the simulation's results (``results.json`` as read) against
+    the committed ``fixation`` (``fixation_problems``' content) and the ``commit`` that added
+    it: the problems, and the record's decisions recomputed (``coverage_decisions``; None when
+    the header or the identities depart, which stops the check there).
+    3. the header: its ``fixation`` is that path, its sha256 now and its commit; that commit is
+       the results' ``code.commit`` or an ancestor of it (the fixation preceded the first draw);
+       M is ``COVERAGE_RUNS``, J, the streams and the resamples are the fixation's;
+    4. the identities: the results' tests are the fixation's, in its order, none twice, none
+       missing, none that it does not list;
+    5. the rows, the gates and the sizes, recomputed from X, c and the counts."""
+    from . import study3_versions as versions  # lazy: it loads the configs
+
+    repo = Path(repo)
     if not isinstance(results, dict) or set(results) != set(RESULTS_FIELDS):
-        return [f"results: fields {sorted(results) if isinstance(results, dict) else '?'}, not "
-                f"{sorted(RESULTS_FIELDS)}"]  # fmt: skip
+        return None, [f"results: fields {sorted(results) if isinstance(results, dict) else '?'}, "
+                      f"not {sorted(RESULTS_FIELDS)}"]  # fmt: skip
+    problems = []
     if results["kind"] != "simulation-results":
         problems.append(f"results: kind {results['kind']!r}, not 'simulation-results'")
     sha = _digest(repo / SIMULATION_FIXATION)
@@ -1915,10 +1995,8 @@ def _against_fixation(root: Path, record: Mapping[str, Any], repo: Path) -> list
             problems.append(f"results.{name} is {results[name]!r}, not the fixation's {value!r}")
     problems += _identities(results["tests"], fixation)
     if problems:
-        return problems
-    decided, found = coverage_decisions(results, fixation)
-    problems += found
-    return problems + _against_decided(record, decided)
+        return None, problems
+    return coverage_decisions(results, fixation)
 
 
 def _identities(rows: Any, fixation: Mapping[str, Any]) -> list[str]:

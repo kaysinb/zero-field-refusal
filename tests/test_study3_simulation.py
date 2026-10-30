@@ -1256,12 +1256,26 @@ def test_the_fixations_schema_is_closed(tmp_path) -> None:
 
     repo = checkout_with_registration(tmp_path)
     scenarios = [sim.SCENARIOS_BY_NAME["C02"]]
-    fixation = sim.build_fixation(repo / "docs" / "study3-simulation-inputs.json", scenarios,
-                                  {(scenarios[0], 1): a_calibration(1)},
-                                  code={"commit": "a" * 40, "gpu_code_sha256": "b" * 64},
-                                  streams=sim.STREAMS, repo=repo)  # fmt: skip
+    inputs = repo / "docs" / "study3-simulation-inputs.json"
+    code = {"commit": "a" * 40, "gpu_code_sha256": "b" * 64}
+    with pytest.raises(ValueError, match="candidate 2"):  # the verification's fallback
+        sim.build_fixation(inputs, scenarios, {(scenarios[0], 1): a_calibration(1)}, code=code,
+                           streams=sim.STREAMS, repo=repo)  # fmt: skip
+    fixation = sim.build_fixation(inputs, scenarios,
+                                  {(scenarios[0], c): a_calibration(c) for c in (1, 2)},
+                                  code=code, streams=sim.STREAMS, repo=repo)  # fmt: skip
+    assert fixation["machine"] == sim.machine_record()
+    assert set(fixation["machine"]) == {"platform", "cpu", "numpy"}
+    only_first = {**fixation["scenarios"][0], "calibration": {
+        "1": fixation["scenarios"][0]["calibration"]["1"]}}  # fmt: skip
     for change, word in (
         ({"extra": 1}, "fields"),
+        ({"scenarios": [only_first]}, "candidate 2"),
+        ({"curvature": {**fixation["curvature"], "A": 9.6}}, "curvature"),
+        ({"curvature": {**fixation["curvature"], "note": "about 0.04 pp"}}, "curvature"),
+        ({"rules": {**fixation["rules"], "draw_bound": {
+            **fixation["rules"]["draw_bound"], "rule": "each test draws at most 5 M"}}}, "rules"),
+        ({"machine": {"platform": "x"}}, "machine"),
         ({"J": 106}, "J"),
         ({"thresholds": {"comparison": 300, "joint": 573}}, "thresholds"),
         ({"streams": {"calibration": 5, "verification": 5}}, "streams"),

@@ -2524,6 +2524,23 @@ def curvature_record() -> dict[str, Any]:
     }
 
 
+def machine_record() -> dict[str, str]:
+    """The machine a fixation is calibrated on (reported, never refused on): the platform, the
+    CPU model and numpy's version."""
+    import platform
+
+    cpu = ""
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("model name"):
+                cpu = line.split(":", 1)[1].strip()
+                break
+    except OSError:
+        pass
+    return {"platform": platform.platform(), "cpu": cpu or platform.processor() or "unknown",
+            "numpy": np.__version__}  # fmt: skip
+
+
 def calibration_json(c: Calibration) -> dict[str, Any]:
     """A calibration as JSON (vector seeds as strings, pairs as lists)."""
     return {
@@ -2596,14 +2613,17 @@ def build_fixation(
     repo: str | Path | None = None,
     policy: Mapping[str, Any] | None = None,
     written_at: str | None = None,
+    machine: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The simulation's fixation (``docs/study3-simulation-fixation.json``, committed alone before
     the first draw; the closed schema ``study3_decisions.fixation_problems`` reads): the code;
-    the registration's ``policy`` (``study3_versions.registered_policy`` at HEAD of ``repo``,
-    unless given); the inputs record (``vectors_path``, in the checkout) by its sha256; M, the
-    resamples, the ``streams``, the levels, N points and p₀, the gate replicates (M) and the
-    draw bound; the procedure's ``rules`` and the base ``curvature``; every scenario with its
-    calibrations per candidate; the coverage tests' explicit identities, their count and sha256,
+    the ``machine`` it is calibrated on (``machine_record``, reported: ``run`` names a different
+    one and goes on); the registration's ``policy`` (``study3_versions.registered_policy`` at
+    HEAD of ``repo``, unless given); the inputs record (``vectors_path``, in the checkout) by its
+    sha256; M, the resamples, the ``streams``, the levels, N points and p₀, the gate replicates
+    (M) and the draw bound; the procedure's ``rules`` and the base ``curvature``; every scenario
+    with its calibrations per candidate (a coverage scenario of candidate 1 also at candidate 2,
+    the verification's fallback); the coverage tests' explicit identities, their count and sha256,
     J, the thresholds and the detection powers."""
     import datetime
 
@@ -2626,6 +2646,9 @@ def build_fixation(
         mine = {c: cal for (s, c), cal in calibrations.items() if s == sc}
         if sc.candidate not in mine:
             raise ValueError(f"scenario {sc.name}: no calibration at its candidate")
+        if sc.coverage and sc.candidate == 1 and 2 not in mine:
+            raise ValueError(f"scenario {sc.name}: no calibration at candidate 2, the "
+                             "verification's fallback")  # fmt: skip
         calibrated = {str(c): calibration_json(mine[c]) for c in sorted(mine)}
         entries.append({**sc.to_json(), "calibration": calibrated})
     coverage = [sc.name for sc in scenarios if sc.coverage]
@@ -2636,6 +2659,7 @@ def build_fixation(
         "written_at": written_at
         or datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "code": dict(code),
+        "machine": dict(machine_record() if machine is None else machine),
         "policy": dict(policy),
         "inputs": {"path": relative, "sha256": hashlib.sha256(full.read_bytes()).hexdigest()},
         "M": m,

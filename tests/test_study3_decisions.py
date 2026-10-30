@@ -234,6 +234,11 @@ class World:
 
     # -- evidence
 
+    def seed_vectors(self) -> dict:
+        """The reference a simulation record gives its seed vectors: the fixation's inputs record,
+        in the checkout."""
+        return {"path": INPUTS, "sha256": sha256(self.repo / INPUTS), "root": "repo"}
+
     def ref(self, name: str, text: str | None = None, *, root: str = "runs") -> dict:
         """An evidence file (a new one holding ``text``) and the reference that records it."""
         path = (self.repo if root == "repo" else self.runs) / "evidence" / name
@@ -283,8 +288,7 @@ class World:
             "written_at": WHEN, "code": CODE,
             "fixation": {"path": SIMULATION_FIXATION,
                          "sha256": sha256(self.repo / SIMULATION_FIXATION), "root": "repo"},
-            "inputs": {"seed_vectors": self.ref("seed-vectors.json"),
-                       "design": self.ref("design.json")},
+            "inputs": {"seed_vectors": self.seed_vectors(), "design": self.ref("design.json")},
             "gates": default_gates(), "coverage": rows, "level": level, "validation_blocks": 28,
             "verification": verified(level, level is not None),
         }  # fmt: skip
@@ -1009,7 +1013,7 @@ def test_evidence_is_found_by_its_root_and_an_absolute_path_needs_none(world) ->
     # the simulation's own fixation is fixed (the J check), so an input carries the references
     ref = world.ref("both.json", "same\n")
     in_repo = {**ref, "root": "repo"}
-    plain = {"seed_vectors": world.ref("seed-vectors.json")}
+    plain = {"seed_vectors": world.seed_vectors()}
     refused(world, "simulation", world.simulation(inputs={**plain, "design": in_repo}),
             "inputs.design", "missing")  # fmt: skip
     absolute = {"path": str(world.file(ref)), "sha256": ref["sha256"]}
@@ -1296,14 +1300,15 @@ def test_a_reported_gate_has_no_requirement(world, name) -> None:
      "has space", "a-b", "", "x" * 41, "caf\u00e9"],
 )  # fmt: skip
 def test_an_input_name_is_a_plain_word_that_marks_no_hidden_value(world, name) -> None:
-    inputs = {"seed_vectors": world.ref("seed-vectors.json"), name: world.ref("extra.json")}
+    inputs = {"seed_vectors": world.seed_vectors(), name: world.ref("extra.json")}
     sim_refused(world, "inputs", "is not a lowercase word", inputs=inputs)
 
 
 @pytest.mark.parametrize("name", ["a", "ab", "seed_vectors", "design", "grid_of_levels", "x" * 40,
                                   "a_" * 19 + "ab"])  # fmt: skip
 def test_the_input_names_of_a_simulation_that_are_plain_words_are_accepted(world, name) -> None:
-    inputs = {"seed_vectors": world.ref("seed-vectors.json"), name: world.ref("extra.json")}
+    extra = {} if name == "seed_vectors" else {name: world.ref("extra.json")}  # bound to inputs
+    inputs = {"seed_vectors": world.seed_vectors(), **extra}
     world.write("simulation", world.simulation(inputs=inputs))
     assert name in world.read("simulation")[0]["inputs"]
 
@@ -1423,9 +1428,39 @@ def test_due_verification_rows_must_be_present_when_a_level_passed(world) -> Non
     refused(world, "simulation", world.simulation(results="verification_not_due"), "due")
 
 
-@pytest.mark.parametrize("how", ["uncommitted", "with_another_file", "after_the_results"])
-def test_the_fixation_must_precede_the_first_draw(world, how) -> None:
-    refused(world, "simulation", world.simulation(fixation=how), "fixation")
+@pytest.mark.parametrize("how,phrase", [("uncommitted", "is not committed"),
+                                        ("with_another_file", "committed alone"),
+                                        ("after_the_results", "descendant")])  # fmt: skip
+def test_the_fixation_must_precede_the_first_draw(world, how, phrase) -> None:
+    refused(world, "simulation", world.simulation(fixation=how), "fixation", phrase)
+
+
+def test_the_seed_vectors_are_the_fixations_inputs_record(world) -> None:
+    """The record's seed vectors are bound to the fixation's inputs record: its path in the
+    checkout and the sha256 the fixation pinned."""
+    other = world.ref("seed-vectors.json")
+    refused(world, "simulation", world.simulation(inputs={"seed_vectors": other}),
+            "inputs.seed_vectors", "the fixation's inputs record")  # fmt: skip
+    refused(world, "simulation", world.simulation(inputs={"design": world.ref("design.json")}),
+            "inputs.seed_vectors")  # fmt: skip
+
+
+def test_the_j_check_is_remembered_by_what_it_depends_on(world, monkeypatch) -> None:
+    """Reading the record again under the same HEAD, record, fixation and results reads Git no
+    more; a change of the results is read afresh."""
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    world.write("simulation", world.simulation())
+    assert world.read("simulation")[1] == []
+    calls = []
+    real = decisions.fixation_problems
+    monkeypatch.setattr(decisions, "fixation_problems",
+                        lambda *a, **k: calls.append(1) or real(*a, **k))  # fmt: skip
+    assert world.read("simulation")[1] == [] and calls == []
+    path = world.runs / SIMULATION_RESULTS
+    path.write_text(path.read_text() + " ")
+    found, problems = world.read("simulation")
+    assert found is None and calls == [1] and any("sha256" in p for p in problems)
 
 
 def test_the_fixation_must_be_unchanged_since_its_commit(world) -> None:
