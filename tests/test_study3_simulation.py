@@ -1047,6 +1047,55 @@ def test_procedure_mode_ends_in_the_scientific_report_when_candidate_2_fails(set
     assert o.candidate == 2 and o.why == {0.975: "scientific_report"} and not o.covered
 
 
+def test_a_pf_closed_at_candidate_1_stays_closed_at_candidate_2(setup) -> None:
+    """Both of candidate 1's gates fail: P–F is closed for the rest of the study, so at
+    candidate 2, whose own P–F gate passes, P–F counts nothing and the joint test is A–F's, as on
+    the real route. Candidate 1 with only its A–F gate failing (A's MMLU loss far above its bound)
+    leaves P–F open at candidate 2; A–F's results are the same in both: the streams stay paired."""
+    sc = replace(sim.SCENARIOS_BY_NAME["C17"], name="AFPF1")
+    a_far = {arm: {v.seed: (6.0 if arm == "A" else 0.0) for v in setup.vectors}
+             for arm in ARM_ORDER}  # fmt: skip
+    second = hand_calibration(2, 0.0, offset_a=0.04, offset_p=0.04)
+    both = replace(setup, calibrations={**setup.calibrations, (sc, 1): hand_calibration(1, 0.6),
+                                        (sc, 2): second})  # fmt: skip
+    only_af = replace(both, calibrations={**both.calibrations, (sc, 1): hand_calibration(
+        1, mmlu_shift=a_far, factual_shift=dict.fromkeys(ARM_ORDER, 0.0))})  # fmt: skip
+    for s, gates in ((both, {"AF": False, "PF": False}), (only_af, {"AF": False, "PF": True})):
+        first = sim.simulate_study(sc, s, 13, 0, resamples=200, levels=(0.975,),
+                                   validation_only=True)  # fmt: skip
+        assert first.candidate == 1 and dict(first.gates) == gates
+    closed, reopened = (sim.simulate_study(sc, s, 13, 0, mode="procedure", resamples=200,
+                                           levels=(0.975,)) for s in (both, only_af))  # fmt: skip
+    assert closed.candidate == reopened.candidate == 2 and closed.confirmed[0.975]
+    assert reopened.active == ["A-F", "P-F"] and dict(reopened.gates) == {"AF": True, "PF": True}
+    assert closed.active == ["A-F"] and dict(closed.gates) == {"AF": True, "PF": None}
+    assert any(v is not None for k, v in reopened.covered.items() if k[2] == "P-F")
+    for (point, level, comparison), value in closed.covered.items():
+        if comparison == "P-F":
+            assert value is None
+        elif comparison == "joint":
+            assert value == closed.covered[(point, level, "A-F")]
+    for name in ("direction", "readings", "utility_claim"):
+        assert getattr(closed, name)[(0.975, "P-F")] is None
+    # the paired streams: candidate 2's rates, blocks, truth, intervals and readings for A–F
+    assert closed.rates == reopened.rates and closed.truth["A-F"] == reopened.truth["A-F"]
+    key = (0.975, "A-F")
+    assert closed.analysis[key] == reopened.analysis[key]
+    assert closed.direction[key] == reopened.direction[key]
+    assert closed.readings[key] == reopened.readings[key]
+    assert {k: v for k, v in closed.covered.items() if k[2] == "A-F"} == {
+        k: v for k, v in reopened.covered.items() if k[2] == "A-F"}  # fmt: skip
+    import json  # the row round-trips with its closed gate
+
+    text = json.dumps(sim.outcome_json(closed), allow_nan=False, sort_keys=True)
+    assert sim.outcome_from_json(json.loads(text)) == closed
+    # P open at candidate 1 and both of candidate 2's gates failing: candidate 2's own P–F gate
+    ended = replace(only_af, calibrations={**only_af.calibrations, (sc, 2): hand_calibration(
+        2, 0.6)})  # fmt: skip
+    o = sim.simulate_study(sc, ended, 13, 0, mode="procedure", resamples=200, levels=(0.975,))
+    assert o.why == {0.975: "scientific_report"} and dict(o.gates) == {"AF": False, "PF": False}
+
+
 def test_procedure_mode_counts_pf_only_where_its_gate_passed(setup) -> None:
     o = sim.simulate_study(pf_gate_fails(), setup, 13, 0, mode="procedure", resamples=200,
                            levels=(0.975,))  # fmt: skip
