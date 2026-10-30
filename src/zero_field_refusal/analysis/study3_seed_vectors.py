@@ -70,6 +70,7 @@ when the record is read.
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import math
@@ -129,6 +130,9 @@ class Vector:
     _utility_map: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
+    _lists: dict[str, tuple[list[float], ...]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if type(self.seed) is not int:
@@ -164,26 +168,37 @@ class Vector:
                 np.array([np.mean([m for m, _ in knots[x]]) for x in xs]),
                 np.array([np.mean([f for _, f in knots[x]]) for x in xs]),
             )
+            self._lists[arm] = (
+                *(a.tolist() for a in self._rate_map[arm]),
+                *(a.tolist() for a in self._utility_map[arm]),
+            )
 
     def ln_k(self, arm: str, rate: float) -> float:
         """ln K of ``arm`` at ``rate``: piecewise linear in ln η through the points, extended
         beyond them with the registered slope b of the arm (``study3_search.SLOPES``)."""
-        x, y = self._rate_map[arm]
+        x, y = self._lists[arm][:2]
         at = math.log(rate)
         if at <= x[0]:
             return float(y[0] + SLOPES[arm] * (at - x[0]))
         if at >= x[-1]:
             return float(y[-1] + SLOPES[arm] * (at - x[-1]))
-        return float(np.interp(at, x, y))
+        return _interp(at, x, y)
 
     def losses(
         self, arm: str, ln_k: float, slopes: Mapping[str, tuple[float, float]]
     ) -> tuple[float, float]:
         """The MMLU and factual losses (pp) of ``arm`` at ``ln_k``: piecewise linear in ln K
         through the points, extended beyond them with the arm's pooled slopes
-        (``slopes[arm]``, as ``utility_slopes`` gives them)."""
-        mmlu, factual = self.losses_at(arm, np.asarray(float(ln_k)), slopes)
-        return float(mmlu), float(factual)
+        (``slopes[arm]``, as ``utility_slopes`` gives them). The same numbers as
+        ``losses_at``, computed for one ln K without arrays."""
+        x, mmlu, factual = self._lists[arm][2:]
+        s_mmlu, s_factual = slopes[arm]
+        at = float(ln_k)
+        if at < x[0]:
+            return mmlu[0] + s_mmlu * (at - x[0]), factual[0] + s_factual * (at - x[0])
+        if at > x[-1]:
+            return mmlu[-1] + s_mmlu * (at - x[-1]), factual[-1] + s_factual * (at - x[-1])
+        return _interp(at, x, mmlu), _interp(at, x, factual)
 
     def losses_at(
         self, arm: str, ln_k: np.ndarray, slopes: Mapping[str, tuple[float, float]]
@@ -230,6 +245,16 @@ class Vector:
         if s != 0 and (level_pp - mmlu[-1]) / s > 0:  # the upper extension
             out.append(float(x[-1] + (level_pp - mmlu[-1]) / s))
         return sorted(set(out))
+
+
+def _interp(at: float, x: Sequence[float], y: Sequence[float]) -> float:
+    """``numpy.interp`` at one point within [x[0], x[-1]], by its formula: y[j] + slope·(at −
+    x[j]) on the segment that holds ``at``, y[-1] at the last knot."""
+    j = bisect.bisect_right(x, at) - 1
+    if j >= len(x) - 1:
+        return float(y[-1])
+    slope = (y[j + 1] - y[j]) / (x[j + 1] - x[j])
+    return float(slope * (at - x[j]) + y[j])
 
 
 # ------------------------------------------------------------------ study 2's points

@@ -1,12 +1,14 @@
-"""Study 3's simulation before validation: the scenario models and the exact truth.
+"""Study 3's simulation before validation: the scenario models, the exact truth, one simulated
+study through the registered functions and the calibration through the selection.
 
 docs/study3-preregistration.md, "Simulation before validation": a CPU Monte Carlo of the whole
 procedure (search, support, utility, validation, N, confirmation and analysis) over a frozen grid
 of scenarios, with the coverage of the interval at level L screened against the registered
 estimand ("Questions and estimands", "The comparisons": the expected interpolated difference over
 fresh supported seed blocks, under the frozen rates). This module holds the scenarios, the harm
-and label models and the truth that the coverage check compares with. Pure numpy and scipy on
-the CPU; it reads no run directory, no harm label, response or judge output.
+and label models, the truth that the coverage check compares with, one study of the procedure
+and the calibration of each scenario. Pure numpy and scipy on the CPU; it reads no run
+directory, no harm label, response or judge output.
 
 - ``SCENARIOS`` (``SCENARIOS_BY_NAME``): the grid, C01–C17 (coverage; C16 and C17 also power),
   P18–P19 (power only) and G1–G2 (the validation gates), each ``Scenario`` with its parameters
@@ -21,6 +23,11 @@ the CPU; it reads no run directory, no harm label, response or judge output.
 - ``truth`` (with ``normal_piecewise`` and ``support_breakpoints``): the registered estimand of a
   study at its final rates.
 - ``shifted_vectors``: the seed vectors with a calibration's utility shifts applied.
+- ``simulate_study`` (with ``Setup``, ``StudyOutcome``, ``synthetic_endpoint``,
+  ``outcome_json`` and ``outcome_from_json``): one study through the registered functions.
+- ``calibrate_scenario`` (with ``realized_support``, ``calibrate_failure``, ``calibrate_safe``,
+  ``calibrate_spread``, ``calibrate_offsets``, ``calibration_stream``, ``label_variance``):
+  everything calibrated per (scenario, candidate), through the selection.
 
 **The harm model** (M1–M5). In pp, with x = ln(K/K*), arm a's harm curve is
 H_a(x) = 15 + β_a·x + ½·g·κ_a·x², g the scenario's ``curvature_scale`` (1, or 3 in C11). β_a and
@@ -77,8 +84,79 @@ support's discontinuities: a standard normal cut at 0.3125 gives 0.5 at 20 nodes
 **Units.** h, block effects, offsets and σ are proportions; spreads, curvature, slopes and
 utility losses are pp, as ``Endpoint`` holds them.
 
-**Rulings** (the study's frozen settings, each with its one-line source; M1, M7, M10 and M15
-are calibrated through the selection by the procedure's part of this module):
+**The procedure** (``simulate_study``; "Candidates and rate search", "Validation",
+"Sample size from validation", "Confirmation", "Inference"). A study is a pure function of its
+stream, scenario and index: every draw comes from ``study3_inference.stream(base, "procedure",
+scenario, index, *part)``, each part (``search``, ``numerical``, ``validation``,
+``confirmation``, ``labels``, and the same under ``candidate-2`` for the fallback) its own
+stream, and every block draws the same numbers whatever is later read of it (P's runs
+included), so that nothing depends on the worker, the order or P's activity. Each seed the
+procedure touches draws one whole vector, with replacement (the bootstrap of whole seed
+vectors). The registered functions decide, on simulated ``Endpoint`` records labeled with the
+registered seeds (``synthetic_endpoint``), never re-implemented:
+1. *Search* (``search_state``): round 0 at the starting rates on the four search seeds' vectors,
+   round 1 at the adjusted rates; K-only runs never fail (M13).
+2. *Repair* (``repair_state``, amendment 3): the numerical runs on the three numerical seeds'
+   vectors, the qualification passed (M13), the repaired rates' runs; the final rates.
+3. *Validation* (``block_state``, ``utility_gate`` at α 0.05 per bound, 22 of 28 or 31 of 40):
+   each run's K is its vector's at the final rate (plus the jitter, M8), its utility the
+   vector's at that K (shifted for the safe alternative, M10; above 15 pp a gross collapse); it
+   fails scientifically with the calibrated probability f (M7).
+4. *Spread and N*: SD = 100·sd(d_AF) over the m A–F-supported validation blocks (judged primary
+   harm, full precision); N = ``sample_size(SD, m, L)`` at each level (at least ``n_floor``),
+   the cap ``cap_of(N)``; a cap beyond the 200 reserved seeds leaves the study unconfirmed at
+   that level (``cap_beyond_seeds``); N above 90 proceeds (M17).
+5. *Confirmation* (``confirmation_state``): blocks in seed order from 10400 until the largest
+   cap is started and each comparison has 99 supported blocks, or the 200 seeds are used; per
+   level the stop (every active counter at N, or the cap) and the analysis sets are the
+   registered function's.
+6. *Analysis*: per block d = interpolated(share_lo, share_hi, w) of the arm minus F's
+   (``study3_blocks.interpolated``); per (N point, comparison) one ``bootstrap_t`` seed,
+   ``stream(base, "bootstrap", scenario, index, comparison, point)``, for every level, chunk
+   500; covered when lower ≤ truth ≤ upper. An undetermined interval, or an N point not reached
+   within the 200 blocks, is a miss (M18). The cap's reading gives the direction (the power) and
+   ``utility_gate`` at α 0.05/8 the utility claim, reported only.
+The two modes. ``"screen"``: the scenario's candidate with no fallback (a failed A–F gate is
+``af_gate``, M14), N from the rule alone, P–F computed in every confirmed study as if active
+(M16), a joint miss when either comparison misses. ``"procedure"``: the realized route, candidate
+1, then candidate 2 (fresh search, repair and validation on its seeds, with its calibration),
+then the scientific feasibility report (``scientific_report``); N raised to ``n_min`` when the
+screen found the power short; P–F counted only where its gate passed, the joint test then A–F's
+(M27).
+
+**The calibration through the selection** (``calibrate_scenario``; M1, M7, M10, M15). On the
+stream (calibration base, "support", scenario, candidate) (``calibration_stream``), 10 000
+studies' search, repair and 28-block validation (``simulate_study(..., validation_only=True)``)
+at the rates each selects, drawn once with every run's failure uniform kept:
+- *f* (M7): by bisection on [0, 1), the realized A–F support of the validation blocks, bracket
+  failures and gross collapses included, equals the scenario's s within 1e-4; f = 0, flagged,
+  when the natural failures alone leave it below s. The selection does not depend on f (M13),
+  so every step reuses the same draws.
+- *The safe shifts* (M10): per arm each vector's MMLU curve moved by c_v = 3 − m + (λ − 1)(ū_v −
+  m), λ² = (4 − W)/B over the supported blocks' interpolated MMLU loss (W within, B between the
+  vectors), so that it has mean 3 pp and SD 2 pp; λ = 0, flagged, when W > 4. The factual loss
+  takes one shift to mean 2 pp. The shift moves gross collapses, so f and the shifts alternate
+  until neither moves (at most 10 rounds, else ``CalibrationNotStable``).
+- *σ_AF, σ_PF* (M1, M2): by bisection, the observed spread of d at Δ = 0 over the supported
+  validation blocks at the selected rates is the planning spread: the square root of the mean
+  within-study variance, the quantity the spread rule estimates. The labels enter through their
+  exact conditional variance (``label_variance``: the prompts are independent given the block,
+  two endpoints' harmful labels bivariate normal thresholds), the expectation of the observed
+  sample variance given the blocks, so that every σ reuses the same draws; a test checks it
+  against simulated labels.
+- *o_A, o_P* (M15): solved so that the mean, over the selections, of the per-study truth at the
+  study's selected rates is Δ_AF (Δ_PF).
+σ and the offsets depend on f and the shifts, not the other way round: they are computed in the
+round in which nothing moved, with the attained spreads and mean truths and their Monte Carlo
+SEs. The truth's moments are remembered per (vector, arm, rates, harm model, the arm's σ and
+offset), since the selected rates are rounded to 3 significant digits and repeat.
+
+**Rulings** (the study's frozen settings, each with its one-line source):
+- M1, the harm model of block differences: additive on the probability scale, σ calibrated so
+  that the observed SD of d at Δ = 0 over the supported validation blocks at the rates the
+  procedure selects is the planning spread (study 2's spread calibration,
+  ``study2_short_sim.calibrate_spread``; the registration's "true spread equal to the planning
+  spread"); decided.
 - M2, P–F's spread and Δ_PF: equal to A–F's spread; Δ_PF = Δ_AF in the power scenarios, 0
   elsewhere (none registered: P–F's power is reported; the symmetric choice); decided.
 - M3, the shapes: heavy ×3 at 0.1, skew Gamma(2), rare π = 0.1 centered (study 2's
@@ -96,8 +174,31 @@ are calibrated through the selection by the procedure's part of this module):
   stratum, docs/reports/gate-1.md; sparse strata 0.58–0.75); decided.
 - M6b, missing labels: MCAR 1 % in every scenario, C14 MNAR 5 % among harmful (no record holds a
   rate: stress values); decided.
+- M7, support: the realized probability that a validation block is A–F-supported at the rates
+  the procedure selects, failures of bracket and collapse included; f calibrated to it, 0 and
+  flagged when the natural failures exceed 1 − s (the registration's "support 0.88, 0.90,
+  0.95"); decided.
 - M8, widths and jitter: the vectors' own widths; C12 adds N(0, σ_e) per run in ln K, σ_e A 0.013,
   F 0.032, P 0.027 (docs/study2-short-b20-inputs.json); decided.
+- M10, the safe alternative: each vector's MMLU curve shifted by a constant so that the
+  interpolated MMLU loss over the supported validation blocks has mean 3 pp and seed SD 2 pp,
+  the factual loss mean 2 pp, support 0.95 (the registration's safe alternative, at its
+  boundary); decided.
+- M13, search and numerical runs never fail, the qualification passes, the repair is simulated
+  ("Not in the simulation": the numerical gates); decided.
+- M14, candidates: the screen runs the scenario's candidate with no chaining; the verification
+  the realized route; C15 starts at candidate 2 (the tests are per candidate); decided.
+- M15, Δ's scale: the judge-rated estimand's, the offsets solved so that the truth averaged over
+  the selections is Δ ("h: judge-rated" in the notation); decided.
+- M16, P–F with P closed: the screen computes it as if active, the verification counts P–F only
+  where its gate passed (A–F's analysis set does not depend on P's activity); decided.
+- M17, N above 90: the simulated confirmation proceeds (the budget decision is outside the
+  model); decided.
+- M18, misses: an undetermined interval, or an N point not reached within 200 blocks, is a miss;
+  the cap's descriptive cases count in the cap test (conservative); decided.
+- M27, the joint test in the verification: over the studies confirmed for A–F, a miss when A–F
+  misses or when P–F is active and misses (the registration's joint p₀ 0.05 over the two
+  comparisons); decided.
 - The constants taken from study 2's simulation (``STUDY1``'s logistic slopes and curvatures,
   the shapes' constants, ρ_a, ρ_b and ``THREAD_VARIABLES``) are written out here so that this
   module loads no GPU path through study 2's analysis; a test compares them with
@@ -111,16 +212,45 @@ from __future__ import annotations
 import functools
 import math
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from scipy.special import gammainc, ndtr, ndtri
 
+from .study3_blocks import (
+    CONFIRMATION_ALPHA,
+    VALIDATION_ALPHA,
+    WIDTH,
+    block_state,
+    interpolated,
+    utility_gate,
+)
 from .study3_blocks import SLACK as WIDTH_SLACK
-from .study3_blocks import WIDTH
-from .study3_records import GROSS_COLLAPSE_PP, TOLERANCE_PP
-from .study3_search import ARM_ORDER, CANDIDATES
+from .study3_decisions import LEVELS, MIN_N, SUPPORTED_AT, VALIDATION_BLOCKS, cap_of, sample_size
+from .study3_inference import Interval, bootstrap_t, reading, stream
+from .study3_progress import confirmation_state
+from .study3_records import (
+    GROSS_COLLAPSE,
+    GROSS_COLLAPSE_PP,
+    INSTABILITY,
+    SEEDS,
+    STEP_ROLES,
+    TOLERANCE_PP,
+    UPDATES,
+    Cell,
+    Endpoint,
+)
+from .study3_search import (
+    ARM_ORDER,
+    CANDIDATES,
+    LABELS,
+    QUALIFIED,
+    REPAIR_STEP,
+    repair_state,
+    search_state,
+)
 from .study3_seed_vectors import Vector
 
 # ------------------------------------------------------------------ constants
@@ -416,7 +546,9 @@ class Calibration:
     (M10; empty shifts for the empirical point, M11); ``sigma_af`` and ``sigma_pf`` (the block
     effects' SDs, proportions), ``offset_a`` and ``offset_p`` (proportions), the attained spreads
     ``attained_af_pp`` and ``attained_pf_pp`` (M1) and ``attained_delta_pp`` (comparison → the
-    mean truth over the selections and its Monte Carlo SE, pp; M15)."""
+    mean truth over the selections and its Monte Carlo SE, pp; M15); ``utility_lambda`` (arm →
+    λ of the safe shifts, M10) and ``attained_spread_se_pp`` (comparison → the attained spread's
+    Monte Carlo SE, pp, M1)."""
 
     candidate: int
     failure: float
@@ -433,6 +565,8 @@ class Calibration:
     attained_af_pp: float
     attained_pf_pp: float
     attained_delta_pp: Mapping[str, tuple[float, float]]
+    utility_lambda: Mapping[str, float] = field(default_factory=dict)
+    attained_spread_se_pp: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.candidate not in CANDIDATES or isinstance(self.candidate, bool):
@@ -825,6 +959,58 @@ def _arm_moments(
     return float(s), float(t)
 
 
+# (E[1_a], E[1_a·I_a]) per (vector, arm, rates, harm model, the arm's σ and offset, K*,
+# slopes, quadrature): the selected rates are rounded to 3 significant digits, so studies share
+# them, and the truth under jitter is costly
+_MOMENTS: dict[tuple, tuple[float, float]] = {}
+_MOMENTS_LIMIT = 2_000_000
+
+
+def _cached_moments(
+    vector: Vector,
+    arm: str,
+    rates: Mapping[str, float],
+    scenario: Scenario,
+    calibration: Calibration,
+    slopes: Mapping[str, tuple[float, float]],
+    kstar_ln: float,
+    *,
+    tol: float,
+    max_nodes: int,
+) -> tuple[float, float]:
+    """``_arm_moments``, remembered by everything it depends on (the vector's points of the arm,
+    as shifted, included)."""
+    key = (
+        vector.seed,
+        vector.arms[arm],
+        arm,
+        float(rates["l"]),
+        float(rates["u"]),
+        scenario.jitter,
+        scenario.curvature_scale,
+        scenario.shape,
+        scenario.judge,
+        scenario.missing,
+        scenario.missing_rate,
+        calibration.sigma(arm),
+        calibration.offset(arm),
+        kstar_ln,
+        tuple(slopes[arm]),
+        tol,
+        max_nodes,
+    )
+    found = _MOMENTS.get(key)
+    if found is None:
+        if len(_MOMENTS) >= _MOMENTS_LIMIT:
+            _MOMENTS.clear()
+        found = _arm_moments(
+            vector, arm, rates, scenario, calibration, slopes, kstar_ln, tol=tol,
+            max_nodes=max_nodes,
+        )  # fmt: skip
+        _MOMENTS[key] = found
+    return found
+
+
 def truth(
     scenario: Scenario,
     calibration: Calibration,
@@ -841,13 +1027,12 @@ def truth(
     calibration's candidate's K*. A comparison is given when ``rates`` holds both its arms; NaN
     when no vector can support it at these rates (no fresh block is supported: undefined).
     ``TruthNotConverged`` under jitter when the quadrature does not converge."""
-    shifted = shifted_vectors(vectors, calibration)
+    shifted = _shifted(vectors, calibration)
     kstar_ln = math.log(CANDIDATES[calibration.candidate]["targets"]["star"])
     arms = [arm for arm in ARM_ORDER if arm in rates]
-    survive = (1 - calibration.failure) ** 2
     moments = {
         arm: [
-            _arm_moments(
+            _cached_moments(
                 v,
                 arm,
                 rates[arm],
@@ -862,6 +1047,14 @@ def truth(
         ]
         for arm in arms
     }
+    return _combine(moments, calibration.failure)
+
+
+def _combine(moments: Mapping[str, Sequence[tuple[float, float]]], failure: float) -> dict:
+    """Σ_v E[1_a·1_F·(I_a − I_F)] / Σ_v E[1_a·1_F] of each comparison whose arms ``moments``
+    holds (per arm, per vector, (E[1_a], E[1_a·I_a]) before the failures), each arm's support
+    times (1 − f)²; NaN when no vector supports it."""
+    survive = (1 - failure) ** 2
     out = {}
     for name, (a, b) in COMPARISONS.items():
         if a not in moments or b not in moments:
@@ -872,3 +1065,1341 @@ def truth(
             den += survive**2 * s_a * s_b
         out[name] = num / den if den > 0 else math.nan
     return out
+
+
+_SHIFTED: dict[tuple, list[Vector]] = {}
+
+
+def _shifted(vectors: Sequence[Vector], calibration: Calibration) -> list[Vector]:
+    """``shifted_vectors``, remembered by the vectors' points and the shifts."""
+    key = (
+        tuple((v.seed, tuple(v.arms.get(a, ()) for a in ARM_ORDER)) for v in vectors),
+        tuple(sorted((arm, tuple(sorted(v.items()))) for arm, v in calibration.mmlu_shift.items())),
+        tuple(sorted(calibration.factual_shift.items())),
+    )
+    found = _SHIFTED.get(key)
+    if found is None:
+        if len(_SHIFTED) >= 64:
+            _SHIFTED.clear()
+        found = _SHIFTED[key] = shifted_vectors(vectors, calibration)
+    return found
+
+
+# ------------------------------------------------------------------ the procedure
+
+SCREEN_RESAMPLES = 2_000  # bootstrap resamples per interval in the screen ("Requirements")
+VERIFICATION_RESAMPLES = 100_000  # the registered procedure's, in the binding verification
+CHUNK = 500  # bootstrap_t's chunk: the result does not depend on it, the memory does
+MODES = ("screen", "procedure")
+N_POINTS: tuple[int | str, ...] = (36, 45, 60, 75, 90, 99, "cap")  # "Where"
+REACH = 99  # the largest N point: each comparison is followed to 99 supported blocks
+TESTED = ("A-F", "P-F", "joint")
+GATE_OF = {"A-F": "AF", "P-F": "PF"}  # a comparison's name in study3_blocks
+UNCONFIRMED = ("af_gate", "cap_beyond_seeds", "scientific_report")  # why a study is not confirmed
+RUNS = tuple((arm, label) for arm in ARM_ORDER for label in LABELS)  # a block's six runs
+RUN_ARMS = tuple(arm for arm, _ in RUNS)
+FAILED_STOP = INSTABILITY[0]  # the stop a simulated scientific failure records
+CALIBRATION_STUDIES = 10_000  # simulated selections per (scenario, candidate)
+CALIBRATION_BLOCKS = 28  # the calibration's validations have 28 blocks
+CALIBRATION_ROUNDS = 10  # f and the safe shifts alternate at most this often
+SUPPORT_TOLERANCE = 1e-4  # |realized support − s| at the calibrated f
+SAFE_MMLU_MEAN, SAFE_MMLU_SD, SAFE_FACTUAL_MEAN = 3.0, 2.0, 2.0  # M10, pp
+SIGMA_PRECISION = 1e-13  # the bisection of σ stops at this width (proportions)
+OFFSET_PRECISION = 1e-12  # |mean truth − Δ| at the solved offset (proportions)
+
+
+class CalibrationNotStable(RuntimeError):
+    """f and the safe shifts still moved after ``CALIBRATION_ROUNDS`` rounds."""
+
+
+class SimulationError(RuntimeError):
+    """A registered function did not take a simulated record as the procedure would: a fault of
+    the simulation, never a result."""
+
+
+@dataclass(frozen=True)
+class Setup:
+    """What one simulated study needs besides its scenario and stream: the inputs' ``vectors``
+    and utility ``slopes``, the ``calibrations`` keyed by (scenario, candidate), ``M``, the
+    ``levels``, the ``validation_blocks`` (28 or 40, from G1) and ``n_min`` (None unless the
+    screen found the power short)."""
+
+    vectors: tuple[Vector, ...]
+    slopes: Mapping[str, tuple[float, float]]
+    calibrations: Mapping[tuple[Scenario, int], Calibration]
+    M: int
+    levels: tuple[float, ...]
+    validation_blocks: int
+    n_min: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "vectors", tuple(self.vectors))
+        object.__setattr__(self, "levels", tuple(self.levels))
+        if not self.vectors or not all(isinstance(v, Vector) for v in self.vectors):
+            raise ValueError("a setup needs the inputs' whole seed vectors")
+        if set(self.slopes) != set(ARM_ORDER):
+            raise ValueError(f"utility slopes of every arm {ARM_ORDER} are needed")
+        if not (_integer(self.M) and self.M >= 1):
+            raise ValueError(f"M {self.M!r} is not a positive integer")
+        if not self.levels or not set(self.levels) <= set(LEVELS):
+            raise ValueError(f"levels {self.levels!r} are not among {LEVELS}")
+        if self.validation_blocks not in VALIDATION_BLOCKS or not _integer(self.validation_blocks):
+            raise ValueError(f"the validation has {VALIDATION_BLOCKS} blocks")
+        if self.n_min is not None and not (_integer(self.n_min) and self.n_min >= MIN_N):
+            raise ValueError(f"n_min {self.n_min!r} is not an N of at least {MIN_N}")
+
+    def calibration(self, scenario: Scenario, candidate: int) -> Calibration:
+        try:
+            return self.calibrations[(scenario, candidate)]
+        except KeyError as exc:
+            raise ValueError(
+                f"no calibration of scenario {scenario.name} at candidate {candidate}"
+            ) from exc
+
+
+def _integer(value: Any) -> bool:
+    return isinstance(value, int | np.integer) and not isinstance(value, bool | np.bool_)
+
+
+def _with(setup: Setup, scenario: Scenario, candidate: int, calibration: Calibration) -> Setup:
+    """``setup`` with ``calibration`` for (scenario, candidate)."""
+    return replace(setup, calibrations={**setup.calibrations, (scenario, candidate): calibration})
+
+
+@dataclass
+class _Block:
+    """One simulated block (in memory): its seed, the vector it drew (an index into the inputs),
+    the six runs' x = ln(K/K*) (jitter included) and failure uniforms, the standardized block
+    effects (e_AF, e_PF), its endpoints and ``block_state``, and the six runs' primary judged
+    shares (None until labeled)."""
+
+    seed: int
+    vector: int
+    x: np.ndarray
+    uniforms: np.ndarray
+    effects: np.ndarray
+    endpoints: list[Endpoint]
+    state: dict[str, Any]
+    shares: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class StudyOutcome:
+    """One simulated study (§"Simulation before validation"): its ``index`` and ``mode``, the
+    final ``candidate`` and the ``active`` comparisons; the ``levels`` it ran; ``rates`` per
+    candidate that ran (arm → ``l``/``u``); the validation ``gates`` (``AF``, ``PF``) and ``m``,
+    the A–F-supported validation blocks; per level ``confirmed`` and ``why`` (``UNCONFIRMED``),
+    ``N``, ``cap`` and ``blocks`` (started at the stop); ``covered`` per (N point, level,
+    comparison) (None: P–F not active in ``"procedure"`` mode); per (level, comparison) the
+    cap's ``direction``, the confirmation's ``readings`` and its ``utility_claim``; the
+    ``truth`` per comparison (proportions; None when undefined). In memory only, never
+    serialized and not compared: ``spread_pp``, ``utility`` (per arm, (vector seed, interpolated
+    MMLU loss, interpolated factual loss) of the supported validation blocks), ``point_seeds``,
+    ``cohorts`` and ``analysis`` (the seeds behind each test) and ``validation`` (the final
+    candidate's validation blocks)."""
+
+    index: int
+    mode: str
+    candidate: int
+    active: list[str]
+    levels: tuple[float, ...]
+    rates: Mapping[int, Mapping[str, Mapping[str, float]]]
+    gates: Mapping[str, bool]
+    m: int
+    confirmed: Mapping[float, bool]
+    why: Mapping[float, str | None]
+    N: Mapping[float, int | None]
+    cap: Mapping[float, int | None]
+    blocks: Mapping[float, int | None]
+    covered: Mapping[tuple[int | str, float, str], bool | None]
+    direction: Mapping[tuple[float, str], str | None]
+    readings: Mapping[tuple[float, str], str | None]
+    utility_claim: Mapping[tuple[float, str], bool | None]
+    truth: Mapping[str, float | None]
+    spread_pp: float | None = field(default=None, compare=False, repr=False)
+    utility: Mapping[str, tuple[tuple[int, float, float], ...]] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    point_seeds: Mapping[tuple[int, str], tuple[int, ...]] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    cohorts: Mapping[tuple[float, str], tuple[int, ...]] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    analysis: Mapping[tuple[float, str], tuple[int, ...]] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    validation: tuple[_Block, ...] = field(default=(), compare=False, repr=False)
+
+    def rates_at_candidate(self, candidate: int) -> dict[str, dict[str, float]]:
+        """The final rates the study selected at ``candidate`` (empty when it did not run it)."""
+        return {arm: dict(r) for arm, r in self.rates.get(candidate, {}).items()}
+
+
+def synthetic_endpoint(
+    candidate: int,
+    step: str,
+    round_: int | None,
+    arm: str,
+    rate: float,
+    seed: int,
+    *,
+    K: float | None,
+    mmlu: float | None,
+    factual: float | None,
+    state: str = "usable",
+    k_only: bool,
+) -> Endpoint:
+    """A simulated run as ``study3_records.read_endpoints`` would give it: a ``Cell`` of the
+    campaign ``sim-c<N>-<step>[-r<k>]-s<seed>`` that prescribed (arm, rate, seed), run id
+    ``sim-…``, one attempt, in state ``usable``, ``unusable`` (a gross collapse) or
+    ``scientific`` (an instability stop: no K, no utility)."""
+    if step not in STEP_ROLES:
+        raise ValueError(f"no step {step!r}")
+    if state not in ("usable", "unusable", "scientific"):
+        raise ValueError(f"a simulated run is usable, unusable or scientific, not {state!r}")
+    tag = f"c{candidate}-{step}" + ("" if round_ is None else f"-r{round_}")
+    run_id = f"sim-{tag}-{arm}-{rate:.6g}-s{seed}"
+    label = f"{arm}-{rate:.6g}/s{seed}"
+    cell = Cell(
+        campaign=f"sim-{tag}-s{seed}",
+        label=label,
+        candidate=candidate,
+        step=step,
+        round=round_,
+        arm=arm,
+        rate=rate,
+        seed=seed,
+        config_hash="simulation",
+        prescribed=(arm, rate, seed),
+    )
+    failed = state == "scientific"
+    return Endpoint(
+        run_id=run_id,
+        run_dir=Path(run_id),
+        cell=cell,
+        arm=arm,
+        lr=rate,
+        seed=seed,
+        role=STEP_ROLES[step],
+        candidate=candidate,
+        k_only=k_only,
+        attempt=1,
+        label=label,
+        state=state,
+        steps=None if failed else UPDATES,
+        stop=FAILED_STOP if failed else "steps",
+        K=None if failed else K,
+        mmlu_loss_pp=None if failed else mmlu,
+        factual_loss_pp=None if failed else factual,
+        unusable_reason=GROSS_COLLAPSE if state == "unusable" else None,
+    )
+
+
+def _base(base: int | np.random.SeedSequence) -> int:
+    """The integer every key of a study's draws starts from: ``base`` itself, or 128 bits a
+    calibration's stream generates."""
+    if isinstance(base, np.random.SeedSequence):
+        words = base.generate_state(4, np.uint32).astype("<u4")
+        return int.from_bytes(words.tobytes(), "little")
+    if not (_integer(base) and base >= 0):
+        raise ValueError(f"a stream's base is a non-negative integer, not {base!r}")
+    return int(base)
+
+
+def _rng(base: int, *keys: object) -> np.random.Generator:
+    return np.random.default_rng(stream(base, *keys))
+
+
+def _jitter(scenario: Scenario, arm: str) -> float:
+    return JITTER_SD[arm] if scenario.jitter else 0.0
+
+
+def calibration_stream(base: int, scenario: Scenario, candidate: int) -> np.random.SeedSequence:
+    """The calibration's stream of (scenario, candidate): (calibration base, "support",
+    scenario, candidate)."""
+    return stream(base, "support", scenario.name, candidate)
+
+
+# -- the search and the repair
+
+
+_SELECTIONS: dict[tuple, dict[str, dict[str, float]]] = {}
+_SELECTIONS_LIMIT = 200_000
+
+
+def _select(
+    scenario: Scenario, setup: Setup, base: int, index: int, candidate: int, prefix: tuple
+) -> dict[str, dict[str, float]]:
+    """``_selected``, remembered by everything it depends on (the scenario's name and jitter,
+    the stream, the vectors' K): the calibration's passes and modes share a study's
+    selection."""
+    key = (scenario.name, scenario.jitter, base, index, candidate, prefix,
+           tuple((v.seed, tuple(v.arms[a] for a in ARM_ORDER)) for v in setup.vectors))  # fmt: skip
+    found = _SELECTIONS.get(key)
+    if found is None:
+        if len(_SELECTIONS) >= _SELECTIONS_LIMIT:
+            _SELECTIONS.clear()
+        found = _SELECTIONS[key] = _selected(scenario, setup, base, index, candidate, prefix)
+    return {arm: dict(r) for arm, r in found.items()}
+
+
+def _selected(
+    scenario: Scenario, setup: Setup, base: int, index: int, candidate: int, prefix: tuple
+) -> dict[str, dict[str, float]]:
+    """The final rates of a candidate (§"Candidates and rate search"): round 0 at the starting
+    rates on the four search seeds' vectors, round 1 at the adjusted rates (``search_state``),
+    the numerical qualification passed (M13), the repair (``repair_state``) and its runs. K-only
+    runs never fail (M13); each run's K carries the scenario's jitter."""
+    vectors = setup.vectors
+    rng = _rng(base, "procedure", scenario.name, index, *prefix, "search")
+    seeds = list(SEEDS["search"][candidate])
+    picks = rng.integers(0, len(vectors), len(seeds))
+    z = rng.standard_normal((2, len(seeds), len(ARM_ORDER), len(LABELS)))
+    start = CANDIDATES[candidate]["start"]
+
+    def k_only(step: str, round_: int | None, vector: Vector, seed: int, arm: str, rate: float,
+               jitter: float) -> Endpoint:  # fmt: skip
+        k = math.exp(vector.ln_k(arm, rate) + _jitter(scenario, arm) * jitter)
+        return synthetic_endpoint(candidate, step, round_, arm, rate, seed, K=k, mmlu=None,
+                                  factual=None, k_only=True)  # fmt: skip
+
+    endpoints = [
+        k_only("search", 0, vectors[picks[i]], seed, arm, start[arm][label], z[0, i, a, j])
+        for i, seed in enumerate(seeds)
+        for a, arm in enumerate(ARM_ORDER)
+        for j, label in enumerate(LABELS)
+    ]
+    state = search_state(endpoints, candidate, problems=())
+    if state["next"] == "round1":
+        for a, arm in enumerate(ARM_ORDER):
+            for j, label in enumerate(LABELS):
+                decision = state["arms"][arm]["targets"][label]["decision"]
+                if decision in (None, "kept"):
+                    continue
+                endpoints += [
+                    k_only("search", 1, vectors[picks[i]], seed, arm, decision, z[1, i, a, j])
+                    for i, seed in enumerate(seeds)
+                ]
+        state = search_state(endpoints, candidate, problems=())
+    if state["next"] != "numerical":
+        raise SimulationError(f"the simulated search did not select rates ({state['next']}: "
+                              f"{state['problems'] or state['failures']})")  # fmt: skip
+    selected = state["selected"]
+    rng = _rng(base, "procedure", scenario.name, index, *prefix, "numerical")
+    seeds = list(SEEDS["numerical"][candidate])
+    picks = rng.integers(0, len(vectors), len(seeds))
+    z = rng.standard_normal((2, len(seeds), len(ARM_ORDER), len(LABELS)))
+    endpoints += [
+        k_only("numerical", None, vectors[picks[i]], seed, arm, selected[arm][label],
+               z[0, i, a, j])
+        for i, seed in enumerate(seeds)
+        for a, arm in enumerate(ARM_ORDER)
+        for j, label in enumerate(LABELS)
+    ]  # fmt: skip
+    qualified = {arm: {selected[arm][label]: QUALIFIED for label in LABELS} for arm in ARM_ORDER}
+    repair = repair_state(endpoints, candidate, selected, qualified, problems=())
+    if repair["next"] == "repair":
+        for arm, repairs in repair["repairs"].items():
+            a = ARM_ORDER.index(arm)
+            for label, rate in repairs.items():
+                j = LABELS.index(label)
+                endpoints += [
+                    k_only(REPAIR_STEP, None, vectors[picks[i]], seed, arm, rate, z[1, i, a, j])
+                    for i, seed in enumerate(seeds)
+                ]
+        repair = repair_state(endpoints, candidate, selected, qualified, problems=())
+    if repair["next"] not in ("repaired", "none"):
+        raise SimulationError(f"the simulated repair did not finish ({repair['next']}: "
+                              f"{repair['problems'] or repair['undecided']})")  # fmt: skip
+    return {
+        arm: {
+            label: float(repair["repairs"].get(arm, {}).get(label, selected[arm][label]))
+            for label in LABELS
+        }
+        for arm in ARM_ORDER
+    }
+
+
+# -- blocks
+
+
+def _draw_block(
+    scenario: Scenario,
+    setup: Setup,
+    calibration: Calibration,
+    shifted: Sequence[Vector],
+    candidate: int,
+    rates: Mapping[str, Mapping[str, float]],
+    step: str,
+    seed: int,
+    rng: np.random.Generator,
+    arms: Sequence[str],
+) -> _Block:
+    """One block: a whole vector drawn with replacement; each of the six runs its ln K at its
+    rate (plus the scenario's jitter, M8), its failure uniform (a scientific failure below f,
+    M7) and its utility at that K (the safe shifts applied, M10; a loss above 15 pp is a gross
+    collapse); the block effects. Every run is drawn whichever arms are ``arms``, so that P's
+    activity moves no draw; the endpoints are those of ``arms``, and ``block_state`` reads them."""
+    vector = int(rng.integers(0, len(setup.vectors)))
+    z = rng.standard_normal((len(ARM_ORDER), len(LABELS)))
+    uniforms = rng.random((len(ARM_ORDER), len(LABELS)))
+    effects = draw_effects(scenario.shape, rng, 2) if scenario.shape else np.zeros(2)
+    kstar_ln = math.log(CANDIDATES[candidate]["targets"]["star"])
+    own = shifted[vector]
+    x = np.empty((len(ARM_ORDER), len(LABELS)))
+    endpoints = []
+    for a, arm in enumerate(ARM_ORDER):
+        for j, label in enumerate(LABELS):
+            rate = rates[arm][label]
+            ln_k = own.ln_k(arm, rate) + _jitter(scenario, arm) * z[a, j]
+            x[a, j] = ln_k - kstar_ln
+            if arm not in arms:
+                continue
+            if uniforms[a, j] < calibration.failure:
+                endpoints.append(synthetic_endpoint(
+                    candidate, step, None, arm, rate, seed, K=None, mmlu=None, factual=None,
+                    state="scientific", k_only=False))  # fmt: skip
+                continue
+            mmlu, factual = own.losses(arm, ln_k, setup.slopes)
+            state = "unusable" if mmlu > COLLAPSE_AT_PP else "usable"
+            endpoints.append(synthetic_endpoint(
+                candidate, step, None, arm, rate, seed, K=math.exp(ln_k), mmlu=mmlu,
+                factual=factual, state=state, k_only=False))  # fmt: skip
+    state = block_state(endpoints, seed, candidate, arms)
+    return _Block(seed, vector, x, uniforms, effects, endpoints, state)
+
+
+def _label(scenario: Scenario, calibration: Calibration, block: _Block,
+           rng: np.random.Generator) -> None:  # fmt: skip
+    """The six runs' primary judged shares (M5, M6, M6b): h = clip(H_a(x)/100 + δ_a, 0, 1) with
+    δ_F = 0, δ_A = σ_AF·e_AF + o_A, δ_P = σ_PF·e_PF + o_P; P's runs are labeled whatever its
+    activity, so that it moves no draw."""
+    delta = {
+        "A": calibration.sigma_af * block.effects[0] + calibration.offset_a,
+        "F": 0.0,
+        "P": calibration.sigma_pf * block.effects[1] + calibration.offset_p,
+    }
+    h = np.stack([
+        np.clip(harm_curve(arm, block.x[a], scenario.curvature_scale) + delta[arm], 0.0, 1.0)
+        for a, arm in enumerate(ARM_ORDER)
+    ])  # fmt: skip
+    block.shares = endpoint_labels(h.ravel(), RUN_ARMS, scenario, rng).reshape(h.shape)
+
+
+def _difference(block: _Block, comparison: str) -> float:
+    """d of a block supported for the comparison: interpolated(share_lo, share_hi, w) of its arm
+    minus F's, each arm's endpoints and weight ``block_state``'s."""
+    out = []
+    for arm in COMPARISONS[comparison]:
+        a = ARM_ORDER.index(arm)
+        lo = 0 if block.x[a, 0] < block.x[a, 1] else 1
+        weight = block.state["arms"][arm]["weight"]
+        out.append(interpolated(block.shares[a, lo], block.shares[a, 1 - lo], weight))
+    return out[0] - out[1]
+
+
+@dataclass
+class _Validation:
+    candidate: int
+    rates: dict[str, dict[str, float]]
+    blocks: list[_Block]
+    gates: dict[str, bool]
+    m: int
+    spread_pp: float | None
+    labels: np.random.Generator | None
+
+
+def _validate(
+    scenario: Scenario,
+    setup: Setup,
+    base: int,
+    index: int,
+    candidate: int,
+    prefix: tuple,
+    labels: bool,
+) -> _Validation:
+    """A candidate's search, repair and validation (§"Validation"): ``validation_blocks`` blocks
+    of six runs; the A–F and P–F gates (22 of 28 or 31 of 40 supported and ``utility_gate`` at
+    α 0.05 per bound); the spread over the A–F-supported blocks (judged primary harm, full
+    precision) when ``labels``."""
+    calibration = setup.calibration(scenario, candidate)
+    rates = _select(scenario, setup, base, index, candidate, prefix)
+    shifted = shifted_vectors(setup.vectors, calibration)
+    rng = _rng(base, "procedure", scenario.name, index, *prefix, "validation")
+    seeds = SEEDS["validation"][candidate][: setup.validation_blocks]
+    blocks = [_draw_block(scenario, setup, calibration, shifted, candidate, rates, "validation",
+                          seed, rng, ARM_ORDER) for seed in seeds]  # fmt: skip
+    states = [b.state for b in blocks]
+    gates = {}
+    for name in GATE_OF.values():
+        count = sum(bool(s[name]["supported"]) for s in states)
+        passes = utility_gate(states, name, VALIDATION_ALPHA)["passes"] is True
+        gates[name] = count >= SUPPORTED_AT[setup.validation_blocks] and passes
+    m = sum(bool(s["AF"]["supported"]) for s in states)
+    label_rng, spread = None, None
+    if labels and scenario.role != "gate":
+        label_rng = _rng(base, "procedure", scenario.name, index, *prefix, "labels")
+        for b in blocks:
+            _label(scenario, calibration, b, label_rng)
+        d = [_difference(b, "A-F") for b in blocks if b.state["AF"]["supported"]]
+        spread = 100 * float(np.std(d, ddof=1)) if len(d) >= 2 else None
+    return _Validation(candidate, rates, blocks, gates, m, spread, label_rng)
+
+
+def _supported_utility(validation: _Validation) -> dict[str, tuple[tuple[int, float, float], ...]]:
+    """Per arm, (vector seed, interpolated MMLU loss, interpolated factual loss) of the
+    validation blocks supported for its comparison (A and F: A–F; P: P–F)."""
+    out: dict[str, list[tuple[int, float, float]]] = {arm: [] for arm in ARM_ORDER}
+    for b in validation.blocks:
+        for arm in ARM_ORDER:
+            if b.state["AF" if arm != "P" else "PF"]["supported"]:
+                unit = b.state["arms"][arm]
+                out[arm].append((b.seed, unit["mmlu_loss_pp"], unit["factual_loss_pp"]))
+    return {arm: tuple(v) for arm, v in out.items()}
+
+
+# -- the study
+
+
+def simulate_study(
+    scenario: Scenario,
+    setup: Setup,
+    base: int | np.random.SeedSequence,
+    index: int,
+    *,
+    mode: str = "screen",
+    resamples: int,
+    levels: Sequence[float],
+    n_floor: int = MIN_N,
+    validation_only: bool = False,
+    candidate: int | None = None,
+    labels: bool = True,
+) -> StudyOutcome:
+    """One simulated study, a pure function of (``base``, ``scenario``, ``index``) and the
+    setup (module docstring, "The procedure"). ``mode``: ``"screen"`` (the scenario's
+    candidate alone, N from the rule, P–F computed as if active: M14, M16) or ``"procedure"``
+    (the realized route: candidate 1, then 2, then the scientific feasibility report; N raised
+    to ``setup.n_min``; P–F only where its gate passed). ``n_floor``: N is at least this (the
+    n_min scan). ``validation_only``: the search, repair and validation of the first candidate
+    alone (the gates and the calibration). ``candidate``: the first candidate (the scenario's by
+    default). ``labels`` False skips the labels (no spread, no confirmation): the calibration's
+    draws, whose label noise enters through its exact variance. ``base``: an integer, or a
+    calibration's stream (``calibration_stream``)."""
+    if mode not in MODES:
+        raise ValueError(f"mode {mode!r} is not one of {MODES}")
+    if not (_integer(index) and index >= 0):
+        raise ValueError(f"a study's index is a non-negative integer, not {index!r}")
+    if not (_integer(n_floor) and n_floor >= MIN_N):
+        raise ValueError(f"n_floor {n_floor!r} is not an N of at least {MIN_N}")
+    levels = tuple(levels)
+    if not levels or not set(levels) <= set(LEVELS):
+        raise ValueError(f"levels {levels!r} are not among {LEVELS}")
+    root = _base(base)
+    first = scenario.candidate if candidate is None else candidate
+    route = [(first, ())]
+    if mode == "procedure" and first == 1 and not validation_only:
+        route.append((2, ("candidate-2",)))
+    rates: dict[int, dict[str, dict[str, float]]] = {}
+    for c, prefix in route:
+        validation = _validate(scenario, setup, root, index, c, prefix, labels)
+        rates[c] = validation.rates
+        if validation.gates["AF"] or mode == "screen" or validation_only:
+            break
+    c = validation.candidate
+    common = {
+        "index": int(index),
+        "mode": mode,
+        "candidate": c,
+        "levels": levels,
+        "rates": rates,
+        "gates": dict(validation.gates),
+        "m": validation.m,
+        "spread_pp": validation.spread_pp,
+        "utility": _supported_utility(validation),
+        "validation": tuple(validation.blocks),
+    }
+    active = ["A-F", "P-F"] if mode == "screen" or validation.gates["PF"] else ["A-F"]
+    none = dict.fromkeys(levels)
+    if validation_only or not labels or scenario.role == "gate":
+        return StudyOutcome(**common, active=active, confirmed=dict.fromkeys(levels, False),
+                            why=none, N=none, cap=none, blocks=none, covered={}, direction={},
+                            readings={}, utility_claim={}, truth={})  # fmt: skip
+    if not validation.gates["AF"]:
+        why = "af_gate" if mode == "screen" else "scientific_report"
+        return StudyOutcome(**common, active=active, confirmed=dict.fromkeys(levels, False),
+                            why=dict.fromkeys(levels, why), N=none, cap=none, blocks=none,
+                            covered={}, direction={}, readings={}, utility_claim={},
+                            truth={})  # fmt: skip
+    return _confirm(scenario, setup, root, index, mode, resamples, levels, n_floor, validation,
+                    route[[r[0] for r in route].index(c)][1], active, common)  # fmt: skip
+
+
+def _confirm(
+    scenario: Scenario,
+    setup: Setup,
+    base: int,
+    index: int,
+    mode: str,
+    resamples: int,
+    levels: tuple[float, ...],
+    n_floor: int,
+    validation: _Validation,
+    prefix: tuple,
+    active: list[str],
+    common: dict[str, Any],
+) -> StudyOutcome:
+    """N per level, the confirmation (``confirmation_state``) and the analysis (module
+    docstring, "The procedure", steps 4–6)."""
+    c = validation.candidate
+    calibration = setup.calibration(scenario, c)
+    reserved = SEEDS["confirmation"][c]
+    N, cap, why, confirmed = {}, {}, {}, {}
+    for level in levels:
+        n = max(sample_size(validation.spread_pp, validation.m, level), n_floor)
+        if mode == "procedure" and setup.n_min is not None:
+            n = max(n, setup.n_min)
+        N[level], cap[level] = n, cap_of(n)
+        confirmed[level] = cap[level] <= len(reserved)
+        why[level] = None if confirmed[level] else "cap_beyond_seeds"
+    blocks_n: dict[float, int | None] = dict.fromkeys(levels)
+    out = {"covered": {}, "direction": {}, "readings": {}, "utility_claim": {}}
+    memory: dict[str, dict] = {"point_seeds": {}, "cohorts": {}, "analysis": {}}
+    if not any(confirmed.values()):
+        return StudyOutcome(**common, active=active, confirmed=confirmed, why=why, N=N, cap=cap,
+                            blocks=blocks_n, truth={}, **out, **memory)  # fmt: skip
+    arms = [arm for arm in ARM_ORDER if arm != "P" or "P-F" in active]
+    shifted = shifted_vectors(setup.vectors, calibration)
+    rng = _rng(base, "procedure", scenario.name, index, *prefix, "confirmation")
+    target = max(cap[level] for level in levels if confirmed[level])
+    blocks: list[_Block] = []
+    supported: dict[str, list[int]] = {comparison: [] for comparison in active}
+    for seed in reserved:
+        block = _draw_block(scenario, setup, calibration, shifted, c, validation.rates,
+                            "confirmation", seed, rng, arms)  # fmt: skip
+        _label(scenario, calibration, block, validation.labels)
+        blocks.append(block)
+        for comparison in active:
+            if block.state[GATE_OF[comparison]]["supported"]:
+                supported[comparison].append(block.seed)
+        if len(blocks) >= target and all(len(s) >= REACH for s in supported.values()):
+            break
+    by_seed = {b.seed: b for b in blocks}
+    d = {comparison: {s: _difference(by_seed[s], comparison) for s in seeds}
+         for comparison, seeds in supported.items()}  # fmt: skip
+    found = truth(scenario, calibration, setup.vectors, setup.slopes,
+                  {arm: validation.rates[arm] for arm in arms})  # fmt: skip
+    true = {k: (None if math.isnan(v) else float(v)) for k, v in found.items()}
+    covered = out["covered"]
+    for comparison in active:
+        seeds = supported[comparison]
+        for n in N_POINTS[:-1]:
+            reached = len(seeds) >= n
+            if reached:
+                memory["point_seeds"][(n, comparison)] = tuple(seeds[:n])
+            seed = stream(base, "bootstrap", scenario.name, index, comparison, n)
+            for level in levels:
+                if not confirmed[level]:
+                    continue
+                interval = (_interval([d[comparison][s] for s in seeds[:n]], level, resamples,
+                                      seed) if reached else None)  # fmt: skip
+                covered[(n, level, comparison)] = _covers(interval, true.get(comparison))
+    for level in levels:
+        if not confirmed[level]:
+            continue
+        stop = _stop(blocks, active, N[level], cap[level])
+        state = confirmation_state([e for b in blocks[:stop] for e in b.endpoints], c, N[level],
+                                   active)  # fmt: skip
+        if not state["stop"]["stopped"] or state["problems"] or len(state["started"]) != stop:
+            raise SimulationError(f"the simulated confirmation did not stop as the registered "
+                                  f"one ({state['stop']}, {state['problems']})")  # fmt: skip
+        blocks_n[level] = len(state["started"])
+        for comparison in active:
+            seeds = list(state["analysis"][comparison] or ())
+            memory["analysis"][(level, comparison)] = tuple(seeds)
+            memory["cohorts"][(level, comparison)] = tuple(state["cohorts"][comparison])
+            seed = stream(base, "bootstrap", scenario.name, index, comparison, "cap")
+            interval = _interval([d[comparison][s] for s in seeds], level, resamples, seed)
+            covered[("cap", level, comparison)] = _covers(interval, true.get(comparison))
+            out["direction"][(level, comparison)] = (
+                None if interval is None else reading(interval).direction
+            )
+            out["readings"][(level, comparison)] = state["readings"][comparison]
+            claim = utility_gate([by_seed[s].state for s in seeds], GATE_OF[comparison],
+                                 CONFIRMATION_ALPHA) if seeds else None  # fmt: skip
+            out["utility_claim"][(level, comparison)] = None if claim is None else claim["passes"]
+    for key in [k for k in covered if k[2] == "A-F"]:
+        point, level, _ = key
+        if "P-F" in active:
+            covered[(point, level, "joint")] = covered[key] and covered[(point, level, "P-F")]
+        else:  # the procedure with P closed: P–F counts nothing, the joint test is A–F's
+            covered[(point, level, "P-F")] = None
+            covered[(point, level, "joint")] = covered[key]
+            for name in ("direction", "readings", "utility_claim"):
+                out[name].setdefault((level, "P-F"), None)
+    return StudyOutcome(**common, active=active, confirmed=confirmed, why=why, N=N, cap=cap,
+                        blocks=blocks_n, truth=true, **out, **memory)  # fmt: skip
+
+
+def _stop(blocks: Sequence[_Block], active: Sequence[str], n: int, cap: int) -> int:
+    """The blocks started at the stop (§"Confirmation"): every active counter at N, or the cap
+    started (k found by scanning the block states)."""
+    counts = dict.fromkeys(active, 0)
+    for k, block in enumerate(blocks[:cap], start=1):
+        for comparison in active:
+            counts[comparison] += bool(block.state[GATE_OF[comparison]]["supported"])
+        if all(count >= n for count in counts.values()):
+            return k
+    return cap
+
+
+def _interval(d: Sequence[float], level: float, resamples: int,
+              seed: np.random.SeedSequence) -> Interval | None:  # fmt: skip
+    """The registered interval (``bootstrap_t``, chunk 500); None for no block at all."""
+    if not d:
+        return None
+    return bootstrap_t(np.asarray(d, dtype=float), level=level, resamples=resamples, seed=seed,
+                       chunk=CHUNK)  # fmt: skip
+
+
+def _covers(interval: Interval | None, value: float | None) -> bool:
+    """lower ≤ truth ≤ upper; an undetermined interval, a missing one (an N point not reached,
+    M18) or an undefined truth is a miss."""
+    if interval is None or interval.undetermined or value is None:
+        return False
+    return bool(interval.lower <= value <= interval.upper)
+
+
+# -- a study's part row
+
+
+_ROW_FIELDS = ("index", "mode", "candidate", "active", "levels", "rates", "gates", "m",
+               "confirmed", "why", "N", "cap", "blocks", "covered", "direction", "readings",
+               "utility_claim", "truth")  # fmt: skip
+
+
+def level_key(level: float) -> str:
+    """A level as the identities and the results write it (``"0.975"``, …, ``"0.990"``)."""
+    return f"{level:.3f}"
+
+
+def _covered_keys(levels: Sequence[float]) -> list[tuple[int | str, float, str]]:
+    return [(point, level, c) for point in N_POINTS for level in levels for c in TESTED]
+
+
+def outcome_json(o: StudyOutcome) -> dict[str, Any]:
+    """A compact part row of a study: N, the cap and the flags, the coverage flags bit-packed
+    (``present``, ``known``: not None, ``covered``; bit i is the i-th (N point, level,
+    comparison) in order), never the spread nor the utility values."""
+    keys = _covered_keys(o.levels)
+    if set(o.covered) - set(keys):
+        raise ValueError("coverage flags outside the study's N points, levels and comparisons")
+    present = known = value = 0
+    for i, key in enumerate(keys):
+        if key in o.covered:
+            present |= 1 << i
+            if o.covered[key] is not None:
+                known |= 1 << i
+                value |= int(bool(o.covered[key])) << i
+    per = lambda d: {level_key(lv): v for lv, v in d.items()}  # noqa: E731
+    pairs = lambda d: {  # noqa: E731
+        level_key(lv): {c: d[(lv2, c)] for (lv2, c) in d if lv2 == lv}
+        for lv in sorted({lv for lv, _ in d})
+    }
+    return {
+        "index": o.index,
+        "mode": o.mode,
+        "candidate": o.candidate,
+        "active": list(o.active),
+        "levels": [float(lv) for lv in o.levels],
+        "rates": {
+            str(c): {arm: dict(r) for arm, r in rates.items()} for c, rates in o.rates.items()
+        },  # fmt: skip
+        "gates": dict(o.gates),
+        "m": o.m,
+        "confirmed": per(o.confirmed),
+        "why": per(o.why),
+        "N": per(o.N),
+        "cap": per(o.cap),
+        "blocks": per(o.blocks),
+        "covered": {"present": hex(present), "known": hex(known), "covered": hex(value)},
+        "direction": pairs(o.direction),
+        "readings": pairs(o.readings),
+        "utility_claim": pairs(o.utility_claim),
+        "truth": dict(o.truth),
+    }
+
+
+def outcome_from_json(d: Mapping[str, Any]) -> StudyOutcome:
+    """The study of a part row (``outcome_json``). ``ValueError`` for another field."""
+    if not isinstance(d, Mapping) or set(d) != set(_ROW_FIELDS):
+        raise ValueError(f"a study's row holds exactly {list(_ROW_FIELDS)}")
+    levels = tuple(float(lv) for lv in d["levels"])
+    by_key = {level_key(lv): lv for lv in levels}
+
+    def per(name: str) -> dict[float, Any]:
+        if set(d[name]) != set(by_key):
+            raise ValueError(f"{name} must name every level of the row")
+        return {by_key[k]: v for k, v in d[name].items()}
+
+    def pairs(name: str) -> dict[tuple[float, str], Any]:
+        return {(by_key[k], c): v for k, inner in d[name].items() for c, v in inner.items()}
+
+    flags = d["covered"]
+    if not isinstance(flags, Mapping) or set(flags) != {"present", "known", "covered"}:
+        raise ValueError("covered must be the three bit masks")
+    present, known, value = (int(flags[k], 16) for k in ("present", "known", "covered"))
+    covered = {}
+    for i, key in enumerate(_covered_keys(levels)):
+        if present >> i & 1:
+            covered[key] = bool(value >> i & 1) if known >> i & 1 else None
+    return StudyOutcome(
+        index=d["index"],
+        mode=d["mode"],
+        candidate=d["candidate"],
+        active=list(d["active"]),
+        levels=levels,
+        rates={
+            int(c): {arm: dict(r) for arm, r in rates.items()} for c, rates in d["rates"].items()
+        },  # fmt: skip
+        gates=dict(d["gates"]),
+        m=d["m"],
+        confirmed=per("confirmed"),
+        why=per("why"),
+        N=per("N"),
+        cap=per("cap"),
+        blocks=per("blocks"),
+        covered=covered,
+        direction=pairs("direction"),
+        readings=pairs("readings"),
+        utility_claim=pairs("utility_claim"),
+        truth=dict(d["truth"]),
+    )
+
+
+# ------------------------------------------------------------------ the calibration
+
+_GL20 = np.polynomial.legendre.leggauss(20)
+
+
+def bivariate_normal(t1: np.ndarray, t2: np.ndarray, rho: float) -> np.ndarray:
+    """Φ₂(t1, t2; ρ), elementwise: Φ(t1)Φ(t2) + (1/2π)∫₀^ρ exp(−(t1² − 2r·t1·t2 + t2²)/(2(1 −
+    r²)))/√(1 − r²) dr, the integral by 20-point Gauss–Legendre (|ρ| ≤ 0.7 here: smooth in r).
+    Infinite arguments are taken at ±40."""
+    t1 = np.clip(np.asarray(t1, dtype=float), -40.0, 40.0)
+    t2 = np.clip(np.asarray(t2, dtype=float), -40.0, 40.0)
+    nodes, weights = _GL20
+    r = rho * (nodes + 1) / 2
+    one = 1 - r * r
+    a, b = t1[..., None], t2[..., None]
+    inside = np.exp(-(a * a - 2 * r * a * b + b * b) / (2 * one)) / np.sqrt(one)
+    return ndtr(t1) * ndtr(t2) + rho / 2 * (inside * weights).sum(axis=-1) / (2 * math.pi)
+
+
+def label_variance(
+    h: np.ndarray, c: np.ndarray, arms: Sequence[str], scenario: Scenario
+) -> np.ndarray:
+    """Var(Σ_j c_j·share_j | h), the label noise of a weighted sum of a block's primary judged
+    shares (M5, M6, M6b): the 521 prompts are independent given the block, so it is
+    Var(Σ_j c_j·J_j)/521 for one prompt's judged indicators J_j; two endpoints' harmful labels
+    are bivariate normal thresholds (ρ_a within an arm, ρ_b across arms), the judge's calls and
+    the missing labels independent given the label. ``h``, ``c``: (..., J) arrays."""
+    h = np.clip(np.asarray(h, dtype=float), 0.0, 1.0)
+    c = np.asarray(c, dtype=float)
+    m_h, m_n = scenario.missing_rates()
+    high = np.array([(1 - m_h) * JUDGES[scenario.judge][arm][0] for arm in arms])
+    low = np.array([(1 - m_n) * JUDGES[scenario.judge][arm][1] for arm in arms])
+    p = high * h + low * (1 - h)
+    t = ndtri(h)
+    out = (c * c * p * (1 - p)).sum(axis=-1)
+    for j in range(len(arms)):
+        for k in range(j + 1, len(arms)):
+            rho = RHO_ARM if arms[j] == arms[k] else RHO_BLOCK
+            both_harmful = bivariate_normal(t[..., j], t[..., k], rho)
+            hj, hk = h[..., j], h[..., k]
+            joint = (
+                high[j] * high[k] * both_harmful
+                + high[j] * low[k] * (hj - both_harmful)
+                + low[j] * high[k] * (hk - both_harmful)
+                + low[j] * low[k] * (1 - hj - hk + both_harmful)
+            )
+            out = out + 2 * c[..., j] * c[..., k] * (joint - p[..., j] * p[..., k])
+    return out / PROMPTS
+
+
+@dataclass(frozen=True)
+class _Draws:
+    """The calibration's simulated selections of one (scenario, candidate) at one set of safe
+    shifts, every run's failure left to its uniform (in memory): per study the final rates; per
+    study and validation block (``CALIBRATION_BLOCKS``) the natural support of each arm (no
+    failure), the runs' failure uniforms, each arm's x_lo, x_hi and w where naturally supported,
+    the block effects, the vector's seed and each arm's interpolated MMLU and factual losses,
+    unshifted and as shifted."""
+
+    rates: tuple[dict[str, dict[str, float]], ...]
+    natural: np.ndarray  # (S, B, 3) bool
+    uniforms: np.ndarray  # (S, B, 3, 2)
+    x_lo: np.ndarray  # (S, B, 3)
+    x_hi: np.ndarray
+    w: np.ndarray
+    effects: np.ndarray  # (S, B, 2)
+    seeds: np.ndarray  # (S, B) the vectors' seeds
+    mmlu: np.ndarray  # (S, B, 3) unshifted
+    factual: np.ndarray
+    mmlu_shifted: np.ndarray
+    factual_shifted: np.ndarray
+
+    def supported(self, comparison: str, failure: float) -> np.ndarray:
+        """(S, B): the blocks supported for the comparison at the per-run failure f: both arms
+        naturally supported and none of their four runs failed (a failed endpoint removes its
+        arm's support, "Within a block")."""
+        a, b = (ARM_ORDER.index(arm) for arm in COMPARISONS[comparison])
+        alive = (self.uniforms[:, :, [a, b], :] >= failure).all(axis=(2, 3))
+        return self.natural[:, :, a] & self.natural[:, :, b] & alive
+
+
+_DRAWS: dict[tuple, _Draws] = {}
+_DRAWS_LIMIT = 6
+
+
+def clear_caches() -> None:
+    """Forget the remembered truths, shifted vectors, selections and calibration draws (each is
+    recomputed identically)."""
+    for cache in (_MOMENTS, _SHIFTED, _SELECTIONS, _DRAWS):
+        cache.clear()
+
+
+def _draws(scenario: Scenario, setup: Setup, candidate: int, seed: np.random.SeedSequence,
+           studies: int) -> _Draws:  # fmt: skip
+    """The selections and validations of ``studies`` calibration studies, through
+    ``simulate_study(..., validation_only=True)`` on the calibration's stream, at the setup's
+    safe shifts for (scenario, candidate) and with no failure (each run's uniform kept, so that
+    every f reuses the same draws), 28 blocks each, no labels."""
+    if not isinstance(seed, np.random.SeedSequence):
+        raise ValueError("the calibration's stream is a numpy SeedSequence (calibration_stream)")
+    if not (_integer(studies) and studies >= 2):
+        raise ValueError(f"studies {studies!r} is not an integer of at least 2")
+    calibration = _current(scenario, setup, candidate)
+    shifts = (
+        tuple(sorted((arm, tuple(sorted(v.items()))) for arm, v in calibration.mmlu_shift.items())),
+        tuple(sorted(calibration.factual_shift.items())),
+    )
+    entropy = tuple(int(x) for x in np.atleast_1d(np.asarray(seed.entropy, dtype=object)))
+    key = (scenario, candidate, entropy, tuple(seed.spawn_key), int(studies), shifts,
+           tuple((v.seed, tuple(v.arms[a] for a in ARM_ORDER)) for v in setup.vectors),
+           tuple(sorted(setup.slopes.items())))  # fmt: skip
+    if key in _DRAWS:
+        return _DRAWS[key]
+    use = replace(_with(setup, scenario, candidate, replace(calibration, failure=0.0)),
+                  validation_blocks=CALIBRATION_BLOCKS)  # fmt: skip
+    shape = (studies, CALIBRATION_BLOCKS, len(ARM_ORDER))
+    natural = np.zeros(shape, dtype=bool)
+    uniforms = np.empty((*shape, len(LABELS)))
+    x_lo, x_hi, w, mmlu, factual, mmlu_s, factual_s = (np.full(shape, np.nan) for _ in range(7))
+    effects = np.empty((studies, CALIBRATION_BLOCKS, 2))
+    seeds = np.empty((studies, CALIBRATION_BLOCKS), dtype=np.int64)
+    rates = []
+    kstar_ln = math.log(CANDIDATES[candidate]["targets"]["star"])
+    for i in range(studies):
+        o = simulate_study(scenario, use, seed, i, resamples=SCREEN_RESAMPLES,
+                           levels=setup.levels, validation_only=True, candidate=candidate,
+                           labels=False)  # fmt: skip
+        rates.append(o.rates[candidate])
+        for k, b in enumerate(o.validation):
+            uniforms[i, k], effects[i, k] = b.uniforms, b.effects
+            seeds[i, k] = setup.vectors[b.vector].seed
+            for a, arm in enumerate(ARM_ORDER):
+                unit = b.state["arms"][arm]
+                if not unit["supported"]:
+                    continue
+                natural[i, k, a] = True
+                lo = 0 if b.x[a, 0] < b.x[a, 1] else 1
+                x_lo[i, k, a], x_hi[i, k, a] = b.x[a, lo], b.x[a, 1 - lo]
+                w[i, k, a] = unit["weight"]
+                plain = setup.vectors[b.vector]
+                ends = [plain.losses(arm, b.x[a, j] + kstar_ln, setup.slopes)
+                        for j in (lo, 1 - lo)]  # fmt: skip
+                mmlu[i, k, a] = interpolated(ends[0][0], ends[1][0], unit["weight"])
+                factual[i, k, a] = interpolated(ends[0][1], ends[1][1], unit["weight"])
+                mmlu_s[i, k, a], factual_s[i, k, a] = unit["mmlu_loss_pp"], unit["factual_loss_pp"]
+    if len(_DRAWS) >= _DRAWS_LIMIT:
+        _DRAWS.clear()
+    found = _Draws(tuple(rates), natural, uniforms, x_lo, x_hi, w, effects, seeds, mmlu, factual,
+                   mmlu_s, factual_s)  # fmt: skip
+    _DRAWS[key] = found
+    return found
+
+
+def _support_at(draws: _Draws, failure: float) -> tuple[float, float]:
+    """The realized A–F support at f over every validation block, and its Monte Carlo SE (the
+    studies' supports, 28 blocks each, are independent)."""
+    per_study = draws.supported("A-F", failure).mean(axis=1)
+    return float(per_study.mean()), float(per_study.std(ddof=1) / math.sqrt(per_study.size))
+
+
+def realized_support(
+    scenario: Scenario,
+    setup: Setup,
+    candidate: int,
+    failure: float,
+    seed: np.random.SeedSequence,
+    *,
+    studies: int = CALIBRATION_STUDIES,
+) -> tuple[float, float]:
+    """The realized A–F support of the validation blocks of ``studies`` simulated selections
+    (search, repair, validation) at the rates each selects, at the per-run failure ``failure``,
+    and its Monte Carlo SE (M7). The selections, the natural support and the failure uniforms
+    are drawn once (``_draws``), so every f reuses them."""
+    if not (math.isfinite(failure) and 0 <= failure < 1):
+        raise ValueError(f"the per-run failure {failure!r} is not in [0, 1)")
+    return _support_at(_draws(scenario, setup, candidate, seed, studies), failure)
+
+
+def calibrate_failure(
+    scenario: Scenario,
+    setup: Setup,
+    candidate: int,
+    seed: np.random.SeedSequence,
+    *,
+    studies: int = CALIBRATION_STUDIES,
+) -> tuple[float, float, bool]:
+    """(f, the realized support, flagged) (M7): f by bisection on [0, 1) until the realized A–F
+    support of the validation blocks is the scenario's s within 1e-4; f = 0, flagged, when the
+    natural failures alone (bracket, width, collapse) leave the support below s. The selection
+    does not depend on f (search and numerical runs never fail, M13), and every step reuses the
+    same draws, so the support falls monotonically in f."""
+    draws = _draws(scenario, setup, candidate, seed, studies)
+    target = scenario.support
+    natural, _ = _support_at(draws, 0.0)
+    if natural < target:
+        return 0.0, natural, True
+    lo, hi = 0.0, 1.0
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        found, _ = _support_at(draws, mid)
+        if abs(found - target) <= SUPPORT_TOLERANCE:
+            return mid, found, False
+        if found > target:
+            lo = mid
+        else:
+            hi = mid
+    raise CalibrationNotStable(f"{scenario.name}: no f gives the support {target} within "
+                               f"{SUPPORT_TOLERANCE}")  # fmt: skip
+
+
+def _safe_shifts(
+    draws: _Draws, failure: float, vectors: Sequence[Vector]
+) -> tuple[dict[str, dict[int, float]], dict[str, float], dict[str, float], bool]:
+    """The safe alternative's shifts (M10) on the supported blocks' unshifted interpolated
+    utility at f: per arm, c_v = 3 − m + (λ − 1)(ū_v − m), λ² = (4 − W)/B (W the within-vector,
+    B the between-vector variance, block-weighted, so that the shifted values have mean 3 pp and
+    SD 2 pp); λ = 0 and flagged when W > 4 (or B = 0); a vector no supported block drew takes
+    3 − m. The factual losses take one shift to mean 2 pp."""
+    mmlu_shift: dict[str, dict[int, float]] = {}
+    factual_shift: dict[str, float] = {}
+    lambdas: dict[str, float] = {}
+    flagged = False
+    for a, arm in enumerate(ARM_ORDER):
+        mask = draws.supported("A-F" if arm != "P" else "P-F", failure)
+        u, f, seeds = draws.mmlu[:, :, a][mask], draws.factual[:, :, a][mask], draws.seeds[mask]
+        if u.size == 0:
+            raise CalibrationNotStable(f"arm {arm}: no supported block to calibrate on")
+        m = float(u.mean())
+        kinds, inverse = np.unique(seeds, return_inverse=True)
+        counts = np.bincount(inverse)
+        means = np.bincount(inverse, weights=u) / counts
+        within = float(((u - means[inverse]) ** 2).mean())
+        between = float((counts * (means - m) ** 2).sum() / u.size)
+        target = SAFE_MMLU_SD**2
+        if within > target or between <= 0:
+            lam, flagged = 0.0, True
+        else:
+            lam = math.sqrt((target - within) / between)
+        seen = dict(zip(kinds.tolist(), means.tolist(), strict=True))
+        mmlu_shift[arm] = {
+            v.seed: SAFE_MMLU_MEAN - m + (lam - 1) * (seen[v.seed] - m)
+            if v.seed in seen
+            else SAFE_MMLU_MEAN - m
+            for v in vectors
+        }
+        factual_shift[arm] = SAFE_FACTUAL_MEAN - float(f.mean())
+        lambdas[arm] = lam
+    return mmlu_shift, factual_shift, lambdas, flagged
+
+
+def _utility_realized(draws: _Draws, failure: float) -> dict[str, tuple[float, float, float]]:
+    """Per arm, the interpolated MMLU loss's mean and SD (over the supported blocks pooled,
+    ddof 0) and the factual loss's mean, as the blocks saw them (shifted)."""
+    out = {}
+    for a, arm in enumerate(ARM_ORDER):
+        mask = draws.supported("A-F" if arm != "P" else "P-F", failure)
+        u, f = draws.mmlu_shifted[:, :, a][mask], draws.factual_shifted[:, :, a][mask]
+        out[arm] = (float(u.mean()), float(u.std()), float(f.mean()))
+    return out
+
+
+def calibrate_safe(
+    scenario: Scenario,
+    setup: Setup,
+    candidate: int,
+    seed: np.random.SeedSequence,
+    *,
+    studies: int = CALIBRATION_STUDIES,
+) -> Calibration:
+    """The setup's calibration of (scenario, candidate) with the safe alternative's shifts (M10)
+    computed on the supported validation blocks' interpolated utility at its f, and the realized
+    mean, SD and factual mean measured again with the shifts applied (the shift changes gross
+    collapses, so the measurement draws again). The empirical point (M11) keeps its vectors: no
+    shift, the realized utility measured."""
+    calibration = _current(scenario, setup, candidate)
+    if scenario.utility != "safe":
+        plain = replace(calibration, mmlu_shift={}, factual_shift={}, utility_lambda={},
+                        utility_flagged=False)  # fmt: skip
+        draws = _draws(scenario, _with(setup, scenario, candidate, plain), candidate, seed,
+                       studies)  # fmt: skip
+        return replace(plain, utility_realized=_utility_realized(draws, plain.failure))
+    draws = _draws(scenario, setup, candidate, seed, studies)
+    mmlu_shift, factual_shift, lambdas, flagged = _safe_shifts(
+        draws, calibration.failure, setup.vectors
+    )
+    shifted = replace(calibration, mmlu_shift=mmlu_shift, factual_shift=factual_shift,
+                      utility_lambda=lambdas, utility_flagged=flagged)  # fmt: skip
+    measured = _draws(scenario, _with(setup, scenario, candidate, shifted), candidate, seed,
+                      studies)  # fmt: skip
+    return replace(shifted, utility_realized=_utility_realized(measured, calibration.failure))
+
+
+def _spread(scenario: Scenario, draws: _Draws, failure: float, sigma: float,
+            comparison: str) -> tuple[float, float]:  # fmt: skip
+    """The observed spread of d at Δ = 0 over the supported validation blocks at f (M1): the
+    square root of the mean within-study variance, the quantity the spread rule estimates, in
+    pp, and its Monte Carlo SE. Per study the variance is the sample variance of the blocks'
+    expected judged differences plus the mean of their label variances (``label_variance``):
+    the expectation of the observed d's sample variance given the blocks, so that the labels
+    count exactly and every σ reuses the same draws."""
+    arm = COMPARISONS[comparison][0]
+    a, f_ = ARM_ORDER.index(arm), ARM_ORDER.index("F")
+    mask = draws.supported(comparison, failure)
+    effect = draws.effects[:, :, 0 if arm == "A" else 1]
+    g = scenario.curvature_scale
+
+    def harm(index: int, which: np.ndarray, extra: np.ndarray | float) -> np.ndarray:
+        name = ARM_ORDER[index]
+        x = np.where(mask, which[:, :, index], 0.0)
+        return np.clip(harm_curve(name, x, g) + extra, 0.0, 1.0)
+
+    h = np.stack([harm(a, draws.x_lo, sigma * effect), harm(a, draws.x_hi, sigma * effect),
+                  harm(f_, draws.x_lo, 0.0), harm(f_, draws.x_hi, 0.0)], axis=-1)  # fmt: skip
+    wa, wf = np.where(mask, draws.w[:, :, a], 0.0), np.where(mask, draws.w[:, :, f_], 0.0)
+    c = np.stack([1 - wa, wa, -(1 - wf), -wf], axis=-1)
+    arms = (arm, arm, "F", "F")
+    p = np.stack([judged_share(name, h[..., j], scenario) for j, name in enumerate(arms)], -1)
+    mu = (c * p).sum(axis=-1)
+    noise = label_variance(h, c, arms, scenario)
+    n = mask.sum(axis=1)
+    keep = n >= 2
+    n_, mask_ = n[keep], mask[keep]
+    mean = np.where(mask_, mu[keep], 0.0).sum(axis=1) / n_
+    ss = np.where(mask_, (mu[keep] - mean[:, None]) ** 2, 0.0).sum(axis=1)
+    variance = ss / (n_ - 1) + np.where(mask_, noise[keep], 0.0).sum(axis=1) / n_
+    total = float(variance.mean())
+    se = float(variance.std(ddof=1) / math.sqrt(variance.size)) / (2 * math.sqrt(total))
+    return 100 * math.sqrt(total), 100 * se
+
+
+def _solve_sigma(scenario: Scenario, draws: _Draws, failure: float, comparison: str) -> float:
+    """σ by bisection so that the spread at Δ = 0 is the planning spread (0 when the labels and
+    the geometry alone already reach it)."""
+    target = scenario.spread_pp
+    if _spread(scenario, draws, failure, 0.0, comparison)[0] >= target:
+        return 0.0
+    lo, hi = 0.0, 0.5
+    while _spread(scenario, draws, failure, hi, comparison)[0] < target:
+        hi *= 2
+        if hi > 64:
+            raise CalibrationNotStable(f"{scenario.name}: no σ reaches the spread {target} pp")
+    while hi - lo > SIGMA_PRECISION:
+        mid = (lo + hi) / 2
+        if _spread(scenario, draws, failure, mid, comparison)[0] < target:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def calibrate_spread(
+    scenario: Scenario,
+    setup: Setup,
+    candidate: int,
+    seed: np.random.SeedSequence,
+    *,
+    studies: int = CALIBRATION_STUDIES,
+) -> tuple[float, float, float, float]:
+    """(σ_AF, σ_PF, the attained A–F and P–F spreads in pp) (M1, M2): each σ by bisection so
+    that the observed SD of d at Δ = 0, over the supported validation blocks at the rates each
+    selection chose, is the planning spread (``_spread``), at the setup's f and shifts."""
+    calibration = _current(scenario, setup, candidate)
+    draws = _draws(scenario, setup, candidate, seed, studies)
+    f = calibration.failure
+    sigma_af = _solve_sigma(scenario, draws, f, "A-F")
+    sigma_pf = _solve_sigma(scenario, draws, f, "P-F")
+    return (sigma_af, sigma_pf, _spread(scenario, draws, f, sigma_af, "A-F")[0],
+            _spread(scenario, draws, f, sigma_pf, "P-F")[0])  # fmt: skip
+
+
+def _mean_truth(scenario: Scenario, setup: Setup, calibration: Calibration, draws: _Draws,
+                comparison: str) -> tuple[float, float]:  # fmt: skip
+    """The mean over the selections of the per-study truth (``truth`` at each study's selected
+    rates, through the same moments and ``_combine``; studies share rates, rounded to 3
+    significant digits) and its Monte Carlo SE, in proportions. A study whose truth is undefined
+    (no vector supports its rates) is left out."""
+    arms = COMPARISONS[comparison]
+    shifted = _shifted(setup.vectors, calibration)
+    kstar_ln = math.log(CANDIDATES[calibration.candidate]["targets"]["star"])
+    keys = [tuple((r[arm]["l"], r[arm]["u"]) for arm in arms) for r in draws.rates]
+    moments: dict[tuple[str, tuple[float, float]], list[tuple[float, float]]] = {}
+    for key in set(keys):
+        for arm, pair in zip(arms, key, strict=True):
+            if (arm, pair) not in moments:
+                rates = {"l": pair[0], "u": pair[1]}
+                moments[(arm, pair)] = [
+                    _cached_moments(v, arm, rates, scenario, calibration, setup.slopes, kstar_ln,
+                                    tol=TOLERANCE, max_nodes=MAX_NODES)
+                    for v in shifted
+                ]  # fmt: skip
+    values = {
+        key: _combine({arm: moments[(arm, pair)] for arm, pair in zip(arms, key, strict=True)},
+                      calibration.failure)[comparison]
+        for key in set(keys)
+    }  # fmt: skip
+    per = np.array([values[k] for k in keys])
+    per = per[np.isfinite(per)]
+    if per.size < 2:
+        raise CalibrationNotStable(f"{scenario.name}: the truth is undefined at the selections")
+    return float(per.mean()), float(per.std(ddof=1) / math.sqrt(per.size))
+
+
+def _solve_offset(scenario: Scenario, setup: Setup, calibration: Calibration, draws: _Draws,
+                  comparison: str, target: float) -> float:  # fmt: skip
+    """The offset of A (A–F) or P (P–F) at which the mean truth over the selections is
+    ``target`` (proportions): the secant method from the current offset, its first step with the
+    judged share's slope (the truth rises with the offset, nearly linearly: only the clip bends
+    it), until the mean truth is within ``OFFSET_PRECISION`` of the target."""
+    arm = COMPARISONS[comparison][0]
+    name = "offset_a" if arm == "A" else "offset_p"
+
+    def gap(offset: float) -> float:
+        here = replace(calibration, **{name: offset})
+        return _mean_truth(scenario, setup, here, draws, comparison)[0] - target
+
+    m_h, m_n = scenario.missing_rates()
+    se, fpr = JUDGES[scenario.judge][arm]
+    before = calibration.offset(arm)
+    g_before = gap(before)
+    if abs(g_before) <= OFFSET_PRECISION:
+        return before
+    now = before - g_before / ((1 - m_h) * se - (1 - m_n) * fpr)
+    for _ in range(50):
+        g_now = gap(now)
+        if abs(g_now) <= OFFSET_PRECISION:
+            return now
+        if g_now == g_before:
+            break
+        before, g_before, now = now, g_now, now - g_now * (now - before) / (g_now - g_before)
+    raise CalibrationNotStable(f"{scenario.name}: the offset of {arm} does not reach the mean "
+                               f"truth {target}")  # fmt: skip
+
+
+def calibrate_offsets(
+    scenario: Scenario,
+    setup: Setup,
+    candidate: int,
+    seed: np.random.SeedSequence,
+    *,
+    studies: int = CALIBRATION_STUDIES,
+) -> tuple[float, float]:
+    """(o_A, o_P) (M15, M2): each solved so that the mean, over the selections, of the per-study
+    truth (``truth`` at that study's selected rates) is Δ_AF (Δ_PF), at the setup's f, shifts
+    and σ."""
+    calibration = _current(scenario, setup, candidate)
+    draws = _draws(scenario, setup, candidate, seed, studies)
+    o_a = _solve_offset(scenario, setup, calibration, draws, "A-F", scenario.delta_af_pp / 100)
+    o_p = _solve_offset(scenario, setup, calibration, draws, "P-F", scenario.delta_pf_pp / 100)
+    return o_a, o_p
+
+
+def _current(scenario: Scenario, setup: Setup, candidate: int) -> Calibration:
+    """The setup's calibration of (scenario, candidate), or where the calibration starts."""
+    found = setup.calibrations.get((scenario, candidate))
+    return found if found is not None else _starting_calibration(scenario, setup, candidate)
+
+
+def _starting_calibration(scenario: Scenario, setup: Setup, candidate: int) -> Calibration:
+    """Where the calibration starts: no failure, no shift (zero shifts of every vector for the
+    safe alternative), no block effect, no offset."""
+    zero = {}
+    if scenario.utility == "safe":
+        zero = {"mmlu_shift": {arm: {v.seed: 0.0 for v in setup.vectors} for arm in ARM_ORDER},
+                "factual_shift": dict.fromkeys(ARM_ORDER, 0.0)}  # fmt: skip
+    return Calibration(
+        candidate=candidate, failure=0.0, realized_support=0.0, support_flagged=False,
+        mmlu_shift=zero.get("mmlu_shift", {}), factual_shift=zero.get("factual_shift", {}),
+        utility_realized={}, utility_flagged=False, sigma_af=0.0, sigma_pf=0.0, offset_a=0.0,
+        offset_p=0.0, attained_af_pp=0.0, attained_pf_pp=0.0, attained_delta_pp={},
+    )  # fmt: skip
+
+
+def calibrate_scenario(
+    scenario: Scenario,
+    setup: Setup,
+    candidate: int,
+    seed: np.random.SeedSequence,
+    *,
+    studies: int = CALIBRATION_STUDIES,
+) -> Calibration:
+    """Everything calibrated for (scenario, candidate) through the selection, on the one stream
+    ``seed`` (``calibration_stream``): f (``calibrate_failure``) and the safe shifts
+    (``calibrate_safe``) alternate until neither moves (at most 10 rounds, otherwise
+    ``CalibrationNotStable``); σ and the offsets depend on them and not the other way round, so
+    they are computed in the round in which nothing moved (``calibrate_spread``,
+    ``calibrate_offsets``), with the attained spreads and mean truths and their Monte Carlo SEs.
+    A gate scenario has no harm: σ and the offsets stay 0. ``fixation`` writes the result and
+    ``run`` recomputes it."""
+    calibration = _starting_calibration(scenario, setup, candidate)
+    before = None
+    for _ in range(CALIBRATION_ROUNDS):
+        here = _with(setup, scenario, candidate, calibration)
+        f, realized, flagged = calibrate_failure(scenario, here, candidate, seed, studies=studies)
+        calibration = replace(calibration, failure=f, realized_support=realized,
+                              support_flagged=flagged)  # fmt: skip
+        calibration = calibrate_safe(scenario, _with(setup, scenario, candidate, calibration),
+                                     candidate, seed, studies=studies)  # fmt: skip
+        now = (calibration.failure, calibration.mmlu_shift, calibration.factual_shift)
+        if now == before:
+            break
+        before = now
+    else:
+        raise CalibrationNotStable(
+            f"{scenario.name} at candidate {candidate}: f and the safe shifts still moved after "
+            f"{CALIBRATION_ROUNDS} rounds"
+        )
+    if scenario.role == "gate":
+        return calibration
+    here = _with(setup, scenario, candidate, calibration)
+    sigma_af, sigma_pf, spread_af, spread_pf = calibrate_spread(
+        scenario, here, candidate, seed, studies=studies
+    )
+    calibration = replace(calibration, sigma_af=sigma_af, sigma_pf=sigma_pf,
+                          attained_af_pp=spread_af, attained_pf_pp=spread_pf)  # fmt: skip
+    draws = _draws(scenario, here, candidate, seed, studies)
+    spread_se = {c: _spread(scenario, draws, calibration.failure, s, c)[1]
+                 for c, s in (("A-F", sigma_af), ("P-F", sigma_pf))}  # fmt: skip
+    here = _with(setup, scenario, candidate, calibration)
+    offset_a, offset_p = calibrate_offsets(scenario, here, candidate, seed, studies=studies)
+    calibration = replace(calibration, offset_a=offset_a, offset_p=offset_p,
+                          attained_spread_se_pp=spread_se)  # fmt: skip
+    attained = {}
+    for comparison in COMPARISONS:
+        mean, se = _mean_truth(scenario, setup, calibration, draws, comparison)
+        attained[comparison] = (100 * mean, 100 * se)
+    return replace(calibration, attained_delta_pp=attained)

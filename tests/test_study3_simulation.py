@@ -1,6 +1,7 @@
 """Study 3's simulation before validation (analysis/study3_simulation.py): the scenario models
 and the exact truth, checked against study 1's curves, large samples and a brute-force simulation
-of fresh blocks, on synthetic seed vectors."""
+of fresh blocks, on synthetic seed vectors; one simulated study through the registered functions
+and the calibration through the selection, on synthetic whole seed vectors."""
 
 import math
 import subprocess
@@ -14,9 +15,18 @@ import pytest
 from scipy.stats import norm
 
 from zero_field_refusal.analysis import study3_simulation as sim
-from zero_field_refusal.analysis.study3_blocks import arm_support
-from zero_field_refusal.analysis.study3_records import Cell, Endpoint
-from zero_field_refusal.analysis.study3_search import CANDIDATES
+from zero_field_refusal.analysis.study3_blocks import arm_support, block_state
+from zero_field_refusal.analysis.study3_decisions import LEVELS, cap_of, sample_size
+from zero_field_refusal.analysis.study3_inference import Interval, stream
+from zero_field_refusal.analysis.study3_progress import confirmation_state
+from zero_field_refusal.analysis.study3_records import SEEDS, Cell, Endpoint
+from zero_field_refusal.analysis.study3_search import (
+    ARM_ORDER,
+    CANDIDATES,
+    LABELS,
+    SLOPES,
+    search_state,
+)
 from zero_field_refusal.analysis.study3_seed_vectors import Point, Vector
 
 START_RATES = CANDIDATES[1]["start"]
@@ -655,3 +665,461 @@ def test_a_scenario_round_trips_through_json_and_refuses_another_field() -> None
         replace(sim.SCENARIOS[0], jitter=1)
     with pytest.raises(ValueError):
         replace(sim.SCENARIOS[0], support=0.9 + 0.2)
+
+
+# ------------------------------------------------------------------ one study
+
+SEED = stream(20261101, "support", "test", 1)  # a calibration stream
+WORLD_BIAS = 0.12  # ln K at the starting rates lies above the targets: the search moves them
+SEED_SD = {"A": 0.07, "F": 0.08, "P": 0.07}
+
+
+def world_vectors(count: int = 25, seed: int = 7) -> list[Vector]:
+    """Synthetic whole seed vectors: per arm three rates around candidate 1's starting rates, ln K
+    in ln η with the registered slope, a seed effect and a bias above the targets (so that the
+    search adjusts the rates), the MMLU loss rising with ln K; one vector's F lies far above K*
+    (no bracket at any selected rate), so that the natural support lies below 1."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for i in range(count):
+        utility = rng.normal(0.0, 0.8)
+        arms = {}
+        for arm in ARM_ORDER:
+            lo, hi = START_RATES[arm]["l"], START_RATES[arm]["u"]
+            mid = math.sqrt(lo * hi)
+            effect = 0.30 if (i == 0 and arm == "F") else rng.normal(0.0, SEED_SD[arm])
+            points = []
+            for r in (lo * 0.8, mid, hi * 1.25):
+                x = SLOPES[arm] * math.log(r / mid) + WORLD_BIAS + effect + rng.normal(0, 0.02)
+                points.append((r, x, 2.5 + 4.0 * x + utility + rng.normal(0.0, 0.1)))
+            arms[arm] = points
+        out.append(make_vector(2100 + i, arms))
+    return out
+
+
+def hand_calibration(candidate: int, failure: float = 0.02, sigma: float = 0.03, **change):
+    return sim.Calibration(
+        candidate=candidate,
+        failure=failure,
+        realized_support=0.9,
+        support_flagged=False,
+        mmlu_shift=change.pop("mmlu_shift", {}),
+        factual_shift=change.pop("factual_shift", {}),
+        utility_realized={},
+        utility_flagged=False,
+        sigma_af=sigma,
+        sigma_pf=sigma,
+        offset_a=change.pop("offset_a", 0.0),
+        offset_p=change.pop("offset_p", 0.0),
+        attained_af_pp=0.0,
+        attained_pf_pp=0.0,
+        attained_delta_pp={},
+    )
+
+
+def af_fails_at_candidate_1() -> sim.Scenario:
+    return replace(sim.SCENARIOS_BY_NAME["C02"], name="AF1")
+
+
+def pf_gate_fails() -> sim.Scenario:
+    return replace(sim.SCENARIOS_BY_NAME["C02"], name="PF0")
+
+
+def small_spread() -> sim.Scenario:
+    return replace(sim.SCENARIOS_BY_NAME["C01"], name="S60")
+
+
+@pytest.fixture(scope="module")
+def vectors() -> list[Vector]:
+    return world_vectors()
+
+
+@pytest.fixture(scope="module")
+def setup(vectors) -> sim.Setup:
+    """The synthetic vectors, their slopes and hand calibrations of every scenario the tests run
+    (the calibration's own tests calibrate)."""
+    from zero_field_refusal.analysis.study3_seed_vectors import utility_slopes
+
+    cal = {}
+    for sc in sim.SCENARIOS:
+        for c in (1, 2):
+            cal[(sc, c)] = hand_calibration(c)
+    cal[(replace(sim.SCENARIOS_BY_NAME["C02"], support=0.5), 1)] = hand_calibration(1, 0.4)
+    cal[(af_fails_at_candidate_1(), 1)] = hand_calibration(1, 0.6)
+    cal[(af_fails_at_candidate_1(), 2)] = hand_calibration(2, 0.0)
+    shift = {arm: {v.seed: (6.0 if arm == "P" else 0.0) for v in vectors} for arm in ARM_ORDER}
+    for c in (1, 2):  # P's MMLU loss far above 5 pp: P–F's utility bounds fail, A–F's hold
+        cal[(pf_gate_fails(), c)] = hand_calibration(
+            c, mmlu_shift=shift, factual_shift=dict.fromkeys(ARM_ORDER, 0.0)
+        )
+        cal[(small_spread(), c)] = hand_calibration(c, sigma=0.0)
+    return sim.Setup(
+        vectors=tuple(vectors),
+        slopes=utility_slopes(vectors),
+        calibrations=cal,
+        M=10_000,
+        levels=LEVELS,
+        validation_blocks=28,
+        n_min=None,
+    )
+
+
+def test_synthetic_round0_passes_the_registered_search(setup) -> None:
+    eps = [
+        sim.synthetic_endpoint(
+            1,
+            "search",
+            0,
+            arm,
+            CANDIDATES[1]["start"][arm][lab],
+            s,
+            K=5.5,
+            mmlu=None,
+            factual=None,
+            k_only=True,
+        )
+        for arm in ARM_ORDER
+        for lab in LABELS
+        for s in SEEDS["search"][1]
+    ]
+    state = search_state(eps, 1, problems=())
+    assert state["next"] in ("round1", "numerical") and state["problems"] == []
+
+
+def test_a_synthetic_block_passes_the_registered_block_state() -> None:
+    eps = [
+        sim.synthetic_endpoint(
+            1,
+            "validation",
+            None,
+            arm,
+            START_RATES[arm][lab],
+            10300,
+            K=k,
+            mmlu=3.0,
+            factual=1.5,
+            k_only=False,
+        )
+        for arm in ARM_ORDER
+        for lab, k in (("l", 5.0), ("u", 7.0))
+    ]
+    eps[0] = sim.synthetic_endpoint(
+        1, "validation", None, "A", START_RATES["A"]["l"], 10300, K=None, mmlu=None,
+        factual=None, state="scientific", k_only=False,
+    )  # fmt: skip
+    block = block_state(eps, 10300, 1, ARM_ORDER)
+    assert block["state"] == "resolved" and block["blockers"] == []
+    assert block["arms"]["A"]["reason"] == "failed endpoint" and block["PF"]["supported"]
+    state = confirmation_state(
+        [
+            sim.synthetic_endpoint(
+                1, "confirmation", None, arm, START_RATES[arm][lab], s, K=k, mmlu=3.0,
+                factual=1.5, k_only=False,
+            )
+            for s in SEEDS["confirmation"][1][:3]
+            for arm in ("A", "F")
+            for lab, k in (("l", 5.0), ("u", 7.0))
+        ],
+        1,
+        60,
+        ["A-F"],
+    )  # fmt: skip
+    assert state["started"] == [10400, 10401, 10402] and state["counters"]["A-F"] == 3
+    assert state["problems"] == [] and state["may_start_next"]
+
+
+def test_a_study_depends_only_on_its_stream_scenario_and_index(setup) -> None:
+    sc = sim.SCENARIOS_BY_NAME["C02"]
+    a = sim.simulate_study(sc, setup, 11, 7, resamples=200, levels=LEVELS)
+    other = sim.simulate_study(sc, setup, 11, 3, resamples=200, levels=LEVELS)
+    assert sim.simulate_study(sc, setup, 11, 7, resamples=200, levels=LEVELS) == a
+    assert other != a and any(a.confirmed.values())
+    assert sim.simulate_study(sc, setup, 12, 7, resamples=200, levels=LEVELS) != a
+
+
+def test_the_n_point_cohort_at_n_is_the_confirmations_cohort(setup) -> None:
+    """At N = 60 (a small spread), the N point 60's blocks are the confirmation's cohort: the
+    first 60 supported blocks by seed order."""
+    seen = 0
+    for index in range(4):
+        o = sim.simulate_study(small_spread(), setup, 11, index, resamples=200, levels=LEVELS)
+        for level in LEVELS:
+            if not o.confirmed[level] or o.N[level] != 60:
+                continue
+            seen += 1
+            for comparison in ("A-F", "P-F"):
+                cohort = o.cohorts[(level, comparison)]
+                assert len(cohort) == 60
+                assert o.point_seeds[(60, comparison)] == cohort
+                assert cohort == tuple(sorted(cohort)) and cohort[0] >= 10400
+    assert seen
+
+
+def test_p_closed_leaves_the_af_analysis_set_unchanged(setup) -> None:
+    """A study whose P–F gate fails: the screen computes P–F as if active, the procedure closes
+    P; A–F's blocks, analysis sets, intervals and readings are the same."""
+    sc = pf_gate_fails()
+    for index in range(3):
+        screen = sim.simulate_study(sc, setup, 13, index, resamples=200, levels=LEVELS)
+        procedure = sim.simulate_study(
+            sc, setup, 13, index, mode="procedure", resamples=200, levels=LEVELS
+        )
+        assert screen.gates == procedure.gates and screen.gates["PF"] is False
+        assert screen.active == ["A-F", "P-F"] and procedure.active == ["A-F"]
+        assert screen.truth["A-F"] == procedure.truth["A-F"]
+        for level in LEVELS:
+            if not screen.confirmed[level]:
+                continue
+            key = (level, "A-F")
+            assert screen.analysis[key] == procedure.analysis[key]
+            assert screen.direction[key] == procedure.direction[key]
+            for point in sim.N_POINTS:
+                assert (
+                    screen.covered[(point, level, "A-F")]
+                    == procedure.covered[(point, level, "A-F")]
+                )
+                assert procedure.covered[(point, level, "P-F")] is None
+
+
+def test_n_follows_the_rule_at_each_level(setup) -> None:
+    o = sim.simulate_study(sim.SCENARIOS_BY_NAME["C02"], setup, 11, 0, resamples=200, levels=LEVELS)
+    assert o.m >= 22 and o.spread_pp > 0
+    for level in LEVELS:
+        assert o.N[level] == sample_size(o.spread_pp, o.m, level)  # spread kept in memory only
+        assert o.cap[level] == cap_of(o.N[level])
+
+
+def test_a_failed_af_gate_is_unconfirmed_and_counted(setup) -> None:
+    o = sim.simulate_study(
+        replace(sim.SCENARIOS_BY_NAME["C02"], support=0.5),
+        setup,
+        11,
+        0,
+        resamples=200,
+        levels=LEVELS,
+    )
+    assert not any(o.confirmed.values()) and set(o.why.values()) == {"af_gate"}
+    assert o.gates["AF"] is False and o.covered == {}
+
+
+def test_a_cap_beyond_the_seeds_is_unconfirmed_at_its_level(setup) -> None:
+    o = sim.simulate_study(
+        sim.SCENARIOS_BY_NAME["C02"], replace(setup, n_min=190), 13, 0, mode="procedure",
+        resamples=200, levels=(0.975,),
+    )  # fmt: skip
+    assert o.N[0.975] >= 190 and o.cap[0.975] > 200
+    assert o.confirmed == {0.975: False} and o.why == {0.975: "cap_beyond_seeds"}
+
+
+def test_an_undetermined_interval_is_a_miss(setup, monkeypatch) -> None:
+    def undetermined(d, *, level, resamples, seed, chunk):
+        return Interval(len(d), 0.0, 0.0, 0.0, float(level), resamples, math.nan, math.nan,
+                        0, 0, 0, True)  # fmt: skip
+
+    monkeypatch.setattr(sim, "bootstrap_t", undetermined)
+    o = sim.simulate_study(sim.SCENARIOS_BY_NAME["C02"], setup, 11, 0, resamples=200,
+                           levels=LEVELS)  # fmt: skip
+    assert o.covered and not any(o.covered.values())
+    assert all(v is None for v in o.direction.values())
+
+
+def test_the_outcome_row_round_trips(setup) -> None:
+    import json
+
+    for sc, mode, s in (
+        (sim.SCENARIOS_BY_NAME["C02"], "screen", setup),
+        (pf_gate_fails(), "procedure", setup),
+        (replace(sim.SCENARIOS_BY_NAME["C02"], support=0.5), "screen", setup),
+    ):
+        o = sim.simulate_study(sc, s, 11, 1, mode=mode, resamples=200, levels=LEVELS)
+        text = json.dumps(sim.outcome_json(o), allow_nan=False, sort_keys=True)
+        assert "spread" not in text
+        assert sim.outcome_from_json(json.loads(text)) == o
+    with pytest.raises(ValueError):
+        sim.outcome_from_json({**json.loads(text), "spread_pp": 3.0})
+
+
+def test_the_screen_counts_a_joint_miss_when_either_comparison_misses(setup) -> None:
+    o = sim.simulate_study(sim.SCENARIOS_BY_NAME["C02"], setup, 11, 2, resamples=200,
+                           levels=LEVELS)  # fmt: skip
+    for (point, level, comparison), value in o.covered.items():
+        if comparison == "joint":
+            assert value == (o.covered[(point, level, "A-F")] and o.covered[(point, level, "P-F")])
+
+
+def test_procedure_mode_falls_back_to_candidate_2(setup) -> None:
+    o = sim.simulate_study(af_fails_at_candidate_1(), setup, 13, 0, mode="procedure",
+                           resamples=200, levels=(0.975,))  # fmt: skip
+    assert o.candidate == 2 and o.rates_at_candidate(2) and o.rates_at_candidate(1)
+    assert o.confirmed[0.975]
+    screen = sim.simulate_study(af_fails_at_candidate_1(), setup, 13, 0, resamples=200,
+                                levels=(0.975,))  # fmt: skip
+    assert screen.candidate == 1 and screen.why == {0.975: "af_gate"}
+    assert not screen.rates_at_candidate(2)
+
+
+def test_procedure_mode_ends_in_the_scientific_report_when_candidate_2_fails(setup) -> None:
+    sc = af_fails_at_candidate_1()
+    failing = replace(setup, calibrations={**setup.calibrations, (sc, 2): hand_calibration(2, 0.6)})
+    o = sim.simulate_study(sc, failing, 13, 0, mode="procedure", resamples=200,
+                           levels=(0.975,))  # fmt: skip
+    assert o.candidate == 2 and o.why == {0.975: "scientific_report"} and not o.covered
+
+
+def test_procedure_mode_counts_pf_only_where_its_gate_passed(setup) -> None:
+    o = sim.simulate_study(pf_gate_fails(), setup, 13, 0, mode="procedure", resamples=200,
+                           levels=(0.975,))  # fmt: skip
+    assert o.active == ["A-F"] and all(v is None for k, v in o.covered.items() if k[2] == "P-F")
+    for (point, level, comparison), value in o.covered.items():
+        if comparison == "joint":
+            assert value == o.covered[(point, level, "A-F")]
+
+
+def test_procedure_mode_raises_n_to_n_min(setup) -> None:
+    o = sim.simulate_study(sim.SCENARIOS_BY_NAME["C02"], replace(setup, n_min=120), 13, 0,
+                           mode="procedure", resamples=200, levels=(0.975,))  # fmt: skip
+    assert o.N[0.975] >= 120
+    screen = sim.simulate_study(sim.SCENARIOS_BY_NAME["C02"], replace(setup, n_min=120), 13, 0,
+                                resamples=200, levels=(0.975,))  # fmt: skip
+    assert screen.N[0.975] < 120  # the screen takes N from the rule alone
+
+
+# ------------------------------------------------------------------ the calibration
+
+
+def support_at_starting_rates(sc, setup, f) -> float:
+    """The expected A–F support of a validation block at candidate 1's starting rates (no
+    search): each block one vector, uniform with replacement, its four runs surviving f."""
+    supported = []
+    for v in setup.vectors:
+        eps = [
+            sim.synthetic_endpoint(1, "validation", None, arm, START_RATES[arm][lab], 10300,
+                                   K=math.exp(v.ln_k(arm, START_RATES[arm][lab])), mmlu=1.0,
+                                   factual=1.0, k_only=False)
+            for arm in ("A", "F") for lab in LABELS
+        ]  # fmt: skip
+        supported.append(block_state(eps, 10300, 1, ["A", "F"])["AF"]["supported"])
+    return float(np.mean(supported)) * (1 - f) ** 4
+
+
+@pytest.mark.parametrize("name", ["C02", "C09", "C10", "G1"])
+def test_the_calibrated_failure_gives_the_support_at_the_selected_rates(setup, name) -> None:
+    sc = sim.SCENARIOS_BY_NAME[name]
+    f, realized, flagged = sim.calibrate_failure(sc, setup, 1, SEED, studies=2_000)
+    support, se = sim.realized_support(sc, setup, 1, f, SEED, studies=2_000)
+    assert not flagged and 0.0 <= f < 1.0
+    assert support == realized and abs(support - sc.support) <= 2 * se + 1e-4
+    # the selection matters: the starting rates' support at this f is not what is calibrated
+    assert support_at_starting_rates(sc, setup, f) != pytest.approx(support, abs=1e-12)
+
+
+def test_the_realized_support_is_the_registered_block_states(setup) -> None:
+    """The support the calibration counts is the A–F support ``block_state`` gives the studies'
+    validation blocks with the failures applied (the same streams)."""
+    sc = sim.SCENARIOS_BY_NAME["C02"]
+    support, _ = sim.realized_support(sc, setup, 1, 0.07, SEED, studies=40)
+    failing = replace(
+        setup, calibrations={**setup.calibrations, (sc, 1): hand_calibration(1, 0.07)}
+    )
+    blocks = [
+        sim.simulate_study(
+            sc, failing, SEED, i, resamples=200, levels=LEVELS, validation_only=True, candidate=1
+        ).m  # fmt: skip
+        for i in range(40)
+    ]
+    assert support == pytest.approx(sum(blocks) / (40 * 28), abs=1e-12)
+
+
+def test_natural_failures_beyond_one_minus_s_give_f_0_and_a_flag(setup) -> None:
+    sc = replace(sim.SCENARIOS_BY_NAME["C10"], support=0.999)  # above the natural support
+    f, realized, flagged = sim.calibrate_failure(sc, setup, 1, SEED, studies=2_000)
+    assert (f, flagged) == (0.0, True) and realized < 0.999
+
+
+def interpolated_utility_moments(sc, cal, setup, seed) -> dict:
+    """Per arm, the interpolated MMLU loss's mean and SD and the factual loss's mean over the
+    supported validation blocks of the same studies, from ``simulate_study`` itself."""
+    use = replace(setup, calibrations={**setup.calibrations, (sc, 1): cal})
+    values = {arm: [] for arm in ARM_ORDER}
+    for i in range(2_000):
+        o = sim.simulate_study(sc, use, seed, i, resamples=200, levels=LEVELS,
+                               validation_only=True, candidate=1)  # fmt: skip
+        for arm in ARM_ORDER:
+            values[arm] += [(m, f) for _, m, f in o.utility[arm]]
+    out = {}
+    for arm, pairs in values.items():
+        m = np.array([p[0] for p in pairs])
+        f = np.array([p[1] for p in pairs])
+        out[arm] = (float(m.mean()), float(m.std()), float(f.mean()))
+    return out
+
+
+def test_the_safe_alternative_holds_on_the_supported_interpolated_utility(setup) -> None:
+    sc = sim.SCENARIOS_BY_NAME["G1"]
+    cal = sim.calibrate_safe(sc, setup, 1, SEED, studies=2_000)
+    for arm in ("A", "F", "P"):
+        mean, sd, factual = cal.utility_realized[arm]
+        assert (mean, sd, factual) == pytest.approx((3.0, 2.0, 2.0), abs=1e-6)
+    # recomputed independently from the same studies' supported blocks
+    again = interpolated_utility_moments(sc, cal, setup, SEED)
+    for arm in ARM_ORDER:
+        assert again[arm] == pytest.approx(cal.utility_realized[arm], abs=1e-9)
+    assert not cal.utility_flagged and set(cal.mmlu_shift) == set(ARM_ORDER)
+    assert {v.seed for v in setup.vectors} == set(cal.mmlu_shift["A"])
+
+
+def realized_spread_at_selected_rates(sc, setup, cal, seed) -> tuple[float, float]:
+    """The observed A–F spread at Δ = 0 with simulated labels: the square root of the mean
+    within-study variance of d_AF over the supported validation blocks of the same studies,
+    and its Monte Carlo SE (pp)."""
+    zero = replace(cal, offset_a=0.0, offset_p=0.0)
+    use = replace(setup, calibrations={**setup.calibrations, (sc, 1): zero})
+    variances = []
+    for i in range(2_000):
+        o = sim.simulate_study(sc, use, seed, i, resamples=200, levels=LEVELS,
+                               validation_only=True, candidate=1)  # fmt: skip
+        if o.m is not None and o.m >= 2:
+            variances.append(o.spread_pp**2)
+    v = np.array(variances)
+    spread = math.sqrt(v.mean())
+    return spread, v.std(ddof=1) / math.sqrt(v.size) / (2 * spread)
+
+
+@pytest.mark.parametrize("name", ["C02", "C07", "C16", "P18"])
+def test_the_spread_and_delta_hold_at_the_selected_rates(setup, name) -> None:
+    sc = sim.SCENARIOS_BY_NAME[name]
+    cal = sim.calibrate_scenario(sc, setup, 1, SEED, studies=2_000)
+    spread, spread_se = realized_spread_at_selected_rates(sc, setup, cal, SEED)  # Δ = 0 copy
+    assert abs(spread - sc.spread_pp) <= 2 * spread_se + 1e-3
+    assert cal.attained_af_pp == pytest.approx(sc.spread_pp, abs=1e-6)
+    for comparison, target in (("A-F", sc.delta_af_pp), ("P-F", sc.delta_pf_pp)):
+        mean, se = cal.attained_delta_pp[comparison]
+        assert abs(mean - target) <= 2 * se + 1e-6
+
+
+def test_the_calibration_is_recomputed_identically(setup) -> None:
+    sc = sim.SCENARIOS_BY_NAME["C16"]
+    first = sim.calibrate_scenario(sc, setup, 1, SEED, studies=2_000)
+    sim.clear_caches()
+    assert sim.calibrate_scenario(sc, setup, 1, SEED, studies=2_000) == first
+
+
+def test_the_label_variance_is_the_simulated_labels(setup) -> None:
+    """The calibration takes the label noise of a block's difference through its exact variance
+    (prompts independent given the block, pairs of endpoints through the bivariate normal); it
+    matches the simulated labels' variance."""
+    sc = sim.SCENARIOS_BY_NAME["C13"]
+    rng = np.random.default_rng(9)
+    h = np.array([0.12, 0.2, 0.1, 0.18, 0.05, 0.3])
+    arms = ["A", "A", "F", "F", "P", "P"]
+    c = np.array([0.4, 0.6, -0.3, -0.7, 0.0, 0.0])
+    draws = np.array([c @ sim.endpoint_labels(h, arms, sc, rng) for _ in range(20_000)])
+    want = sim.label_variance(h[None, :4], c[None, :4], ("A", "A", "F", "F"), sc)[0]
+    assert draws.var(ddof=1) == pytest.approx(want, rel=0.04)
+    from scipy.stats import multivariate_normal
+
+    for t1, t2, rho in ((-1.0, 0.3, 0.7), (0.5, -2.0, 0.3), (-40.0, 0.2, 0.7)):
+        exact = multivariate_normal(mean=[0, 0], cov=[[1, rho], [rho, 1]]).cdf([t1, t2])
+        assert float(sim.bivariate_normal(np.array(t1), np.array(t2), rho)) == pytest.approx(
+            exact, abs=1e-7
+        )

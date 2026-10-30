@@ -526,3 +526,24 @@ def test_the_module_imports_no_torch_and_no_gpu_or_study2_reader():
         "sys.exit(any(m == b or m.startswith(b + '.') for m in sys.modules for b in bad))"
     )
     assert subprocess.run([sys.executable, "-c", code]).returncode == 0
+
+
+def test_one_point_losses_and_ln_k_are_numpys_interpolation() -> None:
+    """``losses`` and ``ln_k`` at one point are exactly ``losses_at`` and ``numpy.interp``, at
+    the knots, between them and beyond them."""
+    v = vector(2100, A=[(1e-5, 4.0), (1.5e-5, 5.5), (2e-5, 7.0), (3e-5, 9.0)],
+               F=[(1e-5, 4.5), (2e-5, 7.5)], P=[(1e-5, 4.2), (2e-5, 7.2)])  # fmt: skip
+    slopes = sv.utility_slopes([v])
+    rng = np.random.default_rng(3)
+    for arm in ("A", "F", "P"):
+        x = v._utility_map[arm][0]
+        points = [*x, *rng.uniform(x[0] - 0.5, x[-1] + 0.5, 200)]
+        many = v.losses_at(arm, np.array(points), slopes)
+        for i, at in enumerate(points):
+            assert v.losses(arm, at, slopes) == (float(many[0][i]), float(many[1][i]))
+        rates = [p.rate for p in v.arms[arm]]
+        for rate in [*rates, *rng.uniform(rates[0] * 0.9, rates[-1] * 1.1, 100)]:
+            xs, ys = v._rate_map[arm]
+            at = math.log(rate)
+            if xs[0] < at < xs[-1]:
+                assert v.ln_k(arm, rate) == float(np.interp(at, xs, ys))
