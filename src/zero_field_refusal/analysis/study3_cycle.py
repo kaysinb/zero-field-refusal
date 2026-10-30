@@ -177,7 +177,10 @@ cycle, under its old code and with the qualification read as it stood before the
 arm inactive: P–F closed by its validation gate or by a scientific failure, with no closure
 record). A run kept as of an arm closed by neither is a problem. A kept run's evidence that
 changes after the cycle (a file appearing or changing after its end line) invalidates the record
-by design: the files changed after the cycle.
+by design: the files changed after the cycle. A byte-identical copy (from the archive, or
+downloaded again) keeps the hashes; for new or changed evidence the remedy is the verified
+original snapshot or an explicit decision on its provenance, never deleting the new evidence to
+get an absence marker back.
 """
 
 from __future__ import annotations

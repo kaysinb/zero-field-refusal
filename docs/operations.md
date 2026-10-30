@@ -2307,7 +2307,10 @@ before each command below.
      sha256 (`config.yaml`, `meta.json`, `terminal.json`) and its journal lines; a file that is not
      there is listed as absent (`{path, absent: true}`), never refused. What keeps counting is
      listed as kept: the scientific failures, held runs, the runs of a closed arm and the stages
-     reused.
+     reused. A byte-identical copy from the archive, or a re-download, keeps every listed sha256;
+     new or changed evidence makes the cycle invalid and stops the route: restore the verified
+     original snapshot, or authorize the new evidence's provenance explicitly, and never delete
+     new evidence to get an absence marker back.
   4. **The call.** On the machine holding `$RUNS_DIR`, from the clean checkout of the fix, first
      with `--dry-run` (it prints the record and the bridge and writes nothing), then without:
 
@@ -2351,9 +2354,10 @@ before each command below.
      `--incident-time` is the cycle record's `written_at`, the time by the clock of the machine
      that wrote the cycle. The launcher refuses an incident time later than its own clock's now
      ("incident_time is later than now"): when the machine that launches runs behind the one
-     that wrote the cycle, the round is refused and nothing runs (it fails closed). Run the
-     printed command again on the machine that wrote the cycle, or after the skewed clock is
-     fixed (the launching machine's now is then not earlier than the cycle's `written_at`).
+     that wrote the cycle, the round is refused and nothing runs (it fails closed). Fix the
+     launching machine's clock and run the same printed command again, unchanged (its now is
+     then not earlier than the cycle's `written_at`); never change the cycle's `written_at` or
+     the round's `--incident-time` to get past the refusal.
   8. **After the cycle.** The cycle is spent once the candidate has a supersession record,
      whichever path wrote it. A technical mark outside the qualification after that is unresolved
      after the cycle: the step is blocked and technical, with the reason `unresolved_after_cycle`,
