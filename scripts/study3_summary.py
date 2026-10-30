@@ -681,7 +681,7 @@ def write_cycle(args: argparse.Namespace) -> None:
         refuse("cycle", "; ".join(exc.reasons))
     records = read_records(root, repo=REPO, expected_code=None, theta0=theta0, settings=settings)
     # the code in force before N's cycle: the existing chain's end, N's own supersession records
-    # aside (with none of them, the chain's end; with one, R2 below refuses)
+    # aside (with none of them, the chain's end; with one, the cycle is recorded already)
     old = chain_end(replace(records, cycles={c: found for c, found in records.cycles.items()
                                              if c < candidate}))  # fmt: skip
     if old is None:

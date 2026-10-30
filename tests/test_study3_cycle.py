@@ -1264,11 +1264,11 @@ def test_the_cycle_opens_the_new_chain_on_files_and_the_guards_stay(cycle_route)
 
 
 @pytest.mark.parametrize("why, setup", [
-    ("no cycle", lambda r: None),                                            # R1: no fix
-    ("recorded already", lambda r: r.commit_fix().qualify_supersession()),   # R2
-    ("campaigns/", lambda r: r.commit_fix().drop_engineering_campaign()),    # R11
-    ("not ended", lambda r: r.commit_fix().pending_search_run("F", "l")),    # R4
-    ("justification", lambda r: r.commit_fix().blank_justification("search")),  # R5
+    ("no cycle", lambda r: None),                                            # no fix committed
+    ("recorded already", lambda r: r.commit_fix().qualify_supersession()),   # qualify.py's cycle
+    ("campaigns/", lambda r: r.commit_fix().drop_engineering_campaign()),    # no campaign file
+    ("not ended", lambda r: r.commit_fix().pending_search_run("F", "l")),    # a run not ended
+    ("justification", lambda r: r.commit_fix().blank_justification("search")),  # a blank claim
 ])  # fmt: skip
 def test_cycle_refuses(cycle_route, why, setup):
     setup(cycle_route)
@@ -1280,8 +1280,8 @@ def test_cycle_refuses(cycle_route, why, setup):
 
 
 def test_a_marked_run_without_meta_json_carries_an_absence_marker_and_is_no_r7(cycle_route):
-    """A mark with no meta.json has no GPU code: a mark of the code in force (R6 refuses only a
-    known other code), its file an absence marker, its journal start binding it."""
+    """A mark with no meta.json has no GPU code: a mark of the code in force (only a mark of a
+    known other code is refused), its file an absence marker, its journal start binding it."""
     cycle_route.commit_fix()
     cycle_route.remove_meta(cycle_route.mark)
     ran = cycle_route.cycle("search=rerun", justification="search=x")
