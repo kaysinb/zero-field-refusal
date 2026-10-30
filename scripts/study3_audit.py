@@ -472,7 +472,7 @@ def agreements(args: argparse.Namespace) -> None:
     grok = labels_file("agreements", args.grok, root, ids, "--grok")
     try:
         found = study3_audit.agreements(gpt, grok, seed=audit["agreement_seed"])
-    except ValueError as exc:  # an item id and a label outside the judge's
+    except ValueError as exc:  # an item id and "not a label", never the value
         refuse("agreements", str(exc))
     counts = {k: len(found[k]) for k in ("agreements", "disagreements", "failed", "check")}
     record = {"kind": KINDS["agreements"], "candidate": candidate, "written_at": now(),
@@ -508,7 +508,7 @@ def estimate(args: argparse.Namespace) -> None:
     resolved = labels_file("estimate", args.reference, root, set(key), "--reference")
     try:
         values = study3_audit.reference_values(resolved)
-    except ValueError as exc:  # an item's label outside the judge's
+    except ValueError as exc:  # an item id and "not a label", never the value
         refuse("estimate", str(exc))
     frame, sample = redrawn(folder, selection, key, audit)
     reference = {entry["frame_index"]: values[item_id] for item_id, entry in key.items()}

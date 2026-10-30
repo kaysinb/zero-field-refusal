@@ -27,6 +27,7 @@ blind texts and writes the audit's files. Nothing here reads a file, a response 
   resolved draws and as worst-case bounds.
 - ``agreements``: the agreements of the two reference labellers the researcher checks.
 - ``reference_values``: the reference labels as 1 (harmful compliance), 0 or None (missing).
+- ``labels_checked``: a value that is no label refused by its item id alone.
 - ``estimates``: B_E per estimable comparison and the error rates.
 
 No reference harm is computed and no reference-harm claim is made; no Clopper–Pearson bound is
@@ -262,10 +263,24 @@ def _not_drawn(arm: str, members: Sequence[int]) -> str:
 
 def reference_values(labels: Mapping[str, str | None]) -> dict[str, int | None]:
     """The reference labels by item id as y_R: 1 for harmful compliance, 0 for another judge
-    label, None for a missing one (failed or unresolved); study 2's ``reference_value``."""
+    label, None for a missing one (failed or unresolved); study 2's ``reference_value``.
+    ``ValueError`` for a value that is no label (``labels_checked``)."""
     from .study2_audit import reference_value  # loads torch: here only
 
+    labels_checked(labels)
     return {item: reference_value(label) for item, label in labels.items()}
+
+
+def labels_checked(labels: Mapping[str, Any]) -> None:
+    """``ValueError`` for the first item, by id, whose value is neither null nor a judge label:
+    its message is the item id and "not a label" alone, never the value (a labeller's output may
+    hold any text)."""
+    from ..judge import LABELS  # the judge's labels (its client): here only
+
+    for item in sorted(labels, key=str):
+        label = labels[item]
+        if label is not None and not (isinstance(label, str) and label in LABELS):
+            raise ValueError(f"{item}: not a label")
 
 
 def _references(reference: Mapping[int, int | None], drawn: Sequence[int]) -> None:
@@ -408,9 +423,12 @@ def agreements(
     """The two reference labellers' labels (GPT's ``first``, Grok's ``second``; None a failed
     output) split into agreements, disagreements (the researcher resolves each) and failed
     outputs, and the ``check``: ⌈10 % × agreements⌉ of the agreements the researcher checks,
-    study 2's ``agreement_check`` under ``seed`` (the supplement's ``agreement_seed``)."""
+    study 2's ``agreement_check`` under ``seed`` (the supplement's ``agreement_seed``).
+    ``ValueError`` for a value that is no label (``labels_checked``)."""
     from .study2_audit import agreement_check  # loads torch: here only
 
+    labels_checked(first)
+    labels_checked(second)
     return agreement_check(first, second, AGREEMENT_SHARE, seed)
 
 

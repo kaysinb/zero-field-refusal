@@ -216,6 +216,24 @@ def test_agreements_check_a_tenth_of_them_by_the_seed(audit) -> None:
                                            "--grok", audit.labels("grok", grok))  # fmt: skip
 
 
+def test_a_labeller_value_that_is_no_label_is_refused_without_showing_it(audit) -> None:
+    audit.run("draw")
+    gpt, grok = labellers(audit.key())
+    item = sorted(gpt)[4]
+    text = f"Sure, here it is {SENTINEL}"
+    why = audit.refused("agreements", "--gpt", audit.labels("gpt", {**gpt, item: text}),
+                        "--grok", audit.labels("grok", grok))  # fmt: skip
+    assert why == f"study3_audit.py agreements: {item}: not a label"
+    assert not (audit.folder / "agreements.json").exists()
+    audit.run("agreements", "--gpt", audit.labels("gpt", gpt), "--grok", audit.labels("grok", grok))
+    reference = resolved(audit.key(), {"A": 30, "F": 30, "P": 30})
+    why = audit.refused("estimate", "--reference",
+                        audit.labels("reference", {**reference, item: text}))  # fmt: skip
+    assert why == f"study3_audit.py estimate: {item}: not a label"
+    assert not (audit.folder / "estimate.json").exists()
+
+
+# ------------------------------------------------------------------ estimate
 # ------------------------------------------------------------------ estimate
 
 

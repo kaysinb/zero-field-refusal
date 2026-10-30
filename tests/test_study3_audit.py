@@ -379,6 +379,20 @@ def test_the_agreements_check_a_tenth_by_the_seed() -> None:
     assert found["failed"] == [ids[1]] and len(found["disagreements"]) == 10
 
 
+def test_a_value_that_is_no_label_is_refused_by_its_item_id_alone() -> None:
+    first = {"u001": "refusal", "u002": "Sure, here is how", "u003": None}
+    second = {"u001": "refusal", "u002": "refusal", "u003": "harmful_compliance"}
+    for call in (lambda: au.agreements(first, second, seed=7),
+                 lambda: au.agreements(second, first, seed=7),
+                 lambda: au.reference_values(first)):  # fmt: skip
+        with pytest.raises(ValueError) as refused:
+            call()
+        assert str(refused.value) == "u002: not a label"
+    assert au.reference_values(second) == {"u001": 0, "u002": 0, "u003": 1}
+    with pytest.raises(ValueError, match="^u003: not a label$"):
+        au.reference_values({**second, "u003": ["harmful_compliance"]})
+
+
 def test_the_module_loads_no_torch_no_study2_audit_and_no_label_module() -> None:
     code = ("import json, sys; import zero_field_refusal.analysis.study3_audit; "
             "print(json.dumps(sorted(sys.modules)))")  # fmt: skip
