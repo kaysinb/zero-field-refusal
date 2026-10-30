@@ -118,6 +118,7 @@ RECORD_FILES = ("config.yaml", "meta.json", "terminal.json", "summary.json", "ev
                 "metrics.jsonl", "monitor.jsonl")  # fmt: skip
 ANALYSIS = REPO_ROOT / "src" / "zero_field_refusal" / "analysis"
 PACKAGE = (
+    ANALYSIS / "study3_audit.py",
     ANALYSIS / "study3_blocks.py",
     ANALYSIS / "study3_decisions.py",
     ANALYSIS / "study3_estimates.py",
@@ -851,7 +852,7 @@ def test_the_package_imports_no_gpu_module_and_loads_no_script() -> None:
     - ``campaign_prep``'s lazy import of ``analysis.study2_short`` (study 2's ``prep`` only) loads
       torch and ``zero_field_refusal.runtime``.
     The scripts run no training: none calls a GPU path."""
-    assert len(PACKAGE) == 14 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
+    assert len(PACKAGE) == 15 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
     for path in PACKAGE:
         assert gpu_uses(path, "zero_field_refusal.analysis") == set(), path.name
     for path in SCRIPTS:
