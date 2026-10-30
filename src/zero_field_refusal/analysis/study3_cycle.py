@@ -26,7 +26,8 @@ journal repair and re-qualification carry it out, unchanged.
   (reading no run record), its bridge against it, and its lists against their derivation in the
   pre-cycle view.
 - ``rebuild_bridge``: the bridge of a published cycle record whose bridge is missing.
-- ``journal_problems``: why the launch journal is not whole, as the launcher refuses it.
+- ``journal_unread`` and ``journal_problems``: why the launch journal cannot be read whole, and
+  why it is not whole, as the launcher refuses it.
 
 **Claims** ("Failure routes": each earlier stage is reused or rerun according to what the fix
 changes). A stage is ``reuse`` (its runs keep counting under the old code) or ``rerun`` with the
@@ -833,14 +834,14 @@ def publish_cycle(
                            "there already: one engineering cycle per candidate, and nothing is "
                            "written")  # fmt: skip
     published = path.exists() or path.is_symlink()
-    if published and path.read_bytes() != data:
+    if published and _there(path) != data:
         raise CycleRefused(f"{path} is published with other content: a cycle record is never "
                            "rewritten")  # fmt: skip
     if hashlib.sha256(data).hexdigest() != (bridge.get("old_record") or {}).get("sha256"):
         raise CycleRefused("the bridge does not name the cycle record by its sha256")
     content = (json.dumps(bridge, indent=1) + "\n").encode("utf-8")
     bridged = bridge_path.exists() or bridge_path.is_symlink()
-    if bridged and bridge_path.read_bytes() != content:
+    if bridged and _there(bridge_path) != content:
         raise CycleRefused(f"{bridge_path} is published with other content: a supersession "
                            "record is never rewritten, and nothing is written")  # fmt: skip
     if not published:
@@ -856,6 +857,16 @@ def publish_cycle(
     except DecisionRefused as exc:
         raise CycleRefused(str(exc)) from exc
     return path, bridge_path
+
+
+def _there(path: Path) -> bytes:
+    """The bytes of a file that is there (a link included); ``CycleRefused`` when they cannot be
+    read (a dangling link, a folder, no permission): nothing is written over it."""
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise CycleRefused(f"{path} is there and cannot be read ({type(exc).__name__}): nothing "
+                           "is written over it") from exc  # fmt: skip
 
 
 def rebuild_bridge(
@@ -899,20 +910,28 @@ _SUPERSESSION = re.compile(r"supersede-\d+\.json")
 _CASE_RESTART = re.compile(r"restart-\d+\.json")
 
 
+def journal_unread(runs_root: str | Path) -> list[str]:
+    """Why the launch journal cannot be read whole: a launch log that cannot be read or resolves
+    under a sealed folder, and a torn line that no resolution names, the last of its log included
+    (``JournalLog.refused``). The first part of ``journal_problems``: what makes every reader of
+    the journal, the decision records' checks included, read less than is there."""
+    logs, unread = journal_lines(Path(runs_root))
+    return [*unread, *(f"{log.path} line {number}: a torn line that no resolution names"
+                       for log in logs for number in log.refused)]  # fmt: skip
+
+
 def journal_problems(runs_root: str | Path) -> list[str]:
     """Why the launch journal is not whole, as the launcher and ``qualify.py`` refuse it (exit
-    12): a launch log that cannot be read or resolves under a sealed folder; a torn line that no
-    resolution names, the last of its log included (``JournalLog.refused``); and a line that a
-    published qualification record requires and no log holds (``launch.missing_lines``,
-    mirrored): a supersession record's ``superseded`` line of each run of its ``launchers`` and
-    ``held`` line of each run of its ``held`` (the same label, experiment and run id), a case
-    restart record's ``superseded`` line of its launcher run (by its run id). A record that
-    cannot be read may name a line, and is named too."""
+    12): what ``journal_unread`` names; and a line that a published qualification record requires
+    and no log holds (``launch.missing_lines``, mirrored): a supersession record's ``superseded``
+    line of each run of its ``launchers`` and ``held`` line of each run of its ``held`` (the same
+    label, experiment and run id), a case restart record's ``superseded`` line of its launcher
+    run, under that run's label and experiment (its start's in the journal, else its run
+    folder's: the campaign label its ``meta.json`` records and the experiment's folder), else by
+    its run id alone. A record that cannot be read may name a line, and is named too."""
     root = Path(runs_root)
-    logs, unread = journal_lines(root)
-    problems = list(unread)
-    problems += [f"{log.path} line {number}: a torn line that no resolution names"
-                 for log in logs for number in log.refused]  # fmt: skip
+    logs, _ = journal_lines(root)
+    problems = journal_unread(root)
     records = [line.record for log in logs for line in log.lines if line.record is not None]
     lines = {tuple(r.get(k) for k in ("event", "run", "experiment", "run_id")) for r in records}
     superseded = {r.get("run_id") for r in records if r.get("event") == "superseded"}
@@ -935,7 +954,13 @@ def journal_problems(runs_root: str | Path) -> list[str]:
         if kind == "restart":
             launcher = record.get("launcher")
             run_id = launcher.get("run_id") if isinstance(launcher, Mapping) else None
-            if isinstance(run_id, str) and run_id not in superseded:
+            if not isinstance(run_id, str):
+                continue
+            labels = _run_labels(root, records, run_id)
+            there = (any(("superseded", label, experiment, run_id) in lines
+                         for label, experiment in labels) if labels
+                     else run_id in superseded)  # fmt: skip
+            if not there:
                 problems.append(f"{where}: no superseded line of {run_id}")
             continue
         for event, key in (("superseded", "launchers"), ("held", "held")):
@@ -947,6 +972,31 @@ def journal_problems(runs_root: str | Path) -> list[str]:
                     shown = named[-1] if isinstance(named[-1], str) else "a run"
                     problems.append(f"{where}: no {event} line of {shown}")
     return problems
+
+
+def _run_labels(root: Path, records: Sequence[Mapping[str, Any]],
+                run_id: str) -> set[tuple[str, str]]:  # fmt: skip
+    """A launcher run's label and experiment, as ``launch`` finds them for a case restart's
+    line: its starts' in the journal, else its run folder's (``RUNS_DIR/<experiment>/<run
+    id>/meta.json``'s campaign label; a ``meta.json`` under a sealed folder or unreadable gives
+    none)."""
+    labels = {(r["run"], r["experiment"]) for r in records if r.get("event") == "start"
+              and r.get("run_id") == run_id and isinstance(r.get("run"), str)
+              and isinstance(r.get("experiment"), str)}  # fmt: skip
+    if labels or not plain_name(run_id):
+        return labels
+    for meta in sorted(root.glob(f"*/{run_id}/meta.json")):
+        if under_sealed(meta, root):
+            continue
+        try:
+            data = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        campaign = data.get("campaign") if isinstance(data, dict) else None
+        label = campaign.get("label") if isinstance(campaign, Mapping) else None
+        if isinstance(label, str):
+            labels.add((label, meta.parent.parent.name))
+    return labels
 
 
 # ------------------------------------------------------------------ reading the cycle back

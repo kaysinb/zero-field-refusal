@@ -133,8 +133,10 @@ file> --candidate N --engineering --case <its first case> --record <the cycle re
 D --fix F``, the campaign file ``RUNS_DIR/campaigns/<name>.yaml``, ``<name>`` the campaign of the
 journal's first engineering start. Run again with its own arguments over a published record
 whose bridge is missing, it writes only the bridge (from the record: ``rebuild_bridge``).
-Refusals, in this order: the fix (a checkout that is not clean or of no known commit, or the code
-in force: "a fix that leaves the GPU code unchanged is no cycle"); a supersession record of N
+Refusals, in this order: the fix (a checkout that is not clean or of no known commit); a launch
+journal that cannot be read whole (a log unreadable or under a sealed folder, an unresolved torn
+line: ``journal_unread``, named before anything that reads the journal short of it); the code in
+force ("a fix that leaves the GPU code unchanged is no cycle"); a supersession record of N
 there already, or a cycle record whose arguments are not these ("recorded already"); no
 engineering campaign file where it is looked for; on the existing chain, a step that is not N's
 engineering cycle, a state with problems, or a journal that is not whole (an unresolved torn
@@ -173,6 +175,7 @@ from zero_field_refusal.analysis.study3_cycle import (
     derive_cycle,
     journal_problems,
     journal_seen,
+    journal_unread,
     parse_claims,
     pre_cycle_records,
     publish_cycle,
@@ -682,6 +685,9 @@ def write_cycle(args: argparse.Namespace) -> None:
         seen = journal_seen(root)  # pinned before the records are read
     except CycleRefused as exc:
         refuse("cycle", "; ".join(exc.reasons))
+    unread = journal_unread(root)  # what every reader below would read short of: named first
+    if unread:
+        refuse("cycle", "the launch journal is not whole: " + "; ".join(unread))
     records = read_records(root, repo=REPO, expected_code=None, theta0=theta0, settings=settings)
     # the code in force before N's cycle: the existing chain's end, N's own supersession records
     # aside (with none of them, the chain's end; with one, the cycle is recorded already)

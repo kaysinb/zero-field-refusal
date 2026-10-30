@@ -13,6 +13,7 @@ repair."""
 import copy
 import hashlib
 import json
+import shutil
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -252,7 +253,7 @@ def test_a_launcher_run_of_the_fixs_code_is_not_superseded(qualify, monkeypatch,
     assert {e["run_id"] for e in entries.launchers} == set(codes) - {fixed}
 
 
-def test_r9_names_an_unclassified_qualification_run_it_cannot_settle(qualify, monkeypatch,
+def test_an_unclassified_qualification_run_the_readers_cannot_settle_is_named(qualify, monkeypatch,
                                                                      tmp_path):  # fmt: skip
     world = QualificationWorld(tmp_path)
     world.full()
@@ -507,7 +508,7 @@ def test_a_mark_under_a_known_other_gpu_code_is_no_cycle_case(tmp_path, monkeypa
     assert {r["run_id"]: r["gpu_code"] for r in record["affected"]["runs"]}[mark] is None
 
 
-def test_r9_refuses_a_qualification_run_the_readers_cannot_settle(tmp_path):
+def test_a_cycle_refuses_a_qualification_run_the_readers_cannot_settle(tmp_path):
     study, root = materialized_validation_mark(tmp_path)
     numerical = sorted(e.run_id for e in study.endpoints if e.cell.step == "numerical")
     folder = root / "qualification" / "c1" / "numerical"
@@ -1217,6 +1218,50 @@ def test_a_launcher_record_there_and_unreadable_is_refused_never_marked_absent(t
         derive(study, root, claims=ALL_RERUN)
 
 
+def test_a_dangling_link_at_the_record_or_the_bridge_is_refused_before_anything_is_written(
+    tmp_path,
+):
+    study, root = materialized_validation_mark(tmp_path)
+    claims = {"search": reuse(), "qualification": reuse(), "validation": rerun()}
+    record, bridge = derive(study, root, claims=claims)
+    for target in (cycle_path(root, 1), root / bridge_name(1)):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(tmp_path / "nowhere.json")  # a link to nothing
+        with pytest.raises(cycle.CycleRefused, match="cannot be read"):
+            cycle.publish_cycle(root, 1, record, bridge)
+        target.unlink()
+        assert not cycle_path(root, 1).exists() and not (root / bridge_name(1)).exists()
+
+
+def test_a_restarts_superseded_line_is_matched_by_its_runs_label_and_experiment(tmp_path):
+    """As the launcher finds a case restart's line (``launch.missing_lines``): the
+    ``superseded`` line of its launcher run under the run's own label and experiment (its
+    start's in the journal); a line of the run id under another label is not it."""
+    root = tmp_path / "runs"
+    run_id = "20261026T000001Z-adamw-1e-05-s10200-0123abcd-a1"
+    first = start(run_id, "2026-10-26T00:00:01+00:00", label="c1-numerical-adamw-1e-05/s10200")
+    case = root / "qualification" / "c1" / "numerical" / "s10200" / "adamw-1e-05"
+    case.mkdir(parents=True)
+    (case / "restart-1.json").write_text(json.dumps({"restart": 1, "launcher": {"run_id": run_id}}))
+    for label, missing in (("c1-numerical-adamw-2e-05/s10200", True), (first["run"], False)):
+        write_lines(
+            root / "launch" / "study3-c1-numerical.jsonl",
+            [
+                first,
+                {
+                    "time": "2026-10-26T00:00:02+00:00",
+                    "event": "superseded",
+                    "run": label,
+                    "experiment": "study3",
+                    "run_id": run_id,
+                    "record": str(case / "restart-1.json"),
+                },
+            ],
+        )
+        found = [p for p in cycle.journal_problems(root) if "no superseded line" in p]
+        assert bool(found) is missing is bool(launcher.missing_lines(root)), (label, found)
+
+
 def test_a_cycle_without_a_mark_is_refused_as_such(tmp_path):
     study, root = materialized_validation_mark(tmp_path)
     with pytest.raises(cycle.CycleRefused, match="no mark"):
@@ -1279,7 +1324,7 @@ def test_cycle_refuses(cycle_route, why, setup):
     assert written(cycle_route.root) == before  # nothing written, the bridge included
 
 
-def test_a_marked_run_without_meta_json_carries_an_absence_marker_and_is_no_r7(cycle_route):
+def test_a_marked_run_without_meta_json_carries_an_absence_marker_and_is_not_refused(cycle_route):
     """A mark with no meta.json has no GPU code: a mark of the code in force (only a mark of a
     known other code is refused), its file an absence marker, its journal start binding it."""
     cycle_route.commit_fix()
@@ -1317,6 +1362,22 @@ def test_the_cycle_writes_only_a_missing_bridge_when_run_again(cycle_route):
     cycle_route.bridge_path().unlink()  # run again with other claims over the record: refused
     ran = cycle_route.cycle("search=rerun", justification="search=other")
     assert "recorded already" in ran.error and not cycle_route.bridge_path().exists()
+
+
+def test_a_torn_line_refuses_the_cycle_by_its_line(cycle_route):
+    """A torn line of the launch journal that no resolution names: the writer refuses naming it,
+    before anything that reads the journal short of it (the decision records' checks, so the
+    chain's start), and writes nothing."""
+    cycle_route.commit_fix()
+    before = written(cycle_route.root)
+    log = sorted((cycle_route.root / "launch").glob("*.jsonl"))[-1]
+    with log.open("ab") as handle:
+        handle.write(b'{"torn\n')
+    ran = cycle_route.cycle("search=rerun", justification="search=x")
+    assert ran.code != 0 and "a torn line that no resolution names" in ran.error, ran.error
+    assert f"{log.relative_to(cycle_route.root).as_posix()} line " in ran.error
+    assert "has no start" not in ran.error
+    assert written(cycle_route.root) == before
 
 
 def test_dry_run_writes_nothing(cycle_route):
@@ -1440,10 +1501,18 @@ def test_the_repair_matches_the_bridge_only_by_its_cycle_records_path_and_sha256
     qualify, monkeypatch, tmp_path, capsys
 ):
     """qualify.py's repair takes the bridge only by its cycle record's path and the sha256 of its
-    bytes: a cycle record whose bytes changed is no repair. Before the journal lines are written,
-    nothing matches the journal's missing lines, so qualify.py refuses as the journal is not
-    whole (exit 12) and writes no line; after them, the same call is a second cycle, refused."""
+    bytes: a cycle record whose bytes changed is no repair, and neither is a byte-identical copy
+    of it at another path. Before the journal lines are written, nothing matches the journal's
+    missing lines, so qualify.py refuses as the journal is not whole (exit 12) and writes no
+    line; after them, the same call is a second cycle, refused."""
     world, _, bridge = bridge_world(qualify, monkeypatch, tmp_path)
+    elsewhere = tmp_path / "elsewhere" / "cycle-c1.json"
+    elsewhere.parent.mkdir()
+    shutil.copy(cycle_path(world.root, 1), elsewhere)  # the same bytes, another path
+    capsys.readouterr()
+    assert repair(world, str(elsewhere), qualify) == 12  # TornJournalError
+    assert "the launch journal is not whole" in capsys.readouterr().err.lower()
+    assert launcher.missing_lines(world.root) != [] and superseded_lines(world.root) == []
     touch_cycle_record(world)  # its bytes change
     capsys.readouterr()
     assert repair(world, bridge["old_record"]["path"], qualify) == 12  # TornJournalError
