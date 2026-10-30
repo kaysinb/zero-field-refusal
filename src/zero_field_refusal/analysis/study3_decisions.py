@@ -90,7 +90,10 @@ on is a response or an observation, and this module opens none.
   failure but the 40-block validation, chosen once: ``validation_blocks`` is 40 when
   ``safe_pass_rate`` is below 0.95 and 28 otherwise. A power shortfall is not a failure either: it
   is recorded (``power_short``, ``n_min``) and N and the cap are raised, with a decision on the
-  money (see ``n-c<N>`` and ``budget-c<N>``). A failed record may have a null L or a null size.
+  money (see ``n-c<N>`` and ``budget-c<N>``), unless no N is attainable: when ``n_min``'s cap
+  exceeds the 200 reserved confirmation seeds (the scan stopped there), the verification is not
+  run, its tests are not due and it does not pass, so the record fails (the design stop). A
+  failed record may have a null L or a null size.
 - ``n-c<N>``: ``candidate`` (N of the kind), ``rates`` (per arm A, F and, when P–F is active, P:
   ``lr_l`` and ``lr_u``), ``active`` (``["A-F"]`` or ``["A-F", "P-F"]``), ``level`` (the
   simulation record's), ``cohort`` (the validation block ``seeds`` and the ``run_ids`` used, at
@@ -1559,7 +1562,9 @@ def coverage_decisions(
     - per level, the record's ``coverage`` row (all four): the counts are the largest X over the
       level's tests (A–F and P–F for ``comparison``), a not-attainable test counting as X = M;
     - L, the first level whose tests passed, and so which verification tests are due: all of
-      them with an L, none without (``selected_calibration_level`` stands for L);
+      them with an L, none without (``selected_calibration_level`` stands for L), and none when
+      ``n_min``'s cap exceeds the 200 reserved seeds (the scan found no attainable n: the
+      verification is not run and does not pass, the design stop);
     - the ``verification`` (its tests, due and passed, at L), the ``gates`` (from their stored
       counts: the pass rates, the powers as the smallest correct/M over the power scenarios, a
       scenario short of M counting its missing studies as not detecting, ``n_min`` from the
@@ -1604,26 +1609,32 @@ def coverage_decisions(
                          "thresholds": dict(thresholds),
                          "passed": all(counts[k] <= thresholds[k] for k in counts)})  # fmt: skip
     selected = next((row["level"] for row in coverage if row["passed"]), None)
-    passed = selected is not None
+    gates, gate_problems = _gates_recomputed(results.get("gates"), fixation, selected)
+    problems += gate_problems
+    n_min = (gates.get("power_af") or {}).get("n_min")
+    reserved = len(SEEDS["confirmation"][1])
+    unattainable = selected is not None and n_min is not None and cap_of(n_min) > reserved
+    why = ("no level passed" if selected is None else
+           f"n_min {n_min} has the cap {cap_of(n_min)}, beyond the {reserved} reserved seeds "
+           "(no attainable n, the design stop)" if unattainable else None)  # fmt: skip
+    passed = selected is not None and not unattainable
     for identity in verification:
-        if selected is None:
+        if why is not None:
             row = rows.get(identity)
             if row is None:
                 problems.append(f"tests: {list(identity)} has no row")
             elif not _not_due(row):
-                problems.append(f"tests: {list(identity)}: no level passed, so the verification "
-                                "is not due: every field but its test, p0 and due (false) is "
+                problems.append(f"tests: {list(identity)}: {why}, so the verification is not "
+                                "due: every field but its test, p0 and due (false) is "
                                 "null")  # fmt: skip
         else:
             passed = read(identity, selected)[1] and passed
     streams = fixation["streams"]
     decided_verification = {
-        "level": selected, "passed": selected is not None and passed, "tests": len(verification),
+        "level": selected, "passed": passed, "tests": len(verification),
         "calibration_stream": streams["calibration"],
         "verification_stream": streams["verification"],
     }  # fmt: skip
-    gates, gate_problems = _gates_recomputed(results.get("gates"), fixation, selected)
-    problems += gate_problems
     safe = gates.get("safe_pass_rate")
     blocks = None if safe is None else (VALIDATION_BLOCKS[0] if safe["passed"]
                                         else VALIDATION_BLOCKS[1])  # fmt: skip

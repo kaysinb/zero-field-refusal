@@ -2352,13 +2352,16 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
   4. `verify` runs the binding verification at L on the verification stream (100 000
      resamples, the realized route) and writes `verification.json`. It refuses without the
      screen, with a screen of another commit than the clean HEAD, without an L (the
-     verification is not due) and once `verification.json` exists: it is never rerolled.
+     verification is not due), when the n_min scan stopped at an n whose cap exceeds the 200
+     reserved seeds (no attainable n: the verification is not run, the design stop) and once
+     `verification.json` exists: it is never rerolled.
   5. `record` writes `results.json` and then the simulation record, which binds the results
      and the seed vectors by sha256. Both are refused when the results fail the J check (an
      identity listed twice, missing or not in the fixation, a pass, L, a gate or a size that
      does not recompute), and a second record is refused, as `study3_summary.py record` refuses
-     it. No level passing, or a verification that fails, gives a failed record: the design stop
-     (`progress`: `design_stop`, `simulation_failed`).
+     it. No level passing, a verification that fails, or no attainable n (the verification not
+     run; `record` prints `verification not_run no_attainable_n`) gives a failed record: the
+     design stop (`progress`: `design_stop`, `simulation_failed`).
 - **The files.** Under `$RUNS_DIR/study3/simulation/` (reserved, no run directory): the parts
   (`parts/<phase>/<scenario>/<first>.json`, 250 studies each, the phase `gates`, `screen`,
   `scan-<n>` or `verification`), `screen.json`, `verification.json` and `results.json`. Every

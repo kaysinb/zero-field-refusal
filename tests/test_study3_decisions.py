@@ -1103,6 +1103,22 @@ def test_a_power_shortfall_is_recorded_and_the_record_still_passes(world) -> Non
     assert record["validation_blocks"] == 28  # the pass rate decided that, not the power
 
 
+def test_a_power_short_beyond_the_reserved_seeds_skips_the_verification(world) -> None:
+    """n_min 179, its cap 201 beyond the 200 reserved seeds: no N is attainable, so the
+    verification is not run (its tests not due) and does not pass, and the record fails (the
+    design stop); due verification rows, or a passed verification, are refused."""
+    gates = gates_with(power_af=power_gate(0.74, 179))
+    sim_refused(world, "no attainable n", "not due", gates=gates, state="failed",
+                verification=verified(0.975, False))  # fmt: skip
+    sim_refused(world, "verification.passed", gates=gates, results="verification_not_due")
+    world.write("simulation", world.simulation(gates=gates, state="failed",
+                                               verification=verified(0.975, False),
+                                               results="verification_not_due"))  # fmt: skip
+    record, problems = world.read("simulation")
+    assert problems == [] and record["state"] == "failed" and record["level"] == 0.975
+    assert record["gates"]["power_af"]["n_min"] == 179
+
+
 @pytest.mark.parametrize(
     ("power", "words"),
     [

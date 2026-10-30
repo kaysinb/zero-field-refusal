@@ -362,6 +362,41 @@ def test_a_verification_test_above_c_gives_the_failed_record(world) -> None:
     assert (state["outcome"], state["reason"]) == ("design_stop", "simulation_failed")
 
 
+def test_no_attainable_n_skips_the_verification_and_fails_the_record(world) -> None:
+    """The power short at every n of the scan up to 179, whose cap 201 exceeds the 200 reserved
+    seeds: no N is attainable, so the verification is not run (the design stop, named), its
+    tests are not due, and the record fails."""
+    repo, runs, simulate = world
+    ran(simulate("run", "--runs-root", runs, "--workers", 1))
+    screen = runs / "study3" / "simulation" / "screen.json"
+
+    def short(s: dict) -> None:
+        by = s["gates"]["power"]["A-F"][decisions.level_slot(s["level"])]
+        for counts in by.values():
+            counts["correct"] = 4  # 4 of M = 6: below 0.80
+        s["gates"]["n_scan"] = [{"n": n, "by_scenario": {name: {"correct": 4, "studies": 6}
+                                                         for name in by}}
+                                for n in range(60, 180)]  # fmt: skip
+        s["gates"]["scan_level"] = s["level"]
+
+    edit(screen, short)
+    refused(simulate("verify", "--runs-root", runs, "--workers", 1), "no attainable n",
+            "design stop", "201")  # fmt: skip
+    assert not (runs / "study3" / "simulation" / "verification.json").exists()
+    out = ran(simulate("record", "--runs-root", runs))
+    assert "state failed" in out and "verification not_run no_attainable_n n 179 cap 201" in out
+    record, problems = read_decision(runs, "simulation", repo=repo)
+    assert problems == [] and record["level"] is not None and record["state"] == "failed"
+    assert record["verification"]["passed"] is False
+    assert record["gates"]["power_af"]["n_min"] == 179
+    results = json.loads((runs / SIMULATION_RESULTS).read_text())
+    verification = [r for r in results["tests"] if r["test"][0] == "verification"]
+    assert verification and {r["due"] for r in verification} == {False}
+    state = progress_of(runs, repo)
+    assert (state["outcome"], state["reason"]) == ("design_stop", "simulation_failed")
+    assert any("attainable" in r for r in state["reasons"])
+
+
 def test_verify_is_never_rerolled(world) -> None:
     repo, runs, simulate = world
     refused(simulate("verify", "--runs-root", runs, "--workers", 1), "screen")  # no screen

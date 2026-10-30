@@ -193,7 +193,10 @@ else (M25).
   from the same streams with N at least n = 60, 61, …, to the first n whose smallest power
   reaches 0.80 or whose cap exceeds the 200 reserved seeds;
 - *verification*: C01–C17 on the verification stream in ``"procedure"`` mode at L,
-  ``VERIFICATION_RESAMPLES``, N at least ``n_min`` when the power was short.
+  ``VERIFICATION_RESAMPLES``, N at least ``n_min`` when the power was short. When the scan
+  stopped at an n whose cap exceeds the 200 reserved seeds, no n is attainable
+  (``unattainable_n``): the verification is not run, its tests are not due and the record fails
+  (the design stop, ``NO_ATTAINABLE_N``).
 
 **Rulings** (the study's frozen settings, each with its one-line source):
 - M1, the harm model of block differences: additive on the probability scale, σ calibrated so
@@ -1402,6 +1405,7 @@ MODES = ("screen", "procedure")
 REACH = 99  # the largest N point: each comparison is followed to 99 supported blocks
 GATE_OF = {"A-F": "AF", "P-F": "PF"}  # a comparison's name in study3_blocks
 UNCONFIRMED = ("af_gate", "cap_beyond_seeds", "scientific_report")  # why a study is not confirmed
+NO_ATTAINABLE_N = "no_attainable_n"  # the n_min scan stopped at a cap beyond the reserved seeds
 RUNS = tuple((arm, label) for arm in ARM_ORDER for label in LABELS)  # a block's six runs
 RUN_ARMS = tuple(arm for arm, _ in RUNS)
 FAILED_STOP = INSTABILITY[0]  # the stop a simulated scientific failure records
@@ -3927,9 +3931,31 @@ def read_screen(runs_root: str | Path, context: Context, commit: str | None = No
     return screen
 
 
+def unattainable_n(screen: Mapping[str, Any]) -> int | None:
+    """The n at which the screen's n_min scan stopped with its cap beyond the reserved
+    confirmation seeds (``cap_of(n)`` > 200): no N within them reaches the power, so none is
+    attainable, the verification is not run and the record fails (``NO_ATTAINABLE_N``, the
+    design stop). None when the scan is empty or stopped at a power reached within them."""
+    scan = screen["gates"]["n_scan"]
+    if scan and cap_of(scan[-1]["n"]) > len(SEEDS["confirmation"][1]):
+        return scan[-1]["n"]
+    return None
+
+
+def no_attainable_n(n: int) -> str:
+    """Why the verification is not run when the scan stopped at ``n`` (``unattainable_n``)."""
+    return (f"the n_min scan stopped at n = {n}, whose cap {cap_of(n)} exceeds the "
+            f"{len(SEEDS['confirmation'][1])} reserved confirmation seeds: no attainable n "
+            f"({NO_ATTAINABLE_N}), the design stop; the verification is not run")  # fmt: skip
+
+
 def _verification_floor(screen: Mapping[str, Any]) -> int:
     """N's floor in the verification: ``n_min`` when the screen found the power short (the last
-    n of its scan), else 60."""
+    n of its scan), else 60. ``SimulationError`` when no n is attainable (``unattainable_n``):
+    the verification is not run."""
+    n = unattainable_n(screen)
+    if n is not None:
+        raise SimulationError(no_attainable_n(n))
     scan = screen["gates"]["n_scan"]
     return scan[-1]["n"] if scan else MIN_N
 
@@ -4032,8 +4058,9 @@ def run_verification(context: Context, runs_root: str | Path, commit: str, *,
                      workers: int) -> Path:  # fmt: skip
     """The run's step 4 (``_verification``), after the screen of this fixation and commit, on
     the verification stream; written once (``verification.json``), never rerolled.
-    ``SimulationError``: no screen of this fixation and commit, no L (not due),
-    ``verification.json`` present, or a part of another fixation or commit."""
+    ``SimulationError``: no screen of this fixation and commit, no L (not due), no attainable
+    n (``unattainable_n``: not run), ``verification.json`` present, or a part of another
+    fixation or commit."""
     runs_root = Path(runs_root)
     path = verification_path(runs_root)
     if path.exists():
@@ -4041,6 +4068,8 @@ def run_verification(context: Context, runs_root: str | Path, commit: str, *,
     screen = read_screen(runs_root, context, commit)
     if selected_level(screen["tests"], context.fixation["J"], _decisions.COVERAGE_RUNS) is None:
         raise SimulationError("no level passed the screen: the verification is not due")
+    if unattainable_n(screen) is not None:
+        raise SimulationError(no_attainable_n(unattainable_n(screen)))
     problems = part_problems(runs_root, context.ref, commit)
     if problems:
         raise SimulationError("; ".join(problems))
@@ -4064,11 +4093,12 @@ def results_record(screen: Mapping[str, Any], verification: Mapping[str, Any] | 
                    written_at: str) -> dict[str, Any]:  # fmt: skip
     """``results.json`` (§"The results file"), from the screen's and the verification's
     summaries as they are: the rows of the calibration tests, then those of the verification
-    (each not due when no level passed), in the fixation's order; the gates (the powers at L, or
+    (each not due when no level passed, or when no n is attainable, ``unattainable_n``: the
+    verification is not run), in the fixation's order; the gates (the powers at L, or
     0.975 without one; the scan; the detection powers at J) and the reported figures.
     ``written_at`` is given (the code commit's time, so that a resumed run's results are an
     uninterrupted one's, byte for byte). ``SimulationError`` for summaries of another fixation
-    or commit, or a verification missing at L."""
+    or commit, a verification missing at L, or one given when no n is attainable."""
     d, fixation = _decisions, context.fixation
     m, j = d.COVERAGE_RUNS, fixation["J"]
     for name, found in (("screen", screen), ("verification", verification)):
@@ -4079,7 +4109,10 @@ def results_record(screen: Mapping[str, Any], verification: Mapping[str, Any] | 
                                   f"{code['commit']}")  # fmt: skip
     level = selected_level(screen["tests"], j, m)
     rows = list(screen["tests"])
-    if level is None:
+    skipped = None if level is None else unattainable_n(screen)
+    if skipped is not None and verification is not None:
+        raise SimulationError(f"a verification is given, but {no_attainable_n(skipped)}")
+    if level is None or skipped is not None:
         rows += [_not_due(i) for i in fixation["tests"]["list"] if i[0] == "verification"]
     elif verification is None or verification.get("level") != level:
         raise SimulationError(f"level {level} passed the screen: its verification is due")

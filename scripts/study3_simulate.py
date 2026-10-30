@@ -39,17 +39,20 @@ engineering stage, before the search); the models and the values the researcher 
    values. Interrupted, it resumes from its finished parts on the same streams, to the same
    bytes.
 4. **verify** refuses without ``screen.json``, with one of another commit than the clean HEAD,
-   without a recomputed L (the verification is not due), or with ``verification.json``
-   present (it is never rerolled); it runs the binding verification at L
-   (``run_verification``) and writes ``verification.json``.
-5. **record** needs ``screen.json`` (and ``verification.json`` when L exists) of the clean
-   HEAD; it writes ``results.json`` (``results_record``: its time is the code commit's, so a
-   resumed run's results are an uninterrupted one's, byte for byte) after the J check of the
-   results (``study3_decisions.results_problems``), then the decision record
-   ``study3/decisions/simulation.json`` through ``write_decision`` (its ``inputs``: the results
-   and the seed vectors, each by sha256; the J check runs again in its reader); it prints the
-   record's path, its state, L and the size. A second record is refused, as
-   ``scripts/study3_summary.py record simulation`` refuses it.
+   without a recomputed L (the verification is not due), when the n_min scan stopped at an n
+   whose cap exceeds the 200 reserved seeds (no attainable n, the design stop: the verification
+   is not run, ``study3_simulation.unattainable_n``), or with ``verification.json`` present (it
+   is never rerolled); it runs the binding verification at L (``run_verification``) and writes
+   ``verification.json``.
+5. **record** needs ``screen.json`` (and ``verification.json`` when L exists and an n is
+   attainable) of the clean HEAD; it writes ``results.json`` (``results_record``: its time is
+   the code commit's, so a resumed run's results are an uninterrupted one's, byte for byte)
+   after the J check of the results (``study3_decisions.results_problems``), then the decision
+   record ``study3/decisions/simulation.json`` through ``write_decision`` (its ``inputs``: the
+   results and the seed vectors, each by sha256; the J check runs again in its reader); it
+   prints the record's path, its state, L and the size, and, without an attainable n, that the
+   verification was not run. A second record is refused, as ``scripts/study3_summary.py record
+   simulation`` refuses it.
 
 The files of the run lie under ``RUNS_DIR/study3/simulation/`` (reserved: no run directory):
 ``parts/<phase>/<scenario>/<first>.json``, ``screen.json``, ``verification.json`` and
@@ -294,8 +297,9 @@ def record(args: argparse.Namespace) -> None:
     except sim.SimulationError as exc:
         refuse("record", str(exc))
     level = sim.selected_level(screen["tests"], found.fixation["J"], decisions.COVERAGE_RUNS)
+    skipped = None if level is None else sim.unattainable_n(screen)
     verification = None
-    if level is not None:
+    if level is not None and skipped is None:
         path = sim.verification_path(root)
         if not path.exists():
             refuse("record", f"level {level} passed the screen: {path} is missing (verify first)")
@@ -340,6 +344,9 @@ def record(args: argparse.Namespace) -> None:
     print(f"state {entry['state']}")
     print(f"level {'null' if entry['level'] is None else entry['level']}")
     print(f"validation_blocks {entry['validation_blocks']}")
+    if skipped is not None:
+        print(f"verification not_run {sim.NO_ATTAINABLE_N} n {skipped} cap "
+              f"{decisions.cap_of(skipped)}")  # fmt: skip
 
 
 # ------------------------------------------------------------------ the command line
