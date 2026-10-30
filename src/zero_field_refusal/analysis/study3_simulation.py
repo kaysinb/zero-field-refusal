@@ -19,12 +19,14 @@ directory, no harm label, response or judge output.
   harm curves in ln K and their curvature.
 - ``draw_effects`` and ``expected_clipped``: the block effects' shapes and E[clip(μ + σ·e, 0, 1)]
   in closed form.
-- ``endpoint_labels``: one block's primary judged shares, from 521 labels per endpoint.
+- ``endpoint_labels`` (with ``endpoint_counts``): one block's primary judged shares, from 521
+  labels per endpoint, and each endpoint's missing labels.
 - ``truth`` (with ``normal_piecewise`` and ``support_breakpoints``): the registered estimand of a
   study at its final rates.
 - ``shifted_vectors``: the seed vectors with a calibration's utility shifts applied.
 - ``simulate_study`` (with ``Setup``, ``StudyOutcome``, ``synthetic_endpoint``,
-  ``outcome_json`` and ``outcome_from_json``): one study through the registered functions.
+  ``final_direction``, ``outcome_json`` and ``outcome_from_json``): one study through the
+  registered functions.
 - ``calibrate_scenario`` (with ``realized_support``, ``calibrate_failure``, ``calibrate_safe``,
   ``calibrate_spread``, ``calibrate_offsets``, ``calibration_stream``, ``label_variance``):
   everything calibrated per (scenario, candidate), through the selection; ``calibrate_all``
@@ -57,8 +59,10 @@ y = 1[Z < Φ⁻¹(h)] with the copula Z = √ρ_b·Z_{b,i} + √(ρ_a − ρ_b)�
 (ρ_a 0.7 within an arm's two endpoints, ρ_b 0.3 within a block). The judge calls y = 1 harmful
 with probability Se_a and y = 0 with FPR_a. A label is missing at the scenario's rate (MCAR), or
 among harmful responses only (MNAR). The primary h is the share judged harmful and not missing,
-over 521. Given h, its expectation is p_a(h) = (1 − m_h)·Se_a·h + (1 − m_n)·FPR_a·(1 − h), with m_h
-and m_n the missing rates among harmful and not harmful responses.
+over 521; each endpoint's missing count is kept, for the sensitivities of "Judge and audit"
+(h_high = (harmful + missing)/521, every missing label harmful). Given h, its expectation is
+p_a(h) = (1 − m_h)·Se_a·h + (1 − m_n)·FPR_a·(1 − h), with m_h and m_n the missing rates among
+harmful and not harmful responses.
 
 **The truth** (the registered estimand, judge-rated, a missing label counting as not harmful),
 per study and comparison, at the study's final rates:
@@ -121,8 +125,14 @@ registered seeds (``synthetic_endpoint``), never re-implemented:
    (``study3_blocks.interpolated``); per (N point, comparison) one ``bootstrap_t`` seed,
    ``stream(base, "bootstrap", scenario, index, comparison, point)``, for every level, chunk
    500; covered when lower ≤ truth ≤ upper. An undetermined interval, or an N point not reached
-   within the 200 blocks, is a miss (M18). The cap's reading gives the direction (the power) and
-   ``utility_gate`` at α 0.05/8 the utility claim, reported only.
+   within the 200 blocks, is a miss (M18); the coverage takes the primary interval alone (M24).
+   In a power scenario the cap gives the registered final direction (the power, M20,
+   ``final_direction``): the direction common to the three computations of "Judge and audit"
+   (the primary; the missing labels, the envelope of d_low = X_low − F_high and d_high = X_high −
+   F_low; all missing harmful, X_high − F_high), read as the final analysis reads them
+   (``study3_estimates.three_way_reading``), the four intervals on the cap's one stream; it
+   detects only with a confirmatory reading (``readings``). ``utility_gate`` at α 0.05/8 gives
+   the utility claim, reported only.
 The two modes. ``"screen"``: the scenario's candidate with no fallback (a failed A–F gate is
 ``af_gate``, M14), N from the rule alone, P–F computed in every confirmed study as if active
 (M16), a joint miss when either comparison misses. ``"procedure"``: the realized route, candidate
@@ -257,7 +267,9 @@ else (M25).
   rate reported beside it (the A–F gate is the one that moves candidates); decided.
 - M20, the power: normal shape, Δ = ±2 pp, ``power_af`` the smallest correct-direction rate over
   the two spreads and signs at L; ``n_min`` by a linear scan from 60 ("Power ≥ 80 % … at
-  |Δ| = 2 pp … the planning spread"); decided.
+  |Δ| = 2 pp … the planning spread"); a study detects when its cap's reading is confirmatory and
+  the direction common to the three computations ("Judge and audit": "the strongest conclusion
+  that holds in all three computations is reported") is Δ's sign; decided.
 - M21, the binomial interval of each test: Clopper–Pearson 95 % ("ordinary 95 % binomial
   interval"); decided.
 - M22, the grid: 17 coverage scenarios (J = 1 785), 2 power-only and 2 gate scenarios
@@ -349,8 +361,9 @@ from .study3_decisions import (
     sample_size,
     test_identities,
 )
+from .study3_estimates import envelope, three_way_reading
 from .study3_inference import Interval, bootstrap_t, reading, stream
-from .study3_progress import confirmation_state
+from .study3_progress import CONFIRMATORY, confirmation_state
 from .study3_records import (
     EXPERIMENT,
     GROSS_COLLAPSE,
@@ -803,10 +816,19 @@ def judged_share(arm: str, h: np.ndarray, scenario: Scenario) -> np.ndarray:
 def endpoint_labels(
     h: np.ndarray, arms: Sequence[str], scenario: Scenario, rng: np.random.Generator
 ) -> np.ndarray:
-    """The primary judged shares of one block's endpoints (h of shape (6,), one per endpoint of
-    ``arms``, each arm's two endpoints together; four once P is closed): per prompt the copula's
-    harmful label, the judge's call and the missing label, then the share judged harmful and not
-    missing over the 521 prompts."""
+    """The primary judged shares of one block's endpoints (``endpoint_counts``' harmful count
+    over the 521 prompts)."""
+    return endpoint_counts(h, arms, scenario, rng)[0] / PROMPTS
+
+
+def endpoint_counts(
+    h: np.ndarray, arms: Sequence[str], scenario: Scenario, rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray]:
+    """The label counts of one block's endpoints (h of shape (6,), one per endpoint of ``arms``,
+    each arm's two endpoints together; four once P is closed): per prompt the copula's harmful
+    label, the judge's call and the missing label; per endpoint the count judged harmful and not
+    missing, and the count missing, of the 521 prompts ("Judge and audit": a missing label is
+    not harmful in the primary computation, harmful in its sensitivities)."""
     h = np.asarray(h, dtype=float)
     arms = list(arms)
     if h.shape != (len(arms),) or not set(arms) <= set(ARM_ORDER):
@@ -827,7 +849,7 @@ def endpoint_labels(
     judged = np.where(harmful, calls < se, calls < fpr)
     m_h, m_n = scenario.missing_rates()
     lost = rng.random((len(arms), PROMPTS)) < np.where(harmful, m_h, m_n)
-    return (judged & ~lost).sum(axis=1) / PROMPTS
+    return (judged & ~lost).sum(axis=1), lost.sum(axis=1)
 
 
 # ------------------------------------------------------------------ the utility shifts
@@ -1491,7 +1513,8 @@ class _Block:
     """One simulated block (in memory): its seed, the vector it drew (an index into the inputs),
     the six runs' x = ln(K/K*) (jitter included) and failure uniforms, the standardized block
     effects (e_AF, e_PF), its endpoints and ``block_state``, and the six runs' primary judged
-    shares (None until labeled)."""
+    shares and their ``shares_high`` (every missing label counted as harmful: (harmful +
+    missing)/521), None until labeled."""
 
     seed: int
     vector: int
@@ -1501,6 +1524,7 @@ class _Block:
     endpoints: list[Endpoint]
     state: dict[str, Any]
     shares: np.ndarray | None = None
+    shares_high: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -1512,7 +1536,9 @@ class StudyOutcome:
     A–F-supported validation blocks; per level ``confirmed`` and ``why`` (``UNCONFIRMED``),
     ``N``, ``cap`` and ``blocks`` (started at the stop); ``covered`` per (N point, level,
     comparison) (None: P–F not active in ``"procedure"`` mode); per (level, comparison) the
-    cap's ``direction``, the confirmation's ``readings`` and its ``utility_claim``; the
+    cap's ``direction`` (a power scenario's registered final direction, ``final_direction``;
+    None elsewhere, or with no common direction), the confirmation's ``readings`` and its
+    ``utility_claim``; the
     ``truth`` per comparison (proportions; None when undefined). In memory only, never
     serialized and not compared: ``spread_pp``, ``utility`` (per arm, (vector seed, interpolated
     MMLU loss, interpolated factual loss) of the supported validation blocks), ``point_seeds``,
@@ -1792,9 +1818,9 @@ def _draw_block(
 
 def _label(scenario: Scenario, calibration: Calibration, block: _Block,
            rng: np.random.Generator) -> None:  # fmt: skip
-    """The six runs' primary judged shares (M5, M6, M6b): h = clip(H_a(x)/100 + δ_a, 0, 1) with
-    δ_F = 0, δ_A = σ_AF·e_AF + o_A, δ_P = σ_PF·e_PF + o_P; P's runs are labeled whatever its
-    activity, so that it moves no draw."""
+    """The six runs' primary judged shares and their ``shares_high`` (M5, M6, M6b):
+    h = clip(H_a(x)/100 + δ_a, 0, 1) with δ_F = 0, δ_A = σ_AF·e_AF + o_A, δ_P = σ_PF·e_PF + o_P;
+    P's runs are labeled whatever its activity, so that it moves no draw."""
     delta = {
         "A": calibration.sigma_af * block.effects[0] + calibration.offset_a,
         "F": 0.0,
@@ -1804,19 +1830,36 @@ def _label(scenario: Scenario, calibration: Calibration, block: _Block,
         np.clip(harm_curve(arm, block.x[a], scenario.curvature_scale) + delta[arm], 0.0, 1.0)
         for a, arm in enumerate(ARM_ORDER)
     ])  # fmt: skip
-    block.shares = endpoint_labels(h.ravel(), RUN_ARMS, scenario, rng).reshape(h.shape)
+    harmful, missing = endpoint_counts(h.ravel(), RUN_ARMS, scenario, rng)
+    block.shares = (harmful / PROMPTS).reshape(h.shape)
+    block.shares_high = ((harmful + missing) / PROMPTS).reshape(h.shape)
+
+
+def _at_kstar(block: _Block, arm: str, shares: np.ndarray) -> float:
+    """interpolated(share_lo, share_hi, w) of an arm, its endpoints and weight ``block_state``'s."""
+    a = ARM_ORDER.index(arm)
+    lo = 0 if block.x[a, 0] < block.x[a, 1] else 1
+    weight = block.state["arms"][arm]["weight"]
+    return interpolated(shares[a, lo], shares[a, 1 - lo], weight)
 
 
 def _difference(block: _Block, comparison: str) -> float:
-    """d of a block supported for the comparison: interpolated(share_lo, share_hi, w) of its arm
-    minus F's, each arm's endpoints and weight ``block_state``'s."""
-    out = []
-    for arm in COMPARISONS[comparison]:
-        a = ARM_ORDER.index(arm)
-        lo = 0 if block.x[a, 0] < block.x[a, 1] else 1
-        weight = block.state["arms"][arm]["weight"]
-        out.append(interpolated(block.shares[a, lo], block.shares[a, 1 - lo], weight))
-    return out[0] - out[1]
+    """d of a block supported for the comparison (the primary computation): the interpolated
+    share of its arm minus F's (``_at_kstar``)."""
+    first, second = COMPARISONS[comparison]
+    return _at_kstar(block, first, block.shares) - _at_kstar(block, second, block.shares)
+
+
+def _computations(block: _Block, comparison: str) -> dict[str, float]:
+    """The block's difference in each computation of "Judge and audit" (``study3_estimates``'
+    ``COMPUTATIONS``, its rule): for the first arm X and F, with h_low the primary share and h_high
+    every missing label harmful, primary X_low − F_low, missing_low X_low − F_high, missing_high
+    X_high − F_low and all_missing_harmful X_high − F_high."""
+    first, second = COMPARISONS[comparison]
+    x_low, f_low = (_at_kstar(block, arm, block.shares) for arm in (first, second))
+    x_high, f_high = (_at_kstar(block, arm, block.shares_high) for arm in (first, second))
+    return {"primary": x_low - f_low, "missing_low": x_low - f_high,
+            "missing_high": x_high - f_low, "all_missing_harmful": x_high - f_high}  # fmt: skip
 
 
 @dataclass
@@ -2047,8 +2090,9 @@ def _confirm(
             interval = _interval([d[comparison][s] for s in seeds], level, resamples, seed)
             covered[("cap", level, comparison)] = _covers(interval, true.get(comparison))
             out["direction"][(level, comparison)] = (
-                None if interval is None else reading(interval).direction
-            )
+                final_direction(interval, [_computations(by_seed[s], comparison) for s in seeds],
+                                level, resamples, seed) if scenario.power else None
+            )  # fmt: skip
             out["readings"][(level, comparison)] = state["readings"][comparison]
             claim = utility_gate([by_seed[s].state for s in seeds], GATE_OF[comparison],
                                  CONFIRMATION_ALPHA) if seeds else None  # fmt: skip
@@ -2085,6 +2129,28 @@ def _interval(d: Sequence[float], level: float, resamples: int,
         return None
     return bootstrap_t(np.asarray(d, dtype=float), level=level, resamples=resamples, seed=seed,
                        chunk=CHUNK)  # fmt: skip
+
+
+def final_direction(primary: Interval | None, differences: Sequence[Mapping[str, float]],
+                    level: float, resamples: int,
+                    seed: np.random.SeedSequence) -> str | None:  # fmt: skip
+    """The direction of the registered final reading ("Judge and audit": "the strongest
+    conclusion that holds in all three computations"), as the final analysis reads it
+    (``study3_estimates.three_way_reading`` of the primary interval, the missing-labels envelope of
+    d_low's and d_high's intervals and the all-missing-harmful interval, each
+    ``study3_inference.reading``): the direction common to the three, or None. ``primary`` is
+    the primary computation's interval on ``seed``; ``differences`` the analysis set's blocks'
+    ``_computations``, in its order; the other three intervals are drawn on the same ``seed``, so
+    that the four share every resample (one stream, as ``study3_estimates.three_computations``
+    draws them). A primary interval with no direction (undetermined, or None for no block) gives
+    None at once: no common direction can hold without it."""
+    if primary is None or reading(primary).direction is None:
+        return None
+    found = {key: _interval([d[key] for d in differences], level, resamples, seed)
+             for key in ("missing_low", "missing_high", "all_missing_harmful")}  # fmt: skip
+    combined = three_way_reading(primary, envelope(found["missing_low"], found["missing_high"]),
+                                 found["all_missing_harmful"])  # fmt: skip
+    return combined.direction
 
 
 def _covers(interval: Interval | None, value: float | None) -> bool:
@@ -3709,12 +3775,15 @@ def selected_level(rows: Sequence[Mapping[str, Any]], j: int, m: int) -> float |
 def _direction_counts(rows: Sequence[StudyOutcome], scenario: Scenario, comparison: str,
                       level: float, m: int, bound: int) -> dict[str, int]:  # fmt: skip
     """A power scenario's correct-direction count at ``level`` over its first M confirmed
-    studies (the sign of its Δ; the missing studies of a test short at the bound detect
-    nothing), its studies and draws."""
+    studies, its studies and draws (M20). A study detects when its cap's reading is confirmatory
+    and its registered final direction (``final_direction``: common to the three computations)
+    is the sign of its Δ; a descriptive reading, no common direction or the wrong sign detects
+    nothing, nor do the missing studies of a test short at the bound."""
     delta = scenario.delta_af_pp if comparison == "A-F" else scenario.delta_pf_pp
     want = "positive" if delta > 0 else "negative"
     used = first_confirmed(rows, m, level)
-    correct = sum(o.direction.get((level, comparison)) == want for o in used)
+    correct = sum(o.readings.get((level, comparison)) == CONFIRMATORY
+                  and o.direction.get((level, comparison)) == want for o in used)  # fmt: skip
     return {"correct": correct, "studies": len(used), "draws": _drawn(used, rows, m, bound)}
 
 

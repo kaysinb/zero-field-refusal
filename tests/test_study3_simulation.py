@@ -1114,6 +1114,111 @@ def test_procedure_mode_raises_n_to_n_min(setup) -> None:
     assert screen.N[0.975] < 120  # the screen takes N from the rule alone
 
 
+# ------------------------------------------------------------------ the power's reading
+
+
+def standardized(n: int, mean: float, sd: float, seed: int = 3) -> np.ndarray:
+    z = np.random.default_rng(seed).standard_normal(n)
+    return mean + sd * (z - z.mean()) / z.std(ddof=1)
+
+
+def the_four(primary: np.ndarray, missing_x: float, missing_f: float) -> dict[str, np.ndarray]:
+    """The four computations' block differences with every endpoint of the first arm missing
+    ``missing_x`` of its labels (a share of 521) and every endpoint of F ``missing_f``."""
+    return {"primary": primary, "missing_low": primary - missing_f,
+            "missing_high": primary + missing_x,
+            "all_missing_harmful": primary + missing_x - missing_f}  # fmt: skip
+
+
+@pytest.mark.parametrize("mean,missing,want", [(0.02, 5, None), (0.04, 5, "positive"),
+                                               (0.02, 0, "positive"), (-0.04, 5, "negative"),
+                                               (0.002, 5, None)])  # fmt: skip
+def test_the_final_direction_is_the_final_analysiss_three_way_reading(mean, missing, want) -> None:
+    """88 blocks of SD 5 pp, at 100 000 resamples and L 0.975, every endpoint missing
+    ``missing`` labels. At a mean of 2 pp with 5 missing (the reproduction) the primary interval
+    excludes 0, about [0.8, 3.2] pp, but the missing labels' envelope does not: the registered
+    reading has no direction, and neither has ``final_direction``. It is the final analysis's
+    (``study3_estimates.three_computations``) in every case."""
+    from zero_field_refusal.analysis.study3_estimates import three_computations
+    from zero_field_refusal.analysis.study3_inference import reading
+
+    d = the_four(standardized(88, mean, 0.05), missing / 521, missing / 521)
+    seed = stream(20261102, "bootstrap", "test", 0, "A-F", "cap")
+    primary = sim._interval(list(d["primary"]), 0.975, 100_000, seed)
+    rows = [{key: float(d[key][i]) for key in d} for i in range(88)]
+    found = sim.final_direction(primary, rows, 0.975, 100_000, seed)
+    final = three_computations(d, level=0.975, resamples=100_000, seed=seed)
+    assert final["primary"] == primary and found == final["reading"].direction == want
+    if (mean, missing) == (0.02, 5):
+        assert reading(primary).direction == "positive"
+        assert 0.006 < primary.lower < 0.009 and 0.030 < primary.upper < 0.034
+        assert final["missing_labels"].lower < 0 < final["missing_labels"].upper
+
+
+def fixed_labels(mean: float, missing: int):
+    """A ``_label`` that gives every block of seed s an A–F (and P–F) difference of
+    ``mean`` + 5 pp·z_s in counts of 521 (F at 78 harmful at both endpoints, A and P above it by
+    the same count at both) and ``missing`` missing labels at every endpoint."""
+    z = np.random.default_rng(3).standard_normal(200)
+
+    def label(scenario, calibration, block, rng) -> None:
+        harmful = np.full((len(ARM_ORDER), 2), 78)
+        lift = round((mean + 0.05 * z[block.seed % 200]) * sim.PROMPTS)
+        harmful[[ARM_ORDER.index("A"), ARM_ORDER.index("P")]] += lift
+        block.shares = harmful / sim.PROMPTS
+        block.shares_high = (harmful + missing) / sim.PROMPTS
+
+    return label, lambda s: (78 + round((mean + 0.05 * z[s % 200]) * 521)) / 521 - 78 / 521
+
+
+@pytest.mark.parametrize("missing,want,counted", [(5, None, 0), (0, "positive", 1)])
+def test_the_power_counts_only_the_registered_final_direction(setup, monkeypatch, missing, want,
+                                                               counted) -> None:  # fmt: skip
+    """A power study (C17, Δ +2 pp) whose 93 cap blocks have a mean difference of 1.9 pp and an
+    SD of 5.1 pp: the primary interval at its stream excludes 0 (its lower bound near 0.8 pp).
+    With 5 missing labels at every endpoint the missing labels' envelope reaches below 0, the
+    three computations share no direction, and the study detects nothing; with none, it
+    detects. The direction is the final analysis's on the same blocks and stream."""
+    from zero_field_refusal.analysis.study3_estimates import three_computations
+    from zero_field_refusal.analysis.study3_inference import reading
+
+    sc = sim.SCENARIOS_BY_NAME["C17"]
+    label, primary_of = fixed_labels(0.02, missing)
+    monkeypatch.setattr(sim, "_label", label)
+    o = sim.simulate_study(sc, setup, 13, 2, resamples=2_000, levels=(0.975,))
+    key = (0.975, "A-F")
+    assert o.confirmed[0.975] and o.readings[key] == "confirmatory"
+    seeds = o.analysis[key]
+    d = the_four(np.array([primary_of(s) for s in seeds]), missing / 521, missing / 521)
+    final = three_computations(d, level=0.975, resamples=2_000,
+                               seed=stream(13, "bootstrap", sc.name, 2, "A-F", "cap"))  # fmt: skip
+    assert len(seeds) == 93 and reading(final["primary"]).direction == "positive"  # it detects
+    assert 0.007 < final["primary"].lower < 0.009
+    assert o.direction[key] == final["reading"].direction == want
+    count = sim._direction_counts([o], sc, "A-F", 0.975, 1, 4)
+    assert count == {"correct": counted, "studies": 1, "draws": 3}  # index 2: drawn through it
+
+
+def test_a_descriptive_reading_detects_nothing() -> None:
+    """At the cap with fewer than 36 supported blocks the reading is descriptive: its direction,
+    even the right one, is no detection; a confirmatory one is."""
+    sc = sim.SCENARIOS_BY_NAME["C16"]
+
+    def study(index: int, reading: str, direction: str | None) -> sim.StudyOutcome:
+        key = (0.975, "A-F")
+        return sim.StudyOutcome(index=index, mode="screen", candidate=1, active=["A-F", "P-F"],
+                                levels=(0.975,), rates={}, gates={}, m=28,
+                                confirmed={0.975: True}, why={0.975: None}, N={0.975: 70},
+                                cap={0.975: 80}, blocks={0.975: 80}, covered={},
+                                direction={key: direction}, readings={key: reading},
+                                utility_claim={}, truth={})  # fmt: skip
+
+    rows = [study(0, "descriptive", "positive"), study(1, "confirmatory", "positive"),
+            study(2, "confirmatory", "negative"), study(3, "confirmatory", None)]  # fmt: skip
+    assert sim._direction_counts(rows, sc, "A-F", 0.975, 4, 16) == {"correct": 1, "studies": 4,
+                                                                    "draws": 4}  # fmt: skip
+
+
 # ------------------------------------------------------------------ the calibration
 
 
