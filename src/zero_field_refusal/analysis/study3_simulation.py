@@ -2545,9 +2545,10 @@ def _solve_sigma(scenario: Scenario, draws: _Draws, failure: float, comparison: 
     """σ such that the spread at the arm's offset ``offset`` (o⁰: Δ = 0) is the planning spread
     (0 when the labels and the geometry alone already reach it), by a bracketing root-finder
     (Brent, ``scipy.optimize.brentq``) to within ``sigma_tolerance``. The bracket is [0, 0.5]
-    (doubled until it holds the root), or, from ``start`` (the previous round's σ), the smallest
-    of [start, start·(1 ± 10⁻³·8^k)] that holds it. The spread rises with σ, so every bracket
-    holds the one root."""
+    (its upper end doubled until it holds the root), or it starts at ``start`` (the previous
+    round's σ) and steps away from it, up or down as the spread there falls short or not, by a
+    relative 10⁻³·8^k (k = 0, 1, …; down to 0 at most) until it holds the root. The spread rises
+    with σ, so every bracket holds the one root."""
     target = scenario.spread_pp
     known: dict[float, float] = {}
 
