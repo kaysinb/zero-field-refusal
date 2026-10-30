@@ -2347,7 +2347,13 @@ before each command below.
      `run.sh` runs it after the block's guard. A label under a new config hash is a new run and
      takes the plain launch. A validation or confirmation reissue under the fix needs a new
      versions record first: `check` refuses a descendant of the pinned commit that changes more
-     than the record (below, "A cycle after the validation fixation").
+     than the record (below, "A cycle after the validation fixation"). The round's
+     `--incident-time` is the cycle record's `written_at`, the time by the clock of the machine
+     that wrote the cycle. The launcher refuses an incident time later than its own clock's now
+     ("incident_time is later than now"): when the machine that launches runs behind the one
+     that wrote the cycle, the round is refused and nothing runs (it fails closed). Run the
+     printed command again on the machine that wrote the cycle, or after the skewed clock is
+     fixed (the launching machine's now is then not earlier than the cycle's `written_at`).
   8. **After the cycle.** The cycle is spent once the candidate has a supersession record,
      whichever path wrote it. A technical mark outside the qualification after that is unresolved
      after the cycle: the step is blocked and technical, with the reason `unresolved_after_cycle`,
@@ -2374,7 +2380,8 @@ before each command below.
   2. the validation rerun, issued under them (the claim `validation=rerun`; none under `reuse`);
   3. the spread, N and budget decisions, as the step names them (`record n-c<N>`, then `record
      budget-c<N>` when N asks for one: the next successor when the record in force is stale, its
-     file carrying `supersedes`), on the validation that counts;
+     file carrying `supersedes`), on the validation that counts; a stale budget record that the
+     new N no longer asks for (N at most 90 and not raised for power) needs no successor;
   4. the confirmation supplement's successor (`fixation confirmation`, the same seeds) and its
      versions record.
 
