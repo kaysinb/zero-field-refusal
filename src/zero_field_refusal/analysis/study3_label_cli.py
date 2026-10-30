@@ -987,10 +987,12 @@ def _move(run_dir: Path, target: str) -> None:
 # ------------------------------------------------------------------ the diagnosis
 
 
-def write_diagnosis(runs_root: Path, batch: str, record: Mapping[str, Any]) -> Path:
+def write_diagnosis(runs_root: Path, batch: str,
+                    record: Mapping[str, Any]) -> tuple[Path, str]:  # fmt: skip
     """Publish the diagnosis of batch ``batch``'s mark, then its ``diagnosed`` line, under the
     ledger's lock (module docstring, "The judge's mark"); a re-run completes a stranded one.
-    ``ValueError`` for every refusal; returns the record's path."""
+    ``ValueError`` for every refusal; returns the record's path and the sha256 its line names
+    (the published bytes, hashed here: the caller opens nothing of the ledger)."""
     root = Path(runs_root)
     with ledger_lock(root) as held:
         if not held:
@@ -1040,7 +1042,7 @@ def write_diagnosis(runs_root: Path, batch: str, record: Mapping[str, Any]) -> P
         reference = {"path": record_path(batch), "sha256": _sha256(data)}
         append_event(root, {"event": "diagnosed", "batch": batch, "cause": record["cause"],
                             "record": reference})  # fmt: skip
-        return path
+        return path, reference["sha256"]
 
 
 # ------------------------------------------------------------------ the commands
@@ -1099,11 +1101,11 @@ def _label_command(args: argparse.Namespace, prog: str, argv: list[str] | None) 
 def _diagnose_command(args: argparse.Namespace) -> None:
     try:
         record = json.loads(Path(args.from_file).read_text(encoding="utf-8"))
-        path = write_diagnosis(args.runs_root, args.batch, record)
+        path, digest = write_diagnosis(args.runs_root, args.batch, record)
     except (OSError, ValueError) as exc:
         sys.exit(f"study3_label_cli diagnose: {exc}")
     print(json.dumps({"batch": args.batch, "cause": record["cause"], "path": str(path),
-                      "sha256": _sha256(path.read_bytes())}))  # fmt: skip
+                      "sha256": digest}))  # fmt: skip
 
 
 def main(argv: list[str] | None = None) -> None:

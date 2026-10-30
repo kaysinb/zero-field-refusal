@@ -458,10 +458,13 @@ class World:
         study3_label_cli.main(argv)
 
     def diagnose(self, batch: str, *, cause: str, diagnosis: str, evidence: list) -> Path:
+        """The diagnosis written; its path (the sha256 it returns checked against the file)."""
         record = {"kind": DIAGNOSIS_KIND, "batch": batch,
                   "written_at": datetime.now(UTC).isoformat(timespec="microseconds"),
                   "cause": cause, "diagnosis": diagnosis, "evidence": evidence}  # fmt: skip
-        return write_diagnosis(self.root, batch, record)
+        path, digest = write_diagnosis(self.root, batch, record)
+        assert digest == sha256(path)
+        return path
 
     def pod_log_ref(self) -> dict:
         """A synthetic external evidence file of an interruption, under the runs root."""
@@ -978,6 +981,49 @@ def test_diagnoses_gives_the_records_to_the_report(world):
     assert (found.path, found.sha256, found.batch, found.cause) == (
         path, sha256(path), out.batch, "judge")  # fmt: skip
     assert (found.diagnosis, found.evidence) == ("the judge's outputs drift", (ref,))
+
+
+@pytest.mark.parametrize("stranded", [False, True])
+def test_the_diagnose_command_opens_the_ledger_only_through_named_functions(
+        world, monkeypatch, capfd, tmp_path, stranded):  # fmt: skip
+    """``diagnose``, fresh and as the re-run that completes a record published without its line:
+    every open of the labeling ledger is inside a named opener (``NamedOpens``), and nothing else
+    sealed is opened. It prints the sha256 its ``diagnosed`` line names."""
+    out = world.batch(["r1"], flips={(1, "control-3"), (2, "control-5")})
+    record = {"kind": DIAGNOSIS_KIND, "batch": out.batch, "written_at": WHEN, "cause": "judge",
+              "diagnosis": "the judge's outputs drift",
+              "evidence": [world.pod_log_ref()]}  # fmt: skip
+    given = tmp_path / "diagnosis-given.json"
+    given.write_text(json.dumps(record))
+    argv = ["diagnose", "--runs-root", str(world.root), "--batch", out.batch, "--from", str(given)]
+    capfd.readouterr()
+    guard = NamedOpens(monkeypatch, runs_root=world.root, under=world.ledger_dir)
+    if stranded:
+        world.crash_before_append("diagnosed")
+        with pytest.raises(SystemExit, match="a crash before the diagnosed line"):
+            world.main(argv)
+    world.main(argv)
+    assert guard.attempts == [] and guard.allowed
+    with guard.off():
+        (line,) = world.events("diagnosed")
+        published = world.ledger_dir / f"diagnosis-{out.batch}.json"
+        digest = sha256(published)
+    shown = json.loads(capfd.readouterr().out.strip().splitlines()[-1])
+    assert shown == {"batch": out.batch, "cause": "judge", "path": str(published),
+                     "sha256": digest} and line["record"]["sha256"] == digest  # fmt: skip
+
+
+def test_the_resolve_torn_command_opens_the_ledger_only_through_named_functions(
+        world, monkeypatch, capfd):  # fmt: skip
+    """``resolve-torn``: every open of the labeling ledger is inside a named opener, and nothing
+    else sealed is opened."""
+    world.batch(["r1"])
+    world.tear_tail()
+    guard = NamedOpens(monkeypatch, runs_root=world.root, under=world.ledger_dir)
+    world.main(["resolve-torn", "--runs-root", str(world.root)])
+    assert guard.attempts == [] and guard.allowed
+    shown = json.loads(capfd.readouterr().out.strip().splitlines()[-1])
+    assert set(shown) == {"offset", "length", "sha256", "kind"} and shown["kind"] == "controls"
 
 
 def test_the_label_command_checks_the_tokens_and_exits_on_a_refusal(world, monkeypatch, capfd):
