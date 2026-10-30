@@ -94,8 +94,45 @@ JUDGE = "judge"  # a run's judge outputs (<run>/judge/<judge>.jsonl): sealed for
 RECORD_FILES = ("config.yaml", "meta.json", "terminal.json", "summary.json", "evaluations.jsonl",
                 "metrics.jsonl", "monitor.jsonl")  # fmt: skip
 ANALYSIS = REPO_ROOT / "src" / "zero_field_refusal" / "analysis"
-PACKAGE = (*sorted(ANALYSIS.glob("study3_*.py")), ANALYSIS / "qualification_records.py",
-           ANALYSIS / "campaign_prep.py")  # fmt: skip
+PACKAGE = (
+    ANALYSIS / "study3_blocks.py",
+    ANALYSIS / "study3_decisions.py",
+    ANALYSIS / "study3_inference.py",
+    ANALYSIS / "study3_progress.py",
+    ANALYSIS / "study3_records.py",
+    ANALYSIS / "study3_search.py",
+    ANALYSIS / "study3_versions.py",
+    ANALYSIS / "qualification_records.py",
+    ANALYSIS / "campaign_prep.py",
+)
+# study 3's label readers (package 2b), each with its own sealing tests
+LABEL_READERS: tuple[Path, ...] = ()
+OTHER = (
+    ANALYSIS / "__init__.py",
+    ANALYSIS / "bootstrap.py",
+    ANALYSIS / "build.py",
+    ANALYSIS / "curves.py",
+    ANALYSIS / "decisions.py",
+    ANALYSIS / "eligibility.py",
+    ANALYSIS / "evidence.py",
+    ANALYSIS / "gate1.py",
+    ANALYSIS / "kstar.py",
+    ANALYSIS / "outputs.py",
+    ANALYSIS / "pilot_momentum.py",
+    ANALYSIS / "primary.py",
+    ANALYSIS / "qualification_verdicts.py",
+    ANALYSIS / "runs.py",
+    ANALYSIS / "simulate.py",
+    ANALYSIS / "stage_a.py",
+    ANALYSIS / "study2_audit.py",
+    ANALYSIS / "study2_audit_cli.py",
+    ANALYSIS / "study2_label_cli.py",
+    ANALYSIS / "study2_labels.py",
+    ANALYSIS / "study2_short.py",
+    ANALYSIS / "study2_short_sim.py",
+    ANALYSIS / "sweeps.py",
+    ANALYSIS / "zero_field_law.py",
+)
 SCRIPTS = (
     REPO_ROOT / "scripts" / "study3_campaigns.py",
     REPO_ROOT / "scripts" / "study3_summary.py",
@@ -195,6 +232,18 @@ def link(path: Path, target: Path | str) -> None:
     """``path`` replaced by a symbolic link to ``target``."""
     path.unlink()
     path.symlink_to(target)
+
+
+def test_every_analysis_module_is_classified_once() -> None:
+    """Every analysis/*.py module is in exactly one fence: the label-free study-3 package (its
+    label-free checks), study 3's label readers (their own sealing tests) or the others (study 1
+    and 2, shared modules, stage_a among them, which stays a GPU path). A new module of any name
+    fails here until it is classified."""
+    found = set(ANALYSIS.glob("*.py"))
+    lists = (set(PACKAGE), set(LABEL_READERS), set(OTHER))
+    assert set().union(*lists) == found
+    assert sum(len(x) for x in lists) == len(found)
+    assert ANALYSIS / "stage_a.py" in set(OTHER)
 
 
 @pytest.mark.parametrize("name", RECORD_FILES)
@@ -712,7 +761,7 @@ def test_the_package_imports_no_gpu_module_and_loads_no_script() -> None:
     - ``campaign_prep``'s lazy import of ``analysis.study2_short`` (study 2's ``prep`` only) loads
       torch and ``zero_field_refusal.runtime``.
     The scripts run no training: none calls a GPU path."""
-    assert len(PACKAGE) == 8 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
+    assert len(PACKAGE) == 9 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
     for path in PACKAGE:
         assert gpu_uses(path, "zero_field_refusal.analysis") == set(), path.name
     for path in SCRIPTS:
