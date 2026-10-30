@@ -971,6 +971,26 @@ def test_the_label_command_checks_the_tokens_and_exits_on_a_refusal(world, monke
     assert len(checked) == 1
 
 
+@pytest.mark.parametrize("error", [LedgerError("a line the ledger does not take"),
+                                   OSError("a disk error")])  # fmt: skip
+def test_the_label_command_exits_on_a_ledger_or_disk_error(world, monkeypatch, error):
+    """A ledger error or a disk error during a batch exits with the command's name and why, with
+    no traceback."""
+    monkeypatch.setattr(study3_label_cli, "check_wildguard_tokens", lambda *a, **k: {"bos_id": 1})
+    monkeypatch.setenv("JUDGE_API_BASE", "http://judge/v1")
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(study3_label_cli, "label_batch", fail)
+    argv = ["label", "--runs-root", str(world.root), "--step", "validation", "--candidate", "1",
+            "--controls-source", str(world.source), "--sealed-dir", str(world.sealed),
+            "r1"]  # fmt: skip
+    with pytest.raises(SystemExit) as caught:
+        world.main(argv)
+    assert caught.value.code == f"study3_label_cli label: {error}"
+
+
 def test_a_validation_run_is_bound_by_the_launch_journal(tmp_path):
     """The real binding (``_bound``): a run id is a plain name, an attempt of the step and the
     candidate the launch journal binds, not refused; any other is named."""

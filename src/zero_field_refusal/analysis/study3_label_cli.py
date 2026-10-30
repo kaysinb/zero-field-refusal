@@ -1088,7 +1088,7 @@ def _label_command(args: argparse.Namespace, prog: str, argv: list[str] | None) 
                                                              max_workers=args.workers),
             load_prompts=harmful_prompts, sealed_dir=sealed_dir, probe=probe,
             command=sys.argv if argv is None else [prog, *argv])  # fmt: skip
-    except BatchRefused as exc:
+    except (BatchRefused, LedgerError, OSError) as exc:
         sys.exit(f"study3_label_cli label: {exc}")
     if result.failure:
         sys.exit(result.failure)
