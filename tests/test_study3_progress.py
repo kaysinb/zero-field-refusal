@@ -1357,6 +1357,22 @@ def test_once_the_confirmation_started_a_failing_requalification_moves_nothing()
         assert all(event["event"] not in ("candidate", "close_pf") for event in result["route"])
 
 
+def test_an_arm_closed_before_the_confirmation_started_keeps_its_route() -> None:
+    """P failed at its qualification and P–F closed before the confirmation started (its n record
+    of A–F): with blocks started, the walk closes P as before and reaches the confirmation; no
+    ``confirmation_fixed``."""
+    study = Study()
+    study.ready()
+    study.search()
+    study.numerical(states={("P", "u"): "failing"})
+    study.validation(arms=("A", "F"))
+    study.n(N=60, arms=("A", "F"))
+    study.confirmation(count=3, arms=("A", "F"))
+    result = study.advance()
+    assert (result["stage"], result["active"]["arms"]) == ("confirmation", ["A", "F"])
+    assert result["step"].get("reason") != "confirmation_fixed"
+
+
 def qualification_reading(state: str) -> dict:
     """Candidate 1's qualification reading, every starting rate in ``state``."""
     study = Study()

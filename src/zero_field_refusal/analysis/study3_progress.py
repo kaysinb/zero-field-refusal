@@ -314,11 +314,13 @@ closes P–F for P; a rerun validation failing its gate takes its route.
 *The confirmation boundary* ("Validation, confirmation and stopping", "Confirmation": the
 confirmation never moves the candidate). Once a block of the candidate's confirmation has
 started, the candidate, the rates, the started seeds and the cohort's order never change: a
-scientific failure of a re-qualification blocks the route with the reason ``confirmation_fixed``
-(an explicit prospective amendment is needed; the walk never moves the candidate or closes an
-arm on it), the repair issues nothing new, and the validation (its runs reused: a cycle once the
-confirmation has started reruns neither the validation nor the search) reads as it did: a failed
-A–F gate would block (``confirmation_fixed``), never move the candidate. The n and budget
+scientific failure of an arm the confirmation holds (its n record's comparisons) blocks the
+route with the reason ``confirmation_fixed`` (an explicit prospective amendment is needed; the
+walk never moves the candidate or closes such an arm on it), the repair issues nothing new, and
+the validation (its runs reused: a cycle once the confirmation has started reruns neither the
+validation nor the search) reads as it did: a failed gate of a comparison the confirmation holds
+would block (``confirmation_fixed``), never move the candidate or close P. An arm closed before
+the start (P–F's gate, a scientific failure) keeps its route as it was. The n and budget
 successors then carry the predecessors' N, cap and cohort (the step's fields).
 
 **Problems.** Nothing is decided on problems. While ``read_endpoints`` or ``read_holds`` reports a
@@ -1100,6 +1102,20 @@ class _Walk:
         key = step_key(candidate, "confirmation")
         return any(e.cell.key == key and e.cell.campaign is not None for e in self.endpoints)
 
+    def _held_arms(self, candidate: int) -> set[str]:
+        """The arms the candidate's started confirmation holds (module docstring, "The
+        confirmation boundary"): those of its n record's comparisons (A and F, and P while P–F
+        is active in it), every active arm when no n record is read; none before the
+        confirmation has started. An arm the route closed before the start (P–F's gate, a
+        scientific failure) is not held: its route stays as it was."""
+        if not self._confirming(candidate):
+            return set()
+        record = self.entry(f"n-c{candidate}").get("record")
+        active = record.get("active") if isinstance(record, Mapping) else None
+        if not isinstance(active, list):
+            return set(self.arms)
+        return {"A", "F"} | ({"P"} if "P-F" in active else set())
+
     def _stale(self, candidate: int, code: Any) -> bool:
         """Whether a write-once record of GPU code ``code`` went stale through the candidate's
         valid cycle: its code is the cycle's old code, no longer the one in force."""
@@ -1334,18 +1350,22 @@ class _Walk:
                 or not all(m["passes"] for m in utility["bounds"].get(arm, {}).values())
             ]
         self.extra["validation"] = {"blocks": count, "gates": gates}
+        held = self._held_arms(candidate)
+        failing = [name for name, arms in (("PF", {"P"}), ("AF", {"A", "F"}))
+                   if name in gates and not gates[name]["passes"] and arms & held]  # fmt: skip
+        if failing:  # the confirmation never moves the candidate, nor closes an arm it holds
+            raise _Stop(self._result(stage, {
+                "kind": "blocked", "technical": False, "reason": CONFIRMATION_FIXED,
+                "reasons": [f"candidate {candidate}'s confirmation has started: the "
+                            f"{' and '.join(failing)} validation gate read now fails, and it "
+                            "moves no candidate and closes no arm the confirmation holds without "
+                            "an explicit prospective amendment"]}))  # fmt: skip
         if "PF" in gates and not gates["PF"]["passes"]:
             self._close_p(
                 stage,
                 f"the P–F validation gate: {gates['PF']['supported']} of {count} "
                 f"blocks supported ({minimum} needed), utility {gates['PF']['utility']}",
             )
-        if not gates["AF"]["passes"] and self._confirming(candidate):
-            raise _Stop(self._result(stage, {  # the confirmation never moves the candidate
-                "kind": "blocked", "technical": False, "reason": CONFIRMATION_FIXED,
-                "reasons": [f"candidate {candidate}'s confirmation has started: the A–F validation "
-                            "gate read now fails, and it moves no candidate without an explicit "
-                            "prospective amendment"]}))  # fmt: skip
         if not gates["AF"]["passes"]:
             raise _Move(self._event(stage, "candidate", short["AF"] or ["A", "F"],
                                     f"the A–F validation gate: {gates['AF']['supported']} of "
@@ -1714,8 +1734,9 @@ class _Walk:
         pending = [x for c in conditions.values() for x in c.pending]
         if pending:
             raise _Stop(self._result(stage, {"kind": "pending", "waiting": pending}))
-        science = [x for c in conditions.values() for x in c.scientific]
-        if science and stage != "confirmation" and self._confirming(self.candidate):
+        held = self._held_arms(self.candidate) if stage != "confirmation" else set()
+        science = [x for arm, c in conditions.items() if arm in held for x in c.scientific]
+        if science:
             raise _Stop(
                 self._result(
                     stage,
