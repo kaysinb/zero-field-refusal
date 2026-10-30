@@ -297,7 +297,8 @@ block the step: "the run records cannot be read".
 
 **After the validation fixation** ("Voiding and supersession", "Sample size from validation",
 "Seeds and order"). A cycle moves the candidate's GPU code: every write-once record of the old
-code goes stale, and its successor (``study3_decisions``' ``n-c<N>-<k>`` and ``budget-c<N>-<k>``,
+code that the cycle lists (``affected.records``: those there when it was written) goes stale,
+and its successor (``study3_decisions``' ``n-c<N>-<k>`` and ``budget-c<N>-<k>``,
 ``study3_versions``' ``docs/study3-fixation-<step>-c<N>-<k>.json``) is written in the registered
 order, each when the step names it: (1) the validation fixation's successor, once the walk
 reaches the validation (the re-qualification passed), then its versions record (the campaign
@@ -306,6 +307,8 @@ writer issues the validation only under a versions record that names the fixatio
 counts, and the budget record's when N asks for one; (4) the supplement's successor, once the
 walk reaches the confirmation, then its versions record. A stale n or budget record is no
 invalid one: the step names its successor (``decision``, the successor's kind, its fields). A
+record of the old code that the cycle does not list is not stale: its code decides
+it (an n or budget record not of the code in force is invalid), and no successor is asked. A
 cycle whose record names a fixation keeps the fixation's rates: a repair the new runs would call
 for is listed (``repair_not_applied``) and never issued. Before the confirmation has started,
 the registered routes apply unchanged: a fixed rate's re-qualification failing scientifically
