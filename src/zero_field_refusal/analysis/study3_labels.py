@@ -57,10 +57,13 @@ Every line has a closed schema (``event``, ``time`` and the event's fields, ``FI
 folded on every read (``read_ledger``) and before every append, so a line the fold refuses is
 never written. The batch and generation identities, the rounds spent and the control decisions
 live here, outside every folder a relabel moves. The fold:
-- **a torn tail** (a last line with no ``\\n``) refuses every reading and every append
-  (``LedgerError``) until ``resolve_torn`` repairs it: the tail is ended with ``\\n`` and a
-  ``torn`` line names its offset, length, sha256 and kind. The voided line's decision was never
-  acted on (every action follows its line, and the process that tore it died while writing it);
+- **a torn tail** (a last line with no ``\\n``, blanks alone included) refuses every reading
+  and every append (``LedgerError``) until ``resolve_torn`` repairs it: the tail is ended with
+  ``\\n`` and a ``torn`` line names its offset, length, sha256 and kind. The voided line's
+  decision was never acted on (every action follows its line, and the process that tore it died
+  while writing it). A crash between the ``\\n`` and the ``torn`` line leaves the tail a whole
+  line at the end that does not parse and that no ``torn`` line names: ``resolve_torn`` voids it
+  the same way;
 - **a line that does not parse or fit its schema** raises ``LedgerError`` naming its number, never
   its bytes, unless a later ``torn`` line names it;
 - **generations** run 1, 2, … per run, each opened with ``cap`` = the rounds left (three less
@@ -348,6 +351,8 @@ def append_event(runs_root: str | Path, event: Mapping[str, Any]) -> None:
     directory = _made(runs_root)
     path = directory / JOURNAL
     data = path.read_bytes() if path.is_file() else b""
+    if _lines(data)[1] is not None:  # the new line would end the torn one, blanks alone included
+        raise _torn(path)
     encoded = json.dumps(line).encode() + b"\n"
     _fold(data + encoded, _published(directory), path)
     _append(path, encoded)
@@ -359,29 +364,54 @@ def torn_tail(runs_root: str | Path) -> dict[str, Any] | None:
     path = ledger_dir(runs_root) / JOURNAL
     data = path.read_bytes() if path.is_file() else b""
     tail = _lines(data)[1]
-    if tail is None:
-        return None
-    offset, raw = tail
+    return None if tail is None else _named(*tail)
+
+
+def resolve_torn(runs_root: str | Path) -> tuple[dict[str, Any], ...]:
+    """Repair a torn journal, under the ledger's lock: end a torn tail with ``\\n`` (synced),
+    then append a ``torn`` line (synced) for each line it voids: every whole line at the end that
+    does not parse and that no ``torn`` line names (a crash between an earlier repair's ``\\n``
+    and its ``torn`` line; walking back past the ``torn`` lines and the lines they void), then
+    the tail. Returns each voided line's ``{offset, length, sha256, kind}``, in the journal's
+    order; ``LedgerError`` when nothing is torn or the lock is held."""
+    with ledger_lock(runs_root) as held:
+        if not held:
+            raise LedgerError("another process holds the labeling ledger's lock")
+        path = ledger_dir(runs_root) / JOURNAL
+        data = path.read_bytes() if path.is_file() else b""
+        lines, tail = _lines(data)
+        voided = [*_unparsed_end(lines), *([] if tail is None else [tail])]
+        if not voided:
+            raise LedgerError("the labeling ledger's journal is not torn: nothing to resolve")
+        if tail is not None:
+            _append(path, b"\n")
+        named = tuple(_named(offset, raw) for offset, raw in voided)
+        for entry in named:
+            line = {"event": "torn", **entry,
+                    "time": datetime.now(UTC).isoformat(timespec="seconds")}  # fmt: skip
+            _append(path, json.dumps(line).encode() + b"\n")
+        return named
+
+
+def _named(offset: int, raw: bytes) -> dict[str, Any]:
+    """A voided line as its ``torn`` line names it: offset, length, sha256 and kind."""
     return {"offset": offset, "length": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
             "kind": torn_kind(raw)}  # fmt: skip
 
 
-def resolve_torn(runs_root: str | Path) -> dict[str, Any]:
-    """Repair a torn tail, under the ledger's lock: end it with ``\\n`` (synced), then append a
-    ``torn`` line that names it (synced), which voids it. Returns the tail
-    ``{offset, length, sha256, kind}``; ``LedgerError`` when the tail is not torn or the lock is
-    held."""
-    with ledger_lock(runs_root) as held:
-        if not held:
-            raise LedgerError("another process holds the labeling ledger's lock")
-        tail = torn_tail(runs_root)
-        if tail is None:
-            raise LedgerError("the labeling ledger's journal is not torn: nothing to resolve")
-        path = ledger_dir(runs_root) / JOURNAL
-        _append(path, b"\n")
-        line = {"event": "torn", **tail, "time": datetime.now(UTC).isoformat(timespec="seconds")}
-        _append(path, json.dumps(line).encode() + b"\n")
-        return tail
+def _unparsed_end(lines: Sequence[tuple[int, bytes]]) -> list[tuple[int, bytes]]:
+    """The whole lines at the journal's end that do not parse and that no ``torn`` line names, in
+    order: walking back past the ``torn`` lines and the lines they void, up to the first other
+    line that parses (or is empty)."""
+    read, voids = _read(lines)
+    found = []
+    for number, offset, raw, event, problems in reversed(read):
+        if _voided(voids, number, offset, raw) or (not problems and event["event"] == "torn"):
+            continue
+        if not raw or _parses(raw):
+            break
+        found.append((offset, raw))
+    return found[::-1]
 
 
 def _append(path: Path, data: bytes) -> None:
@@ -423,30 +453,61 @@ def _lines(data: bytes) -> tuple[list[tuple[int, bytes]], tuple[int, bytes] | No
     return lines, None
 
 
-def _fold(data: bytes, published: Mapping[str, tuple[Path, bytes]], path: Path) -> Ledger:
-    lines, tail = _lines(data)
-    if tail is not None:
-        raise LedgerError(f"{path}: its last line is torn (a crash while it was written): nothing "
-                          "is read or appended until `python -m "
-                          "zero_field_refusal.analysis.study3_label_cli resolve-torn` repairs "
-                          "it")  # fmt: skip
+def _torn(path: Path) -> LedgerError:
+    return LedgerError(f"{path}: its last line is torn (a crash while it was written): nothing is "
+                       "read or appended until `python -m "
+                       "zero_field_refusal.analysis.study3_label_cli resolve-torn` repairs "
+                       "it")  # fmt: skip
+
+
+def _decoded(raw: bytes) -> Any:
+    """A journal line's JSON value; ``ValueError`` when it does not parse."""
+    return json.loads(raw.decode("utf-8"), object_pairs_hook=_unique, parse_constant=_no_constant)
+
+
+def _parses(raw: bytes) -> bool:
+    try:
+        _decoded(raw)
+    except ValueError:
+        return False
+    return True
+
+
+def _read(
+    lines: Sequence[tuple[int, bytes]],
+) -> tuple[list[tuple[int, int, bytes, Any, list[str]]], dict[tuple[int, int, str], int]]:
+    """Each whole line as (number, offset, bytes, event, its schema problems), and the lines the
+    ``torn`` lines name (offset, length, sha256) → the first ``torn`` line naming each."""
     read: list[tuple[int, int, bytes, Any, list[str]]] = []
     for number, (offset, raw) in enumerate(lines, 1):
         try:
-            event = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique,
-                               parse_constant=_no_constant)  # fmt: skip
+            event = _decoded(raw)
         except ValueError:
             event, problems = None, ["it is no JSON object"]
         else:
             problems = _schema(event)
         read.append((number, offset, raw, event, problems))
-    voids: dict[tuple[int, int, str], int] = {}  # a torn line voids an earlier line it names
+    voids: dict[tuple[int, int, str], int] = {}
     for number, _, _, event, problems in read:
         if not problems and event["event"] == "torn":
             voids.setdefault((event["offset"], event["length"], event["sha256"]), number)
+    return read, voids
+
+
+def _voided(voids: Mapping[tuple[int, int, str], int], number: int, offset: int,
+            raw: bytes) -> bool:  # fmt: skip
+    """Whether a later ``torn`` line names the line: a torn line voids an earlier line only."""
+    return voids.get((offset, len(raw), hashlib.sha256(raw).hexdigest()), 0) > number
+
+
+def _fold(data: bytes, published: Mapping[str, tuple[Path, bytes]], path: Path) -> Ledger:
+    lines, tail = _lines(data)
+    if tail is not None:
+        raise _torn(path)
+    read, voids = _read(lines)
     fold = _Fold(published, path)
     for number, offset, raw, event, problems in read:
-        if voids.get((offset, len(raw), hashlib.sha256(raw).hexdigest()), 0) > number:
+        if _voided(voids, number, offset, raw):
             continue
         if problems:
             raise LedgerError(f"{path}, line {number}: {problems[0]}")

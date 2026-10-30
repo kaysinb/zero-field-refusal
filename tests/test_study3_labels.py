@@ -50,6 +50,11 @@ HARMFUL_REPLY = "Harmful request: yes\nResponse refusal: no\nHarmful response: y
 REFUSAL_REPLY = "Harmful request: yes\nResponse refusal: yes\nHarmful response: no"
 GARBLED = "cannot classify"
 WHEN = "2026-10-31T12:00:00+00:00"
+# The torn tail's refusal, by its own words (never matched through the folder's path)
+TORN = (r"its last line is torn \(a crash while it was written\): nothing is read or appended "
+        r"until `python -m zero_field_refusal\.analysis\.study3_label_cli resolve-torn` repairs "
+        "it")  # fmt: skip
+NOT_TORN = "the labeling ledger's journal is not torn: nothing to resolve"
 
 
 def sha256(path: Path) -> str:
@@ -484,18 +489,74 @@ def test_a_torn_tail_refuses_until_resolve_torn_repairs_it(root):
     open_generation(root, "r1", 1, cap=3)
     with open(ledger_dir(root) / "journal.jsonl", "ab") as f:
         f.write(b'{"event": "controls", "batch": "b0001", "k": 1, "acc')  # a crash mid-line
+    before = journal(root).read_bytes()
     for call in (lambda: read_ledger(root), lambda: append_event(root, generation_line("r2"))):
-        with pytest.raises(LedgerError, match="torn"):
+        with pytest.raises(LedgerError, match=TORN):
             call()
+    assert journal(root).read_bytes() == before  # nothing appended to a torn tail
     tail = torn_tail(root)
-    repaired = resolve_torn(root)
+    (repaired,) = resolve_torn(root)
     assert repaired == tail and repaired["kind"] == "controls" and torn_tail(root) is None
     ledger = read_ledger(root)  # the voided decision is not in the fold
     assert ledger.current("r1").number == 1 and ledger.covered == {}
     append_event(root, generation_line("r2"))
     assert read_ledger(root).current("r2") is not None
-    with pytest.raises(LedgerError, match="not torn"):
+    with pytest.raises(LedgerError, match=NOT_TORN):
         resolve_torn(root)
+
+
+def test_a_whitespace_tail_is_torn_too(root):
+    """A tail of blanks alone, with no ``\\n``: an append would make it part of its own line, so
+    it refuses as torn until ``resolve_torn`` voids it."""
+    open_generation(root, "r1", 1, cap=3)
+    with open(journal(root), "ab") as f:
+        f.write(b"  ")
+    before = journal(root).read_bytes()
+    for call in (lambda: read_ledger(root), lambda: append_event(root, generation_line("r2"))):
+        with pytest.raises(LedgerError, match=TORN):
+            call()
+    assert journal(root).read_bytes() == before
+    (repaired,) = resolve_torn(root)
+    assert (repaired["length"], repaired["kind"]) == (2, None)
+    append_event(root, generation_line("r2"))
+    assert read_ledger(root).current("r2") is not None
+
+
+def test_a_crash_between_ending_the_tail_and_its_torn_line_is_resolved(root, monkeypatch):
+    """``resolve_torn`` dies after the tail's ``\\n``: the tail is now a whole line that does not
+    parse and that no torn line names, and the next ``resolve_torn`` voids it. A crash while the
+    torn line itself is written leaves both: both are voided."""
+    open_generation(root, "r1", 1, cap=3)
+    offset = len(journal(root).read_bytes())
+    with open(journal(root), "ab") as f:
+        f.write(b'{"event": "controls", "batch": "b0001", "k": 1, "acc')
+    real, calls = study3_labels._append, []
+
+    def append(path, data):
+        calls.append(data)
+        if len(calls) == 2:
+            raise SystemExit("a crash before the torn line")
+        real(path, data)
+
+    monkeypatch.setattr(study3_labels, "_append", append)
+    with pytest.raises(SystemExit):
+        resolve_torn(root)
+    monkeypatch.setattr(study3_labels, "_append", real)
+    assert torn_tail(root) is None and journal(root).read_bytes().endswith(b"acc\n")
+    with pytest.raises(LedgerError, match="line 2"):
+        read_ledger(root)
+    (voided,) = resolve_torn(root)
+    assert (voided["offset"], voided["length"], voided["kind"]) == (offset, 52, "controls")
+    assert read_ledger(root).current("r1").number == 1
+    with pytest.raises(LedgerError, match=NOT_TORN):
+        resolve_torn(root)
+    # the cut line ended, and its torn line itself cut short: both voided at once
+    with open(journal(root), "ab") as f:
+        f.write(b'{"event": "superseded", "batch"\n{"event": "torn", "offs')
+    first, second = resolve_torn(root)
+    assert (first["kind"], second["kind"]) == ("superseded", "torn")
+    append_event(root, generation_line("r2"))
+    assert read_ledger(root).current("r2") is not None
 
 
 def test_an_unnamed_bad_line_in_the_middle_fails_closed(root):

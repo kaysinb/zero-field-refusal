@@ -134,7 +134,9 @@ candidate is refused and the runs stay labeling problems. The order is recoverab
 published once, then its ``diagnosed`` line appended; a re-run that finds the record published
 without its line appends the line when every field but ``written_at`` is the new file's, and
 refuses otherwise. **A torn tail** of the ledger refuses ``label``, ``diagnose`` and every reader
-until ``resolve-torn`` repairs it (it prints ``{offset, length, sha256, kind}``).
+until ``resolve-torn`` repairs it (it prints ``{offset, length, sha256, kind}`` of each line it
+voids: the tail, and a whole line at the end that does not parse, left by a crash between an
+earlier repair's ``\\n`` and its ``torn`` line).
 
 **What opens the sealed folders here.** The named sealed openers are ``_label_pass`` (the runs'
 labeling and their receipts), ``_rounds_used`` (a run's rounds record, which step 7's
@@ -1136,9 +1138,11 @@ def main(argv: list[str] | None = None) -> None:
         _diagnose_command(args)
     else:
         try:
-            print(json.dumps(resolve_torn(args.runs_root)))
+            voided = resolve_torn(args.runs_root)
         except LedgerError as exc:
             sys.exit(f"study3_label_cli resolve-torn: {exc}")
+        for line in voided:
+            print(json.dumps(line))
 
 
 if __name__ == "__main__":

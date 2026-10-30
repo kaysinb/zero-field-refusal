@@ -15,7 +15,15 @@ from types import SimpleNamespace
 
 import pytest
 from test_study2_labels import IDENTITY, PROMPTS, factory
-from test_study3_labels import GARBLED, HARMFUL_REPLY, REFUSAL_REPLY, ContentJudge, study3_run
+from test_study3_labels import (
+    GARBLED,
+    HARMFUL_REPLY,
+    NOT_TORN,
+    REFUSAL_REPLY,
+    TORN,
+    ContentJudge,
+    study3_run,
+)
 from test_study3_records import World as RecordsWorld
 
 from zero_field_refusal.analysis import gate1, study3_label_cli, study3_labels, study3_versions
@@ -36,6 +44,7 @@ from zero_field_refusal.analysis.study3_labels import (
     DIAGNOSIS_KIND,
     LabelingProblem,
     LabelsPending,
+    LedgerError,
     diagnoses,
     labeling_problems,
     ledger_dir,
@@ -642,15 +651,16 @@ def test_a_crash_between_publishing_a_diagnosis_and_its_line_recovers(world):
 def test_a_torn_tail_refuses_every_command_until_resolve_torn(world, capfd):
     world.batch(["r1"])
     world.tear_tail()
-    with pytest.raises(BatchRefused, match="resolve-torn"):
+    with pytest.raises(BatchRefused, match="the labeling ledger's last line is torn: run `.* "
+                       "resolve-torn"):  # fmt: skip
         world.batch(["r2"])
-    with pytest.raises(ValueError, match="torn"):
+    with pytest.raises(LedgerError, match=TORN):
         world.diagnose("b0001", cause="judge", diagnosis="x", evidence=[])
     world.main(["resolve-torn", "--runs-root", str(world.root)])
     shown = json.loads(capfd.readouterr().out.strip().splitlines()[-1])
     assert set(shown) == {"offset", "length", "sha256", "kind"} and shown["kind"] == "controls"
     assert world.batch(["r2"]).outcome == "accepted"
-    with pytest.raises(SystemExit, match="not torn"):
+    with pytest.raises(SystemExit, match=NOT_TORN):
         world.main(["resolve-torn", "--runs-root", str(world.root)])
 
 
