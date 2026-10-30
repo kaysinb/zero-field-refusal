@@ -38,17 +38,29 @@ from test_qualification_records import qualify as qualify  # noqa: F401  (the fi
 from test_qualify import ADAMW_LR, FIX, codes, load_script
 from test_study3_campaigns import ARM_OF, START, run_config
 from test_study3_campaigns import target as at_target
-from test_study3_package2 import REAL_IDENTITY, Route, SealedGuard, round0
+from test_study3_package2 import (
+    REAL_IDENTITY,
+    SUPPLEMENT_SEEDS,
+    N,
+    Route,
+    SealedGuard,
+    numerical,
+    round0,
+)
 from test_study3_progress import OPT, Study, ep, run_of
-from test_study3_versions import git
+from test_study3_records import write_run
+from test_study3_versions import FIRST, SECOND, git
 
 from zero_field_refusal import code_identity
 from zero_field_refusal import launch as launcher
 from zero_field_refusal.analysis import qualification_records as qr
 from zero_field_refusal.analysis import study3_cycle as cycle
 from zero_field_refusal.analysis.study3_decisions import (
+    _problems,
     bridge_name,
+    cap_of,
     cycle_path,
+    decision_path,
     end_lines,
     serialized,
     start_lines,
@@ -64,6 +76,7 @@ from zero_field_refusal.analysis.study3_search import CANDIDATES
 from zero_field_refusal.config import config_hash
 from zero_field_refusal.launch import campaign_header, load_campaign
 from zero_field_refusal.qualification_constants import FAILING
+from zero_field_refusal.tracking import git_state
 
 
 def sha(data) -> str:
@@ -981,7 +994,11 @@ class FixedRoute(CycleRoute):
 
     def build(self) -> None:
         self.build_to("fixation")
-        # the engineering campaign file where the operator keeps it: RUNS_DIR/campaigns/
+
+    def build_to(self, stage: str) -> None:
+        """``Route.build_to``, then the engineering campaign file where the operator keeps it
+        (RUNS_DIR/campaigns/): the journal repair takes it."""
+        super().build_to(stage)
         self.campaign_file = self.root / "campaigns" / f"{load_campaign(self.engineering)[0]}.yaml"
         self.campaign_file.parent.mkdir(exist_ok=True)
         self.campaign_file.write_bytes(self.engineering.read_bytes())
@@ -1019,6 +1036,9 @@ class FixedRoute(CycleRoute):
 
     def qualification(self, runs_root, candidate, *, expected_code, settings, without=None,
                       prefix=None, restarts=None) -> dict:  # fmt: skip
+        """The route's reading; a case its bridge voids waits (``incomplete``) until its next
+        baseline record under the fix (``requalify``): ``qualified``, or ``failing`` for an arm
+        of ``failing``."""
         out = super().qualification(runs_root, candidate, expected_code=expected_code,
                                     settings=settings)  # fmt: skip
         bridge = Path(runs_root) / bridge_name(candidate)
@@ -1026,9 +1046,133 @@ class FixedRoute(CycleRoute):
             return out
         voided = {e.get("sha256") for e in json.loads(bridge.read_text()).get("attempts") or []}
         for key, rate in out["rates"].items():
-            if sha(Path(rate["cases"][0]["folder"]) / "baseline-attempt-1.json") in voided:
-                rate["state"] = rate["verdict"]["state"] = out["states"][key] = "incomplete"
+            folder = Path(rate["cases"][0]["folder"])
+            if sha(folder / "baseline-attempt-1.json") not in voided:
+                continue
+            state = "incomplete"
+            if (folder / "baseline-attempt-2.json").is_file():
+                state = "failing" if rate["arm"] in getattr(self, "failing", ()) else "qualified"
+            rate["state"] = rate["verdict"]["state"] = out["states"][key] = state
         return out
+
+    def validation_mark(self, arm: str, seed: int) -> str:
+        """The validation launched, ``arm``'s run at its lower rate on ``seed`` a technical mark
+        (its terminal record gone, its meta.json failed): the state's engineering cycle."""
+        self.validate()
+        (marked,) = [e for e in self.endpoints("validation") if e.arm == arm and e.seed == seed
+                     and e.lr == min(x.lr for x in self.endpoints("validation")
+                                     if x.arm == arm)]  # fmt: skip
+        (marked.run_dir / "terminal.json").unlink()
+        meta = json.loads((marked.run_dir / "meta.json").read_text())
+        (marked.run_dir / "meta.json").write_text(json.dumps({**meta, "status": "failed"}))
+        self.mark = marked.run_id
+        return marked.run_id
+
+    def relaunch(self, path: Path, values=at_target) -> list[tuple]:
+        """The labels of the campaign ``path`` whose latest attempt is superseded launched again
+        (each its next attempt, its own recovery round), under this checkout's commit: each
+        launcher run and its run id."""
+        name, runs = load_campaign(path)
+        header = campaign_header(path)
+        superseded = {r["run_id"] for r in superseded_lines(self.root)}
+        latest = {}
+        for log in self.root.glob("launch/*.jsonl"):
+            for line in log.read_text().splitlines():
+                record = json.loads(line)
+                if record.get("event") == "start":
+                    latest[record["run"]] = (record["attempt"], record["run_id"])
+        ids = []
+        with self.guard.off():
+            for run in runs:
+                attempt, last = latest.get(run.label, (0, None))
+                if last not in superseded:
+                    continue
+                cfg = run_config(run.config, run.overrides)
+                arm, rate = ARM_OF[str(cfg.optimizer.name)], float(cfg.optimizer.lr)
+                run_id = (f"20261028T{next(self.run_ids):06d}Z-{run.cell[:28]}-s{run.seed}-"
+                          f"{run.config_hash[:8]}-a{attempt + 1}")  # fmt: skip
+                self.runs.log(name, {"event": "start", "run": run.label, "attempt": attempt + 1,
+                                     "run_id": run_id, "experiment": run.experiment,
+                                     "config_hash": run.config_hash,
+                                     "command": run.command()[1:], "header": header,
+                                     "max_attempts": 1})  # fmt: skip
+                write_run(self.root / run.experiment / run_id,
+                          OmegaConf.to_yaml(cfg, resolve=True), run.config_hash,
+                          {"name": name, "label": run.label, "attempt": attempt + 1,
+                           "header": header},
+                          k_only=OmegaConf.select(cfg, "eval.k_only", default=False) is True,
+                          git=git_state(self.repo),
+                          **values(arm, rate, run.seed, header["candidate"]))  # fmt: skip
+                self.runs.end(name, run.label, attempt + 1, run_id, "done")
+                ids.append((run, run_id))
+        return ids
+
+    def requalify(self, failing=()) -> None:
+        """The re-qualification under the fix: every superseded launcher run of the
+        qualification launched again, and its case's next baseline record under the fix (naming
+        the bridge); ``failing``: arms whose rates fail scientifically."""
+        self.failing = set(failing)
+        fix = self.identity()["sha256"]
+        for path in [Path(p) for p in self.launched]:
+            step = campaign_header(path).get("step")
+            if step not in ("numerical", "repair"):
+                continue
+            for run, run_id in self.relaunch(path, numerical if step == "numerical"
+                                             else at_target):  # fmt: skip
+                cfg = run_config(run.config, run.overrides)
+                arm, lr = ARM_OF[str(cfg.optimizer.name)], float(cfg.optimizer.lr)
+                folder = (self.root / "qualification" / "c1" / "numerical" / f"s{run.seed}"
+                          / f"{OPT[arm]}-{lr:g}")  # fmt: skip
+                (folder / "baseline-attempt-2.json").write_text(json.dumps({
+                    "part": "baseline", "case": {"candidate": 1, "optimizer": OPT[arm], "lr": lr,
+                                                 "seed": run.seed, "engineering": False},
+                    "launcher": {"identity": {"run_id": run_id}, "classified": True},
+                    "engineering_cycle": {"path": str(self.bridge_path())},
+                    "provenance": {"gpu_code": {"sha256": fix}}}))  # fmt: skip
+
+    def fixed_code(self) -> dict:
+        head = git(self.repo, "rev-parse", "HEAD")
+        return {"commit": head, "gpu_code_sha256": self.identity()["sha256"]}
+
+    def write(self, what: str, kind: str) -> SimpleNamespace:
+        """``study3_summary.py fixation <kind>`` (``what`` ``fixation``), or ``record <kind>``
+        with the record the state's step gives the fields of (or, without them, the route's
+        n and budget records), under HEAD's code."""
+        if what == "fixation":
+            seeds = SUPPLEMENT_SEEDS if kind == "confirmation" else ("--theta0", self.runs.theta0)
+            ran = self.run("summary", "fixation", kind, "--runs-root", self.root, "--candidate",
+                           1, *seeds)  # fmt: skip
+        else:
+            step = self.state()["step"]
+            fields = step.get("fields") or {}
+            if kind.startswith("n-"):
+                record = self.records.n(1, N, rates=fields.get("rates", {}),
+                                        active=fields.get("active", ["A-F"]),
+                                        cohort=fields.get("cohort", {"seeds": [], "run_ids": []}),
+                                        code=self.fixed_code())  # fmt: skip
+            else:
+                record = self.records.budget(1, N, code=self.fixed_code())
+            source = self.inputs / f"{kind}-{next(self.names)}.json"
+            source.write_text(json.dumps(record))
+            ran = self.run("summary", "record", kind, "--runs-root", self.root, "--from", source)
+        return SimpleNamespace(code=ran.code, out=ran.out, error=ran.err)
+
+    def versions_successor(self) -> None:
+        """The versions record of the validation fixation's successor, superseding the first,
+        committed alone."""
+        name = "docs/study3-fixation-validation-c1-2.json"
+        self.commit("the validation fixation's successor", name)
+        self.ok("summary", "versions", "--out", SECOND, "--reason", "validation_c1", "--fixation",
+                name, "--runs-root", self.root, "--supersedes", FIRST, "--supersedes-reason",
+                "cycle_c1")  # fmt: skip
+        self.commit("its versions record", SECOND)
+
+    def rerun_validation(self) -> None:
+        """The validation's reissued cells written by the campaign writer and launched again
+        (each label's next attempt)."""
+        out = self.campaign("validation")
+        self.ok("summary", "check", "--runs-root", self.root, "--campaign", out)
+        self.relaunch(out)
 
     def claims(self, **claims: str) -> SimpleNamespace:
         """``study3_summary.py cycle`` with a claim per stage (``STAGE=CLAIM``), each with a
@@ -1049,6 +1193,22 @@ class FixedRoute(CycleRoute):
             rates.setdefault(ARM_OF[pairs["optimizer"]], []).append(float(pairs["optimizer.lr"]))
         return self.launch(self.blocks[seed], technical={(arm, min(rates[arm]))
                                                          for arm in technical})  # fmt: skip
+
+
+@pytest.fixture
+def fixed_route(tmp_path, monkeypatch):
+    """``FixedRoute`` built through the validation fixation and its first versions record, the
+    cycle module reading the route's checkout."""
+    sealed = pytest.MonkeyPatch()
+    try:
+        world = FixedRoute(tmp_path, monkeypatch)
+        world.guard = SealedGuard(sealed, runs_root=world.root)
+        world.build()
+        sealed.undo()
+        monkeypatch.setattr(cycle, "REPO", world.repo)
+        yield world
+    finally:
+        sealed.undo()
 
 
 def p_misses(arm, rate, seed, candidate) -> dict:
@@ -1498,6 +1658,112 @@ def test_an_arm_the_route_closed_keeps_the_cycle_valid_after_its_repair_on_files
     assert launcher.missing_lines(r.root) == []
     problems = r.cycle_problems()
     assert problems == [], problems[:3]
+
+
+def test_a_cycle_after_the_fixation_lists_the_stale_records_and_never_reruns_the_search(
+    fixed_route,
+):
+    """A validation mark after the validation fixation: the search is never rerun (search=rerun
+    refused); the cycle that reruns the qualification and the validation names the fixation in
+    force and lists the records it makes stale, the fixation and the versions record among
+    them, and it reads valid."""
+    r = fixed_route
+    r.validation_mark("F", 10304)
+    r.commit_fix()
+    refused = r.claims(search="rerun", qualification="rerun", validation="rerun")
+    assert refused.code != 0 and "search=rerun" in refused.error
+    ran = r.claims(search="reuse", qualification="rerun", validation="rerun")
+    assert ran.code == 0, ran.error
+    record = r.record_()
+    assert record["fixation"]["path"] == "docs/study3-fixation-validation-c1.json"
+    names = {Path(entry["path"]).name for entry in record["affected"]["records"]}
+    assert names == {"study3-fixation-validation-c1.json", "study3-versions.json"}
+    assert r.cycle_problems() == []
+
+
+def test_successors_follow_the_registered_order(fixed_route):
+    """After a cycle that reruns the qualification and the validation, on the route's files:
+    (1) the validation fixation's successor and its versions record, (2) the validation rerun,
+    (3) the n record (and the budget record), (4) the supplement; a record written out of turn
+    is refused with the step the state names, and the fixation's successor is written once."""
+    r = fixed_route
+    r.validation_mark("F", 10304)
+    r.commit_fix()
+    assert r.claims(search="reuse", qualification="rerun", validation="rerun").code == 0
+    r.repair()
+    r.requalify()
+    assert r.state()["step"]["record"] == "fixation-validation-c1-2"
+    assert "the state's step does not name it" in r.write("record", "n-c1").error  # (3) early
+    assert r.write("fixation", "validation").code == 0  # (1)
+    assert r.write("fixation", "validation").code != 0  # written once
+    r.versions_successor()  # (1) its versions record
+    assert r.write("fixation", "confirmation").code != 0  # (4) before (2) and (3)
+    state = r.state()
+    assert (state["step"]["kind"], state["step"]["campaign"]) == ("campaign", "validation")
+    assert state["cycle"][1]["successors"]["docs/study3-fixation-validation-c1.json"] == (
+        "docs/study3-fixation-validation-c1-2.json")  # fmt: skip
+    r.rerun_validation()  # (2) the reissued cells, real launches
+    assert r.write("record", "n-c1").code == 0  # (3) on the validation that counts
+    assert r.write("record", "budget-c1").code == 0
+    assert r.write("fixation", "confirmation").code == 0  # (4)
+    assert r.state()["step"]["campaign"] == "confirmation"
+
+
+@pytest.fixture
+def confirming_route(tmp_path, monkeypatch):
+    """``FixedRoute`` through the confirmation's first block (``Route.build_to``), then block
+    10401 with F's run at its lower rate technical: the state's engineering cycle at the
+    confirmation."""
+    sealed = pytest.MonkeyPatch()
+    try:
+        world = FixedRoute(tmp_path, monkeypatch)
+        world.guard = SealedGuard(sealed, runs_root=world.root)
+        world.build_to("confirming")
+        world.block(10401, technical=("F",))
+        sealed.undo()
+        monkeypatch.setattr(cycle, "REPO", world.repo)
+        yield world
+    finally:
+        sealed.undo()
+
+
+def test_a_cycle_during_the_confirmation_cannot_reach_candidate_2_or_a_new_n(confirming_route):
+    """Once the confirmation has started: a cycle that reruns the validation is refused (an
+    explicit prospective amendment is needed); one that reuses it is written; its
+    re-qualification failing scientifically blocks the route (``confirmation_fixed``), never
+    moving the candidate; an n successor with another N is refused, one that changes the code
+    alone is a valid record, and the writer takes it only when the state's step names it."""
+    r = confirming_route
+    assert r.state()["step"]["reason"] == "engineering_cycle"
+    r.commit_fix()
+    reopened = r.claims(search="reuse", qualification="rerun", validation="rerun",
+                        confirmation="rerun")  # fmt: skip
+    assert reopened.code != 0 and "prospective amendment" in reopened.error
+    ran = r.claims(search="reuse", qualification="rerun", validation="reuse",
+                   confirmation="rerun")  # fmt: skip
+    assert ran.code == 0, ran.error
+    names = {Path(e["path"]).name for e in r.record_()["affected"]["records"]}
+    assert names == {"study3-fixation-validation-c1.json", "study3-fixation-confirmation-c1.json",
+                     "n-c1.json", "budget-c1.json", "study3-versions-2.json"}  # fmt: skip
+    r.repair()
+    r.requalify(failing=("F",))
+    state = r.state()
+    assert (state["candidate"], state["step"]["kind"], state["step"]["reason"]) == (
+        1, "blocked", "confirmation_fixed")  # fmt: skip
+    assert all(event["event"] != "candidate" for event in state["route"])
+    n = json.loads(decision_path(r.root, "n-c1").read_text())
+    successor = {**n, "kind": "n-c1-2", "code": r.fixed_code(), "supersedes": {
+        "path": "study3/decisions/n-c1.json", "sha256": sha(decision_path(r.root, "n-c1")),
+        "reason": "cycle_c1", "cycle": {"path": "study3/decisions/cycle-c1.json",
+                                        "sha256": sha(cycle_path(r.root, 1))}}}  # fmt: skip
+    source = r.inputs / "n-successor.json"
+    source.write_text(json.dumps({**successor, "N": N + 6, "cap": cap_of(N + 6)}))
+    ran = r.run("summary", "record", "n-c1", "--runs-root", r.root, "--from", source)
+    assert ran.code != 0 and "prospective amendment" in ran.err
+    source.write_text(json.dumps(successor))
+    ran = r.run("summary", "record", "n-c1", "--runs-root", r.root, "--from", source)
+    assert ran.code != 0 and "the state's step does not name it" in ran.err  # out of turn
+    assert _problems(r.root, "n-c1-2", successor, r.repo) == []  # the code alone changes
 
 
 def test_the_qualification_before_a_cycle_reads_as_it_stood(qualify, monkeypatch, tmp_path):

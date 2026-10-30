@@ -147,8 +147,10 @@ from zero_field_refusal.analysis.campaign_prep import comment, revision, streams
 from zero_field_refusal.analysis.study3_decisions import (  # its one sealed-path rule
     _under_sealed,
     budget_reason,
+    chain,
     closures,
     decision_path,
+    kind_of,
     read_decision,
     start_lines,
 )
@@ -414,7 +416,10 @@ def standing_versions(repo: Path) -> Path:
 
 def decision(kind: str, root: Path, record_kind: str, key: str) -> tuple[dict, dict[str, str]]:
     """A decision record the campaign rests on, valid and passed, and its header entries: its
-    path under RUNS_DIR and the sha256 of its file now."""
+    path under RUNS_DIR and the sha256 of its file now. An n or budget record is its chain's
+    link in force (``study3_decisions.chain``: a successor after a cycle)."""
+    if kind_of(record_kind)[0] in ("n", "budget") and chain(root, record_kind):
+        record_kind = chain(root, record_kind)[-1]["kind"]
     record, problems = read_decision(root, record_kind, repo=REPO)
     if record is None or record["state"] != "passed":
         why = "; ".join(problems) or ("not written" if record is None else "it did not pass")
@@ -447,8 +452,7 @@ def header_of(kind: str, candidate: int, root: Path) -> dict[str, Any]:
         n, named = decision(kind, root, f"n-c{candidate}", "n_record")
         header.update(named)
         budget = f"budget-c{candidate}"
-        if (budget_reason(n["N"], simulation) is not None
-                or decision_path(root, budget).exists()):  # fmt: skip
+        if budget_reason(n["N"], simulation) is not None or chain(root, budget):
             header.update(decision(kind, root, budget, "budget_record")[1])
     return header
 

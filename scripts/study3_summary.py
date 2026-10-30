@@ -49,8 +49,9 @@ All of these must hold:
   (``c<N>-confirmation-<optimizer>-<rate>-s<S>``, config experiments/study3, the arm, B = 20, the
   rate and the role, the one seed S);
 - the records its header names are as they were when it was written: the n record (always) and
-  the budget record (when named), each the candidate's under RUNS_DIR with the sha256 the header
-  gives, and the versions record, in the checkout, of its named sha256;
+  the budget record (when named), each the candidate's under RUNS_DIR (its chain's link in force:
+  a successor after a cycle) with the sha256 the header gives, and the versions record, in the
+  checkout, of its named sha256;
 - ``study3_versions.versions_problems`` finds no problem in that versions record for the
   confirmation of candidate N, the running checkout's HEAD included: it prevents a block from
   running under a commit other than the pinned one. It does not stand for comparing each run's
@@ -88,7 +89,11 @@ the stage read as ``progress`` reads it, θ₀ from --theta0) or its confirmatio
 of agreements, integers in [0, 2³²), as "Inference" and "The audit" require), once, at its fixed
 path docs/study3-fixation-<step>-c<N>.json. It needs a clean checkout of a known commit: the
 record's code is HEAD's commit and that commit's GPU code, which the builders take as given. The
-record is then committed alone, before the next one is written. While the route after the
+record is then committed alone, before the next one is written. After candidate N's cycle
+(module docstring, "After a cycle") a record of it is written only when the state's step names
+it: the first supplement once the state is at N's confirmation, a stale fixation's successor
+(``docs/study3-fixation-<step>-c<N>-<k>.json``, naming the record before it and the cycle) when
+the step names that successor. While the route after the
 validation fixation (the successor records of a cycle after it and the confirmation boundary,
 "Voiding and supersession") and its replay have not passed (``POST_FIXATION_ROUTE``), the
 validation fixation is refused and nothing is written; the supplement, which needs it, cannot be
@@ -97,6 +102,20 @@ written either.
 **record** writes a decision record (engineering, simulation, n-c<N>, budget-c<N>) from a JSON
 file through ``study3_decisions.write_decision``, which validates it against the evidence it
 names and the records it answers: written once, never over another; a refusal prints its reasons.
+After candidate N's cycle an n or budget record is written only when the state's step names it:
+the first record, or, the record in force stale through the cycle, its next successor
+(``n-c<N>-<k>``, ``budget-c<N>-<k>``; the file carries ``supersedes``), its content checked
+first (after the confirmation has started, N, the cap and the cohort stand).
+
+**After a cycle** ("Voiding and supersession", "Sample size from validation", "Seeds and order").
+The write-once records of the old GPU code are stale; their successors come in the registered
+order, each committed alone: (1) the validation fixation's successor and its versions record;
+(2) the validation's reissued cells, issued under them; (3) the n record's successor (spread, N,
+cohort, on the validation that counts) and the budget record's when N asks for one; (4) the
+supplement's successor and its versions record. A successor written out of turn is refused with
+the step the state names. Once the candidate's confirmation has started, the validation is not
+reopened (``cycle`` refuses validation=rerun and search=rerun) and the successors keep N, the cap,
+the cohort and the seeds.
 
 **closure** writes the closure record closure-c<N>-<ARM> with exactly the fields the state's step
 gives: a held run's decision step, the way out of a run under another commit (its last end
@@ -146,8 +165,9 @@ engineering campaign file where it is looked for; on the existing chain, a step 
 engineering cycle, a state with problems, or a journal that is not whole (an unresolved torn
 line, a line a published record requires and no log holds: ``journal_problems``); a run of N in a
 stage and arm the claims rerun that has not ended (pending, or recovered with no later attempt);
-a claim or justification missing or malformed, a marked arm not rerun, or the search rerun once a
-validation fixation exists; and what ``derive_cycle`` refuses (a mark under a known other GPU
+a claim or justification missing or malformed, a marked arm not rerun, the search rerun once a
+validation fixation exists, or the validation or the search rerun once the confirmation has
+started; and what ``derive_cycle`` refuses (a mark under a known other GPU
 code, a record under a sealed folder or there and unreadable, a qualification launcher run the
 readers cannot settle, and the rest it names).
 
@@ -187,10 +207,15 @@ from zero_field_refusal.analysis.study3_cycle import (
 )
 from zero_field_refusal.analysis.study3_decisions import (  # its sealed-path rule, its
     DecisionRefused,  # write-once publication
+    _problems,
     _publish,
     _under_sealed,
+    chain,
+    confirmation_started,
     cycle_path,
     decision_path,
+    kind_of,
+    next_successor,
     read_decision,
     write_decision,
 )
@@ -215,7 +240,9 @@ from zero_field_refusal.analysis.study3_search import ARM_ORDER
 from zero_field_refusal.analysis.study3_versions import (
     RecordRefused,
     confirmation_fixation,
+    fixation_chain,
     fixation_name,
+    fixation_number,
     validation_fixation,
     versions_name,
     versions_problems,
@@ -262,7 +289,30 @@ def unopened(path: Path, base: Path) -> str:
 def state_of(args: argparse.Namespace) -> dict[str, Any]:
     """The state of the records under --runs-root, read under this checkout's GPU code."""
     expected = code_identity.gpu_code_identity(repo=REPO)["sha256"]
-    return progress(args.runs_root, repo=REPO, expected_code=expected, theta0=args.theta0)
+    return progress(args.runs_root, repo=REPO, expected_code=expected,
+                    theta0=getattr(args, "theta0", None))  # fmt: skip
+
+
+def after_cycle(args: argparse.Namespace, candidate: int) -> dict[str, Any] | None:
+    """The state, once candidate N has a valid cycle record outside the qualification (module
+    docstring, "After a cycle"); None before (no state is read when no cycle record is
+    there)."""
+    if not (cycle_path(args.runs_root, candidate).exists()
+            or cycle_path(args.runs_root, candidate).is_symlink()):  # fmt: skip
+        return None
+    state = state_of(args)
+    found = (state.get("cycle") or {}).get(candidate) or {}
+    return state if found.get("state") == "valid" else None
+
+
+def named_step(command: str, state: dict[str, Any], kind: str) -> None:
+    """Refused unless the state's step names the record ``kind`` (module docstring, "After a
+    cycle": each successor in the registered order)."""
+    step = state["step"]
+    if not (step.get("kind") == "decision" and step.get("record") == kind):
+        refuse(command, f"{kind}: the state's step does not name it: after the cycle the records "
+               "are written in the registered order, each when the step names it (the state names "
+               f"{shown(state)})")  # fmt: skip
 
 
 def shown(state: dict[str, Any]) -> str:
@@ -454,7 +504,8 @@ def block_problems(data: Any, candidate: int, seed: int, cells: list,
                 problems.append("its header names no n record (n_record): the confirmation "
                                 "rests on it")  # fmt: skip
             continue
-        named, path = decision_path(".", kind).as_posix(), decision_path(root, kind)
+        path = in_force(root, kind)  # the chain's link in force (a successor after a cycle)
+        named = decision_path(".", path.name[: -len(".json")]).as_posix()
         if header[key] != named:
             problems.append(f"its header's {key} is {header[key]!r}, not {named}")
         elif _under_sealed(path, root):
@@ -478,6 +529,13 @@ def block_problems(data: Any, candidate: int, seed: int, cells: list,
                             f"{header.get('versions_record_sha256')}, and it is now "
                             f"{sha256(path)}")  # fmt: skip
     return problems
+
+
+def in_force(root: Path, kind: str) -> Path:
+    """The link in force of an n or budget record's chain (``study3_decisions.chain``: the first
+    record, or its last successor); the first record's path when there is none."""
+    links = chain(root, kind)
+    return Path(links[-1]["path"]) if links else decision_path(root, kind)
 
 
 def check(args: argparse.Namespace) -> None:
@@ -608,20 +666,39 @@ def write_fixation(args: argparse.Namespace) -> None:
         refuse("fixation", "the route after the validation fixation (its successor records and "
                'the confirmation boundary, "Voiding and supersession") and its replay have not '
                "passed: no validation fixation is written")  # fmt: skip
+    names = fixation_chain(step, candidate, repo=REPO)
+    state = after_cycle(args, candidate)
+    supersedes = None
     path = REPO / fixation_name(step, candidate)
+    if names and state is None:
+        refuse("fixation", f"{REPO / names[-1]} exists: a fixation record is written once")
+    if names:  # a stale record's successor, when the state's step names it
+        k = fixation_number(names[-1]) + 1
+        named_step("fixation", state, f"fixation-{step}-c{candidate}-{k}")
+        path = REPO / fixation_name(step, candidate, k)
+        cycle = cycle_path(args.runs_root, candidate)
+        supersedes = {"path": names[-1], "sha256": sha256(REPO / names[-1]),
+                      "reason": f"cycle_c{candidate}",
+                      "cycle": {"path": decision_path(".", f"cycle-c{candidate}").as_posix(),
+                                "sha256": sha256(cycle)}}  # fmt: skip
+    elif state is not None and step == "confirmation" and (
+            state["stage"], state["candidate"]) != ("confirmation", candidate):  # fmt: skip
+        refuse("fixation", f"the confirmation supplement of candidate {candidate} is written once "
+               "the state is at its confirmation: after the cycle, the records come in the "
+               f"registered order (the state names {shown(state)})")  # fmt: skip
     if path.exists() or path.is_symlink():
         refuse("fixation", f"{path} exists: a fixation record is written once")
     code = head_code("fixation", clean=True)
     try:
         if step == "validation":
             record = validation_fixation(args.runs_root, candidate, code=code, repo=REPO,
-                                         theta0=args.theta0)  # fmt: skip
+                                         theta0=args.theta0, supersedes=supersedes)  # fmt: skip
         else:
             record = confirmation_fixation(args.runs_root, candidate, code=code,
                                            bootstrap_seed=args.bootstrap_seed,
                                            audit_seed=args.audit_seed,
                                            agreement_seed=args.agreement_seed,
-                                           repo=REPO)  # fmt: skip
+                                           repo=REPO, supersedes=supersedes)  # fmt: skip
     except RecordRefused as exc:
         refuse("fixation", str(exc))
     publish("fixation", path, record)
@@ -637,8 +714,23 @@ def write_record(args: argparse.Namespace) -> None:
         record = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         refuse("record", f"{source} cannot be read ({type(exc).__name__})")
+    kind = args.kind
+    family, candidate = kind_of(kind)
+    state = after_cycle(args, candidate) if family in ("n", "budget") else None
+    if state is not None:  # after the cycle: the first record, or the next successor
+        if chain(args.runs_root, kind):
+            kind = next_successor(args.runs_root, kind)
+            try:
+                found = json.loads(json.dumps(record, allow_nan=False))
+            except (TypeError, ValueError) as exc:
+                refuse("record", f"{kind}: not a JSON record ({exc})")
+            problems = _problems(args.runs_root, kind, found, REPO)
+            if problems:  # its content first: after the confirmation started, N stands
+                refuse("record", f"{kind}: not written, {len(problems)} problem(s): "
+                       + "; ".join(problems))  # fmt: skip
+        named_step("record", state, kind)
     try:
-        path = write_decision(args.runs_root, args.kind, record, repo=REPO)
+        path = write_decision(args.runs_root, kind, record, repo=REPO)
     except DecisionRefused as exc:
         refuse("record", str(exc))
     print(path)
@@ -768,7 +860,14 @@ def write_cycle(args: argparse.Namespace) -> None:
                "them")  # fmt: skip
     if fixation is not None and "search" in claims and claims["search"].action == "rerun":
         refuse("cycle", f"the validation fixation {fixation} exists: the search is never rerun "
-               "after it (search=reuse, with its justification)")  # fmt: skip
+               "after it: search=rerun is refused (search=reuse, with its "
+               "justification)")  # fmt: skip
+    if confirmation_started(root, candidate) and any(
+            name in claims and claims[name].action == "rerun"
+            for name in ("search", "validation")):  # fmt: skip
+        refuse("cycle", "after the confirmation has started, validation is not reopened without "
+               "an explicit prospective amendment: validation=rerun and search=rerun are "
+               "refused")  # fmt: skip
     ref = None if fixation is None else {"path": fixation, "sha256": sha256(REPO / fixation),
                                          "root": "repo"}  # fmt: skip
     try:

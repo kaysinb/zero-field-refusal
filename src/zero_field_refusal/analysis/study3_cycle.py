@@ -26,6 +26,7 @@ journal repair and re-qualification carry it out, unchanged.
   (reading no run record), its bridge against it, and its lists against their derivation in the
   pre-cycle view.
 - ``rebuild_bridge``: the bridge of a published cycle record whose bridge is missing.
+- ``stale_records``: the write-once records a cycle makes stale.
 - ``journal_unread`` and ``journal_problems``: why the launch journal cannot be read whole, and
   why it is not whole, as the launcher refuses it.
 
@@ -65,7 +66,8 @@ its GPU code), and
 - ``diagnosis`` and ``fix``: one line each, not blank;
 - ``stages``: a claim per stage of N started when the record is written (``action``, ``arms``,
   ``justification``); the marks' stage is ``rerun`` with every marked arm;
-- ``fixation``: the validation fixation in force (evidence, ``root: repo``), or null;
+- ``fixation``: the validation fixation in force, its chain's last link (evidence, ``root:
+  repo``), or null;
 - ``journal``: the prefix it pins (``journal_seen``);
 - ``affected``: ``runs``, every run of N whose start lies in the prefix, in a stage and arm the
   claims rerun, counting, under a GPU code other than the fix's (or none), and neither a
@@ -79,7 +81,10 @@ its GPU code), and
   ``meta``, its ``meta.json`` as evidence or an absence marker) and the case restart records
   counted as written before the cycle (``restarts``, evidence: every one there when the cycle is
   written; a restart is never dated by its clock); ``records``, the write-once records the cycle
-  makes stale;
+  makes stale (``stale_records``: of the candidate's validation fixation, confirmation supplement,
+  n and budget records, each chain's last link of the old code, and the standing versions record,
+  the last whose commit has the old code; each as evidence, the checkout's ``root: repo``), those
+  there when it is written;
 - ``kept``: what keeps counting, each with ``why``: a run that is a ``scientific_failure``,
   ``held``, of a ``closed_arm`` (or cited by a closure), each ``run_id`` with its ``evidence``
   (its ``terminal.json``, else its ``meta.json``, else an absence marker); and per stage whose
@@ -103,8 +108,11 @@ launcher runs it supersedes and every affected run, each ``run_id``, ``campaign`
 that is not one line; the fix's GPU code the old one; a claim missing for a stage started, or
 one for a stage not started; no mark; the marks' stage not a rerun of every marked arm; a mark
 under a known GPU code other than the old one (its code unknown, it is a mark of the code in
-force); a mark that is not among the affected runs; a journal whose prefix moved since the
-records were read, or a start in the pinned prefix that the records read do not hold; a record
+force); once the candidate's confirmation has started (a run of it in the records), a claim that
+reruns the validation or the search ("Validation, confirmation and stopping": validation is not
+reopened without an explicit prospective amendment); a mark that is not among the affected
+runs; a journal whose prefix moved since the records were read, or a start in the pinned prefix
+that the records read do not hold; a record
 under a sealed folder or present and unreadable (a missing one is an absence marker, never a
 refusal); a launcher run of the qualification that no part record classified and that the
 readers cannot settle (``qualification_records.cycle_entries``: ``qualify.py``'s own
@@ -141,7 +149,9 @@ writer derives from this view with ``without=None``; the reader re-derives with 
 cycle's bridge, before and after the repair alike, and with the case restarts the record pins
 (only those count as written before the cycle; no time stamp is compared, the bridge's
 ``superseded_at`` included). ``cycle_problems`` then requires a claim for every stage started
-and none for a stage not started, ``affected`` and ``kept`` equal to their derivation exactly
+and none for a stage not started (no rerun of the validation or the search once the
+confirmation has started), ``affected`` (its runs and its stale records) and ``kept`` equal to
+their derivation exactly
 (no omission, no extra, nothing twice, canonical order), every mark among the affected runs, the
 qualification's side equal to ``cycle_entries``', no listed run a scientific failure, and the
 bridge equal to its derivation (``_bridge_against``: its ``launchers`` the qualification's
@@ -218,6 +228,11 @@ ACTIONS = CLAIMS  # reuse, rerun
 JUSTIFICATION_MAX = TEXT_MAX  # characters of a diagnosis, a fix or a claim's justification
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 WRITER = "scripts/study3_summary.py cycle"  # the bridge's provenance: what wrote it
+# The checkout a cycle record's evidence there (the validation fixation) is read in, where a caller
+# names none (``read_cycle``; the qualification's one check of a bridge)
+REPO = REPO_ROOT
+REOPENED = ("after the confirmation has started, validation is not reopened without an explicit "
+            "prospective amendment: validation=rerun and search=rerun are refused")  # fmt: skip
 RUN_FILES = ("config.yaml", "meta.json", "terminal.json")  # an affected run's records
 
 
@@ -661,6 +676,7 @@ def derive_cycle(
     reasons += [f"the {name}, started, has no claim" for name in started if name not in claims]
     reasons += [f"a claim for the {name}, which has not started" for name in claims
                 if name not in started]  # fmt: skip
+    reasons += reopened(claims, started)
     by_id = {e.run_id: e for e in records.endpoints}
     found = []
     for run_id in marks:
@@ -733,7 +749,8 @@ def derive_cycle(
                           "justification": c.justification} for name, c in claims.items()},
         "fixation": None if fixation is None else dict(fixation),
         "journal": now,
-        "affected": {"runs": affected, "qualification": qualification, "records": []},
+        "affected": {"runs": affected, "qualification": qualification,
+                     "records": stale_records(root, candidate, repo=repo, old_code=old_code)},
         "kept": kept, "bridge": bridge_name(candidate),
     }  # fmt: skip
     record = json.loads(json.dumps(record, allow_nan=False))  # what a reader will see
@@ -747,6 +764,76 @@ def derive_cycle(
                           fix_identity=fix_identity, entries=entries, stage_runs=stage_runs,
                           host=host, at=written_at, commit=str(code.get("commit")))  # fmt: skip
     return record, json.loads(json.dumps(bridge, allow_nan=False))
+
+
+def reopened(claims: Mapping[str, Claim], started: Collection[str]) -> list[str]:
+    """Why the claims reopen the validation once the confirmation has started (module
+    docstring, "Refusals"): a rerun of the validation or the search."""
+    rerun = [name for name in ("search", "validation")
+             if name in claims and claims[name].action == "rerun"]  # fmt: skip
+    return [f"{REOPENED} ({', '.join(f'{name}=rerun' for name in rerun)})"] if (
+        "confirmation" in started and rerun) else []  # fmt: skip
+
+
+def stale_records(
+    runs_root: str | Path, candidate: int, *, repo: str | Path, old_code: str
+) -> list[dict[str, Any]]:
+    """The write-once records a cycle of ``old_code`` makes stale (module docstring, "The cycle
+    record"), in canonical order: of the candidate's validation fixation, confirmation supplement,
+    n and budget records, each chain's last link whose GPU code is ``old_code`` (its successors,
+    written after the cycle, carry the fix), and the last versions record whose commit has
+    ``old_code`` (``study3_versions._gpu_code``); each as evidence, the checkout's with ``root:
+    repo``. Read as written (their readers check them): a file under a sealed folder or that
+    cannot be read is passed over."""
+    from .study3_decisions import chain
+    from .study3_versions import fixation_chain, versions_name
+
+    root, repo = Path(runs_root), Path(repo)
+    out = []
+    for step in ("validation", "confirmation"):
+        for name in reversed(fixation_chain(step, candidate, repo=repo)):
+            data = _plain_json(repo / name, repo)
+            if _code_of(data) == old_code:
+                out.append({"path": name, "sha256": _sha(repo / name), "root": "repo"})
+                break
+    for family in ("n", "budget"):
+        for link in reversed(chain(root, f"{family}-c{candidate}")):
+            if _code_of(_plain_json(Path(link["path"]), root)) == old_code:
+                out.append({"path": "/".join((EXPERIMENT, "decisions", Path(link["path"]).name)),
+                            "sha256": _sha(Path(link["path"]))})  # fmt: skip
+                break
+    names = []
+    while (repo / versions_name(len(names) + 1)).is_file():
+        names.append(versions_name(len(names) + 1))
+    for name in reversed(names):
+        data = _plain_json(repo / name, repo)
+        code = data.get("code") if isinstance(data, dict) else None
+        commit = code.get("commit") if isinstance(code, Mapping) else None
+        if isinstance(commit, str) and _COMMIT.fullmatch(commit) and _gpu_code(
+                repo, commit) == old_code:  # fmt: skip
+            out.append({"path": name, "sha256": _sha(repo / name), "root": "repo"})
+            break
+    return sorted(out, key=lambda entry: entry["path"])
+
+
+def _plain_json(path: Path, base: Path) -> Any:
+    """A record's JSON as written, None under a sealed folder or unreadable (never opened)."""
+    if under_sealed(path, base) or not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _code_of(data: Any) -> Any:
+    """A record's ``code.gpu_code_sha256``, or None."""
+    code = data.get("code") if isinstance(data, dict) else None
+    return code.get("gpu_code_sha256") if isinstance(code, Mapping) else None
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _mark(e: Endpoint, records: Records) -> dict[str, Any]:
@@ -1066,7 +1153,7 @@ def read_cycle(
     runs_root: str | Path,
     candidate: int,
     *,
-    repo: str | Path = REPO_ROOT,
+    repo: str | Path | None = None,
     chain_old: str | None = None,
 ) -> dict[str, Any]:
     """The candidate's cycle as published (module docstring, "Reading a cycle back"), reading no
@@ -1077,9 +1164,9 @@ def read_cycle(
     the ``bridge`` (None unless readable), the ``claims`` by stage, the ``affected`` run ids, the
     ``kept`` entries, ``repair_record`` (the bridge's ``old_record.path``: the exact ``--record``
     of the journal repair) and the ``problems``. ``repo``: the checkout of the fixation's
-    evidence; ``chain_old``: the code in force before the cycle on the chain of engineering
-    cycles, when known."""
-    root = Path(runs_root)
+    evidence (``REPO`` by default); ``chain_old``: the code in force before the cycle on the chain
+    of engineering cycles, when known."""
+    root, repo = Path(runs_root), REPO if repo is None else repo
     path, bridge_path = cycle_path(root, candidate), root / bridge_name(candidate)
     out: dict[str, Any] = {"state": "missing", "path": str(path), "bridge_path": str(bridge_path),
                            "record": None, "bridge": None, "claims": {}, "affected": [],
@@ -1269,6 +1356,10 @@ def cycle_problems(
                 "justification)" for stage in started if stage not in claims]  # fmt: skip
     problems += [f"{where}: a claim for the {stage}, which had not started" for stage in claims
                  if stage not in started]  # fmt: skip
+    problems += [f"{where}: {why}" for why in reopened(claims, started)]
+    problems += _compare(where, "affected.records", record["affected"]["records"],
+                         stale_records(root, candidate, repo=repo, old_code=record["old_code"]),
+                         lambda r: r["path"])  # fmt: skip
     run_codes = run_gpu_codes(records.endpoints, repo=repo)
     by_id = {e.run_id: e for e in records.endpoints}
     closed = [k["run_id"] for k in record["kept"] if k.get("why") == "closed_arm"]

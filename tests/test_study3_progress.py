@@ -116,6 +116,7 @@ class Study:
         self.uncounted: dict[str, dict] = {}  # runs under another commit than the pinned one
         self.cycle_records: dict[int, dict] = {}  # each candidate's cycle record, as read
         self.run_codes: dict[str, str | None] = {}  # run id -> its GPU code, where it is known
+        self.fixed: dict[int, dict[str, dict]] = {}  # the fixation chains' links in force
 
     # -- decision records
 
@@ -384,7 +385,7 @@ class Study:
                        starts=self.starts, cycles=self.cycles,
                        recoverable=frozenset(self.recoverable),
                        uncounted=self.uncounted, cycle_records=self.cycle_records,
-                       run_codes=self.run_codes)  # fmt: skip
+                       run_codes=self.run_codes, fixed=self.fixed)  # fmt: skip
 
     def advance(self, **kw) -> dict:
         return advance(self.records(), **{"expected_code": self.expected, **kw})
@@ -1173,6 +1174,187 @@ def test_an_after_cycle_mark_whose_supersession_record_cannot_be_read_names_it()
     assert any("qualification/c1/supersede-1.json" in r and "cannot be read" in r
                for r in step["reasons"])  # fmt: skip
     assert all("closure" not in way for way in step["ways_out"])
+
+
+# ------------------------------------------------------------------ after the validation fixation
+
+FIXED_RATES = {arm: dict(START[arm]) for arm in ARMS}  # the rates the fixation fixed (l, u)
+
+
+def fixation_link(candidate: int, step: str, k: int, code: str) -> dict:
+    """A fixation chain's link in force (``Records.fixed``): its path, number, code and rates."""
+    name = f"docs/study3-fixation-{step}-c{candidate}" + ("" if k == 1 else f"-{k}") + ".json"
+    start = CANDIDATES[candidate]["start"]
+    rates = {arm: {"lr_l": start[arm]["l"], "lr_u": start[arm]["u"]} for arm in ARMS}
+    return {"path": name, "k": k, "code": code, "rates": rates}
+
+
+def failing_reading(arm: str, candidate: int = 1) -> dict:
+    """Candidate N's qualification reading, the starting rates qualified but ``arm``'s upper rate
+    failing (a scientific failure of its re-qualification)."""
+    study = Study()
+    for a in ARMS:
+        for label in LABELS:
+            state = "failing" if (a, label) == (arm, "u") else "qualified"
+            study.rate(candidate, a, CANDIDATES[candidate]["start"][a][label], state)
+    return study.readings[candidate]
+
+
+def post_fixation_cycle(candidate: int = 1, *, reissued_validation: dict | None = None,
+                        requalified_K_miss: tuple[str, str] | None = None,
+                        confirming: bool = False) -> Study:  # fmt: skip
+    """Candidate N (candidate 1 failed at its numerical qualification first, for N = 2) through
+    its validation fixation (``fixed``: its first link, the old code) and its validation, and a
+    valid cycle record after the fixation through the re-qualification (its reading qualified):
+    a validation mark, the search reused, the qualification and the validation rerun (its runs
+    superseded). ``reissued_validation``: the fixation's successor written and the validation
+    reissued, A supported in ``supported`` of 28 blocks; ``requalified_K_miss``: (arm, label)
+    whose re-qualified numerical runs miss their target (a repair the new runs would call for;
+    its search runs on 0, .03, .06, .3 in ln K); ``confirming``: the n record and three
+    confirmation blocks before the cycle, at the confirmation instead (the validation reused, the
+    confirmation rerun)."""
+    study = Study()
+    study.ready()
+    offsets = None if requalified_K_miss is None else {requalified_K_miss: [0.0, 0.03, 0.06, 0.3]}
+    if candidate == 2:
+        study.search(1)
+        study.numerical(1, states={"A": "failing"})
+    study.search(candidate, offsets=offsets)
+    study.numerical(candidate)
+    study.validation(candidate)
+    if confirming:
+        study.n(candidate, N=60)
+        study.confirmation(candidate, count=3)
+    old = study.expected
+    study.fixed = {candidate: {"validation": fixation_link(candidate, "validation", 1, old)}}
+    if confirming:
+        study.fixed[candidate]["confirmation"] = fixation_link(candidate, "confirmation", 1, old)
+        study.technical(run_of(study, "confirmation", "F", "u", 10401, candidate))
+        claims = {"search": REUSE, "qualification": RERUN, "validation": REUSE,
+                  "confirmation": RERUN}  # fmt: skip
+        study.cycle_record(candidate, stage="confirmation", claims=claims)
+    else:
+        study.technical(run_of(study, "validation", "F", "u",
+                               SEEDS["validation"][candidate][4], candidate))  # fmt: skip
+        study.cycle_record(
+            candidate,
+            stage="validation",
+            claims={"search": REUSE, "qualification": RERUN, "validation": RERUN},
+        )
+    record = study.cycle_records[candidate]["record"]
+    record["fixation"] = {"path": study.fixed[candidate]["validation"]["path"], "sha256": "7" * 64,
+                          "root": "repo"}  # fmt: skip
+    if requalified_K_miss is not None:  # the re-qualification's runs miss the target
+        arm, label = requalified_K_miss
+        for e in [
+            e
+            for e in study.endpoints
+            if e.cell.step == "numerical"
+            and e.arm == arm
+            and e.candidate == candidate
+            and math.isclose(e.lr, CANDIDATES[candidate]["start"][arm][label])
+        ]:
+            study.change(e.run_id, K=CANDIDATES[candidate]["targets"][label] * math.exp(0.3))
+    if reissued_validation is not None:
+        study.fixed[candidate]["validation"] = fixation_link(candidate, "validation", 2,
+                                                             study.expected)  # fmt: skip
+        supported = reissued_validation["supported"]
+        spec, seeds = CANDIDATES[candidate], SEEDS["validation"][candidate][:28]
+        for i, seed in enumerate(seeds):
+            for arm in ARMS:
+                for label in LABELS:
+                    K = spec["targets"][label]
+                    if arm == "A" and label == "u" and i >= supported:
+                        K = 5.0  # below K*: A unsupported in this block
+                    study.add(ep(arm, spec["start"][arm][label], seed, step="validation",
+                                 candidate=candidate, K=K, attempt=2))  # fmt: skip
+    return study
+
+
+def test_requalification_failing_before_the_confirmation_takes_the_registered_route() -> None:
+    """After the validation fixation, before the confirmation has started: a fixed rate's
+    re-qualification failing scientifically takes the registered route (A or F at candidate 1:
+    candidate 2; at candidate 2: the scientific feasibility report; P: P–F closes)."""
+    study = post_fixation_cycle(candidate=1)
+    study.readings[1] = failing_reading("F")
+    assert study.advance()["route"][-1]["event"] == "candidate"
+    study2 = post_fixation_cycle(candidate=2)
+    study2.readings[2] = failing_reading("A", 2)
+    assert study2.advance()["outcome"] == "scientific_feasibility_report"
+    study3 = post_fixation_cycle(candidate=1)
+    study3.readings[1] = failing_reading("P")
+    result = study3.advance()
+    assert "P-F" not in result["active"]["comparisons"] and result["candidate"] == 1
+
+
+def test_a_rerun_validation_failing_its_gate_before_the_confirmation_takes_the_registered_route(
+) -> None:  # fmt: skip
+    """The validation rerun after the fixation's successor, A supported in 21 of 28 blocks: the
+    A–F gate fails, and candidate 1 moves on."""
+    study = post_fixation_cycle(candidate=1, reissued_validation={"supported": 21})
+    assert study.advance()["route"][-1]["event"] == "candidate"
+
+
+def test_after_the_fixation_the_repair_never_changes_a_rate() -> None:
+    """A cycle whose record names a fixation keeps the fixation's rates: a repair the
+    re-qualified runs would call for is listed and never issued."""
+    study = post_fixation_cycle(candidate=1, requalified_K_miss=("A", "l"))
+    result = study.advance()
+    assert result["rates"] == FIXED_RATES
+    assert result["repair_not_applied"] and result["repair_not_applied"][0]["arm"] == "A"
+    assert not any(key.endswith("/repair") for key in result["prescribed"])
+
+
+def test_after_a_cycle_the_stale_records_successors_come_in_the_registered_order() -> None:
+    """A cycle at the confirmation (the validation reused): the step names (1) the validation
+    fixation's successor, then (3) the n record's successor with its predecessor's N, cap and
+    cohort (the confirmation has started), then (4) the supplement's successor; the cycle's
+    listing names each stale record and its successor once written."""
+    study = post_fixation_cycle(candidate=1, confirming=True)
+    study.cycle_records[1]["record"]["affected"]["records"] = [
+        {"path": "docs/study3-fixation-validation-c1.json", "sha256": "1" * 64, "root": "repo"},
+        {"path": "study3/decisions/n-c1.json", "sha256": "2" * 64}]  # fmt: skip
+    result = study.advance()
+    assert (result["stage"], result["step"]["record"]) == ("validation", "fixation-validation-c1-2")
+    assert result["step"]["path"] == "docs/study3-fixation-validation-c1-2.json"
+    assert result["cycle"][1]["successors"] == {
+        "docs/study3-fixation-validation-c1.json": None,
+        "study3/decisions/n-c1.json": None,
+    }
+    study.fixed[1]["validation"] = fixation_link(1, "validation", 2, study.expected)
+    result = study.advance()
+    step = result["step"]
+    assert (result["stage"], step["record"]) == ("choice", "n-c1-2")
+    old = study.entries["n-c1"]["record"]
+    assert {k: step["fields"][k] for k in ("N", "cap", "cohort")} == {
+        k: old[k] for k in ("N", "cap", "cohort")}  # fmt: skip
+    assert step["fields"]["supersedes"] == "study3/decisions/n-c1.json"
+    successor = {**old, "kind": "n-c1-2",
+                 "code": {"commit": "c" * 40, "gpu_code_sha256": study.expected}}  # fmt: skip
+    study.entries["n-c1"] = {**entry("n-c1", "passed", successor),
+                             "path": "/runs/study3/decisions/n-c1-2.json",
+                             "chain": ["/runs/study3/decisions/n-c1.json",
+                                       "/runs/study3/decisions/n-c1-2.json"]}  # fmt: skip
+    result = study.advance()
+    assert (result["stage"], result["step"]["record"]) == (
+        "confirmation", "fixation-confirmation-c1-2")  # fmt: skip
+    assert result["cycle"][1]["successors"] == {
+        "docs/study3-fixation-validation-c1.json": "docs/study3-fixation-validation-c1-2.json",
+        "study3/decisions/n-c1.json": "study3/decisions/n-c1-2.json"}  # fmt: skip
+
+
+def test_once_the_confirmation_started_a_failing_requalification_moves_nothing() -> None:
+    """The confirmation has started: a fixed rate's re-qualification failing scientifically
+    blocks the route (``confirmation_fixed``); the candidate is not moved, no arm is closed."""
+    for arm in ("F", "P"):
+        study = post_fixation_cycle(candidate=1, confirming=True)
+        study.readings[1] = failing_reading(arm)
+        result = study.advance()
+        step = result["step"]
+        assert (result["candidate"], step["kind"], step["reason"]) == (
+            1, "blocked", "confirmation_fixed")  # fmt: skip
+        assert result["active"]["arms"] == ["A", "F", "P"]
+        assert all(event["event"] not in ("candidate", "close_pf") for event in result["route"])
 
 
 def qualification_reading(state: str) -> dict:

@@ -67,7 +67,8 @@ paths, its ``state``, the marks' ``stage``, its ``claims`` (each stage's ``reuse
 ``kept``, the ``repair_record`` (the exact ``--record`` of the journal repair), its
 ``written_at`` and ``code`` (the fix: the incident of the recovery rounds that reissue the
 affected runs, ``study3_campaigns``) and the ``successors`` of the write-once records it makes
-stale (none yet). Superseded runs need no rule of their own: a
+stale (each stale record's path, and its successor's once written, or None). Superseded runs
+need no rule of their own: a
 cell whose attempts are all superseded is issued again (the search's missing seeds, a block's
 missing cells), and a superseded qualification launcher run waits for its next attempt.
 
@@ -293,6 +294,33 @@ before the stage of the run it names (it is then judged once the walk reaches it
 reader cannot read at all (a run id longer than a file name, a run directory it may not search)
 block the step: "the run records cannot be read".
 
+**After the validation fixation** ("Voiding and supersession", "Sample size from validation",
+"Seeds and order"). A cycle moves the candidate's GPU code: every write-once record of the old
+code goes stale, and its successor (``study3_decisions``' ``n-c<N>-<k>`` and ``budget-c<N>-<k>``,
+``study3_versions``' ``docs/study3-fixation-<step>-c<N>-<k>.json``) is written in the registered
+order, each when the step names it: (1) the validation fixation's successor, once the walk
+reaches the validation (the re-qualification passed), then its versions record (the campaign
+writer issues the validation only under a versions record that names the fixation in force);
+(2) the validation's reissued cells; (3) the n record's successor, on the validation that
+counts, and the budget record's when N asks for one; (4) the supplement's successor, once the
+walk reaches the confirmation, then its versions record. A stale n or budget record is no
+invalid one: the step names its successor (``decision``, the successor's kind, its fields). A
+cycle whose record names a fixation keeps the fixation's rates: a repair the new runs would call
+for is listed (``repair_not_applied``) and never issued. Before the confirmation has started,
+the registered routes apply unchanged: a fixed rate's re-qualification failing scientifically
+moves A or F to candidate 2 (or ends candidate 2 with the scientific feasibility report) and
+closes P–F for P; a rerun validation failing its gate takes its route.
+
+*The confirmation boundary* ("Validation, confirmation and stopping", "Confirmation": the
+confirmation never moves the candidate). Once a block of the candidate's confirmation has
+started, the candidate, the rates, the started seeds and the cohort's order never change: a
+scientific failure of a re-qualification blocks the route with the reason ``confirmation_fixed``
+(an explicit prospective amendment is needed; the walk never moves the candidate or closes an
+arm on it), the repair issues nothing new, and the validation (its runs reused: a cycle once the
+confirmation has started reruns neither the validation nor the search) reads as it did: a failed
+A–F gate would block (``confirmation_fixed``), never move the candidate. The n and budget
+successors then carry the predecessors' N, cap and cohort (the step's fields).
+
 **Problems.** Nothing is decided on problems. While ``read_endpoints`` or ``read_holds`` reports a
 problem (every problem of the one check of a supersession record among them:
 ``qualification_records.cycle_checks``, read once and given to both, so that a record it does not
@@ -329,10 +357,13 @@ may differ (a change of analysis code moves no run).
 
 **The cells** (``prescribed``). ``read_endpoints`` binds every run to a cell the route issued, so
 the reader first derives the cells: it reads the runs under every cell they bind, runs the core
-leniently (problems set aside, refused runs left out: only the rule decides which cells it issues
-next), then reads the runs under exactly those cells and runs the core strictly, all three
-readings from one snapshot (``study3_records.EndpointReader``: each run file is read once). A
-run of a cell the rule never issued is then refused by name, and blocks.
+leniently (problems set aside, refused runs left out, the steps that name a successor record
+passed over: only the rule decides which cells it issues next), then reads the runs under
+exactly those cells and runs the core strictly, all three readings from one snapshot
+(``study3_records.EndpointReader``: each run file is read once). The cells of a candidate's runs
+started before its cycle (in the journal prefix the cycle pins) stay issued: the route had
+issued them, and a re-qualification that waits does not take them back. A run of a cell the rule
+never issued is then refused by name, and blocks.
 
 **Rulings** where the registration leaves a detail open, fixed here before any study-3 record:
 - *A failed engineering or simulation record* is final (a record is written once): the technical
@@ -426,6 +457,9 @@ ENGINEERING_CYCLE = "engineering_cycle"
 # A counting search run under a GPU code the search does not count under: a technical mark
 # (module docstring, "A run under another GPU code"), the reason of its closure
 OTHER_GPU_CODE = "other_gpu_code"
+# A scientific failure once the candidate's confirmation has started: the route blocks (module
+# docstring, "The confirmation boundary")
+CONFIRMATION_FIXED = "confirmation_fixed"
 ENGINEERING_CYCLE_WHY = (
     "one engineering cycle at once: diagnosis, a fix that changes the GPU code, and a claim per "
     "stage (reuse or rerun, with its justification); a fix that leaves the GPU code unchanged is "
@@ -451,7 +485,9 @@ class Records:
     (``cycle_records``: ``study3_cycle.cycle_problems``), each run's GPU code for the
     candidate's search runs and the runs of every stage its cycle claims (``run_codes``:
     ``study3_cycle.run_gpu_codes``), and per candidate the validation fixation the checkout
-    holds, by its path (``fixations``)."""
+    holds, by its path (``fixations``: the link in force of its chain), and the link in force of
+    each fixation chain (``fixed``: per candidate and step, its ``path``, number ``k``, GPU
+    ``code`` and ``rates``, read from the checkout as written)."""
 
     endpoints: Sequence[Endpoint] = ()
     problems: Sequence[str] = ()
@@ -471,6 +507,7 @@ class Records:
     cycle_records: Mapping[int, Mapping[str, Any]] = field(default_factory=dict)
     run_codes: Mapping[str, str | None] = field(default_factory=dict)
     fixations: Mapping[int, str] = field(default_factory=dict)
+    fixed: Mapping[int, Mapping[str, Mapping[str, Any]]] = field(default_factory=dict)
 
 
 # ------------------------------------------------------------------ the reader
@@ -518,7 +555,6 @@ def read_records(
         raise ValueError(f"expected_code is the GPU code's sha256 or None, not {expected_code!r}")
     from . import qualification_records  # it loads torch (qualification_verdicts): here only
     from .study3_cycle import STAGE_STEPS, cycle_problems, read_cycle, run_gpu_codes
-    from .study3_versions import fixation_name
 
     root, repo = Path(runs_root), Path(repo)
     theta0 = root / THETA0_RUN if theta0 is None else Path(theta0)
@@ -553,32 +589,36 @@ def read_records(
         # the resolved torn lines: their log, line and kind, nothing else of them
         "resolved": tuple({"log": r["path"], "line": r["line"], "kind": r["kind"]}
                           for log in logs for r in log.resolved),
-        "fixations": {c: fixation_name("validation", c) for c in (1, 2)
-                      if (repo / fixation_name("validation", c)).is_file()},
     }  # fmt: skip
+    links = _fixed(repo)  # each fixation chain's link in force, as written
+    fixed_ = {"fixed": links,
+              "fixations": {c: found["validation"]["path"] for c, found in links.items()
+                            if "validation" in found}}  # fmt: skip
     try:
         read_theta0(theta0)
     except ValueError as exc:
         why = (f"{exc}: θ₀'s evaluation is the utility losses' baseline, and no run record is "
                "read without it")  # fmt: skip
-        return Records(problems=(why,), cycle_records=cycle_records, **fixed)
+        return Records(problems=(why,), cycle_records=cycle_records, **fixed, **fixed_)
     try:  # one snapshot of the run records, read once whatever cells it is read under
         reader = EndpointReader(
             root, theta0=theta0, cycles=checks, restarts=qualification_records.restart_checks(root)
         )
     except (OSError, ValueError) as exc:
         why = f"{root}: the run records cannot be read ({type(exc).__name__})"
-        return Records(problems=(why,), cycle_records=cycle_records, **fixed)
+        return Records(problems=(why,), cycle_records=cycle_records, **fixed, **fixed_)
     try:
         every = _bound(reader.read({})[0])  # every cell a run binds: each outcome is read
         endpoints, problems = reader.read(every)
-        derived = advance(Records(tuple(endpoints), tuple(problems), **fixed),
+        derived = advance(Records(tuple(endpoints), tuple(problems), cycle_records=cycle_records,
+                                  **fixed, **fixed_),
                           expected_code=fallback or "", lenient=True)["prescribed"]  # fmt: skip
+        derived = _issued_before(root, derived, endpoints, cycle_records)
         endpoints, problems = reader.read(derived)
         recoverable = _recoverable(reader, endpoints)
     except (OSError, ValueError) as exc:
         why = f"{root}: the run records cannot be read ({type(exc).__name__})"
-        return Records(problems=(why,), cycle_records=cycle_records, **fixed)
+        return Records(problems=(why,), cycle_records=cycle_records, **fixed, **fixed_)
     from .study3_versions import uncounted_runs  # each run's own commit, against the checkout's
 
     uncounted = uncounted_runs(endpoints, repo=repo)
@@ -598,7 +638,60 @@ def read_records(
                               repo=repo)  # fmt: skip
     return Records(tuple(endpoints), tuple(problems), recoverable=recoverable,
                    uncounted=uncounted, cycle_records=cycle_records, run_codes=run_codes,
-                   **fixed)  # fmt: skip
+                   **fixed, **fixed_)  # fmt: skip
+
+
+def _fixed(repo: Path) -> dict[int, dict[str, dict[str, Any]]]:
+    """The link in force of each candidate's fixation chains in the checkout (``Records.fixed``),
+    read as written (their reader, ``study3_versions``, checks them): its path, number, GPU code
+    and rates. A link that resolves under a sealed folder or cannot be read gives no code."""
+    import json
+
+    from .study3_versions import fixation_chain, fixation_number
+
+    out: dict[int, dict[str, dict[str, Any]]] = {}
+    for c in (1, 2):
+        for step in ("validation", "confirmation"):
+            names = fixation_chain(step, c, repo=repo)
+            if not names:
+                continue
+            path, data = repo / names[-1], None
+            if not under_sealed(path, repo):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    data = None
+            data = data if isinstance(data, dict) else {}
+            code = data.get("code") if isinstance(data.get("code"), Mapping) else {}
+            out.setdefault(c, {})[step] = {"path": names[-1], "k": fixation_number(names[-1]),
+                                           "code": code.get("gpu_code_sha256"),
+                                           "rates": data.get("rates")}  # fmt: skip
+    return out
+
+
+def _issued_before(root: Path, cells: Mapping[str, Collection[tuple[str, float, int]]],
+                   endpoints: Iterable[Endpoint],
+                   cycle_records: Mapping[int, Mapping[str, Any]]) -> dict[str, set]:  # fmt: skip
+    """The cells the lenient walk issues (``cells``), and the cells of every run of a candidate
+    whose start lies in the journal prefix its cycle pinned (module docstring, "The cells"): the
+    route had issued them before the cycle, and while a re-qualification waits they stay
+    issued (each run is bound and read, superseded or counting as the records say)."""
+    from .study3_cycle import CycleRefused, seen_starts
+
+    out = {key: set(found) for key, found in cells.items()}
+    endpoints = list(endpoints)
+    for candidate, found in cycle_records.items():
+        record = found.get("record") if found.get("state") == "valid" else None
+        if record is None:
+            continue
+        try:
+            seen = seen_starts(root, record["journal"])
+        except CycleRefused:
+            continue  # the cycle's own reader names why
+        mine = [e for e in endpoints if e.run_id in seen and e.cell.candidate == candidate]
+        for key, more in _bound(mine).items():
+            out.setdefault(key, set()).update(more)
+    return out
 
 
 def qualification_code(records: Records, candidate: int) -> str | None:
@@ -996,12 +1089,52 @@ class _Walk:
         self._block_on(stage, loud)
         self._decide(stage, conditions)
 
+    def _cycle_record(self, candidate: int) -> Mapping[str, Any] | None:
+        """The candidate's valid cycle record outside the qualification, or None."""
+        found = self.records.cycle_records.get(candidate) or {}
+        return found.get("record") if found.get("state") == "valid" else None
+
+    def _confirming(self, candidate: int) -> bool:
+        """Whether the candidate's confirmation has started (module docstring, "The confirmation
+        boundary"): a run of its confirmation started in the launch journal."""
+        key = step_key(candidate, "confirmation")
+        return any(e.cell.key == key and e.cell.campaign is not None for e in self.endpoints)
+
+    def _stale(self, candidate: int, code: Any) -> bool:
+        """Whether a write-once record of GPU code ``code`` went stale through the candidate's
+        valid cycle: its code is the cycle's old code, no longer the one in force."""
+        record = self._cycle_record(candidate)
+        return (record is not None and code == record["old_code"]
+                and code != self.in_force.get(candidate))  # fmt: skip
+
+    def _successor_of(self, stage: str, candidate: int, step: str) -> None:
+        """The step that writes the successor of the candidate's stale fixation of ``step``
+        (module docstring, "After the validation fixation"); the lenient walk passes over it."""
+        link = (self.records.fixed.get(candidate) or {}).get(step)
+        if self.lenient or link is None or not self._stale(candidate, link.get("code")):
+            return
+        from .study3_versions import fixation_name
+
+        k = int(link["k"]) + 1
+        name, kind = fixation_name(step, candidate, k), f"fixation-{step}-c{candidate}-{k}"
+        what = "validation fixation" if step == "validation" else "confirmation supplement"
+        raise _Stop(self._result(stage, {
+            "kind": "decision", "record": kind, "path": name,
+            "why": f"the {what} {link['path']} is stale through candidate {candidate}'s "
+                   f"engineering cycle (its code {link.get('code')}): its successor, then its "
+                   "versions record, each committed alone",
+            "fields": {"candidate": candidate, "supersedes": link["path"],
+                       "reason": f"cycle_c{candidate}"}}))  # fmt: skip
+
     def _repair(
         self, candidate: int, selected: Mapping[str, Mapping[str, float]]
     ) -> dict[str, dict[str, float]]:
         stage = "repair"
         seeds = SEEDS["numerical"][candidate]
         reading = self._reading(stage, candidate)
+        fixed = self._fixed_rates(candidate)
+        if fixed is not None:
+            return self._repair_fixed(candidate, selected, fixed, reading)
         qualified = {arm: {selected[arm][label]: (_rate(reading, arm, selected[arm][label]) or {})
                            .get("state") or "not reported" for label in LABELS}
                      for arm in self.arms}  # fmt: skip
@@ -1034,6 +1167,60 @@ class _Walk:
                 c.scientific += [e.run_id for e in second["failed"]]
                 loud += self._qualified(c, candidate, "repair", arm, repaired, reading)
             conditions[arm] = c
+        self._block_on(stage, loud)
+        self._decide(stage, conditions)
+        self.rates = {arm: final[arm] for arm in self.arms}
+        return {arm: dict(final[arm]) for arm in self.arms}
+
+    def _fixed_rates(self, candidate: int) -> dict[str, dict[str, float]] | None:
+        """The rates the candidate's validation fixation fixed, when its valid cycle record names
+        a fixation (module docstring, "After the validation fixation"): per active arm, ``l``
+        and ``u``; None otherwise."""
+        record = self._cycle_record(candidate)
+        link = (self.records.fixed.get(candidate) or {}).get("validation") or {}
+        rates = link.get("rates")
+        if record is None or record.get("fixation") is None or not isinstance(rates, Mapping):
+            return None
+        try:
+            return {arm: {"l": float(rates[arm]["lr_l"]), "u": float(rates[arm]["lr_u"])}
+                    for arm in self.arms if arm in rates}  # fmt: skip
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _repair_fixed(self, candidate: int, selected: Mapping[str, Mapping[str, float]],
+                      fixed: Mapping[str, Mapping[str, float]],
+                      reading: Mapping[str, Any]) -> dict[str, dict[str, float]]:  # fmt: skip
+        """The repair after a cycle whose record names a fixation: the fixation's rates stand. A
+        rate the fixation repaired is qualified as a repair (its runs reissued), a repair the new
+        runs would call for (another rate, or one the fixation did not repair) is listed in
+        ``repair_not_applied`` and never issued, and once the confirmation has started the
+        repair issues nothing new."""
+        stage, seeds = "repair", SEEDS["numerical"][candidate]
+        qualified = {arm: {selected[arm][label]: (_rate(reading, arm, selected[arm][label]) or {})
+                           .get("state") or "not reported" for label in LABELS}
+                     for arm in self.arms}  # fmt: skip
+        state = repair_state(self.endpoints, candidate, {a: selected[a] for a in self.arms},
+                             qualified, problems=())  # fmt: skip
+        final = {arm: dict(fixed.get(arm) or selected[arm]) for arm in self.arms}
+        conditions, loud, held_back = {}, [], []
+        for arm in self.arms:
+            c = _Arm(hold=self._holds_at(candidate, arm, ("repair",)))
+            found = (state.get("arms") or {}).get(arm) or {}
+            for label in LABELS:
+                rate = (found.get("rates") or {}).get(label) or {}
+                called = rate.get("repaired_rate") if rate.get("action") == "repair" else None
+                target = final[arm][label]
+                if isinstance(called, int | float) and not math.isclose(
+                        called, target, rel_tol=RATE_TOLERANCE):  # fmt: skip
+                    held_back.append({"arm": arm, "label": label, "rate": called,
+                                      "fixed": target})  # fmt: skip
+                if math.isclose(target, selected[arm][label], rel_tol=RATE_TOLERANCE):
+                    continue
+                self._prescribe(candidate, "repair", None, [(arm, target, s) for s in seeds])
+                loud += self._qualified(c, candidate, "repair", arm, target, reading)
+            conditions[arm] = c
+        if held_back:
+            self.extra["repair_not_applied"] = held_back
         self._block_on(stage, loud)
         self._decide(stage, conditions)
         self.rates = {arm: final[arm] for arm in self.arms}
@@ -1103,6 +1290,7 @@ class _Walk:
         self._prescribe(candidate, "validation", None, [
             (arm, final[arm][label], seed) for arm in self.arms for label in LABELS
             for seed in seeds])  # fmt: skip
+        self._successor_of(stage, candidate, "validation")  # (1) before the validation's cells
         self._other_commits(stage, step_key(candidate, "validation"))
         # holds first: a closed P leaves the blocks
         self._decide(stage, {arm: _Arm(hold=self._holds_at(candidate, arm, ("validation",)))
@@ -1152,6 +1340,12 @@ class _Walk:
                 f"the P–F validation gate: {gates['PF']['supported']} of {count} "
                 f"blocks supported ({minimum} needed), utility {gates['PF']['utility']}",
             )
+        if not gates["AF"]["passes"] and self._confirming(candidate):
+            raise _Stop(self._result(stage, {  # the confirmation never moves the candidate
+                "kind": "blocked", "technical": False, "reason": CONFIRMATION_FIXED,
+                "reasons": [f"candidate {candidate}'s confirmation has started: the A–F validation "
+                            "gate read now fails, and it moves no candidate without an explicit "
+                            "prospective amendment"]}))  # fmt: skip
         if not gates["AF"]["passes"]:
             raise _Move(self._event(stage, "candidate", short["AF"] or ["A", "F"],
                                     f"the A–F validation gate: {gates['AF']['supported']} of "
@@ -1218,6 +1412,10 @@ class _Walk:
         self.consumed.add(kind)
         if entry["state"] == "invalid":
             raise _Stop(self._blocked("n", entry["problems"]))
+        if entry.get("stale"):  # (3): its successor, on the validation that counts
+            self._stale_step("choice", entry, fields if not self._confirming(candidate) else {
+                key: entry["record"][key] for key in ("candidate", "rates", "active", "cohort",
+                                                      "N", "cap")})  # fmt: skip
         record = entry["record"]
         self._block_on("n", self._against_n(kind, record, fields))
         if record["state"] == "failed":
@@ -1232,6 +1430,9 @@ class _Walk:
         self.consumed.add(budget_kind)
         if budget["state"] == "invalid":
             raise _Stop(self._blocked("budget", budget["problems"]))
+        if budget.get("stale"):
+            self._stale_step("budget", budget, {"candidate": candidate, "N": record["N"],
+                                                "cap": record["cap"], "why": reason})  # fmt: skip
         if budget["state"] == "missing":
             raise _Stop(self._result("budget", self._decision(
                 budget_kind, f"the researcher's decision on the extra blocks and their price: "
@@ -1242,6 +1443,24 @@ class _Walk:
                 f"{budget_kind}: the decision on N = {record['N']} and its cap {record['cap']} "
                 "is stop: the confirmation does not start"]))  # fmt: skip
         return record
+
+    def _stale_step(self, stage: str, entry: Mapping[str, Any],
+                    fields: Mapping[str, Any]) -> None:  # fmt: skip
+        """The step that writes the successor of a stale n or budget record (module docstring,
+        "After the validation fixation"): its kind, path and fields, with the record it
+        supersedes and the reason. The lenient walk reads the stale record on (its cells were
+        issued)."""
+        if self.lenient:
+            return
+        family, candidate = kind_of(Path(entry["path"]).name[: -len(".json")])
+        kind = f"{family}-c{candidate}-{len(entry.get('chain') or [entry['path']]) + 1}"
+        why = (f"{entry['path']} is stale through candidate {candidate}'s engineering cycle (its "
+               f"code is the cycle's old code): its successor names it and the cycle"
+               + (" (the confirmation has started: N, the cap and the cohort stand)"
+                  if self._confirming(candidate) else ""))  # fmt: skip
+        raise _Stop(self._result(stage, self._decision(kind, why, {
+            **fields, "supersedes": f"study3/decisions/{Path(entry['path']).name}",
+            "reason": f"cycle_c{candidate}"})))  # fmt: skip
 
     def _against_n(self, kind: str, record: Mapping[str, Any],
                    fields: Mapping[str, Any]) -> list[str]:  # fmt: skip
@@ -1289,6 +1508,7 @@ class _Walk:
         self._prescribe(candidate, "confirmation", None, [
             (arm, final[arm][label], seed) for arm in self.arms for label in LABELS
             for seed in seeds])  # fmt: skip
+        self._successor_of(stage, candidate, "confirmation")  # (4) before its blocks
         self._other_commits(stage, step_key(candidate, "confirmation"))
         while True:  # once more when a closure closed P: the blocks are A–F's alone
             arms = list(self.arms)
@@ -1494,6 +1714,23 @@ class _Walk:
         pending = [x for c in conditions.values() for x in c.pending]
         if pending:
             raise _Stop(self._result(stage, {"kind": "pending", "waiting": pending}))
+        science = [x for c in conditions.values() for x in c.scientific]
+        if science and stage != "confirmation" and self._confirming(self.candidate):
+            raise _Stop(
+                self._result(
+                    stage,
+                    {  # the confirmation never moves the candidate
+                        "kind": "blocked",
+                        "technical": False,
+                        "reason": CONFIRMATION_FIXED,
+                        "reasons": [
+                            f"candidate {self.candidate}'s confirmation has started: a scientific "
+                            f"failure at its {stage} ({'; '.join(science)}) moves neither the "
+                            "candidate nor an arm without an explicit prospective amendment"
+                        ],
+                    },
+                )
+            )
         failed = [arm for arm in primary if conditions[arm].scientific]
         if "P" in conditions and conditions["P"].scientific:
             self._close_p(stage, "a scientific failure: "
@@ -1836,6 +2073,9 @@ class _Walk:
                            f"cycles {self.codes}")  # fmt: skip
             elif (family in ("n", "budget") and candidate in self.in_force
                   and code != self.in_force[candidate]):  # fmt: skip
+                if self._stale(candidate, code):  # its successor is the step that needs it
+                    entry["stale"] = True
+                    continue
                 invalidate(entry, f"its GPU code {code} is not {self.in_force[candidate]}, the "
                             f"code in force for candidate {candidate}'s runs")  # fmt: skip
         simulation = entries.get("simulation", {})
@@ -1863,7 +2103,8 @@ class _Walk:
 
     def _final(self, result: dict[str, Any]) -> dict[str, Any]:
         """The records the route does not rest on: an n or budget record it has not reached
-        (unless problems keep the route from showing where it is), and a closure record that
+        (unless problems keep the route from showing where it is, or a cycle made it stale: its
+        successor is written when the step names it), and a closure record that
         names neither a held run of its route nor a mark the walk met (unless the walk stopped
         before the stage of the run it names). Each is a problem, and blocks."""
         if self.lenient:
@@ -1875,7 +2116,14 @@ class _Walk:
             family, candidate = kind_of(kind)
             if entry["state"] == "missing":
                 continue
-            if family in ("n", "budget") and kind not in self.consumed and placed:
+            if (
+                family in ("n", "budget")
+                and kind not in self.consumed
+                and placed
+                and not (
+                    entry.get("stale")  # a stale record waits for the step of its successor
+                )
+            ):
                 found.append(f"{entry['path']}: a record the route has not reached (it is at "
                              f"candidate {self.candidate}'s {result['stage']}): a decision "
                              "record answers the step that needs it")  # fmt: skip
@@ -1992,8 +2240,26 @@ class _Walk:
                 "repair_record": found.get("repair_record"),
                 "written_at": record.get("written_at"),
                 "code": dict(record["code"]) if isinstance(record.get("code"), Mapping) else None,
-                "successors": {},
+                "successors": self._successors(candidate, record),
             }  # fmt: skip
+        return out
+
+    def _successors(self, candidate: int, record: Mapping[str, Any]) -> dict[str, Any]:
+        """The write-once records the cycle made stale (its ``affected.records``), each by its
+        path, with its successor's path once written (the link after it in force), else None."""
+        out: dict[str, Any] = {}
+        links = {}
+        for kind in (f"n-c{candidate}", f"budget-c{candidate}"):
+            chain = list((self.entries.get(kind) or {}).get("chain") or [])
+            names = [f"study3/decisions/{Path(path).name}" for path in chain]
+            links.update({before: after for before, after in zip(names, names[1:], strict=False)})
+        for step, link in (self.records.fixed.get(candidate) or {}).items():
+            if int(link.get("k") or 1) > 1:
+                first = f"docs/study3-fixation-{step}-c{candidate}.json"
+                links[first] = link["path"]
+        for entry in (record.get("affected") or {}).get("records") or []:
+            if isinstance(entry, Mapping) and isinstance(entry.get("path"), str):
+                out[entry["path"]] = links.get(entry["path"])
         return out
 
     # -- helpers
