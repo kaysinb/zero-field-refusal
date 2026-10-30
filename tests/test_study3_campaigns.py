@@ -210,6 +210,9 @@ class World:
         shutil.rmtree(self.records.run)  # the records tests' own run: none here without a start
         self.root, self.repo = self.records.runs, self.records.repo
         self.runs = RunWorld(self.root)
+        # the runs ran a clean checkout (its GPU code EXPECTED: ``gpu_code_identity`` below) until
+        # a versions record pins a commit of the checkout (``versions``)
+        self.runs.git = {"commit": "a" * 40, "dirty": False}
         # θ₀ also where ``progress`` reads it by default: a confirmation is written without
         # --theta0 here, so that its run.sh calls the guard without it
         default = self.root / THETA0_RUN

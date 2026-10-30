@@ -40,8 +40,8 @@ outcome (``TERMINAL``, below). ``candidate``.
   (``scientific_failure``);
 - ``technical_feasibility_report``: a dead end in the code: a failed engineering record
   (``engineering_failed``), an unresolved technical mark in A or F: a held run closed
-  (``held_run``), a run under another commit closed (its uncounted reason id,
-  ``study3_versions.UNCOUNTED_REASONS``), a qualification technical after the candidate's
+  (``held_run``), a run under another commit or another GPU code closed (its uncounted reason
+  id, ``study3_versions.UNCOUNTED_REASONS``), a qualification technical after the candidate's
   engineering cycle, or a mark outside it closed after that cycle
   (``unresolved_after_cycle``);
 - ``design_stop``: the confirmation cannot start as designed: the simulation record failed (no
@@ -181,6 +181,25 @@ closure is valid (it names the run, with its reason), the route is "After a tech
 A or F, the technical feasibility report, its reason the run's; in P alone, P–F closes and the
 stage goes on with A and F. A published result is never rerun: no cell is issued again for it.
 
+**A run under another GPU code** ("Failure routes"; "Voiding and supersession": a run counts
+under the code it was run for). A counting run of the candidate's search (either round, an active
+arm) must be under a GPU code the search counts under: the chain's code before the candidate's
+cycle (the code in force when it has none) or the code in force for its runs, the former not for
+an arm that a valid cycle record of the candidate reruns at the search (the claim's arms: a stage
+rerun under the fix counts under the fix alone; a search reused, or an arm it does not rerun,
+keeps counting under the old code). Each run's code is ``study3_cycle.run_gpu_codes``' (the
+commit its ``meta.json`` records): a run whose code cannot be told (a dirty checkout, one whose
+cleanness is not recorded, a commit the checkout cannot place) is under none; a run without a
+readable ``meta.json`` is not read here (its code is the readers' to wait for). Any other is a
+technical mark of its arm with the reason ``other_gpu_code``, read first at the search, before
+any cycle too; the scientific failures a valid cycle record keeps are exempt by run id (they keep
+counting under the old code, and keep their scientific route: an arm with such a failure still
+fails at the search). It is no cycle case, and routes as a run under another commit: its recovery
+round where the launcher would open one, or its closure record (its last ``end`` line, or its
+start line, the reason ``other_gpu_code``, no cycle); once that closure is valid, A or F ends
+with the technical feasibility report (``other_gpu_code``), and P closes P–F. The validation's and
+the confirmation's runs are held to their versions record's commit (above).
+
 **The hold route** (a held launcher run: an outcome the candidate's engineering cycle could not
 resolve, kept as it is and never attempted again). It is unresolved technical evidence, neither a
 scientific failure nor a permission to rerun, and the route shows it as a terminal technical
@@ -317,6 +336,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -390,6 +410,10 @@ ENDED = ("usable", "unusable", "scientific")  # a run whose records are publishe
 # A technical mark outside the qualification: its registered route is the candidate's one
 # engineering cycle (module docstring, "Technical marks outside the qualification")
 ENGINEERING_CYCLE = "engineering_cycle"
+# A counting search run under a GPU code the search does not count under: a technical mark
+# (module docstring, "A run under another GPU code"), the reason of its closure
+OTHER_GPU_CODE = "other_gpu_code"
+_COMMIT = re.compile(r"[0-9a-f]{40}")
 ENGINEERING_CYCLE_WHY = (
     "one engineering cycle at once: diagnosis, a fix that changes the GPU code, and a claim per "
     "stage (reuse or rerun, with its justification); a fix that leaves the GPU code unchanged is "
@@ -890,6 +914,7 @@ class _Walk:
         self._prescribe(candidate, "search", 0, [
             (arm, spec["start"][arm][label], seed) for arm in self.arms for label in LABELS
             for seed in seeds])  # fmt: skip
+        self._other_codes(stage, step_key(candidate, "search"))
         state = search_state(self.endpoints, candidate, problems=())
         if state["next"] == "blocked":
             raise _Stop(self._blocked(stage, state["problems"]))
@@ -1312,24 +1337,80 @@ class _Walk:
         (the lenient walk goes on)."""
         found = sorted((e for e in self.by_key.get(key, ()) if e.run_id in self.records.uncounted
                         and e.arm in self.arms), key=lambda e: e.run_id)  # fmt: skip
+        self._route_other(stage, [(e, self.records.uncounted[e.run_id]) for e in found],
+                          "under a commit other than the pinned one does not count")  # fmt: skip
+
+    def _other_codes(self, stage: str, key: str) -> None:
+        """The counting runs of the candidate's search (its cells under ``key``, either round)
+        under a GPU code other than one the search counts under (module docstring, "A run under
+        another GPU code"), read first at the search: technical marks of their active arms with
+        the reason ``other_gpu_code``, routed as a run under another commit's (``_route_other``).
+        The codes the search counts under: the chain's code before the candidate's cycle and the
+        code in force for its runs, the former not for an arm a valid cycle record of the
+        candidate reruns at the search. A run whose code cannot be told (None) is under neither;
+        a run without a readable ``meta.json`` is not read here; the scientific failures that
+        the valid cycle record keeps are exempt (they keep counting, with their route)."""
+        if not self.codes:
+            return
+        candidate = self.candidate
+        before = self.codes[0] if candidate == 1 else self.in_force.get(1, self.codes[0])
+        in_force = self.in_force.get(candidate, before)
+        found = self.records.cycle_records.get(candidate) or {}
+        valid = found.get("state") == "valid"
+        claim = (found.get("claims") or {}).get("search") if valid else None
+        rerun = set(claim.arms) if claim is not None and claim.action == "rerun" else set()
+        kept = {k.get("run_id") for k in ((found.get("record") or {}).get("kept") or [])
+                if valid and isinstance(k, Mapping)
+                and k.get("why") == "scientific_failure"}  # fmt: skip
+        codes = self.records.run_codes
+        marked = []
+        for e in sorted(self.endpoints, key=lambda e: e.run_id):
+            if not (e.cell.key == key or str(e.cell.key).startswith(f"{key}/")):
+                continue
+            if (e.arm not in self.arms or e.state not in COUNTING or e.run_id not in codes
+                    or e.run_id in kept):  # fmt: skip
+                continue
+            allowed = [in_force, *([] if e.arm in rerun else [before])]
+            code = codes[e.run_id]
+            if code is not None and code in allowed:
+                continue
+            commit, dirty = e.git if e.git is not None else (None, None)
+            shown = commit if isinstance(commit, str) and _COMMIT.fullmatch(commit) else None
+            why = (f"its GPU code {code} is none the search counts under for candidate "
+                   f"{candidate} ({', '.join(dict.fromkeys(allowed))})" if code is not None else
+                   "its GPU code cannot be told (a dirty checkout, one whose cleanness is not "
+                   "recorded, or a commit the checkout cannot place), so it is not shown to be "
+                   "one the search counts under")  # fmt: skip
+            marked.append((e, {"run_id": e.run_id, "label": e.label, "candidate": e.candidate,
+                               "step": e.cell.step, "reason": OTHER_GPU_CODE, "commit": shown,
+                               "dirty": dirty, "versions_record": None, "why": why}))  # fmt: skip
+        self._route_other(stage, marked, "under a GPU code other than the one in force")
+
+    def _route_other(self, stage: str, found: Sequence[tuple[Endpoint, Mapping[str, Any]]],
+                     what: str) -> None:  # fmt: skip
+        """The route of runs under another code (``found``: each run and its entry, its reason,
+        commit and why): technical marks outside the qualification of their arms, closed by their
+        closure record (A or F: the technical feasibility report, its reason the run's; P: P–F
+        closes and the stage goes on), or rerun by a recovery round where the launcher would open
+        one; until then the step is blocked, technical, naming each run, its reason, its commit
+        and its ways out (the lenient walk goes on)."""
         if not found:
             return
         conditions: dict[str, _Arm] = {}
-        for e in found:
-            entry = self.records.uncounted[e.run_id]
+        for e, entry in found:
             mark = self._mark(e, uncounted=entry)
             c = conditions.setdefault(str(e.arm), _Arm())
             c.closable.append(mark)
-            ways = ([f"a recovery round of {e.label} with its documented cause, launched after "
-                     f"study3_summary.py check passes, reruns it: {recovery_command(e.label)}"]
-                    if mark["recovery"] else [])  # fmt: skip
+            checked = (", launched after study3_summary.py check passes,"
+                       if e.cell.step in ("validation", "confirmation") else "")  # fmt: skip
+            ways = ([f"a recovery round of {e.label} with its documented cause{checked} reruns "
+                     f"it: {recovery_command(e.label)}"] if mark["recovery"] else [])  # fmt: skip
             if mark["closure"] is not None:
                 ways.append(f"a closure record ({mark['closure']['record']}) closes it")
             c.technical.append(
-                f"{e.run_id}: a {e.cell.step} run under a commit other than the pinned one does "
-                f"not count ({entry.get('reason')}, commit {entry.get('commit')}: "
-                f"{entry.get('why')}); it is kept, excluded from every count and listed, a "
-                "technical mark outside the qualification until its way out: "
+                f"{e.run_id}: a {e.cell.step} run {what} ({entry.get('reason')}, commit "
+                f"{entry.get('commit')}: {entry.get('why')}); it is kept, excluded from every "
+                "count and listed, a technical mark outside the qualification until its way out: "
                 + (" or ".join(ways) or "no way out the records give"))  # fmt: skip
         for arm in ("A", "F"):
             if arm in conditions:

@@ -25,8 +25,9 @@ from test_study3_decisions import held as decision_hold
 from test_study3_records import SENTINEL, header, seal
 from test_study3_records import World as RunWorld
 
-from zero_field_refusal import launch
+from zero_field_refusal import code_identity, launch
 from zero_field_refusal.analysis import study3_progress
+from zero_field_refusal.analysis.study3_cycle import STAGE_STEPS, Claim
 from zero_field_refusal.analysis.study3_decisions import START_REASON, cap_of, end_reason
 from zero_field_refusal.analysis.study3_progress import (
     Records,
@@ -34,7 +35,7 @@ from zero_field_refusal.analysis.study3_progress import (
     confirmation_state,
     progress,
 )
-from zero_field_refusal.analysis.study3_records import SEEDS, Cell, Endpoint, step_key
+from zero_field_refusal.analysis.study3_records import COUNTING, SEEDS, Cell, Endpoint, step_key
 from zero_field_refusal.analysis.study3_search import CANDIDATES, adjusted_rate
 
 ARMS = ("A", "F", "P")
@@ -49,6 +50,7 @@ K_ONLY = ("engineering", "search", "numerical", "repair")
 WHEN = "2026-10-25T12:00:00+00:00"
 START = CANDIDATES[1]["start"]
 ENGINEERING_SHA = "1" * 64  # the engineering record file's sha256 now
+RAN = "5" * 40  # the commit the reader tests' runs ran, its GPU code EXPECTED
 NAMED = {"engineering_record": "study3/decisions/engineering.json",
          "engineering_record_sha256": ENGINEERING_SHA}  # a search header naming it  # fmt: skip
 
@@ -112,6 +114,7 @@ class Study:
         self.expected = EXPECTED  # the chain of engineering cycles' end
         self.uncounted: dict[str, dict] = {}  # runs under another commit than the pinned one
         self.cycle_records: dict[int, dict] = {}  # each candidate's cycle record, as read
+        self.run_codes: dict[str, str | None] = {}  # run id -> its GPU code, where it is known
 
     # -- decision records
 
@@ -379,10 +382,87 @@ class Study:
                        headers=self.headers, digests=self.digests, ends=self.ends,
                        starts=self.starts, cycles=self.cycles,
                        recoverable=frozenset(self.recoverable),
-                       uncounted=self.uncounted, cycle_records=self.cycle_records)  # fmt: skip
+                       uncounted=self.uncounted, cycle_records=self.cycle_records,
+                       run_codes=self.run_codes)  # fmt: skip
 
     def advance(self, **kw) -> dict:
         return advance(self.records(), **{"expected_code": self.expected, **kw})
+
+    # -- the engineering cycle outside the qualification
+
+    def cycle_record(self, candidate=1, *, stage, claims, kept_failures=()) -> list[str]:
+        """The candidate's cycle outside the qualification, valid as ``read_cycle`` reads it:
+        its record (the old code the chain's end now; the claims; every counting run of the
+        search, the validation and the confirmation in a stage and arm the claims rerun
+        affected, but the ``kept_failures``, kept as scientific failures) and its bridge
+        (``cycle``: the chain moves to the fix); the affected runs superseded. The
+        qualification's side is the readings'. Returns the affected run ids."""
+        old, kept = self.expected, sorted(kept_failures)
+        affected = []
+        for e in sorted(self.endpoints, key=lambda e: e.run_id):
+            stage_ = next((s for s in ("search", "validation", "confirmation")
+                           if e.cell.step in STAGE_STEPS[s]), None)  # fmt: skip
+            claim = claims.get(stage_)
+            if (e.candidate == candidate and claim is not None and claim.action == "rerun"
+                    and e.arm in claim.arms and e.state in COUNTING
+                    and e.run_id not in kept):  # fmt: skip
+                affected.append(e)
+        fix = self.cycle(candidate)
+        for e in affected:
+            self.change(e.run_id, state="superseded", K=None, steps=None)
+        runs = [{"run_id": e.run_id, "label": e.label, "step": e.cell.step, "arm": e.arm,
+                 "rate": e.lr, "seed": e.seed, "gpu_code": old} for e in affected]  # fmt: skip
+        record = {
+            "kind": f"cycle-c{candidate}", "state": "passed", "written_at": WHEN,
+            "code": {"commit": "c" * 40, "gpu_code_sha256": fix}, "candidate": candidate,
+            "stage": stage, "old_code": old,
+            "stages": {name: {"action": c.action, "arms": list(c.arms),
+                              "justification": c.justification} for name, c in claims.items()},
+            "affected": {"runs": runs, "records": [],
+                         "qualification": {"records": [], "launchers": [], "restarts": []}},
+            "kept": [{"run_id": run, "why": "scientific_failure",
+                      "evidence": {"path": f"study3/{run}/meta.json", "sha256": "8" * 64}}
+                     for run in kept],
+            "bridge": f"qualification/c{candidate}/supersede-1.json",
+        }  # fmt: skip
+        path = f"/runs/study3/decisions/cycle-c{candidate}.json"
+        self.cycle_records[candidate] = {
+            "state": "valid", "path": path,
+            "bridge_path": f"/runs/qualification/c{candidate}/supersede-1.json",
+            "record": record, "bridge": {"candidate": candidate}, "claims": dict(claims),
+            "affected": [r["run_id"] for r in runs], "kept": record["kept"],
+            "repair_record": path, "problems": [],
+        }  # fmt: skip
+        return [e.run_id for e in affected]
+
+    def add_search_run(self, arm, label, seed, *, attempt=2, candidate=1) -> Endpoint:
+        """A further attempt of a search cell (round 0) at its target, its campaign naming the
+        engineering record and its last end line ``done``."""
+        spec = CANDIDATES[candidate]
+        found = ep(arm, spec["start"][arm][label], seed, step="search", candidate=candidate,
+                   attempt=attempt, K=spec["targets"][label])  # fmt: skip
+        self.add(found)
+        self.headers[found.run_id] = {"study": 3, "candidate": candidate, "step": "search",
+                                      "round": 0, **NAMED}  # fmt: skip
+        self.ends[found.run_id] = {"path": f"launch/study3-c{candidate}-search.jsonl",
+                                   "line": 40 + len(self.ends), "line_sha256": "c" * 64,
+                                   "outcome": "done", "attempt": attempt,
+                                   "run": found.label}  # fmt: skip
+        return found
+
+    def reissue_search(self, code, candidate=1) -> list[Endpoint]:
+        """A fresh usable attempt of every search cell whose attempts are superseded, under the
+        GPU code ``code``."""
+        out = []
+        for e in [e for e in self.endpoints if e.cell.step == "search" and e.state == "superseded"
+                  and e.candidate == candidate]:  # fmt: skip
+            start = CANDIDATES[candidate]["start"][e.arm]
+            label = next(name for name in LABELS if math.isclose(start[name], e.lr))
+            found = self.add_search_run(e.arm, label, e.seed, attempt=e.attempt + 1,
+                                        candidate=candidate)  # fmt: skip
+            self.run_codes[found.run_id] = code
+            out.append(found)
+        return out
 
     def other_commit(self, run_id, reason="other_commit", commit="e" * 40, *,
                      ended=True) -> dict:  # fmt: skip
@@ -972,6 +1052,101 @@ def test_a_qualification_cycle_spends_the_cycle_for_later_marks() -> None:
     study.validation()
     study.technical(run_of(study, "validation", "F", "u", 10304))
     assert study.advance()["step"]["reason"] == "unresolved_after_cycle"
+
+
+RERUN = Claim("rerun", ("A", "F", "P"), "the fix changes what these runs compute")
+REUSE = Claim("reuse", (), "the fix leaves these runs as they ran")
+
+
+def test_a_search_run_under_another_gpu_code_is_a_mark_before_any_cycle() -> None:
+    study = Study()
+    study.ready()
+    study.search()
+    run = run_of(study, "search", "A", "u", 10101)
+    study.run_codes = {e.run_id: EXPECTED for e in study.endpoints if e.cell.step == "search"} | {
+        run: "e" * 64}  # fmt: skip
+    step = study.advance()["step"]
+    assert step["kind"] == "blocked" and any(run in r and "other_gpu_code" in r
+                                             for r in step["reasons"])  # fmt: skip
+    assert [w["reason"] for w in step["ways_out"] if w["run_id"] == run] == ["other_gpu_code"]
+
+
+def test_a_search_run_whose_gpu_code_cannot_be_told_is_a_mark() -> None:
+    """A run of a dirty checkout, or of a commit the checkout cannot place, has no GPU code: it
+    is not shown to be under the code in force."""
+    study = Study()
+    study.ready()
+    study.search()
+    run = run_of(study, "search", "F", "l", 10100)
+    study.run_codes = {e.run_id: EXPECTED for e in study.endpoints if e.cell.step == "search"} | {
+        run: None}  # fmt: skip
+    study.ends[run] = {
+        "path": "launch/study3-c1-search.jsonl",
+        "line": 3,
+        "line_sha256": "c" * 64,
+        "outcome": "done",
+        "attempt": 1,
+        "run": "F",
+    }  # its last end line
+    (way,) = study.advance()["step"]["ways_out"]
+    assert (way["run_id"], way["reason"]) == (run, "other_gpu_code")
+    assert way["closure"]["fields"]["reason"] == "other_gpu_code"
+    assert way["closure"]["fields"]["cycle"] is None
+
+
+def test_a_counting_run_of_a_rerun_stage_under_another_gpu_code_is_a_mark() -> None:
+    study = Study()
+    study.ready()
+    study.search()
+    old = study.expected
+    study.cycle_record(stage="search", claims={"search": RERUN})  # the search runs superseded
+    late = study.add_search_run("A", "u", 10101, attempt=2)  # launched later from an old checkout
+    study.run_codes[late.run_id] = old
+    assert study.advance()["step"]["ways_out"][0]["reason"] == "other_gpu_code"
+    study.closure(late.run_id, reason="other_gpu_code", cycle=None)
+    assert study.advance()["outcome"] == "technical_feasibility_report"
+
+
+def test_a_kept_scientific_failure_keeps_its_route_after_a_search_rerun() -> None:
+    study = Study()
+    study.ready()
+    old = study.expected
+    study.search(special={("F", "u", 10102): {"state": "scientific", "K": None}})  # F's stop
+    study.technical(run_of(study, "search", "A", "u", 10101), log="launch/study3-c1-search.jsonl")
+    study.cycle_record(stage="search", claims={"search": RERUN},
+                       kept_failures=[run_of(study, "search", "F", "u", 10102)])  # fmt: skip
+    study.run_codes = {e.run_id: old for e in study.endpoints if e.cell.step == "search"}
+    study.reissue_search(code=study.expected)  # the superseded cells rerun under the fix, usable
+    result = study.advance()
+    assert not [r for r in result["step"].get("reasons", []) if "other_gpu_code" in r]
+    assert result["candidate"] == 2 and result["route"][-1]["event"] == "candidate"
+
+
+def test_a_qualify_cycle_leaves_earlier_search_runs_counting() -> None:
+    study = Study()
+    study.ready()
+    study.search()
+    study.cycle()  # qualify.py's own cycle: no claims
+    study.run_codes = {e.run_id: EXPECTED for e in study.endpoints if e.cell.step == "search"}
+    assert study.advance()["stage"] != "search"
+
+
+def test_a_search_rerun_of_some_arms_leaves_the_others_counting_under_the_old_code() -> None:
+    """The claim's arms: a search rerun of A alone reuses F's and P's runs under the old code,
+    and only a counting A run under it is a mark."""
+    study = Study()
+    study.ready()
+    study.search()
+    old = study.expected
+    study.cycle_record(stage="search", claims={"search": Claim("rerun", ("A",), "A's runs")})
+    study.run_codes = {e.run_id: old for e in study.endpoints if e.cell.step == "search"}
+    fresh = study.reissue_search(code=study.expected)
+    assert {e.arm for e in fresh} == {"A"}
+    assert study.advance()["stage"] != "search"
+    late = study.add_search_run("A", "l", 10100, attempt=3)
+    study.run_codes[late.run_id] = old
+    (way,) = study.advance()["step"]["ways_out"]
+    assert (way["run_id"], way["reason"]) == (late.run_id, "other_gpu_code")
 
 
 def test_an_after_cycle_closure_must_cite_the_candidates_cycle() -> None:
@@ -2339,12 +2514,23 @@ THETA0_RUN = Path("study2_stage_a") / "20261014T192927Z-theta0-s2000-abb703a1-a1
 
 
 @pytest.fixture
-def worlds(tmp_path):
+def worlds(tmp_path, monkeypatch):
     """A runs directory with its decision records (and their evidence, in a checkout), and the
-    runs: the reader tests' helpers on one root."""
+    runs: the reader tests' helpers on one root. The runs ran a clean checkout of ``RAN``, whose
+    GPU code is the engineering record's (``gpu_code_identity`` gives it; any other commit is
+    the real one's), until a test says otherwise."""
     records = DecisionWorld(tmp_path)
     shutil.rmtree(records.run)  # the records tests' own sentinel run: no run of this study
     runs = RunWorld(tmp_path / "runs")
+    runs.git = {"commit": RAN, "dirty": False}
+    real = code_identity.gpu_code_identity
+
+    def identity(commit="HEAD", repo=None, *args, **kwargs):
+        if commit == RAN:
+            return {"commit": RAN, "files": 1, "sha256": EXPECTED}
+        return real(commit, *([] if repo is None else [repo]), *args, **kwargs)
+
+    monkeypatch.setattr(code_identity, "gpu_code_identity", identity)
     # the engineering stage's log: a decision record is checked against the journal
     (runs.root / "launch").mkdir()
     (runs.root / "launch" / "study3-c1-engineering.jsonl").write_text("")
@@ -2388,7 +2574,9 @@ def named(records, round_=0, candidate=1) -> dict:
             "engineering_record_sha256": records.digest("engineering")}  # fmt: skip
 
 
-def search_round0(records, runs, offsets=None, candidate=1) -> None:
+def search_round0(records, runs, offsets=None, candidate=1, git=None) -> None:
+    """The candidate's search round 0 at the start rates (K at the targets times e^offset), the
+    runs' ``meta.json`` recording ``git`` (the world's by default)."""
     spec = CANDIDATES[candidate]
     for arm in ARMS:
         for label in LABELS:
@@ -2396,7 +2584,8 @@ def search_round0(records, runs, offsets=None, candidate=1) -> None:
                 k = spec["targets"][label] * math.exp((offsets or {}).get((arm, label), 0.0))
                 runs.run(arm, spec["start"][arm][label], seed, role="search", round_=0, k=k,
                          prescribe=False, campaign=f"study3-c{candidate}-search-r0",
-                         candidate=candidate, head=named(records, 0, candidate))  # fmt: skip
+                         candidate=candidate, head=named(records, 0, candidate),
+                         git=git or runs.git)  # fmt: skip
 
 
 def numerical_runs(runs, candidate=1) -> None:
@@ -2958,12 +3147,12 @@ def test_the_reader_reads_a_real_qualification_through_its_engineering_cycle(
     from zero_field_refusal import code_identity
 
     # the GPU codes as sha256 a decision record can carry: the records' (the launcher runs'
-    # commit abc123) and the fix's (this checkout's after the cycle)
+    # commit abc123, and the search runs' RAN) and the fix's (this checkout's after the cycle)
     old = {**RECORDS_CODE, "sha256": "e" * 64}
     fix = {**RECORDS_CODE, "commit": "f" * 40, "sha256": "f" * 64}
 
     def gpu_code(commit="HEAD", *args, **kwargs):
-        return dict(fix if commit == "HEAD" else old if commit == "abc123" else
+        return dict(fix if commit == "HEAD" else old if commit in ("abc123", RAN) else
                     {**old, "sha256": "3" * 64})  # fmt: skip
 
     monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(old))

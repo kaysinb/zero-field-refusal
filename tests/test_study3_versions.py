@@ -119,6 +119,10 @@ class Study:
     def head(self) -> str:
         return git(self.repo, "rev-parse", "HEAD")
 
+    def clean(self) -> dict:
+        """A run's ``meta.json`` git of a clean checkout of HEAD (its GPU code the checkout's)."""
+        return {"commit": self.head(), "dirty": False}
+
     def now(self) -> dict:
         """The code of HEAD: its commit and its GPU code."""
         head = self.head()
@@ -192,7 +196,7 @@ class Study:
         with ``real``, the search too, and the stage read by ``progress`` (otherwise given)."""
         self.decided(**simulation)
         if real:
-            search_round0(self.records, self.runs)
+            search_round0(self.records, self.runs, git=self.clean())
         self.qualified()
         self.given = None if real else stage()
 
@@ -327,7 +331,7 @@ def test_the_fixed_rates_are_the_stages(study) -> None:
     (study.root / "launch" / "study3-c1-engineering.jsonl").write_text("")
     with pytest.raises(sv.RecordRefused, match="'search' of candidate 1"):
         study.fixation()  # the study is at its search
-    search_round0(study.records, study.runs)
+    search_round0(study.records, study.runs, git=study.clean())
     study.qualified()
     assert study.fixation()["rates"] == RATES  # at its validation, read by progress
     for given, words in (
