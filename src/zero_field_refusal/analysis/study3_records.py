@@ -1292,6 +1292,16 @@ def journal_lines(runs_root: str | Path) -> tuple[list[JournalLog], list[str]]:
     return logs, problems
 
 
+def prefixed(logs: Sequence[JournalLog], prefix: Mapping[str, int] | None) -> list[JournalLog]:
+    """The logs as a pinned journal prefix reads them (an engineering cycle's, ``study3_cycle``):
+    each log the map names (by its path under RUNS_DIR), up to its pinned number of lines; a log
+    it does not name reads as empty, left out. Without a map, the logs as they are."""
+    if prefix is None:
+        return list(logs)
+    return [JournalLog(log.path, log.sha256, log.lines[: max(0, int(prefix[log.path]))])
+            for log in logs if log.path in prefix]  # fmt: skip
+
+
 def _journal_logs(root: Path) -> tuple[list[JournalLog], list[tuple[Path, OSError | None]]]:
     """Every launch log under ``root/launch/`` that can be read, each line as the launcher reads
     it (``log_lines``) with its standing as ``launch.torn_lines`` gives it: a ``torn_resolved``

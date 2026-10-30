@@ -20,6 +20,9 @@ read here, and the verdict rules are called where they live, in ``qualification_
 - ``cycle_checks`` and ``restart_checks``: the one check of every supersession record, and the
   check of every case restart record (it voids its own case's launcher run alone), by path, for
   every reader of what a record voids or holds (``study3_records``).
+- ``cycle_entries``: what the bridge of an engineering cycle outside the qualification lists for
+  the candidate's numerical qualification, as ``qualify.py supersede`` lists it, and the launcher
+  runs it cannot settle (``CycleEntries``).
 - ``Scope``, ``settings_record``, ``launcher_identity`` and ``resolved_verdict``: what
   ``qualification.QualificationScope``, ``qualification.settings_record``,
   ``qualification.launcher_identity`` and ``qualify.py``'s ``resolved_verdict`` give, from the
@@ -98,6 +101,37 @@ candidate. Every reader of what a record voids or holds applies the same check
 run records' problems, so that it blocks at every step. The chain of GPU codes
 (``study3_progress.code_chain``) reads the records alone (``supersessions``) and counts a second
 record for a candidate as a break.
+
+**The cycle's qualification entries** (``cycle_entries``; "Failure routes", "Voiding and
+supersession"). A technical mark outside the qualification opens the candidate's one engineering
+cycle from analysis code (``study3_cycle``); when its claim reruns the qualification, its bridge
+(a supersession record in ``qualify.py``'s format) lists what ``qualify.py supersede``
+(``supersede_case``) would list, mirrored here without importing the script, restricted to the
+stage folder ``c<N>/numerical/`` (a repair is qualified there too). The engineering stage's
+records (``c<N>/engineering/``) are never voided: they stay as the historical evidence of the
+engineering stage, and certify nothing the fix changed; the re-qualification certifies the fix.
+- *attempts* and *cases_requalified*: every attempt of a case recorded under the old GPU code (and
+  the case's interrupted attempts), none void already (named by a case restart or a supersession
+  record), in ``supersede``'s entry shape (``case``, ``stage``, ``part``, ``attempt``, ``state``,
+  the absolute ``path``, ``sha256``, ``status``, ``kind``, ``launcher_run_id``);
+- *kept_cases* and *kept*: a case that holds a scientific failure under the old GPU code
+  (``_Cycles._scientific``, ``_failure_kind``: as ``qualify.py`` reads one at the time of the
+  cycle) is kept whole, every entry of it in ``kept``, its launcher runs not superseded: a
+  scientific failure keeps counting;
+- *launchers*: the launcher runs of every case not kept, its label's attempts under any config
+  hash and the runs its records name, whose GPU code (the caller's ``run_codes``) is not the
+  fix's: each ``run_id``, ``campaign``, ``run``, ``experiment``, ``config_hash`` and
+  ``identity`` (``launcher_identity``); a case whose run is superseded is re-qualified;
+- *unsettled*: a launcher run no part record classified (``launcher.classified``) that
+  ``qualify.py`` would resolve against what it was issued (``resolve_launcher_run``, which needs
+  GPU paths and is not mirrored). The analysis readers settle it only when its state before any
+  outcome is read (``study3_records``, "States") is ``superseded``, ``pending``, ``recovered`` or
+  ``technical``; one whose outcome they would read, one held, and one whose records cannot be
+  read are named here instead, never superseded, and the cycle is refused for them. No run is
+  held.
+The view before the cycle is read with ``without`` (the cycle's own bridge, read as absent: it
+voids nothing and names nothing void) and ``prefix`` (each launch log up to the line count the
+cycle pinned).
 
 **The issued runs.** The campaign file the verdict was given is not read: the launch journal
 stands for it. A start of a campaign whose header names study 3, the candidate and the step
@@ -180,7 +214,7 @@ from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, NamedTuple
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
@@ -201,6 +235,8 @@ from .study3_records import (
     ARMS,
     DECISIONS,
     EXPERIMENT,
+    OPEN_ENDS,
+    OUTCOME_ENDS,
     RATE_TOLERANCE,
     TORN_WHY,
     _command_config,
@@ -208,6 +244,7 @@ from .study3_records import (
     _sealed_records,
     _unbacked,
     plain_name,
+    prefixed,
     read_holds,
     sealed_record,
     study3_labels,
@@ -476,20 +513,25 @@ class _Issued:
                 "optimizer": self.optimizer, "lr": self.lr, "seed": self.seed}  # fmt: skip
 
 
-def _journal(root: Path, problems: list[str]) -> list[tuple[str, dict[str, Any]]]:
+def _journal(
+    root: Path, problems: list[str], prefix: Mapping[str, int] | None = None
+) -> list[tuple[str, dict[str, Any]]]:
     """Every record of every launch log, with its campaign, each log read as the launcher and
     ``study3_records`` read it (``journal_lines``: split at ``\n`` alone, each line decoded
     strictly as UTF-8). A torn line holds no record: the last of its log is skipped (the
     launcher's rule), a resolved one is no problem, and any other is a problem by its log and
     line, never its bytes. A log that resolves under a sealed folder, or cannot be read, is a
-    problem, never opened."""
+    problem, never opened. ``prefix``: each log read up to its pinned number of lines, a log it
+    does not name as empty (``study3_records.prefixed``)."""
     logs, unread = _journal_logs(root)
     for log, error in unread:
+        if prefix is not None and log.relative_to(root).as_posix() not in prefix:
+            continue
         why = (sealed_record("a launch log", log, root) if error is None
                else "an unreadable launch journal")  # fmt: skip
         problems.append(f"{log}: {why}")
     records = []
-    for log in logs:
+    for log in prefixed(logs, prefix):
         problems += [f"{root / log.path} line {number}: {TORN_WHY}" for number in log.corrupt]
         records += [(PurePosixPath(log.path).stem, line.record) for line in log.lines
                     if line.record is not None]  # fmt: skip
@@ -903,6 +945,212 @@ class _Cycles:
             return verdicts.case_verdict(bound, record, self.scope)["kind"]
         verdict = verdicts.control_verdict(record, self.scope, self.candidate)
         return None if verdict["state"] == ACCEPTED else verdict["kind"]
+
+
+class CycleEntries(NamedTuple):
+    """The qualification's entries of an engineering cycle outside the qualification
+    (``cycle_entries``), in ``scripts/qualify.py supersede``'s shapes, and the launcher runs it
+    cannot settle."""
+
+    attempts: list[dict]
+    cases_requalified: list[dict]
+    kept: list[dict]
+    kept_cases: list[dict]
+    launchers: list[dict]
+    unsettled: list[str]
+
+
+def cycle_entries(
+    runs_root: str | Path,
+    candidate: int,
+    *,
+    old_code: str,
+    fix_code: str,
+    settings: Mapping[str, Any],
+    run_codes: Mapping[str, str | None],
+    without: str | None = None,
+    prefix: Mapping[str, int] | None = None,
+) -> CycleEntries:
+    """The entries an engineering cycle's bridge lists for the candidate's numerical
+    qualification (module docstring, "The cycle's qualification entries"): ``qualify.py
+    supersede``'s, restricted to the stage folder ``c<N>/numerical/`` (a repair is qualified
+    there too). ``old_code``: the GPU code in force before the cycle; ``fix_code``: the fix's;
+    ``settings``: configs/experiments/qualification.yaml as loaded; ``run_codes``: each run's GPU
+    code by run id (``study3_cycle.run_gpu_codes``; a run it does not name has none). The view
+    before the cycle: ``without``, a supersession record (its path under RUNS_DIR) read as absent,
+    and ``prefix``, each launch log read up to its pinned number of lines
+    (``study3_records.prefixed``)."""
+    root = Path(runs_root)
+    scope = Scope.of(settings)
+    journal = _journal(root, [], prefix)
+    issued = {f"s{r.seed}/{r.optimizer}-{r.lr:g}": r
+              for r in _issued(root, journal, candidate, [], STEPS)
+              if r.optimizer is not None}  # fmt: skip
+    cycles = _Cycles(root, candidate, scope, journal,
+                     [(r.optimizer, r.lr, r.seed) for r in issued.values()])  # fmt: skip
+    folder = root / "qualification" / f"c{candidate}"
+    supersessions = [_object(path, root) or {} for path in sorted(folder.glob("supersede-*.json"))
+                     if VOIDING_FILE.fullmatch(path.name)
+                     and path.relative_to(root).as_posix() != without]  # fmt: skip
+    attempts, requalified, kept, kept_cases = [], [], [], []
+    run_ids: set[str] = set()
+    kept_runs: set[str] = set()
+    classified: set[str] = set()
+    entries_of: dict[str, list[dict[str, Any]]] = {}
+    for case_dir in sorted({f.parent for f in (folder / STAGE).glob("s*/*/*-attempt-*")}):
+        name = f"{case_dir.parent.name}/{case_dir.name}"
+        before, listed = cycles._restarted_before(case_dir, {})  # every restart, at the cycle
+        named = before | {e["sha256"] for record in supersessions
+                          for e in record.get("attempts") or []
+                          if isinstance(e, Mapping) and isinstance(e.get("sha256"), str)
+                          and e.get("case", name) == name
+                          and e.get("stage", STAGE) == STAGE}  # fmt: skip
+        entries, mine = [], []
+        for part in PARTS:
+            for n, state in attempt_files(case_dir, part).items():
+                file = case_dir / f"{part}-attempt-{n}.json"
+                record = _object(file, root) if state == "recorded" else None
+                launcher = (record or {}).get("launcher")
+                launcher = launcher if isinstance(launcher, Mapping) else {}
+                identity = launcher.get("identity")
+                identity = identity if isinstance(identity, Mapping) else {}
+                entry = {"case": name, "stage": STAGE, "part": part, "attempt": n,
+                         "state": state, "path": str(file.absolute()),
+                         "sha256": _file_sha256(file, root) if state == "recorded" else None,
+                         "status": (record or {}).get("status"),
+                         "kind": (record or {}).get("kind"),
+                         "launcher_run_id": identity.get("run_id")}  # fmt: skip
+                entries.append(entry)
+                if (state == "recorded" and isinstance(entry["launcher_run_id"], str)
+                        and launcher.get("classified") is True):  # fmt: skip
+                    classified.add(entry["launcher_run_id"])
+                if state == "recorded" and (entry["sha256"] in named or _code(record) != old_code):
+                    continue  # void already, or not of the old code
+                mine.append(entry)
+        entries_of[name] = entries
+        science = cycles._scientific(case_dir, old_code, named, listed)
+        if science:  # a scientific failure keeps the case whole, its launcher runs included
+            kept += entries
+            why = f"a scientific failure keeps counting: {sorted(science)}"
+            kept_cases.append({"case": name, "stage": STAGE, "why": why})
+            kept_runs |= {e["launcher_run_id"] for e in entries
+                          if isinstance(e["launcher_run_id"], str)}  # fmt: skip
+            if name in issued:
+                kept_runs |= set(issued[name].run_ids)
+            continue
+        if any(e["state"] == "recorded" for e in mine):
+            attempts += mine
+            requalified.append({"case": name, "stage": STAGE})
+            run_ids |= {e["launcher_run_id"] for e in mine
+                        if isinstance(e["launcher_run_id"], str)}  # fmt: skip
+    kept_names = {k["case"] for k in kept_cases}
+    starts: dict[str, tuple[str, Mapping[str, Any]]] = {}
+    ends: dict[str, list[Any]] = {}
+    for campaign, record in journal:
+        run_id = record.get("run_id")
+        if record.get("event") == "start" and isinstance(run_id, str):
+            starts.setdefault(run_id, (campaign, record))
+        elif record.get("event") == "end" and isinstance(run_id, str):
+            ends.setdefault(run_id, []).append(record.get("outcome"))
+    voided = _voided(journal, supersessions, folder, without)
+    unsettled: set[str] = set()
+    labels: dict[str, set[str]] = {}
+    for name in sorted(set(issued) | set(entries_of)):
+        if name in kept_names:
+            continue
+        ids = set(issued[name].run_ids) if name in issued else set()
+        mentioned = {e["launcher_run_id"] for e in entries_of.get(name, [])
+                     if e["state"] == "recorded"
+                     and isinstance(e["launcher_run_id"], str)}  # fmt: skip
+        for run_id in sorted((ids | mentioned) - classified):
+            run_dir = _run_dir(root, starts.get(run_id))
+            if run_dir is not None and run_dir.is_dir() and not _settleable(
+                    root, run_dir, ends.get(run_id, []), voided.get(run_id)):  # fmt: skip
+                unsettled.add(run_id)
+        if name in issued:
+            labels[name] = ids
+            run_ids |= ids
+    launchers = []
+    for run_id in sorted(run_ids - kept_runs - unsettled):
+        run_dir = _run_dir(root, starts.get(run_id))
+        if run_dir is None or not run_dir.is_dir() or run_codes.get(run_id) == fix_code:
+            continue  # no run to supersede, or one of the fix's code
+        campaign, start = starts[run_id]
+        launchers.append({"run_id": run_id, "campaign": campaign, "run": start.get("run"),
+                          "experiment": start.get("experiment"),
+                          "config_hash": start.get("config_hash"),
+                          "identity": launcher_identity(run_dir)})  # fmt: skip
+        for name, ids in labels.items():  # its case re-qualifies, records or none
+            entry = {"case": name, "stage": STAGE}
+            if run_id in ids and entry not in requalified:
+                requalified.append(entry)
+    return CycleEntries(attempts, requalified, kept, kept_cases, launchers, sorted(unsettled))
+
+
+def _run_dir(root: Path, start: tuple[str, Mapping[str, Any]] | None) -> Path | None:
+    """A started launcher run's folder (its experiment's, by its run id), or None for a run with
+    no start or whose start names no plain run id or experiment."""
+    if start is None:
+        return None
+    run_id, experiment = start[1].get("run_id"), start[1].get("experiment")
+    return root / experiment / run_id if plain_name(run_id) and plain_name(experiment) else None
+
+
+def _voided(journal: Sequence[tuple[str, Mapping[str, Any]]],
+            supersessions: Sequence[Mapping[str, Any]], folder: Path,
+            without: str | None) -> dict[str, str]:  # fmt: skip
+    """The launcher runs that no longer count before the cycle, ``superseded`` or ``held``: the
+    journal's lines that cite no record ``without`` names, the case restarts' launcher runs and
+    the other supersession records' ``launchers`` and ``held`` (a held run stays held)."""
+    out: dict[str, str] = {}
+
+    def add(run_id: Any, state: str) -> None:
+        if isinstance(run_id, str) and out.get(run_id) != "held":
+            out[run_id] = state
+
+    for _, record in journal:
+        cited = record.get("record")
+        tail = "/".join(PurePosixPath(cited.replace("\\", "/")).parts[-3:]) if isinstance(
+            cited, str) else None  # fmt: skip
+        if record.get("event") in ("superseded", "held") and (without is None or tail != without):
+            add(record.get("run_id"), record["event"])
+    for path in sorted(folder.glob("*/s*/*/restart-*.json")):
+        restart = _object(path, folder.parent.parent) if VOIDING_FILE.fullmatch(path.name) else None
+        launcher = (restart or {}).get("launcher")
+        add(launcher.get("run_id") if isinstance(launcher, Mapping) else None, "superseded")
+    for record in supersessions:
+        for key, state in (("launchers", "superseded"), ("held", "held")):
+            for entry in record.get(key) or []:
+                add(entry.get("run_id") if isinstance(entry, Mapping) else None, state)
+    return out
+
+
+def _settleable(root: Path, run_dir: Path, outcomes: Sequence[Any], voided: str | None) -> bool:
+    """Whether the analysis readers settle a launcher run no part record classified, so that a
+    cycle may supersede it: its state as ``study3_records`` reads it before any outcome
+    ("States") is ``superseded``, ``pending``, ``recovered`` or ``technical`` (no end, or an end
+    ``stopped``, on a run that has not finished; no published terminal record after its end; an
+    end other than done or diverged; ends that disagree). Any other run, one whose outcome the
+    readers would read (an end done or diverged with its terminal record published), one that is
+    held, and one whose records cannot be read (or resolve under a sealed folder, never opened),
+    only ``qualify.py``'s own resolution of the run against what it was issued could classify:
+    the cycle names it, unsettled."""
+    if voided is not None:
+        return voided == "superseded"
+    if _sealed_records(run_dir, root) is not None:
+        return False
+    meta = _object(run_dir / "meta.json", run_dir)
+    if meta is None:
+        return False
+    found = {str(outcome) for outcome in outcomes}
+    if len(found) > 1:
+        return True
+    ended = outcomes[0] if outcomes else None
+    published = (run_dir / "terminal.json").is_file()
+    finished = not published and meta.get("status") not in (None, "running")
+    if ended in OPEN_ENDS and not finished:
+        return True
+    return not published or ended not in OUTCOME_ENDS
 
 
 def _named_entries(record: Mapping[str, Any] | None) -> dict[str, list[str]]:

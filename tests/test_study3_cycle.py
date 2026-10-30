@@ -1,10 +1,12 @@
-"""Study 3's engineering cycle outside the numerical qualification (analysis/study3_cycle.py).
+"""Study 3's engineering cycle outside the numerical qualification (analysis/study3_cycle.py, and
+its qualification side in analysis/qualification_records.py).
 
 docs/study3-preregistration.md: "Failure routes" (one engineering cycle per candidate: diagnosis,
 a fix, re-qualification of the affected cases and reruns of the affected runs) and "Voiding and
 supersession" (the affected records listed, the scientific failures kept). The claims a cycle
 makes per stage, each run's GPU code and the journal prefix a cycle pins are tested on synthetic
-launch logs and endpoints."""
+launch logs and endpoints; the qualification's entries of a cycle on the qualification tests'
+worlds, in the formats scripts/qualify.py writes."""
 
 import hashlib
 import json
@@ -12,9 +14,22 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from test_qualification import CODE
+from test_qualification_records import (
+    ADAMW,
+    ENGINEERING,
+    ENGINEERING_HEADER,
+    REGISTERED,
+    SCIENTIFIC_CASE,
+    beyond,
+)
+from test_qualification_records import World as QualificationWorld
+from test_qualification_records import qualify as qualify  # noqa: F401  (the fixture)
+from test_qualify import ADAMW_LR, FIX
 from test_study3_progress import ep
 
 from zero_field_refusal import code_identity
+from zero_field_refusal.analysis import qualification_records as qr
 from zero_field_refusal.analysis import study3_cycle as cycle
 
 
@@ -137,3 +152,138 @@ def test_the_prefix_holds_whole_lines_and_a_log_that_is_gone_refuses(tmp_path):
     log.unlink()
     with pytest.raises(cycle.CycleRefused, match="prefix"):
         cycle.seen_starts(tmp_path, seen)
+
+
+# ------------------------------------------------------------------ the qualification's entries
+
+
+def launched(world) -> list[tuple[str, str]]:
+    """Every start in the world's launch journal: (run id, label)."""
+    out = []
+    for log in sorted((world.root / "launch").glob("*.jsonl")):
+        for line in log.read_text().splitlines():
+            record = json.loads(line)
+            if record.get("event") == "start":
+                out.append((record["run_id"], record["run"]))
+    return out
+
+
+def all_runs(world, code: str) -> dict[str, str]:
+    """Every launched run under ``code``, as ``run_gpu_codes`` would give it."""
+    return {run_id: code for run_id, _ in launched(world)}
+
+
+def runs_except(world, case) -> set[str]:
+    """Every launched run but those of ``case``'s label."""
+    label = f"{case.optimizer}-{case.lr:g}/s{case.seed}"
+    return {run_id for run_id, found in launched(world) if found != label}
+
+
+def entries_of(world, **kw):
+    return qr.cycle_entries(world.root, 1, old_code=CODE["sha256"], fix_code=FIX["sha256"],
+                            settings=REGISTERED, run_codes=all_runs(world, CODE["sha256"]),
+                            **kw)  # fmt: skip
+
+
+def engineering_and_numerical_world(tmp_path):
+    """Candidate 1's engineering case recorded in c1/engineering, and its numerical
+    qualification in c1/numerical, all under the old code."""
+    engineering = QualificationWorld(tmp_path, ((("adamw", ADAMW_LR), (10000,)),),
+                                     name="study3-c1-engineering", header=ENGINEERING_HEADER,
+                                     role="engineering")  # fmt: skip
+    engineering.qualified(ENGINEERING, engineering.launch(ENGINEERING))
+    world = QualificationWorld(tmp_path)
+    world.full()
+    return world
+
+
+def test_the_bridge_mirrors_supersede_and_keeps_a_scientific_case_whole(qualify, monkeypatch,
+                                                                        tmp_path):  # fmt: skip
+    world = QualificationWorld(tmp_path)
+    world.full(changes={SCIENTIFIC_CASE: beyond("rest", "baseline~s3")})  # old code, one scientific
+    entries = qr.cycle_entries(world.root, 1, old_code=CODE["sha256"], fix_code=FIX["sha256"],
+                               settings=REGISTERED,
+                               run_codes=all_runs(world, CODE["sha256"]))  # fmt: skip
+    assert {e["case"] for e in entries.kept} == {SCIENTIFIC_CASE.name}
+    assert SCIENTIFIC_CASE.name not in {c["case"] for c in entries.cases_requalified}
+    assert {e["stage"] for e in entries.attempts} == {"numerical"} and entries.unsettled == []
+    assert all(e["sha256"] == sha(e["path"]) for e in entries.attempts)
+    assert {e["run_id"] for e in entries.launchers} == runs_except(world, SCIENTIFIC_CASE)
+    (kept,) = entries.kept_cases
+    assert (kept["case"], kept["stage"]) == (SCIENTIFIC_CASE.name, "numerical")
+    assert kept["why"].startswith("a scientific failure keeps counting: [")
+    assert all(Path(e["path"]).is_absolute() for e in [*entries.attempts, *entries.kept])
+    launcher = entries.launchers[0]
+    assert set(launcher) == {"run_id", "campaign", "run", "experiment", "config_hash", "identity"}
+    assert launcher["identity"] == qr.launcher_identity(world.root / "study3" / launcher["run_id"])
+
+
+def test_a_launcher_run_of_the_fixs_code_is_not_superseded(qualify, monkeypatch, tmp_path):
+    world = QualificationWorld(tmp_path)
+    world.full()
+    codes = all_runs(world, CODE["sha256"])
+    fixed = sorted(codes)[0]
+    entries = qr.cycle_entries(world.root, 1, old_code=CODE["sha256"], fix_code=FIX["sha256"],
+                               settings=REGISTERED,
+                               run_codes={**codes, fixed: FIX["sha256"]})  # fmt: skip
+    assert fixed not in {e["run_id"] for e in entries.launchers}
+    assert {e["run_id"] for e in entries.launchers} == set(codes) - {fixed}
+
+
+def test_r9_names_an_unclassified_qualification_run_it_cannot_settle(qualify, monkeypatch,
+                                                                     tmp_path):  # fmt: skip
+    world = QualificationWorld(tmp_path)
+    world.full()
+    extra = world.launch(ADAMW, stop="instability", steps=11)  # a stop no record classified
+    entries = qr.cycle_entries(world.root, 1, old_code=CODE["sha256"], fix_code=FIX["sha256"],
+                               settings=REGISTERED,
+                               run_codes=all_runs(world, CODE["sha256"]))  # fmt: skip
+    assert entries.unsettled == [extra["run_id"]]
+    assert extra["run_id"] not in {e["run_id"] for e in entries.launchers}
+
+
+def test_an_unclassified_run_the_launcher_never_settled_is_superseded(qualify, monkeypatch,
+                                                                      tmp_path):  # fmt: skip
+    """A label's later attempt that ended with no published terminal record: the readers read
+    it technical, so the cycle supersedes it; one whose meta.json cannot be read is named
+    instead."""
+    world = QualificationWorld(tmp_path)
+    world.full()
+    extra = world.launch(ADAMW)
+    run_dir = world.root / "study3" / extra["run_id"]
+    (run_dir / "terminal.json").unlink()
+    entries = entries_of(world)
+    assert entries.unsettled == []
+    assert extra["run_id"] in {e["run_id"] for e in entries.launchers}
+    (run_dir / "meta.json").write_text("{")
+    assert entries_of(world).unsettled == [extra["run_id"]]
+
+
+def test_the_pre_cycle_view_reads_the_pinned_prefix_without_the_bridge(qualify, monkeypatch,
+                                                                       tmp_path):  # fmt: skip
+    world = QualificationWorld(tmp_path)
+    world.full()
+    before = entries_of(world)
+    prefix = {entry["path"]: entry["lines"] for entry in cycle.journal_seen(world.root)}
+    extra = world.launch(ADAMW, stop="instability", steps=11)  # after the prefix
+    assert entries_of(world).unsettled == [extra["run_id"]]
+    assert entries_of(world, prefix=prefix) == before
+    bridge = world.out / "c1" / "supersede-1.json"
+    bridge.write_text(json.dumps({"candidate": 1, "supersession": 1,
+                                  "attempts": before.attempts,
+                                  "launchers": before.launchers}))  # fmt: skip
+    voided = entries_of(world, prefix=prefix)
+    assert before.attempts and voided.attempts == []  # void already, as the bridge names them
+    where = "qualification/c1/supersede-1.json"
+    assert entries_of(world, prefix=prefix, without=where) == before
+
+
+def test_old_code_engineering_records_are_not_voided(qualify, monkeypatch, tmp_path):
+    world = engineering_and_numerical_world(tmp_path)  # c1/engineering and c1/numerical, old code
+    entries = qr.cycle_entries(world.root, 1, old_code=CODE["sha256"], fix_code=FIX["sha256"],
+                               settings=REGISTERED,
+                               run_codes=all_runs(world, CODE["sha256"]))  # fmt: skip
+    assert all(e["stage"] != "engineering" for e in [*entries.attempts, *entries.kept])
+    engineering = {run_id for run_id, label in launched(world) if "/s10000" in label}
+    assert engineering and not engineering & {e["run_id"] for e in entries.launchers}
+    assert entries.unsettled == []
