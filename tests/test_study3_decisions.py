@@ -73,7 +73,7 @@ WHEN = "2026-10-26T12:00:00Z"
 SEALED = ("responses", "observations")
 # The fixture's simulation: the whole grid (the reader refuses any other), J = 1 785; C16 a
 # coverage scenario and P20 a power scenario that tests name
-FIXED, POWER = "C16", "P20"
+COVER, POWER = "C16", "P20"
 COVERAGE = [s.name for s in sim.SCENARIOS if s.coverage]
 POWERS = [s.name for s in sim.SCENARIOS if s.power]
 GRID_J = len(test_identities(COVERAGE))  # 17 × 105
@@ -1601,7 +1601,7 @@ SCENARIOS_DEPART = {
     "another_delta": (POWER, {"delta_af_pp": 1.0},
                       ("P20 is not the grid's", "departs in delta_af_pp")),
     "another_name": (POWER, {"name": "P99"}, ("P99 is not a scenario of the grid",)),
-    "power_role": (FIXED, {"role": "power"}, ("C16 is not the grid's", "departs in role",
+    "power_role": (COVER, {"role": "power"}, ("C16 is not the grid's", "departs in role",
                                                "missing labels are MCAR at 0.01")),
 }  # fmt: skip
 
@@ -1701,7 +1701,7 @@ def test_a_row_whose_test_is_no_identity_is_refused(world) -> None:
     record = world.simulation()
     path = world.runs / SIMULATION_RESULTS
     results = json.loads(path.read_text())
-    results["tests"][0] = {**results["tests"][0], "test": [["calibration"], FIXED]}
+    results["tests"][0] = {**results["tests"][0], "test": [["calibration"], COVER]}
     path.write_text(json.dumps(results))
     reference = {"path": SIMULATION_RESULTS, "sha256": sha256(path)}
     record["inputs"] = {**record["inputs"], "results": reference}
@@ -3351,6 +3351,29 @@ def supersedes(world: World, predecessor: str) -> dict:
 
 def state_of(world: World, kind: str = "n-c1") -> str:
     return decisions(world.runs, 1, repo=world.repo)[kind]["state"]
+
+
+def test_the_simulation_record_has_no_successor_and_stays_in_force_after_a_cycle(world) -> None:
+    """The simulation record precedes the search, so no cycle makes it stale: it has no successor
+    kind and no chain, a cycle lists it among no stale records, and after the cycle it is still
+    read whole (the J check at J = 1 785 included), with an n successor under the fix's code
+    resting on it."""
+    from zero_field_refusal.analysis import study3_cycle
+
+    with pytest.raises(ValueError):
+        chain(world.runs, "simulation")
+    with pytest.raises(ValueError):
+        kind_of("simulation-2")
+    world.chain()  # engineering, simulation, n-c1 under the old code
+    published_cycle(world)
+    stale = study3_cycle.stale_records(world.runs, 1, repo=world.repo, old_code=OLD_CODE)
+    assert [s["path"] for s in stale] == ["study3/decisions/n-c1.json"]
+    assert world.fixation["J"] == GRID_J == 1785
+    world.write("n-c1-2", world.n(code=FIXED, kind="n-c1-2", supersedes=supersedes(world, "n-c1")))
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert found["simulation"]["state"] == "passed", found["simulation"]["problems"]
+    assert found["simulation"]["path"].endswith("study3/decisions/simulation.json")
+    assert found["n-c1"]["state"] == "passed" and found["n-c1"]["path"].endswith("n-c1-2.json")
 
 
 def test_successors_name_their_predecessor_and_the_cycle(world) -> None:
