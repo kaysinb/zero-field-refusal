@@ -137,9 +137,9 @@ on is a response or an observation, and this module opens none.
   ``launch/<log>.jsonl`` under the runs directory, ``line``, its number from 1, and
   ``line_sha256``, the sha256 of the line's UTF-8 text: the line's own bytes, which stay when the
   launcher appends to the log, as the log's sha256 does not), ``cycle``, ``reason`` and
-  ``decision``: ``technical_feasibility_report`` for A or F (the study ends with the technical
-  feasibility report, and candidate 2 is not taken), ``close_pf`` for P (P–F closes, and A–F goes
-  on); any other pairing is refused. The state is ``failed``: a terminal technical outcome.
+  ``decision``: ``technical_feasibility_report`` for A or F, ``close_pf`` for P; any other pairing
+  is refused. The state is ``failed``. The state machine reads no closure and no step names one
+  (amendment 7, "Technical causes"): this schema stays for the record a decision will need.
   - ``kind: "held"``: a ``held`` line of the launch journal naming the run, whose reasons state
     ``reason`` (an id of ``HOLD_REASONS``: never the evidence's free text); ``cycle`` is the
     evidence of the candidate's supersession record (``qualification/c<N>/supersede-<n>.json``

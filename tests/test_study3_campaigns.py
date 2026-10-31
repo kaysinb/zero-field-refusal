@@ -732,12 +732,19 @@ def test_a_blocked_step_and_a_terminal_stage_are_refused(world) -> None:
         error = world.refused(kind)
         assert "the step is blocked" in error and '"kind": "blocked"' in error
         assert "a run with no start" in error
-    terminal = Study()
-    terminal.record("engineering", "failed")
-    world.core(terminal)
+    paused = Study()
+    paused.record("engineering", "failed")
+    world.core(paused)
     for kind in ("engineering", "search-round0"):
         error = world.refused(kind)
-        assert "technical_feasibility_report" in error and "terminal" in error
+        assert "engineering_failed" in error and "the step is blocked" in error
+    terminal = Study()
+    terminal.ready()
+    terminal.search(special={("F", "u", 10102): {"state": "scientific"}})
+    terminal.search(2, special={("F", "u", 10112): {"state": "scientific"}})
+    world.core(terminal)
+    error = world.refused("search-round0")
+    assert "scientific_feasibility_report" in error and "terminal" in error
 
 
 def test_no_block_is_written_while_a_technical_mark_outside_the_qualification_stands(world):

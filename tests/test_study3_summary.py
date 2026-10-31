@@ -44,7 +44,7 @@ from test_study3_versions import sha256 as vsha256
 
 from zero_field_refusal import launch
 from zero_field_refusal.analysis import study3_versions as sv
-from zero_field_refusal.analysis.study3_decisions import decision_path, end_lines, read_decision
+from zero_field_refusal.analysis.study3_decisions import decision_path, read_decision
 from zero_field_refusal.analysis.study3_progress import advance, progress, read_records
 from zero_field_refusal.analysis.study3_records import SEEDS, Endpoint
 from zero_field_refusal.launch import load_campaign
@@ -464,23 +464,14 @@ def test_the_guard_refuses_a_block_file_that_does_not_match_the_step(world, summ
 
 
 def test_the_guard_refuses_a_block_whose_records_changed_since_it_was_written(world, summary):
-    """A block is run as written, on the records its header names as they were then: a block
-    left with six cells by P's closure, a changed n record or versions record, a missing or
-    unreadable file are refused."""
+    """A block is run as written, on the records its header names as they were then: a changed
+    n record or versions record, a missing or unreadable file are refused."""
     study = confirmation_study(world, N=60)
     study.confirmation(count=10)
     files = block_files(world.write("confirmation"))
     summary.core(study)
     summary.versions()
-    # P closed after the block was written (a P run under another commit, its closure): the
-    # step's block has four cells
-    broken = run_of(study, "confirmation", "P", "u", 10405)
-    study.other_commit(broken)
-    study.closure(broken)
-    refused(summary.guard(10410, files[10410]), "does not match", "are not the step's cells")
-    closed = study.entries.pop("closure-c1-P")
-    study.uncounted.clear()
-    assert summary.guard(10410, files[10410])[0] == 0 and closed
+    assert summary.guard(10410, files[10410])[0] == 0
     record = decision_path(world.root, "n-c1")
     kept = record.read_bytes()
     world.records.change("n-c1", written_at="2026-10-26T13:00:00Z")
@@ -1089,173 +1080,31 @@ def held_study(world: World) -> tuple[Study, dict]:
 FIELDS = ("candidate", "arm", "rate", "seed", "run_id", "line", "cycle", "reason", "decision")
 
 
-def test_closure_writes_the_record_a_held_runs_step_names(world, summary, monkeypatch) -> None:
-    study, closure = held_study(world)
-    step = study.advance()["step"]
-    assert (step["kind"], step["record"]) == ("decision", "closure-c1-F")
-    assert step["fields"] == {key: closure[key] for key in FIELDS}
-    summary.core(study)
-    monkeypatch.setattr(
-        summary.script, "git_state", lambda repo=None: {"commit": None, "dirty": None}
-    )
-    argv = ["closure", "--runs-root", world.root, "--candidate", 1, "--arm", "F"]
-    refused(summary.run(*argv), "a known commit")
-    monkeypatch.setattr(
-        summary.script, "git_state", lambda repo=None: {"commit": "a" * 40, "dirty": True}
-    )
-    attempts = sealed_reads(monkeypatch)
-    code, printed, error = summary.run(*argv)
-    assert code == 0, error
-    path = decision_path(world.root, "closure-c1-F")
-    assert printed.strip() == str(path)
-    record, problems = read_decision(world.root, "closure-c1-F", repo=world.repo)
-    assert problems == []
-    assert record == {**{key: closure[key] for key in FIELDS}, "kind": "closure-c1-F",
-                      "state": "failed", "written_at": record["written_at"],
-                      "code": {"commit": "a" * 40, "gpu_code_sha256": EXPECTED}}  # fmt: skip
-    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00", record["written_at"])
-    refused(summary.run(*argv), "already written")
-    assert attempts == [] and SENTINEL not in printed + error
-
-
-def test_closure_refuses_when_the_step_names_no_closure_of_the_arm(world, summary) -> None:
+def test_closure_is_refused_while_no_step_names_one(world, summary) -> None:
+    """A technical mark is a pause: no step names a closure (a held run, a mark after the cycle, a
+    run under another commit), the refusal says a closure needs a recorded decision, and no record
+    is written."""
     study, _ = held_study(world)
+    assert study.advance()["step"]["reason"] == "held_run"
     summary.core(study)
-    refused(summary.run("closure", "--runs-root", world.root, "--candidate", 1, "--arm", "A"),
-            "names no closure record closure-c1-A", '"record": "closure-c1-F"')  # fmt: skip
-    refused(summary.run("closure", "--runs-root", world.root, "--candidate", 2, "--arm", "F"),
-            "names no closure record closure-c2-F")  # fmt: skip
-    refused(summary.run("closure", "--runs-root", world.root, "--candidate", 1, "--arm", "F",
-                        "--run-id", "another-run"), "names no closure record closure-c1-F",
-            "another-run")  # fmt: skip
-    plain = Study()
-    plain.ready()
-    summary.core(plain)
-    refused(summary.run("closure", "--runs-root", world.root, "--candidate", 1, "--arm", "F"),
-            "names no closure record closure-c1-F", '"campaign": "search-round0"')  # fmt: skip
-    for kind in ("closure-c1-A", "closure-c1-F", "closure-c2-F"):
-        assert not decision_path(world.root, kind).exists()
-
-
-def test_closure_writes_a_way_out_chosen_by_its_run(world, summary, monkeypatch) -> None:
-    """Two completed validation runs of F under another commit: the step is blocked and names
-    each one's closure among its ways out (its last end line in the journal, its reason); the
-    run is chosen with --run-id."""
-    study = Study()
-    study.through_validation()
-    run_ids = [run_of(study, "validation", "F", "u", seed) for seed in (10304, 10306)]
-    for run_id in run_ids:
-        (endpoint,) = [e for e in study.endpoints if e.run_id == run_id]
-        world.runs.log("study3-c1-validation", {"event": "start", "run": endpoint.label,
-                                                "attempt": 1, "run_id": run_id,
-                                                "experiment": "study3"})  # fmt: skip
-        world.runs.end("study3-c1-validation", endpoint.label, 1, run_id, "done")
-    ends = end_lines(world.root)
-    for run_id in run_ids:
-        study.ends[run_id] = dict(ends[run_id])
-        study.other_commit(run_id)
-    step = study.advance()["step"]
-    assert (step["kind"], step["technical"], len(step["ways_out"])) == ("blocked", True, 2)
-    summary.core(study)
-    monkeypatch.setattr(
-        summary.script, "git_state", lambda repo=None: {"commit": "a" * 40, "dirty": False}
-    )
     argv = ["closure", "--runs-root", world.root, "--candidate", 1, "--arm", "F"]
-    refused(summary.run(*argv), "2 closures of closure-c1-F", run_ids[0], run_ids[1],
-            "--run-id")  # fmt: skip
-    code, _, error = summary.run(*argv, "--run-id", run_ids[1])
-    assert code == 0, error
-    record, problems = read_decision(world.root, "closure-c1-F", repo=world.repo)
-    assert problems == [] and record["run_id"] == run_ids[1]
-    assert (record["line"], record["reason"], record["cycle"]) == (
-        {"kind": "end", **{k: ends[run_ids[1]][k] for k in ("path", "line", "line_sha256")}},
-        "other_commit", None)  # fmt: skip
-
-
-def test_closure_writes_the_after_cycle_closure_from_the_step(world, summary, monkeypatch):
-    """A technical validation run before the candidate's engineering cycle takes the cycle: the
-    step names no closure, and ``closure`` writes none. After the cycle (here qualify.py's own
-    supersession record, on disk) the mark is unresolved after it: the step names its closure
-    (its last end line, the reason ``unresolved_after_cycle``, the supersession record by its
-    sha256), which ``closure`` writes and the schema accepts; once written, the route ends with
-    the technical feasibility report."""
-    study = Study()
-    study.through_validation()
-    run_id = run_of(study, "validation", "F", "u", 10304)
-    (endpoint,) = [e for e in study.endpoints if e.run_id == run_id]
-    world.runs.log("study3-c1-validation", {"event": "start", "run": endpoint.label,
-                                            "attempt": 1, "run_id": run_id,
-                                            "experiment": "study3"})  # fmt: skip
-    world.runs.end("study3-c1-validation", endpoint.label, 1, run_id, "technical")
-    end = end_lines(world.root)[run_id]
-    study.technical(run_id, log=end["path"], line=end["line"])
-    study.ends[run_id]["line_sha256"] = end["line_sha256"]
-    summary.core(study)
-    monkeypatch.setattr(
-        summary.script, "git_state", lambda repo=None: {"commit": "a" * 40, "dirty": False}
-    )
-    argv = ["closure", "--runs-root", world.root, "--candidate", 1, "--arm", "F"]
-    assert study.advance()["step"]["reason"] == "engineering_cycle"
-    refused(summary.run(*argv), "names no closure record closure-c1-F", "engineering_cycle")
+    refused(summary.run(*argv), "names no closure record closure-c1-F", "a recorded decision",
+            "held_run")  # fmt: skip
+    after = Study()
+    after.through_validation()
+    after.cycle()
+    after.technical(run_of(after, "validation", "F", "u", 10304))
+    assert after.advance()["step"]["reason"] == "unresolved_after_cycle"
+    summary.core(after)
+    refused(summary.run(*argv), "names no closure record closure-c1-F")
+    other = Study()
+    other.through_validation()
+    other.other_commit(run_of(other, "validation", "F", "u", 10304), "dirty_checkout")
+    assert other.advance()["step"]["reason"] == "dirty_checkout"
+    summary.core(other)
+    refused(summary.run(*argv), "names no closure record closure-c1-F", "dirty_checkout")
+    refused(summary.run(*argv, "--run-id", "another-run"), "another-run")
     assert not decision_path(world.root, "closure-c1-F").exists()
-    bridge = world.root / "qualification" / "c1" / "supersede-1.json"
-    bridge.parent.mkdir(parents=True)
-    bridge.write_text(json.dumps({"candidate": 1, "supersession": 1}))
-    cited = {"path": "qualification/c1/supersede-1.json",
-             "sha256": hashlib.sha256(bridge.read_bytes()).hexdigest()}  # fmt: skip
-    study.cycle()
-    study.cycles[1][0].update(path=str(bridge), sha256=cited["sha256"])
-    step = study.advance()["step"]
-    assert (step["kind"], step["reason"]) == ("blocked", "unresolved_after_cycle")
-    (way,) = [w for w in step["ways_out"] if "closure" in w]
-    code, printed, error = summary.run(*argv)
-    assert code == 0, error
-    path = decision_path(world.root, "closure-c1-F")
-    assert printed.strip() == str(path)
-    record, problems = read_decision(world.root, "closure-c1-F", repo=world.repo)
-    assert problems == []
-    assert {key: record[key] for key in FIELDS} == way["closure"]["fields"]
-    assert (record["line"], record["reason"], record["cycle"]) == (
-        {"kind": "end", **{k: end[k] for k in ("path", "line", "line_sha256")}},
-        "unresolved_after_cycle", cited)  # fmt: skip
-    study.entries["closure-c1-F"] = {"kind": "closure-c1-F", "state": "failed", "record": record,
-                                     "path": str(path), "problems": []}  # fmt: skip
-    result = study.advance()
-    assert (result["outcome"], result["reason"]) == (
-        "technical_feasibility_report", "unresolved_after_cycle")  # fmt: skip
-
-
-def test_closure_writes_the_closure_of_a_run_under_another_commit(world, summary,
-                                                                 monkeypatch) -> None:  # fmt: skip
-    """A completed validation run under another commit: the step names its closure (its last
-    end line, its uncounted reason id), which ``closure`` writes and the schema accepts; once
-    written, the route ends with the technical feasibility report, the run's reason its own."""
-    study = Study()
-    study.through_validation()
-    run_id = run_of(study, "validation", "F", "u", 10304)
-    (endpoint,) = [e for e in study.endpoints if e.run_id == run_id]
-    world.runs.log("study3-c1-validation", {"event": "start", "run": endpoint.label,
-                                            "attempt": 1, "run_id": run_id,
-                                            "experiment": "study3"})  # fmt: skip
-    world.runs.end("study3-c1-validation", endpoint.label, 1, run_id, "done")
-    study.ends[run_id] = dict(end_lines(world.root)[run_id])
-    study.other_commit(run_id, "dirty_checkout")
-    summary.core(study)
-    monkeypatch.setattr(
-        summary.script, "git_state", lambda repo=None: {"commit": "a" * 40, "dirty": False}
-    )
-    code, _, error = summary.run("closure", "--runs-root", world.root, "--candidate", 1, "--arm",
-                                 "F")  # fmt: skip
-    assert code == 0, error
-    record, problems = read_decision(world.root, "closure-c1-F", repo=world.repo)
-    assert problems == [] and (record["run_id"], record["reason"], record["line"]["kind"]) == (
-        run_id, "dirty_checkout", "end")  # fmt: skip
-    study.entries["closure-c1-F"] = {"kind": "closure-c1-F", "state": "failed", "record": record,
-                                     "path": str(decision_path(world.root, "closure-c1-F")),
-                                     "problems": []}  # fmt: skip
-    result = study.advance()
-    assert (result["outcome"], result["reason"]) == (
-        "technical_feasibility_report", "dirty_checkout")  # fmt: skip
 
 
 def test_operations_describe_the_cycle_route() -> None:
