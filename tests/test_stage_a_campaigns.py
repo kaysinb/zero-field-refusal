@@ -132,7 +132,7 @@ def test_campaigns_go_to_a_directory_made_for_them(monkeypatch, tmp_path) -> Non
 
 
 def test_controls_need_the_screen_and_discovery_on_seed_2000s_one_stream(monkeypatch, tmp_path):
-    # Review r14: each set reads one stream, but the screen another one than the discovery.
+    # Each set reads one stream, but the screen another one than the discovery.
     search(tmp_path / "runs")
     shutil.rmtree(tmp_path / "runs" / "controls")
     for run_dir in sorted((tmp_path / "runs" / "screen").iterdir()):

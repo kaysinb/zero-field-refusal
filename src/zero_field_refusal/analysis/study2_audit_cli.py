@@ -1,5 +1,5 @@
 """Draw study 2's terminal audit of the judge, and bound the judge's bias once its reference labels
-are resolved (amendment 4; the audit design v3, after review fa18; analysis.study2_audit).
+are resolved (amendment 4; the audit design v3; analysis.study2_audit).
 
     python -m zero_field_refusal.analysis.study2_audit_cli draw --runs DIR [DIR ...] \
         --theta0 RUN_DIR --fixation FILE --judge NAME [--runs-root RUNS_DIR] \
@@ -17,7 +17,7 @@ summary's final analysis as the summary does (its functions, loaded from the scr
 (exit 2, "refused: ...") unless that final analysis is available: the confirmation has ended, the
 cohort blocks are labeled and the primary has stopped; before, it reads no item's judge label.
 An error on the pre-warmed arm's label counts there (analysis.study2_short.SealedLabelError, as
-the summary seals it; review fa27) refuses with only the runs, a generic status and the path of
+the summary seals it) refuses with only the runs, a generic status and the path of
 its sealed record (``<sealed dir>/audit-<UTC timestamp>-<judge>.json``, --sealed-dir, default
 $RUNS_DIR/sealed, refused where Git could track it, as --out is; analysis.study2_label_cli's
 ``sealed_directory`` and ``write_sealed_record``), which holds the traceback.
@@ -25,7 +25,7 @@ Then it reads the judge's label of every response of each bracket run of the pri
 stopping-look cohort and of the mechanism cohort (each checked as
 analysis.study2_labels.read_endpoint_labels checks it, its counts against that reader's), builds
 the frame (analysis.study2_audit.audit_frame), marks the estimands whose cohort is empty
-non-estimable with the reason (``non_estimable``; review fa19: at the cap the mechanism cohort may
+non-estimable with the reason (``non_estimable``: at the cap the mechanism cohort may
 hold no block while the primary's holds some), checks that the frame's judge-rated Δ, C1 and C2
 are the final analysis's to 1e-12 (a non-estimable one: that the final analysis has none either),
 and draws the fixation record's ``audit``: per arm 400, 400 and 200 draws with replacement with
@@ -284,10 +284,10 @@ def draw(args: argparse.Namespace) -> dict[str, Any]:
     summary = summary_module()
     try:
         fixation, state, runs, found, final = final_state(args, summary)
-    except SealedLabelError as exc:  # the pre-warmed arm's label counts: sealed (review fa27)
+    except SealedLabelError as exc:  # the pre-warmed arm's label counts: sealed
         path = write_sealed_record(args.sealed_dir, "audit", args.judge, {
-            "what": "A sealed error of the audit's draw on the pre-warmed arm's labels (review "
-                    "fa27). Opened in the final analysis, never before.",
+            "what": "A sealed error of the audit's draw on the pre-warmed arm's labels. "
+                    "Opened in the final analysis, never before.",
             "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "command": sys.argv,
             "code": git_state(),

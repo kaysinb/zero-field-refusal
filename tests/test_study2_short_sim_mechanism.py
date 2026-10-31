@@ -464,7 +464,7 @@ def test_the_calibration_rule_takes_the_smallest_level_every_required_cell_meets
 
 def test_final_run_checks_a_raised_level_on_the_check_stream(tmp_path, monkeypatch) -> None:
     """The final run's order: the mechanism on the calibration stream; one check-stream run at
-    the level it chose, 0.95 included (review fa24, Q2: no repetition); the primary rerun (the
+    the level it chose, 0.95 included (no repetition); the primary rerun (the
     decided one against the conditional truth) and its comparisons; the fixed level is the
     chosen one when the check passes, else none."""
     script = load_script()
@@ -739,7 +739,7 @@ def test_mechanism_mode_smoke(tmp_path: Path) -> None:
         assert int(size) == len(data) and digest == hashlib.sha256(data).hexdigest()
 
 
-# Review fa24: the conditional truth, missing intervals, the precision check, attrition
+# The conditional truth, missing intervals, the precision check, attrition
 
 
 def _fresh_means(simulate, n: int) -> tuple[np.ndarray, np.ndarray]:
@@ -815,7 +815,7 @@ def test_conditional_truth_is_accurate_against_a_finer_computation() -> None:
 
 def test_missing_intervals_do_not_cover() -> None:
     """A missing interval (no observed SE, or a zero one) does not cover; a whole-line one
-    (q = ∞) covers trivially and is counted apart (review fa24, Q3)."""
+    (q = ∞) covers trivially and is counted apart."""
     rows = {
         "readable": np.array([[1, 1], [1, 1], [0, 0], [1, 1]], dtype=float),
         "zero_se": np.array([[0, 0], [1, 0], [0, 0], [0, 0]], dtype=float),
@@ -940,11 +940,11 @@ def test_primary_conditional_truth_report(tmp_path: Path) -> None:
     assert "## Against the conditional truth" in (with_truth / "results.md").read_text()
 
 
-# The scoped review of round 2
+# Round 2's checks of the amended simulation
 
 
 def _independent_truth(arms, sigma_s, w_max, alpha, misses, n, seed):
-    """The conditional truth by brute force (review M8): fresh blocks drawn directly (stream
+    """The conditional truth by brute force: fresh blocks drawn directly (stream
     effect, speed, position noise, failures; no block effect), the panel's exact mean on a fine
     grid, a bracket of its own; the ratio estimate of each arm's mean on the joint support and
     its delta-method SE for the first minus the second arm and for any pair asked."""
@@ -987,7 +987,7 @@ def _ratio_se(joint, values, estimate) -> float:
 
 
 def test_conditional_truth_matches_an_independent_computation() -> None:
-    """``PanelTruth`` against a brute-force computation of its own (review M8): exact panel sums,
+    """``PanelTruth`` against a brute-force computation of its own: exact panel sums,
     fresh blocks with correlated failures, a bracket of its own. Without block effects the
     contrast varies little across fresh blocks, so 200 000 of them pin it to about 1e-5."""
     scenario = sim.Scenario(delta=0.05, w_max=0.47, failure=0.2, failure_correlated=True)
@@ -1016,8 +1016,7 @@ def test_conditional_truth_matches_an_independent_computation() -> None:
 
 
 def test_conditional_truth_never_clamps() -> None:
-    """An endpoint curve beyond the engine's grid raises instead of being clamped by np.interp
-    (review M10)."""
+    """An endpoint curve beyond the engine's grid raises instead of being clamped by np.interp."""
     scenario = sim.Scenario(w_max=0.47)
     params = sim.solve_parameters(scenario, 0.3)
     engine = sim.primary_truth(scenario, params, 0)

@@ -3,7 +3,7 @@
 > **Report of the stop, 2026-10-12.**
 >
 > Gate 1 was not passed: the lower bound of the AdamW effect's interval is 14.44 pp against the
-> fixed 15 pp. On 2026-10-12 the user decided to stop
+> fixed 15 pp. On 2026-10-12 the researcher decided to stop
 > ([decision log](../decisions.md#gate-decisions)).
 >
 > Every comparison between optimizers below is exploratory and *preliminary*. The judge check
@@ -76,10 +76,10 @@ The criteria are [fixed in the preregistration](../preregistration.md#gate-1-tec
 **The sample.** Both rounds together: 200 prompts per stratum in nine strata, 1800 items.
 
 **The reference labels.** The same in both rounds: GPT and Grok label each distinct text
-independently, and the user checks every disagreement and 30 random agreements.
+independently, and a person checks every disagreement and 30 random agreements.
 
-- Round 1: the user changed 2 of the 45 items checked.
-- Round 2: the user changed 9 of the 52 items checked.
+- Round 1: the person changed 2 of the 45 items checked.
+- Round 2: the person changed 9 of the 52 items checked.
 - Every change was to a disputed item.
 
 **The comparison strata.** Seven of them have fewer than 20 reference-harmful responses each, so
@@ -211,7 +211,7 @@ single-seed pilot at 0.0213 (× 48).
 - The training runs in float32 without clipping, and every logged quantity stays finite.
 - Under the noisier batch of 5 the threshold is lower.
 
-**The code.** A review of the SGD step's code found no defect.
+**The code.** An inspection of the SGD step's code found no defect.
 
 **Presumed mechanism:** a learning rate near 2/λ_max, with an edge of stability and a catapult.
 The curvature was not measured.
@@ -330,9 +330,9 @@ and `20261011T111406Z-adamw-5.0e-5-1.5b-s4-6f1639c7-a1`.
   `480ed4ee50fba52696a8e3807adae5c2f834a1df5f4b36cb1e5cbeabe952980e`.
 - Round 2: `reference/labels-d7r2-96d185b1.jsonl`, sha256
   `0ebb81a6b03507096e3362df8d1adce4cc95692750dea39ccaf1b0545b64199c`.
-- Each round's provenance is in the `reference/README.md` next to its labels, with the user's
-  review log.
-- The coordination copies are in the bucket under `coordination/2026-10-12/`.
+- Each round's provenance is in the `reference/README.md` next to its labels, with the log of the
+  person's check.
+- Copies are in the bucket under `coordination/2026-10-12/`.
 
 **Command:**
 `python scripts/judge_check_qualify.py runs/judge_check/frozen-2026-10-11 runs/judge_check/frozen-2026-10-11-round2 --reference runs/judge_check/frozen-2026-10-11/reference/labels-d7-509b6f1d.jsonl --reference runs/judge_check/frozen-2026-10-11-round2/reference/labels-d7r2-96d185b1.jsonl --runs-root runs --judge wildguard --out runs/judge_check/frozen-2026-10-11/qualification-both-rounds-2026-10-12.json`

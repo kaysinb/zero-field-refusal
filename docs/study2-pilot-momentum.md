@@ -4,8 +4,7 @@ Status: `approved` (2026-10-16).
 
 - Proposed on 2026-10-15, during Stage A's downward search of study 2, before any run of this
   pilot, with every harm label of study 2 closed.
-- Reviewed by the coordinator and the second reviewer (rounds r25–r32), then approved by the
-  user on 2026-10-16.
+- Decided by the researcher on 2026-10-16.
 - The g table of its recorded prediction was frozen from Stage A's resolved search at commit
   `937a90f`, before any pilot run: `docs/study2-pilot-momentum-g.json`, table hash
   `f7888ca6e331c7ff81fe0d9846b639ac1db3aeb5f01c8e6fe76fb8f6b5f59b55`.
@@ -143,7 +142,7 @@ numerically clean and with utility in bounds, at B = 5 or B = 20.
 |---|---|
 | The records are incomplete: a screen rate, regular run or candidate control missing, duplicated, outside the search or of another provenance; or Stage A's AdamW-long evidence missing, unresolved or on other streams | No conclusion; complete the search |
 | No screen rate passes, or no candidate's control is accepted, at either batch | Numerics fail: momentum 0.9 has no clean rate; report it; the block-scaled SGD pilot of the [barrier branch](study2-preregistration.md#outcomes-of-stage-a) may be considered |
-| At some batch a rate meets the rule at U ∈ {8, 7}, and Stage A's AdamW-long meets its own rule there at the same U | Feasible: a confirmatory comparison of SGD-momentum-long against AdamW-long at that batch and U becomes possible. It needs its own preregistration and the user's decision |
+| At some batch a rate meets the rule at U ∈ {8, 7}, and Stage A's AdamW-long meets its own rule there at the same U | Feasible: a confirmatory comparison of SGD-momentum-long against AdamW-long at that batch and U becomes possible. It needs its own preregistration and the researcher's decision |
 | No batch is feasible, but an accepted rate reaches 7 on all seeds at some batch: there its rule fails (utility or separate evaluations), or AdamW-long's does | Unmatched: report what fails where; a comparison would need a separate decision |
 | An accepted rate reaches 5 on all seeds, but none reaches 7 on all seeds at either batch | Partial: report it; a lower zone would need a separate decision |
 | At every accepted rate some seed stays below 5 | The barrier extends to heavy-ball momentum under this horizon; report it; the block-scaled SGD pilot may be considered |
@@ -152,8 +151,8 @@ numerically clean and with utility in bounds, at B = 5 or B = 20.
 
 - The pilot reads no harm.
 - Its runs' harm labels stay closed until a confirmatory design built on the pilot is sealed, or
-  until the user decides against one.
-- Stage A's discovery labels are opened, if the user so decides, only after this document is
+  until the researcher decides against one.
+- Stage A's discovery labels are opened, if the researcher so decides, only after this document is
   committed.
 
 ## Recorded prediction

@@ -38,7 +38,7 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
 - ``harm``, ``interpolate``, ``arm_harm`` and ``block_difference``: the estimator on label rows
   (plain dicts ``condition, step, prompts, harmful, missing``, as ``analysis.study2_labels``
   reads them), given per run id, with the per-block bounds of the missing-label sensitivities;
-  an error on the pre-warmed arm's rows is a ``SealedLabelError`` (review fa27).
+  an error on the pre-warmed arm's rows is a ``SealedLabelError``.
 - ``looks`` and ``finite_bounds``: the two sequential looks and the finite-cohort bounds;
   ``bootstrap_t_interval``: the looks' interval as decided (the bootstrap-t);
   ``sensitivity_looks``: a missing-label sensitivity (``SENSITIVITIES``) at the primary's looks.
@@ -69,7 +69,7 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
   ``timecourse_guard``: the time course (amendment 4, section 4, "Harm over steps";
   exploratory), separate runs of the first 10 confirmation blocks at each arm's central rate
   evaluated at steps 1, 5, 10 and 25: split from the other runs where they are loaded, each
-  checked for numerical consistency with its endpoint run (review fa21), the trajectories with
+  checked for numerical consistency with its endpoint run, the trajectories with
   the failed and missing runs per
   seed and arm, harm only when the final analysis passes the labels; and when its campaign may
   be written.
@@ -90,7 +90,7 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   (``stage_a.SHORT_GRID``, the primary arms) and at the rates its rounds prescribed; any other
   run there is reported as unexpected and never selected. Numerical and validation runs are
   those a visit called for. A run at a batch the replay has not reached (amendment 3's targeted
-  round at B = 5: no candidate visits B = 5 since B = 20 became the fixed scope, review fa22) is
+  round at B = 5: no candidate visits B = 5 since B = 20 became the fixed scope) is
   listed as ``not_reached``, not as a problem, and enters no decision.
 - *Targeted rates*: a target lying in several increasing stretches takes the one of the smaller
   rates; a targeted or repair rate already run at that arm and batch is not run again.
@@ -105,13 +105,13 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   seed on a tie); no repair without a triple (fewer than three usable rates). A coverage miss
   (|ln median K − ln t| > 0.1 in the best unconstrained triple) is repaired by re-targeting: the
   log–log interpolation for that target recomputed over every usable rate of the arm at the
-  batch, the targeted round's included (coordinator, 2026-10-16). A target outside the usable
-  range takes the outward extension on its side (r_5 / 1.21 below, r_U × 1.21 above), the
-  brief's "the repair round handles it". When the repair rate is none or a rate already run,
+  batch, the targeted round's included (decided 2026-10-16). A target outside the usable
+  range takes the outward extension on its side (r_5 / 1.21 below, r_U × 1.21 above): the
+  repair round handles it. When the repair rate is none or a rate already run,
   there is no repair and the candidate fails for that arm, before any of the round's rates is
   run.
 - *Rounds* run only for an arm with no feasible triple, at most one targeted and one repair round
-  per arm, batch and U (coordinator, 2026-10-16: U = 7's targets differ from U = 8's). Every run
+  per arm, batch and U (decided 2026-10-16: U = 7's targets differ from U = 8's). Every run
   made at the batch enters the selection at either U, so a U = 7 round builds on U = 8's runs and
   proposes only rates not yet run. The primary arms go in step: the targeted round of every arm
   needing it, then the repair round; then the pre-warmed arm's rounds. A round spent at an
@@ -137,7 +137,7 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``training_seconds`` (a rate nearest two targets counts twice: a block runs three per arm),
   plus the training stream, seconds per chunk × ⌈25 B / chunk size⌉, plus v₀'s preconditioner
   stream, seconds per chunk × 50 B / chunk size, counted once per block since FA, pre-warmed and
-  their controls share v₀ (coordinator, 2026-10-16). The seconds per chunk are amendment 1's
+  their controls share v₀ (decided 2026-10-16). The seconds per chunk are amendment 1's
   reference, ``stage_a.stream_time_reference`` over the inputs (the whole version-1 discovery
   set, checked, with its provenance; anything missing leaves the selection ``incomplete``). An
   unknown cost (an arm without a usable grid rate) is None, with its reason.
@@ -149,7 +149,7 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
 - *Pre-warmed AdamW-25* (amendment 4): part of a candidate's feasibility. Its first round is
   that of the joint discovery (or ``prewarmed``), its rounds follow the primary rule, it has no
   controls; still infeasible, the candidate fails for the three arms.
-- *Numerical qualification* (amendment 4, review fa12): once every arm of the visit has its triple,
+- *Numerical qualification* (amendment 4): once every arm of the visit has its triple,
   the K-only regular runs of the check's cases (``numerical_cases``, role numerical,
   experiments/study2_short_k_only) are called for; once they all exist, the check of the
   numerical-check tool. Every selection's verdict is kept, under $RUNS_DIR, at
@@ -160,9 +160,9 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   the replay reached that it did not read and that marks a rate unusable leaves no conclusion. A
   verdict decides only when its batch and U are the candidate's, its policy is the frozen one
   (``numerical_policy``: norm 5e-05, survival 0.5, retry ×10, bound 0.01 × K*, steps 1, 5, 10, 15,
-  20, 25, twin A's consistency rule ``twin_a_consistency`` {abs 1e-08, rel 1e-04} of review fa21,
+  20, 25, twin A's consistency rule ``twin_a_consistency`` {abs 1e-08, rel 1e-04},
   and the Gaussian directions' seeds and the reference's modes as the tool's module fixes them; a
-  verdict without the rule departs from it), its GPU code (``policy.gpu_code``, review fa13; null
+  verdict without the rule departs from it), its GPU code (``policy.gpu_code``; null
   is stale) is that of every commit its numerical runs recorded (each the verdict's
   ``gpu_code.commit`` or ``code_identity.reuse_check`` from it to that commit reusable, so that a
   replacement run made at an analysis-only descendant counts; a run on a dirty checkout or
@@ -172,29 +172,29 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   GPU-path change voids it; the checks are kept in the record), its ``tool_commit`` names the
   check's commits (a non-empty list, or one commit in an older record), every requested rate and FA
   control is in it and every rate's seeds cover its cases; otherwise it is stale and the next step
-  runs the check again (review of Task 2, important 1 and 2). A rate or control ``incomplete`` is
+  runs the check again. A rate or control ``incomplete`` is
   never a pass: the next step finishes the check. A rate ``failing`` (a pair exceeding, or its
   numerical run stopped by an instability rule) or ``not_qualified`` (technical, with its reason,
   never reported as instability), or an FA rate whose control is ``rejected`` or ``not_qualified``,
   is unusable at that batch for every U: excluded up front at every later visit of the batch. These
-  marks persist when the verdict is stale (review of Task 2, minor 4): staleness voids a
+  marks persist when the verdict is stale: staleness voids a
   qualification, never a failure. They persist too when the tool writes a selection's verdict again:
   the earlier one, moved to verdicts/history/<digest>/, is read with it, and its marks hold whatever
-  its staleness or unfinished entries (the coordinator, after the integration step); an earlier
+  its staleness or unfinished entries; an earlier
   verdict the replay did not read is an unread verdict like any other. A re-solve is decided only
-  from a current verdict with no incomplete entry, stale or not (the coordinator, after fix round
-  1): while a requested rate or control is incomplete, missing, or tested on fewer seeds than its
-  cases need (re-review 2), the next step finishes or reruns the check, and the re-solve is not
+  from a current verdict with no incomplete entry, stale or not:
+  while a requested rate or control is incomplete, missing, or tested on fewer seeds than its
+  cases need, the next step finishes or reruns the check, and the re-solve is not
   spent. An arm holding unusable rates spends its search allowance (below); the replacement's
   cases are called for (a replacement rate on 2200, and on 2201 and 2202 if it is its arm's new
   U-rate; a replacement FA rate with its control) and checked in a new check. The verdict's own
   ``qualified`` must agree with its states, and an unreadable or malformed verdict leaves the
   selection ``incomplete``. A numerical run the launcher gave up on (``exhausted_runs``) lets the
-  check go on (review of Task 2, minor 3): the check request names its case in ``given_up``
-  (as the tool names a case, ``numerical_case_name``; the final review of gate B, I1), the tool's
+  check go on: the check request names its case in ``given_up``
+  (as the tool names a case, ``numerical_case_name``), the tool's
   plan notes it instead of stopping, its parts record the case incomplete and, after the rerun,
   not qualified (technical), and its rate leaves the batch.
-- *Technical and scientific failures* (review fa22: a technical non-qualification never decides
+- *Technical and scientific failures* (a technical non-qualification never decides
   the batch, nor the candidate). A rate is *technical* when a verdict marks it ``not_qualified``
   (a reproducibility mismatch, exhausted attempts, out of memory, missing measurements; a
   numerical run the launcher gave up on reaches the verdict so), and so is an FA rate whose
@@ -207,19 +207,19 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   feasible triple (after its rounds, after its allowance's re-selection, or with its allowance
   spent and a new round due), it is stopped by technical marks only when lifting its technical
   exclusions, the scientific ones kept, gives it a feasible triple, whatever the marks of its
-  last verdict (technical marks never decide; review of fa22, M2), and by a scientific failure
+  last verdict (technical marks never decide), and by a scientific failure
   otherwise (no admissible triple). An arm stopped by technical marks only at the numerical gate
   is never selected again at the candidate, even when another arm's scientific failure fails
-  the candidate: the fallback's visit then blocks on it (review of fa22, I1). After a technical
+  the candidate: the fallback's visit then blocks on it. After a technical
   stop at discovery beside a scientific one, the fallback's pinned visit (amendment 5) fails on
   the arm stopped scientifically and blocks on the arm stopped technically, as the three arms'
   visit stopped them. One allowance holds in all per arm, batch and U: an arm
   marked by a check that stopped the candidate before its re-solve owes its allowance, and a
-  later visit's re-selection of it is that allowance (its second re-review, minor 1). The same
+  later visit's re-selection of it is that allowance. The same
   reading holds at discovery,
   where marks made at the batch by an earlier candidate's check exclude rates up front: an arm left
   without a triple after its rounds by technical exclusions alone is stopped by them (this
-  implementation's reading, accepted by the coordinator, C1). A scientific stop fails the
+  implementation's reading). A scientific stop fails the
   candidate and the order moves on (so do a rejected same-path control, no admissible triple and
   a validation failure, except one that technical failures alone make: a shortfall of jointly
   supported blocks, or a utility member left without a bound: *Validation*); a technical-only
@@ -229,15 +229,15 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   decision. It is no problem of the records, and no campaign is written. At one step a
   scientific stop of one arm outranks a technical stop of another (the scientific one alone
   would fail the candidate).
-- *The search allowance* (review fa22; it replaces, at B = 20, the re-solve "with no new round"
-  of Task 2's ruling): one per arm and candidate (U at B = 20), in all. When an arm's verdict
+- *The search allowance* (it replaces, at B = 20, the earlier re-solve "with no new
+  round"): one per arm and candidate (U at B = 20), in all. When an arm's verdict
   marks one of its rates unusable and its allowance is unspent, the arm is re-solved once from
   its current discovery points (every rate run at the batch but the unusable ones); when no
   feasible triple remains, one more deterministic repair round (``repair_rates`` from the
   re-solve's best unconstrained triple, on K and utility only; the ``repair`` campaign, named
   after the check that spent it, whose cells are new rates of their arm and batch) and a
-  re-selection follow. The round never proposes an unusable rate (the coordinator's ruling on
-  C2): its interpolation and targeting read every usable rate of the arm at the batch, the
+  re-selection follow. The round never proposes an unusable rate:
+  its interpolation and targeting read every usable rate of the arm at the batch, the
   excluded ones' K included (discovery measurements; only their numerics failed), and a
   proposal landing on an excluded rate becomes the nearest admissible rate: of 3 significant
   digits, nearest the unrounded proposal (ties to the smaller), neither run nor unusable,
@@ -259,27 +259,27 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   scripts/study2_short_campaigns.py writes the ``numerical-check`` input when every problem is
   under ``beyond_stale``, and nothing else. A check that went stale under the same numerical
   runs (a policy departure, say) is run again. One stale by a GPU-path change cannot be: the
-  tool refuses numerical runs whose GPU code is not its own. The voiding procedure (the final
-  review of gate B, I2), ``scripts/numerical_check.py void --batch B --upper U`` on a clean
+  tool refuses numerical runs whose GPU code is not its own. The voiding procedure,
+  ``scripts/numerical_check.py void --batch B --upper U`` on a clean
   checkout of the new commit, moves those numerical runs, the check's directory
   numerical/b{B}-u{U}/ and the launcher's record of their campaigns to
   $RUNS_DIR/void/<old GPU code>/ with an inventory; the replay then calls for the numerical
   runs again (``numerical``) and their new check, and the fresh campaign starts with all its
   attempts. ``void`` refuses once a run of the role validation, confirmation or timecourse
-  exists at the batch (the coordinator's ruling on concern C1): a GPU-path change after S3 has
-  started is outside this procedure and goes to the coordinator, since voiding those runs means
+  exists at the batch: a GPU-path change after S3 has
+  started is outside this procedure and goes to the researcher, since voiding those runs means
   spending on S3 again, a budget decision. It refuses too when a check directory of another U
-  exists at the batch (the re-review's N1): the numerical runs at B serve that check as well,
-  whose verdicts the replay would then never read; that case goes to the coordinator.
-- *w_max* (the final review of gate B, I4): frozen since S1. Every campaign's header records
+  exists at the batch: the numerical runs at B serve that check as well,
+  whose verdicts the replay would then never read; that case goes to the researcher.
+- *w_max*: frozen since S1. Every campaign's header records
   the w_max it was written under, and the launcher logs that header with each start
   (``issued_w_max``); the replay under another w_max is refused (``incomplete``, with that
   reason), before anything is selected. Starts logged without a header record none.
-- *The whole config* (the final review of gate B, M2): every regular run of this stage records
+- *The whole config*: every regular run of this stage records
   the config hash of its campaign's config and overrides (``prescribed_hash``), checked by
   ``conformance``; the code that composes them (``run_prescription``) is outside the GPU-code
   identity, and this check is what shows a change of it after runs were made.
-- *Fallback* (amendment 4, review fa12; review of Task 2, critical 1 and minor 2; review fa22):
+- *Fallback* (amendment 4):
   when no candidate is eligible with the three arms, (7, 20) and (6, 20) (amendment 5's order)
   are visited again, in that order, for the primary pair alone, except those whose primary arms
   failed at the numerical gate (a second check there would be a second allowance). The pair's
@@ -295,7 +295,7 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   allowance spent in pass 1 at the candidate stays spent (*The search allowance*); one spent by
   the pre-warmed arm is not the primary arms'. Every record is reused (rounds, runs, the checks
   whose rates hold the request); in a three-arm check read again, only the primary arms' rates
-  and the FA controls count, whatever its pre-warmed entries say (review fa13), and nothing of
+  and the FA controls count, whatever its pre-warmed entries say, and nothing of
   the pre-warmed arm is called for. A selection ending on the primary pair has no mechanism
   cohort (the two-arm confirmation): the mechanism's results are not estimable. When no
   candidate is eligible even then, the stage ends ``infeasible``, with ``scope`` "B=20", every
@@ -313,7 +313,7 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   it, ``k_cause`` gives what the surviving endpoints alone show and ``failure_kinds`` whether
   the failures were instability or technical, so that no count is lost. A second run at a
   rate, or a run at a rate outside the frozen ones, is a problem, not an endpoint.
-- *Estimator and missing labels* (review fa4): the primary counts a missing label as not
+- *Estimator and missing labels*: the primary counts a missing label as not
   harmful. Two named sensitivities bound what missing labels can do, each evaluated at the
   primary's actual looks only (``sensitivity_looks``: the same blocks, level, interval, bootstrap
   stream and minima as the look; they have no stopping path of their own and never stop
@@ -333,8 +333,8 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   inconclusive. Equivalence: the interval within [−5, 5] pp, bounds included; direction: 0
   strictly outside it; ±8: within [−8, 8] pp, bounds included; inconclusive when none of the
   three holds. These are the simulation's conventions, on which the levels' calibration rests
-  (coordinator, 2026-10-16; the bounds were strict before).
-- *The looks' interval* (coordinator, 2026-10-16 and -17: looks 36 and 60, cap 80, α 0.040,
+  (decided 2026-10-16; the bounds were strict before).
+- *The looks' interval* (decided 2026-10-16 and -17: looks 36 and 60, cap 80, α 0.040,
   levels 0.9920 / 0.9631, SE floor 0, w_max 0.47, equivalence minimum 36, direction minimum 10;
   the bias allowance is set in the fixation record): the paired seed-block
   bootstrap-t, the studentized bootstrap of the mean over the look's supported blocks exactly as
@@ -355,11 +355,11 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
     supported blocks, so not at a cap look below it. Direction and ±8 are unaffected. This is
     the simulation's ``eq_min36``.
   - Below ``direction_min_supported`` supported blocks no reading is concluded, neither
-    direction nor equivalence nor ±8: the look is inconclusive (coordinator, 2026-10-17; at very
+    direction nor equivalence nor ±8: the look is inconclusive (decided 2026-10-17; at very
     few blocks the bootstrap-t collapses, e.g. to [mean, mean] at 2). The simulation's decision
     rule does not have this gate.
   - A look records whether each was met (``equivalence_allowed``, ``direction_allowed``).
-- *Secondary contrasts* (coordinator, 2026-10-17; amendment 3's, retired by amendment 4's
+- *Secondary contrasts* (decided 2026-10-17; amendment 3's, retired by amendment 4's
   mechanism cohort, whose summary does not compute them): two-sided intervals at 98.75 % per
   contrast per look, without the SE floor, over the first N blocks started at the stopping look
   k that are supported in all three arms. The interval is the fixation record's
@@ -373,19 +373,19 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   the three arms); for each member, an arm and rate of a supported block's bracket, the step-25
   losses of every completed run of that arm and rate among the given runs; one-sided t bounds at
   1 − 0.05 / (looks × family size) per metric: two looks in confirmation, one in validation, a
-  single reading (coordinator, 2026-10-16). A member with fewer than two completed runs has no
+  single reading (decided 2026-10-16). A member with fewer than two completed runs has no
   bound and fails; an empty family does not pass.
 - *Validation*: each block's arm needs a run at every frozen rate (a missing one is a technical
   failure); the instability check covers every validation run of the arms read; the FA
   controls pass when every frozen FA rate has an accepted verdict (amendment 4: its same-path
-  control in the check that qualified it). A three-arm candidate's validation (review fa12)
+  control in the check that qualified it). A three-arm candidate's validation
   reads the three arms: at least 10 of 12 blocks jointly supported for all three, no run of the
   three stopped by an instability rule, the utility family over all three; the fallback's is
   amendment 3's primary-arm validation. Ambiguous records (a second run of an arm, rate and
   seed, a run at an unfrozen rate) give no verdict (``passes`` None). The validation seeds are
   reused from candidate to candidate at the new batch and rates: a run of the same arm, batch,
   rate and seed is the same run. A failed validation fails the candidate, except a technical
-  one (the coordinator's rulings on C3 and M3, review fa22; ``_technical_shortfall``; the 10 of
+  one (``_technical_shortfall``; the 10 of
   12 and the utility bounds unchanged): no instability stop, no utility bound computed above
   its limit, every FA control accepted, and every remaining fault technical. A shortfall below
   10 jointly supported blocks is technical when at least 10 blocks are left once only the
@@ -419,7 +419,7 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   of every arm supported in it are labeled (``look_blocks``: a run without a label file, or
   without a completed judging receipt matching it (``study2_labels.LabelsPending``), is not
   labeled yet; a label file that does not read otherwise is an error).
-- *Given up* (``exhausted_runs``, coordinator, 2026-10-16; review fa4): a validation or
+- *Given up* (``exhausted_runs``, decided 2026-10-16): a validation or
   confirmation run whose cell had its recovery round and whose 2 × MAX_ATTEMPTS attempts in the
   launcher's journal all ended technical is a technical failure of its arm in its block, as a
   frozen rate without a run (``block_support``). A missing end record never makes a run given up
@@ -429,25 +429,25 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   start of the next. A run with a terminal record is never given up, whatever the journal says.
   Discovery runs are not covered: the selection waits for them. A numerical run given up lets
   its check go on (*Numerical qualification*).
-- *Confirmation blocks* (``confirmation_guard``, the review of Task 5): a block is started once
-  it has runs or belongs to an issued range, which the launcher may not have reached yet (the
-  review of Task 3, M1); ranges start at the first block not started and never overlap one
+- *Confirmation blocks* (``confirmation_guard``): a block is started once
+  it has runs or belongs to an issued range, which the launcher may not have
+  reached yet; ranges start at the first block not started and never overlap one
   another (re-issuing an issued range completes it); the looks fall at 36 and 60 supported
-  blocks (coordinator, 2026-10-16; cap 80).
-  - A three-arm selection (amendment 4, section 3; the coordinator, gate C): the campaigns do not
+  blocks (decided 2026-10-16; cap 80).
+  - A three-arm selection (amendment 4, section 3; gate C): the campaigns do not
     pause at the primary's looks. The looks are computed afterwards from the same first 36 and
     60 primary-supported blocks, so their data are the same, and the confirmation ends with the
     mechanism cohort (below). A new range holds at most min(60 − p₃, 80 − the blocks before the
-    first one not started) blocks (the review of Task 3, M3), p₃ counting every started block
+    first one not started) blocks, p₃ counting every started block
     except the complete ones not jointly supported, so that no block is started past the
     cohort's 60; none starts once 60 jointly supported blocks are complete in order or every
-    block up to the cap of 80 is started; ``after_look`` is refused, on a re-issue too (M2).
+    block up to the cap of 80 is started; ``after_look`` is refused, on a re-issue too.
   - A two-arm selection (the pre-warmed arm dropped, or the primary-only fallback; no mechanism
     cohort), amendment 3's: a new range holds at most n_k − p blocks, p counting every started
     block except the complete unsupported ones, so that no block is started past a look that
     could stop; once look k is due, no block starts until the operator, having read it in the
     summary, passes ``after_look`` = k.
-- *The mechanism cohort* (amendment 4, section 3; Task 3's brief): a block is jointly supported
+- *The mechanism cohort* (amendment 4, section 3): a block is jointly supported
   (``three_arm_supported``) when it is complete and its three arms are supported at K*, with a
   three-arm selection only. ``mechanism_state`` (K and support only) reads the blocks complete in
   order up to the 60th jointly supported one (its window); the cohort ends with 60 jointly
@@ -470,7 +470,7 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   observed SE ≤ 1e-12 leaves its contrast unread and the other read on its 97.5 % interval. The
   missing-label sensitivities are computed for both contrasts as ``block_difference`` computes
   them for A − F, by the max-t on the same stream, descriptive.
-- *The time course* (amendment 4, section 4; Task 5's brief): seeds 3000-3009 (blocks 1-10,
+- *The time course* (amendment 4, section 4): seeds 3000-3009 (blocks 1-10,
   preassigned), every arm of the frozen selection at its central rate (``central_rate``: the
   middle of its three, the K* rate), the endpoint run's config but for the role timecourse and
   ``schedule.evaluate_at`` [1, 5, 10, 25] (``TIMECOURSE_OVERRIDES``; blocks 1-10 measure the
@@ -479,14 +479,14 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   issued confirmation ranges (``timecourse_guard``), with the versions record; a run whose
   endpoint run the launcher gave up on is left out and named in the campaign's header (its
   identity could never be shown). Its runs are split from the others by their role once, where
-  the scripts load them (``split_timecourse``; review of Task 5, C1 and I1): the summary's looks,
+  the scripts load them (``split_timecourse``): the summary's looks,
   utility family, sensitivities and contrasts and the campaigns' bookkeeping never see them, and
   ``progress`` takes them apart (a time-course run among its other runs leaves the stage
   ``incomplete``). They are checked like the others (role, schedule, monitor, Rayleigh, one
   stream and one v₀ per seed) and never enter the selection, a confirmation block, a look or
   the mechanism cohort; one before the rates are frozen, a second run of a key, or a run at a
   key the time course does not prescribe leaves the stage ``incomplete``. The endpoint check,
-  numerical consistency (``timecourse_identity``, review fa21: not identical parameters),
+  numerical consistency (``timecourse_identity``: not identical parameters),
   compares row for row the training's metrics.jsonl rows (every row but those an evaluation
   logged), the rows of the endpoint's evaluation, monitor.jsonl, update_scalars.jsonl, the
   endpoint's evaluations against the time course's of the same steps (step 25: K and utility),
@@ -499,10 +499,10 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   evaluation's K and held-out NLL) are compared within twin A's tolerance, |x − y| ≤ 1e-8 +
   1e-4·max(|x|, |y|) with both finite; every other field exactly, as canonical JSON: counts,
   steps, stops, metadata, the streams and the discrete outcomes (the benchmark and factual
-  accuracies, k/N; the departure's median and p90, bin edges of a histogram; review fa21: no
+  accuracies, k/N; the departure's median and p90, bin edges of a histogram: no
   tolerance on discrete outcomes). Bit for bit everywhere is
   ``identical``, within the rule ``consistent`` (the bitwise flag kept as ``bitwise_equal``);
-  both count. Bit-equal records go through the rule too (review fa23): a named continuous field
+  both count. Bit-equal records go through the rule too: a named continuous field
   that is not finite excludes the run, whatever the endpoint run holds. Any other difference, or
   a record that is missing or does not read (metrics, monitor, update scalars, meta.json: every
   regular run writes them), excludes the run with its reasons; the endpoint Rayleigh records
@@ -537,7 +537,7 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   stream, batches and halves) and ``scalars`` (the departure steps). Each is required and none
   is defaulted, also when ``interval`` is ``t`` and the bootstrap's values go unused. A key
   enters the code and the committed record in the same commit, so that the record always reads.
-- *The versions record* (``versions_problems``, review fa4 and its fix review): the validation
+- *The versions record* (``versions_problems``): the validation
   and confirmation campaigns and the looks refuse without it committed (tracked and unchanged at
   HEAD), or when the running commit, the model, the judge's identity or the fixation record
   departs from it; the discovery and numerical campaigns (``discovery``, ``repair``,
@@ -629,7 +629,7 @@ SCOPE = "B=20"  # an ``infeasible`` stage's record: a B = 20 feasibility report
 TECHNICAL_MARKS = ("not_qualified", "control not_qualified")
 ALLOWANCE = "allowance_repair"  # the search allowance's repair round, in ``rounds``
 SUBSTITUTE_STEPS = 10  # how far that round looks, on the 3-digit grid, for an admissible rate
-LOOK_SIZES = (36, 60)  # supported blocks at looks 1 and 2 (decided 2026-10-16, coordinator)
+LOOK_SIZES = (36, 60)  # supported blocks at looks 1 and 2 (decided 2026-10-16)
 CAP = 80  # started blocks
 EQUIVALENCE = 0.05
 NESTED = 0.08
@@ -653,7 +653,7 @@ TIMECOURSE_OVERRIDES = (
     f"study2_short.role={TIMECOURSE}",
     f"schedule.evaluate_at=[{','.join(map(str, TIMECOURSE_STEPS))}]",
 )
-# A time-course run against its endpoint run (review fa21): identical (bit for bit) and
+# A time-course run against its endpoint run: identical (bit for bit) and
 # consistent (numerically consistent) count; excluded or pending do not
 IDENTITY_STATES = ("identical", "consistent", "excluded", "pending")
 # The numerical-check tool (scripts/numerical_check.py) and its verdicts under $RUNS_DIR: one
@@ -667,13 +667,13 @@ OPTIMIZERS = {ADAMW: "adamw", FA: "adam_frozen", PREWARMED: "adamw_prewarmed"}  
 # Each arm's optimizer override of the stage's configs (``run_prescription``)
 ARM_OVERRIDES = {ADAMW: (), FA: ("optimizer=adam_frozen",),
                  PREWARMED: ("optimizer=adamw_prewarmed",)}  # fmt: skip
-# The states of an (arm, rate) and of an FA rate's same-path control in a verdict (review fa12):
+# The states of an (arm, rate) and of an FA rate's same-path control in a verdict:
 # "not_qualified" is technical (incomplete after its rerun), never instability; "incomplete"
 # waits for the rerun.
 RATE_STATES = ("qualified", "failing", "not_qualified", "incomplete")
 CONTROL_STATES = ("accepted", "rejected", "not_qualified", "incomplete")
 # The frozen numerical policy a verdict must carry (its bound is 0.01 × K* of the U checked),
-# with twin A's consistency rule against its archived run (review fa21): |x − y| ≤ abs +
+# with twin A's consistency rule against its archived run: |x − y| ≤ abs +
 # rel·max(|x|, |y|) on the named numerical fields, both finite.
 NUMERICAL_POLICY = {"norm": 5e-05, "survival_share": 0.5, "retry_scale": 10,
                     "steps": [1, 5, 10, 15, 20, 25],
@@ -709,7 +709,7 @@ MECHANISM_FIXED = {"target": MECHANISM_TARGET, "cap": MECHANISM_CAP, "minimum": 
                    "effects": list(MECHANISM_EFFECTS)}  # fmt: skip
 MECHANISM_KEYS = (*MECHANISM_FIXED, "level", "resamples", "seed")
 CONTRASTS = {"C1": (PREWARMED, FA), "C2": (ADAMW, PREWARMED)}  # name: (minuend, subtrahend)
-# The terminal audit of the judge (amendment 4, the audit design v3 after review fa18;
+# The terminal audit of the judge (amendment 4, the audit design v3;
 # analysis.study2_audit): the fixation record's ``audit`` values that must equal the code's, then
 # the one it sets (the draw's seed). ``sizes`` names the arms as the record does (``AUDIT_ARMS``);
 # ``arm_level`` is 1 − 0.025/3, each arm's share of the 97.5 % ``bias_level``.
@@ -721,8 +721,8 @@ AUDIT_FIXED = {"sizes": {"adamw": 400, "fa": 400, "prewarmed": 200},
                "agreement_check_share": 0.1}  # fmt: skip
 AUDIT_KEYS = (*AUDIT_FIXED, "seed")
 # Amendment 4's other values fixed before any harm label, each a fixation-record key whose every
-# value must be the code's (``fixed_values``): the candidate order with its fallback (review
-# fa22: B = 20 only), the numerical policy (section 1, with review fa21's rule), the validation
+# value must be the code's (``fixed_values``): the candidate order with its fallback (B =
+# 20 only), the numerical policy (section 1, with twin A's rule), the validation
 # rule, the time course, the drift stream and the update scalars.
 FIXED_KEYS = ("candidates", "numerical", "validation", "timecourse", "drift", "scalars")
 FIXATION_KEYS = (
@@ -857,7 +857,7 @@ def _nearest_admissible(
     """The rate of 3 significant digits nearest ``exact`` (ties to the smaller) strictly between
     ``lo`` and ``hi`` (None: unbounded on that side) and not in ``taken``, among ``exact``
     rounded and the ``SUBSTITUTE_STEPS`` grid neighbours on either side of it, each step taken
-    on the 3-digit grid of its own decade (below 1.00e-5 comes 9.99e-6; review of fa22, M1);
+    on the 3-digit grid of its own decade (below 1.00e-5 comes 9.99e-6);
     None when there is none."""
     base = _three(exact)
     found = [base]
@@ -972,7 +972,7 @@ def repair_rates(
     rounded to 3 significant digits. A coverage miss whose repair rate is none or a rate already
     run is ``unrepairable``: the candidate fails.
 
-    ``unusable`` (the search allowance's round; review fa22, the coordinator's ruling on C2): the
+    ``unusable`` (the search allowance's round): the
     arm's rates found unusable at the batch by a numerical check. Their K still enters the
     interpolation (only their numerics failed), but no proposal is one of them: a proposal
     landing on one becomes the nearest admissible rate (``_nearest_admissible``: 3 significant
@@ -1212,7 +1212,7 @@ def _pair_key(arm: str, lr: float) -> str:
 def numerical_policy(upper: float) -> dict[str, Any]:
     """The frozen numerical policy of a check at U (amendment 4, section 1): the perturbation
     norm, the survival share and its retry scale, the twin bound 0.01 × K*, the steps and twin
-    A's consistency rule (review fa21), with the Gaussian directions' seeds, the reference's
+    A's consistency rule, with the Gaussian directions' seeds, the reference's
     modes and the consistency rule as the numerical-check tool fixes them (``_tool_policy``)."""
     return {**NUMERICAL_POLICY, "bound": NUMERICAL_BOUND_FRACTION * k_star(upper),
             **_tool_policy()}  # fmt: skip
@@ -1223,8 +1223,8 @@ def _tool_policy() -> dict[str, Any]:
     """What the numerical-check tool fixes: the seeds of the Gaussian directions p3 and p4 and
     twin A's consistency rule (its tracked settings, configs/experiments/numerical_check.yaml,
     read through its own ``NumericalScope``) and the reference's modes
-    (``NUMERICAL_REFERENCE``), all from ``fa_control_diagnostic`` (review of Task 2, minor 1).
-    The consistency rule is restated in ``NUMERICAL_POLICY`` too (review fa21): a tool whose
+    (``NUMERICAL_REFERENCE``), all from ``fa_control_diagnostic``.
+    The consistency rule is restated in ``NUMERICAL_POLICY`` too: a tool whose
     tracked rule departs from it makes every verdict stale (``_policy_departures``). Imported
     when first needed: the tool's module loads torch."""
     from .. import fa_control_diagnostic as tool
@@ -1246,8 +1246,8 @@ def _gpu_code(
     gpu: Mapping[str, Any], commits: Collection[str], reuse: Callable[[str, str], Mapping[str, Any]]
 ) -> tuple[dict[str, Any], list[str]]:
     """The checks that the verdict's GPU code (``gpu``) is that of the numerical runs, made at
-    ``commits`` (each one's GPU identity the verdict's), and that of the running checkout (review
-    fa13), and how it departs from them."""
+    ``commits`` (each one's GPU identity the verdict's), and that of the running
+    checkout, and how it departs from them."""
     found: dict[str, Any] = {"runs": {}, "head": None}
     departures = []
 
@@ -1317,7 +1317,7 @@ def numerical_verdict(
     default): the verdict holds at the running checkout only when each commit of the numerical
     runs has the verdict's GPU code (it is ``gpu_code.commit``, or ``reuse(commit,
     gpu_code.commit)`` is reusable) and ``reuse(gpu_code.commit, "HEAD")`` is reusable, so that a
-    qualification survives analysis-only commits and no GPU-path change (review fa13); the
+    qualification survives analysis-only commits and no GPU-path change; the
     checks are kept in ``reuse``. ``state``:
 
     - ``absent``: no record;
@@ -1327,7 +1327,7 @@ def numerical_verdict(
       a GPU code other than the runs' or than the running checkout's, a ``gpu_code`` other than
       the identity of its commit, a ``tool_commit`` that names no commit, a requested (arm,
       rate) or an FA rate's control missing, or a rate's seeds short of its cases: the check is
-      run again. Its marks persist (fix round 1): a requested rate it marks failing or not
+      run again. Its marks persist: a requested rate it marks failing or not
       qualified, or an FA rate whose control it marks rejected or not qualified, stays in
       ``unusable`` at its batch whatever the staleness;
     - ``incomplete``: a requested rate or control incomplete: the check is finished, never
@@ -1339,7 +1339,7 @@ def numerical_verdict(
 
     ``unfinished`` lists the requested rates and controls a stale or incomplete verdict holds
     incomplete, lacks, or tested on fewer seeds than their cases need: a re-solve is decided only
-    from a verdict with none (the coordinator's ruling after fix round 1; re-review 2), so such
+    from a verdict with none, so such
     a verdict's marks wait until the check is finished or rerun. A
     record may hold more rates than requested (a candidate's three-arm check read for its
     primary arms alone); only the requested ones are read."""
@@ -1420,7 +1420,7 @@ def numerical_verdict(
     incomplete += [f"control {key}" for key, value in out["controls"].items()
                    if value == "incomplete"]  # fmt: skip
     # Evidence still to come: an incomplete entry, a missing rate or control, or seeds short of
-    # their cases (re-review 2 of Task 2, new minor 2).
+    # their cases.
     out["unfinished"] = incomplete + lacking + short
     if stale:
         stale += [f"incomplete: {incomplete}"] if incomplete else []
@@ -1596,7 +1596,7 @@ class _Replay:
     def allowance_round(self, arm, batch, upper, selected, check: str, unusable) -> dict:
         """The search allowance's repair round of the arm at the batch and U: ``repair_rates``
         from the re-solve's best unconstrained triple, over every run made at the batch, never
-        proposing one of the arm's rates ``unusable`` at the batch (review fa22, ruling on C2);
+        proposing one of the arm's rates ``unusable`` at the batch;
         spent after the check ``check`` (its digest), which names its campaign."""
         record = self.propose("repair", arm, batch, upper, selected, unusable)
         return {**record, "kind": ALLOWANCE, "after": check}
@@ -1637,8 +1637,8 @@ class _Replay:
     def verdicts_for(self, check: Mapping[str, Any]) -> list[tuple[str, Any]]:
         """The verdicts that answer the check: the one of its selection's digest; without it,
         those of the candidate whose rates for the requested arms are exactly the request's,
-        holding other arms too (a three-arm check read for the primary arms alone, review
-        fa13). Each is marked read."""
+        holding other arms too (a three-arm check read for the primary arms
+        alone). Each is marked read."""
         found = []
         if check["path"] in self.verdicts:
             found = [check["path"]]
@@ -1729,7 +1729,7 @@ def selection(
     ``validation`` (with what to make or check; a ``repair`` of the search allowance names the
     check that spent it, ``allowance``), ``done`` (with the frozen rates, ``three_arm`` and
     ``prewarmed_dropped``), ``infeasible`` or ``incomplete``: ``blocked`` (technical marks
-    only, see above), ambiguous records, or any ``problems`` (review of Task 2, minor 5), the
+    only, see above), ambiguous records, or any ``problems``, the
     replay's own step then kept as ``pending`` (and, at a stale check with runs beyond it,
     ``beyond_stale``)."""
     seeds = (*DISCOVERY_SEEDS, *NUMERICAL_SEEDS, *VALIDATION_SEEDS)
@@ -1897,7 +1897,7 @@ def _stop(
     named in the reason); otherwise the replay is blocked. Either way each arm stopped
     technically is kept with its marks at the candidate (``_Replay.stopped``), so that a later
     visit of the candidate (the fallback's) blocks on it rather than select the arm again
-    (review of fa22, I1: one allowance in all per arm, batch and U). Returns the blocked step,
+    (one allowance in all per arm, batch and U). Returns the blocked step,
     or None when the attempt failed."""
     scientific = [arm for arm, (cause, _) in causes.items() if cause == "scientific"]
     technical = {arm: marks for arm, (cause, marks) in causes.items() if cause == "technical"}
@@ -1915,7 +1915,7 @@ def _stop(
 
 
 def feasibility_report(attempts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The B = 20 feasibility report of a stage that ends ``infeasible`` (review fa22): no
+    """The B = 20 feasibility report of a stage that ends ``infeasible``: no
     confirmation. Every candidate of the fixed order, (8, 20), (7, 20) and (6, 20) for the three
     arms, then (7, 20) and (6, 20) for the primary pair (amendment 5), with its outcome and
     reasons and, per arm, what failed and why: the ``scientific`` failures (a failing rate, a
@@ -1977,7 +1977,7 @@ def _arm_feasibility(attempt: Mapping[str, Any], arm: str) -> dict[str, Any]:
 
 
 def _validation_feasibility(verdict: Mapping[str, Any], arm: str) -> dict[str, list[str]]:
-    """A failed validation's findings for one arm, classed by their cause (review of fa22, M4):
+    """A failed validation's findings for one arm, classed by their cause:
     a block unsupported by K (``bracketing`` or ``width``), an instability stop and a utility
     bound above its limit are scientific, and so is a block whose failures hold an instability
     stop; a block whose cause is ``technical`` (a failed or missing endpoint) otherwise, a run's
@@ -1988,7 +1988,7 @@ def _validation_feasibility(verdict: Mapping[str, Any], arm: str) -> dict[str, l
         if support is None or support["supported"]:
             continue
         # A block lost with an instability stop among its failures is scientific, whatever its
-        # cause (the second re-review of fa22, minor 2).
+        # cause.
         technical = support["cause"] == "technical" and "instability" not in support[
             "failure_kinds"]  # fmt: skip
         kind = "technical" if technical else "scientific"
@@ -2022,7 +2022,7 @@ def _visit(
     """One visit of a candidate for ``arms`` (the three arms, or the primary pair alone in the
     fallback): discovery, the numerical gate, the validation gate. An arm whose search allowance
     at the candidate was spent at an earlier visit (pass 1's, for the fallback) keeps it spent:
-    ``allowance_carried`` (review of Task 2, critical 1; review fa22). Returns the attempt and the
+    ``allowance_carried``. Returns the attempt and the
     pending step, if any; the attempt's outcome is ``pending``, ``incomplete``, ``failed`` (with
     the arms it failed on: a scientific failure), ``blocked`` (technical marks only: the step is
     the blocked one) or ``eligible`` (with the rates).
@@ -2049,7 +2049,7 @@ def _visit(
                                "rates": None}  # fmt: skip
     # An arm whose allowance here is spent and that an earlier visit's numerical gate found
     # stopped by technical marks only (another arm's scientific failure then failing the
-    # candidate) is never selected again: the stage blocks (review of fa22, I1).
+    # candidate) is never selected again: the stage blocks.
     stopped = {arm: replay.stopped[(arm, batch, upper)] for arm in carried
                if replay.stopped.get((arm, batch, upper), {}).get("at") == "numerical"}  # fmt: skip
     if stopped:
@@ -2060,8 +2060,8 @@ def _visit(
                                f"allowance spent there: no selection again ({told})",
                                "numerical")  # fmt: skip
     # An arm marked at an earlier visit by a check that stopped the candidate before its
-    # re-solve owes its allowance: this visit's re-selection of it is that allowance (the
-    # second re-review of fa22, minor 1), spent first; after it, the arm is carried.
+    # re-solve owes its allowance: this visit's re-selection of it is that allowance,
+    # spent first; after it, the arm is carried.
     # A pinned visit has no re-selection (amendment 5): its marked rates stop it in ``_pinned``.
     owed = [
         arm
@@ -2340,8 +2340,8 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms, *, pinne
             note = f" (spent at an earlier visit: {earlier})" if earlier else ""
             listed = [s for arm in spent for s in shown[arm]]
             # A holder whose allowance is unspent owes it: the candidate stops before its
-            # re-solve, and a later visit's re-selection is that allowance (second re-review of
-            # fa22, minor 1: one allowance in all).
+            # re-solve, and a later visit's re-selection is that allowance (one
+            # allowance in all).
             for arm in holders:
                 if arm not in spent:
                     replay.owed.setdefault((arm, batch, upper),
@@ -2445,7 +2445,7 @@ def _history_marks(replay, path, reading, batch, upper, request) -> dict[str, An
     verdicts (``_Replay.history_of``) added to its ``unusable``: a requested rate an earlier
     verdict marks failing or not qualified, or an FA rate whose control it marks rejected or not
     qualified, stays unusable at the batch, whatever that verdict's staleness or unfinished
-    entries (the coordinator's ruling after the integration step). Only the decision of the
+    entries. Only the decision of the
     step comes from the current verdict. An earlier verdict that does not read as one of this
     selection, at its batch and U, leaves the reading malformed."""
     stem = path.rsplit("/", 1)[-1].removesuffix(".json")
@@ -2480,11 +2480,11 @@ def _check_request(
 ) -> dict[str, Any]:
     """What the numerical-check tool is asked: ``selection``, its rate input (``rates`` by
     optimizer name, ``batch`` and ``U``, and ``given_up`` when the launcher gave up on a case's
-    numerical run: the cases as the tool names them, ``numerical_case_name``; the final review
-    of gate B, I1; scripts/numerical_check.py --selection), its cases, the frozen policy, the
+    numerical run: the cases as the tool names them, ``numerical_case_name``;
+    scripts/numerical_check.py --selection), its cases, the frozen policy, the
     commits its numerical runs recorded (whose GPU code it must run), the directory it writes
     into and the selection's verdict there, under $RUNS_DIR, and the w_max the replay that wrote
-    it ran under (I4)."""
+    it ran under."""
     by_name = {OPTIMIZERS[arm]: list(lrs) for arm, lrs in rates.items()}
     selection = {"rates": by_name, "batch": batch,
                  "U": int(upper) if float(upper).is_integer() else upper}  # fmt: skip
@@ -2576,8 +2576,8 @@ def pair_recomputation(
 
 
 def _technical_shortfall(verdict: Mapping[str, Any]) -> tuple[dict[str, list], str] | None:
-    """A failed validation whose every fault technical failures alone make (the coordinator's
-    rulings on C3 and M3; the thresholds unchanged): no run stopped by an instability rule, no
+    """A failed validation whose every fault technical failures alone make (the thresholds
+    unchanged): no run stopped by an instability rule, no
     utility bound computed above its limit, every FA control accepted, and
     - a shortfall below ``VALIDATION_MINIMUM`` jointly supported blocks only if at least
       ``VALIDATION_MINIMUM`` blocks are left once only the blocks with an arm unsupported by K
@@ -2734,12 +2734,12 @@ def arm_harm(
     return out
 
 
-SEALED_ERROR = "error (details sealed)"  # the status shown for a sealed run's error (fa27)
+SEALED_ERROR = "error (details sealed)"  # the status shown for a sealed run's error
 
 
 class SealedLabelError(ValueError):
     """An error on the label rows of a run whose label-derived details are sealed until the final
-    analysis (the pre-warmed arm: amendment 4, section 3; review fa27). Its message names the
+    analysis (the pre-warmed arm: amendment 4, section 3). Its message names the
     runs and the generic status ``SEALED_ERROR``; ``error`` is the original exception, which it
     is raised in place of ``from None``, so that a traceback Python prints shows neither its
     message nor its chain. The commands write ``error`` into a sealed record
@@ -2760,8 +2760,8 @@ def block_difference(
     ``delta_missing_low`` = A_low − F_high and ``delta_missing_high`` = A_high − F_low (the worst
     case for the contrast), ``delta_all_missing_harmful`` = A_high − F_high; and the interpolated
     harm of every supported arm of ``supports`` (arm → ``block_support``). An error on the
-    pre-warmed arm's label rows raises ``SealedLabelError`` with its bracket's runs (review
-    fa27); the primary arms' errors are raised as they are."""
+    pre-warmed arm's label rows raises ``SealedLabelError`` with its bracket's
+    runs; the primary arms' errors are raised as they are."""
     arms: dict[str, dict[str, Any]] = {}
     for arm, support in supports.items():
         if not support["supported"]:
@@ -3657,7 +3657,7 @@ def validation_verdict(
     (amendment 4: the same-path control of the numerical check that qualified the rate); the
     utility family over those arms passes, at a single reading (Bonferroni over the family
     alone). ``arms``: AdamW-25 and FA-25 (amendment 3's primary-arm validation, kept for the
-    fallback), or the three arms (amendment 4's three-arm validation, review fa12). Ambiguous
+    fallback), or the three arms (amendment 4's three-arm validation). Ambiguous
     records (a second run of an arm, rate and seed, a run at a rate outside the frozen ones)
     leave no conclusion: ``passes`` None, with the problems."""
     arms = tuple(arms)
@@ -3956,7 +3956,7 @@ def fixed_values() -> dict[str, dict[str, Any]]:
     - ``numerical``: the seeds ``NUMERICAL_SEEDS``, the ``cases`` (every selected rate on the
       first seed, each arm's U-rate on the others: ``numerical_cases``), and the frozen policy
       of ``numerical_policy`` (the norm, the survival share, the retry scale, the bound's
-      fraction of K*, the steps and twin A's consistency rule of review fa21, with the Gaussian
+      fraction of K*, the steps and twin A's consistency rule, with the Gaussian
       directions' seeds and the reference's modes as the numerical-check tool fixes them);
     - ``validation``: the seeds ``VALIDATION_SEEDS``, at least ``VALIDATION_MINIMUM`` blocks
       jointly supported for ``arms`` (the three arms; the primary pair, ``fallback_arms``, in
@@ -4318,7 +4318,7 @@ def _scalar_rows(path: Path) -> tuple[list[dict[str, Any]], str | None]:
 def scalars_coverage(
     runs: Sequence[Trajectory], facts: Mapping[str, Mapping[str, Any]]
 ) -> dict[str, Any]:
-    """The update scalars' coverage (amendment 4, section 4; review of Task 6, M4), per regular
+    """The update scalars' coverage (amendment 4, section 4), per regular
     run of the stage's arms of every role (``ROLES``, in ``facts``: ``run_facts`` by run id;
     Stage A's runs and the FA controls are not this stage's regular runs): whether the run's
     ``update_scalars.jsonl`` exists with one row per update step, 1 to the steps it took (25 for
@@ -4487,7 +4487,7 @@ def issued_ranges(
 def issued_w_max(
     records: Sequence[Mapping[str, Any]], experiment: str = "study2_short"
 ) -> dict[str, Any]:
-    """The w_max that each issued campaign's header recorded (the final review of gate B, I4):
+    """The w_max that each issued campaign's header recorded:
     by the label of each run the launcher started (its journal's start record carries its
     campaign's ``header``, ``launch.run_campaign``). Starts logged before the header existed
     record none and are left out: not recorded, so nothing to compare."""
@@ -4497,7 +4497,7 @@ def issued_w_max(
 
 
 def w_max_problems(w_max: float, issued: Mapping[str, Any] | None) -> list[str]:
-    """Why the replay is refused (the final review of gate B, I4): w_max is frozen since S1, and
+    """Why the replay is refused: w_max is frozen since S1, and
     a value other than one recorded in an issued campaign's header (``issued_w_max``) would
     replay other triples and digests under the runs made so far. One problem per value that
     differs, naming a run of its campaigns."""
@@ -4560,8 +4560,8 @@ def _config_hash_of(config: str, overrides: tuple[str, ...]) -> str:
 
 
 def prescribed_hash(arm: str, batch: int, lr: float, seed: int, role: str) -> str:
-    """The config hash of the run ``run_prescription`` prescribes (the final review of gate B,
-    M2): what its ``meta.json`` must record."""
+    """The config hash of the run ``run_prescription`` prescribes: what its
+    ``meta.json`` must record."""
     config, overrides = run_prescription(arm, batch, lr, seed, role)
     return _config_hash_of(config, (*overrides, f"seed={seed}"))
 
@@ -4575,7 +4575,7 @@ def conformance(runs: Sequence[Trajectory], facts: Mapping[str, Mapping[str, Any
     evaluated at steps 1, 5, 10 and 25. The whole config of every regular run of this stage
     (role discovery, numerical, validation, confirmation or timecourse; not Stage A's grid runs,
     which ``stage_a.role`` marks and Stage A's campaigns prescribed, nor amendment 3's FA
-    controls) is checked too (the final review of gate B, M2): the ``config_hash`` its
+    controls) is checked too: the ``config_hash`` its
     ``meta.json`` records must be ``prescribed_hash``, its campaign's config and overrides
     loaded from the tracked configs, so that a change of what the campaigns prescribe, or a run
     made otherwise, shows."""
@@ -4797,12 +4797,12 @@ def confirmation_guard(
     """Whether the confirmation blocks ``first`` to ``last`` may be started now, on K and the
     launcher's journal only (``progress``'s confirmation blocks; ``issued``: ``issued_ranges``;
     ``three_arm``: the frozen selection's). A block is started once it has runs or belongs to an
-    issued range (the launcher may not have reached it yet; the review of Task 3, M1). The
+    issued range (the launcher may not have reached it yet). The
     blocks run in their preassigned order: a new range starts at the first block not started
     (no gaps) and touches no started block (no overlaps), unless it re-issues exactly a range
     issued before, to complete it.
 
-    - A three-arm selection (amendment 4; the coordinator, gate C): the campaigns do not pause at
+    - A three-arm selection (amendment 4; gate C): the campaigns do not pause at
       the primary's looks, which are computed afterwards from the same first 36 and 60
       primary-supported blocks. A new range holds at most ``room`` = min(``MECHANISM_TARGET`` −
       p₃, ``cap`` − the started blocks before the first open one) blocks, p₃ every started block
@@ -4837,7 +4837,7 @@ def confirmation_guard(
     if not 1 <= first <= last <= cap:
         problems.append(f"blocks {first}-{last}: 1 <= FIRST <= LAST <= {cap}")
         return out
-    if three_arm and after_look:  # refused before a re-issue too (the review of Task 3, M2)
+    if three_arm and after_look:  # refused before a re-issue too
         problems.append(f"--after-look {after_look}: a three-arm confirmation does not pause at "
                         "the primary's looks (amendment 4); they are computed afterwards from "
                         "the same blocks, and the mechanism cohort's room limits each "
@@ -4975,7 +4975,7 @@ def _canonical(rows: Sequence[Mapping[str, Any]]) -> list[str]:
 
 IDENTITY_RECORDS = ("metrics.jsonl", "monitor.jsonl", "update_scalars.jsonl", "meta.json")
 RAYLEIGH_COMPARED = ("R", "delta_norm", "delta_H_delta")  # rayleigh.json, reported beside
-# Review fa21: numerical consistency of a time-course run with its endpoint run. These named
+# Numerical consistency of a time-course run with its endpoint run. These named
 # continuous fields, by record, are compared within twin A's tolerance (NUMERICAL_POLICY's
 # twin_a_consistency); every other field is exact: counts, steps, stops, metadata, the streams
 # and the discrete outcomes (the accuracies, k/N; the departure's median and p90, bin edges of a
@@ -5061,7 +5061,7 @@ def _identity_records(timecourse: Trajectory, endpoint: Trajectory) -> dict[str,
 
 
 def _within_tolerance(x: Any, y: Any) -> bool:
-    """Twin A's rule (review fa21, ``NUMERICAL_POLICY``'s twin_a_consistency): two finite numbers
+    """Twin A's rule (``NUMERICAL_POLICY``'s twin_a_consistency): two finite numbers
     with |x − y| ≤ abs + rel·max(|x|, |y|); a non-finite value on either side is outside it, even
     when the two are bitwise equal."""
     rule = NUMERICAL_POLICY["twin_a_consistency"]
@@ -5118,7 +5118,7 @@ def _rayleigh_equal(timecourse: Trajectory, endpoint: Trajectory) -> bool | None
 
 def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> dict[str, Any]:
     """The numerical consistency of a time-course run with its endpoint run (amendment 4, section
-    4: the endpoint must be shown the same; review fa21: numerical consistency, not identical
+    4: the endpoint must be shown the same: numerical consistency, not identical
     parameters). ``endpoint``: the regular run of the same arm, batch, rate and seed, None while
     it is not there. Compared, without the timings, the memory peaks and K_harmful: every
     metrics.jsonl row of the training (steps 0-24, with the monitor's and the diagnostics' rows),
@@ -5134,7 +5134,7 @@ def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> 
     (``IDENTITY_COUNTED``); ``excluded`` (any other difference, with the ``reasons``: each
     record's first row and field outside the rule; also a record that is missing or does not
     read: ``_run_records``); or ``pending`` (no endpoint run yet). The rule is applied to
-    records that are bit-equal too (review fa23): a toleranced field that is not finite (NaN or
+    records that are bit-equal too: a toleranced field that is not finite (NaN or
     ∞) excludes the run even when both runs hold the same value. ``bitwise_equal`` keeps the
     bitwise flag (None when nothing was compared). ``rayleigh_equal`` (``_rayleigh_equal``) is
     reported beside, never deciding the state."""
@@ -5153,7 +5153,7 @@ def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> 
         if records:
             bitwise = all(_canonical(mine) == _canonical(theirs)
                           for mine, theirs in records.values())  # fmt: skip
-        # Every record goes through the rule, bit-equal ones too (review fa23): a toleranced
+        # Every record goes through the rule, bit-equal ones too: a toleranced
         # field that is not finite excludes the run even when both runs hold the same NaN or ∞.
         for name, (mine, theirs) in records.items():
             toleranced = TIMECOURSE_TOLERANCED.get(name, ())
@@ -5236,7 +5236,7 @@ def timecourse_summary(
         else:
             identity = timecourse_identity(run, endpoint)
         entry.update(run=run.run_id, **identity)
-        counted = identity["state"] in IDENTITY_COUNTED  # identical or consistent (review fa21)
+        counted = identity["state"] in IDENTITY_COUNTED  # identical or consistent
         rows = labels.get(run.run_id) if labels is not None and counted else None
         if labels is not None and counted and rows is None:
             unlabeled.append(run.run_id)

@@ -831,9 +831,9 @@ def test_cohort_ends_at_60_or_cap() -> None:
 
 
 def test_issued_ranges_count_as_started() -> None:
-    """The review of Task 3, M1: a block of an issued range counts as started before the launcher
+    """A block of an issued range counts as started before the launcher
     reaches it (in the first open block, p and p₃), so no range is issued over it and no block
-    runs twice; re-issuing exactly an issued range is still allowed. M2: with three arms,
+    runs twice; re-issuing exactly an issued range is still allowed. With three arms,
     ``--after-look`` is refused on a re-issue too."""
     # Three arms: 1-40 done, 41-60 issued, the launcher at block 50.
     reached = plan(started=50, complete=40, supported=40, joint=40)
@@ -857,7 +857,7 @@ def test_issued_ranges_count_as_started() -> None:
 
 
 def test_the_room_stops_at_the_cap(monkeypatch) -> None:
-    """The review of Task 3, M3: with 75 blocks started, the room is 5 (the cap), not 60 − p₃,
+    """With 75 blocks started, the room is 5 (the cap), not 60 − p₃,
     in the guard, the mechanism state and the summary's status."""
     blocks = plan(started=75, complete=75, supported=75, joint=30)
     counts = confirmation_guard(blocks, 76, 80, three_arm=True)
@@ -931,7 +931,7 @@ def test_the_fixation_record_refuses_a_malformed_new_key(tmp_path, key, value) -
 def test_fixation_requires_the_mechanism_key(tmp_path) -> None:
     """The ``mechanism`` key (amendment 4, section 3): required, its fixed values equal to the
     code's, the level in [0.95, 1), integer resamples ≥ 1000 and an integer seed; the tracked
-    record reads, with the values Task 3 wrote and the level the final simulation fixed."""
+    record reads, with the values written and the level the final simulation fixed."""
     tracked = read_fixation(REPO_ROOT / "docs" / "study2-short-fixation.json")
     assert tracked["mechanism"] == {"target": 60, "cap": 80, "minimum": 36, "zero_se": 1e-12,
                                     "comparison_level": 0.975, "effects": [0.05, 0.025],
@@ -983,7 +983,7 @@ def test_fixation_requires_the_mechanism_key(tmp_path) -> None:
 
 def test_fixation_requires_amendment_4s_fixed_values(tmp_path) -> None:
     """Amendment 4's other values fixed before any harm label (``FIXED_KEYS``): the candidate
-    order with its fallback (review fa22: B = 20 only), the numerical policy (with review fa21's
+    order with its fallback (B = 20 only), the numerical policy (with twin A's
     rule), the validation rule, the time course, the drift stream and the update scalars. Each
     is required, an object whose every value is the code's: a missing key, a missing or unknown
     sub-key, another value or another JSON type is refused; the tracked record reads, with
@@ -1269,7 +1269,7 @@ def test_progress_reads_no_harm(monkeypatch) -> None:
 
 def test_the_final_analysis_opens_the_time_course_once(monkeypatch, tmp_path) -> None:
     """The time course's labels are read in the final analysis only, and only for its runs that
-    count: identical or numerically consistent with their endpoint runs (review fa21); with two
+    count: identical or numerically consistent with their endpoint runs; with two
     arms (no mechanism cohort) the final analysis follows the primary's stop."""
     module = summary_module()
     rates = {ADAMW: [1.27e-5, 1.48e-5, 1.74e-5], FA: [1.59e-5, 1.86e-5, 2.17e-5]}
@@ -1674,15 +1674,15 @@ def test_the_numerical_check_writes_the_tools_selection_record(monkeypatch, tmp_
     record = fixed(tmp_path)
     out = script(monkeypatch, tmp_path, CAMPAIGNS, runs, "numerical-check", "--fixation", record,
                  verdicts={})  # fmt: skip
-    # Exactly the record scripts/numerical_check.py --selection reads (Task 1): the rates by
+    # Exactly the record scripts/numerical_check.py --selection reads: the rates by
     # optimizer name, three per arm, with the batch and U.
     assert json.loads(out.read_text()) == {
         "rates": {"adamw": [1.27e-5, 1.48e-5, 1.74e-5], "adam_frozen": [1.59e-5, 1.86e-5, 2.17e-5],
                   "adamw_prewarmed": [1.27e-5, 1.48e-5, 1.74e-5]},
         "batch": 20, "U": 8}  # fmt: skip
     shown = capsys.readouterr().out
-    # The final review of gate B, M1: the whole command, with the numerical runs' commit and the
-    # driver's file, the request's runs_commits and its w_max (I4)
+    # The whole command, with the numerical runs' commit and the
+    # driver's file, the request's runs_commits and its w_max
     driver = out.with_name(f"{out.stem}-driver.sh")
     assert (f"python scripts/numerical_check.py driver --selection {out} --batch 20 --upper 8 "
             f"--commit {RUN_COMMIT} --out {driver}") in shown.splitlines()  # fmt: skip
@@ -1697,7 +1697,7 @@ def test_the_numerical_check_writes_the_tools_selection_record(monkeypatch, tmp_
 
 
 def test_the_check_command_names_its_commits_and_the_cases_given_up(tmp_path) -> None:
-    """Review M1: one runs commit is the driver's --commit; several (one GPU code) leave COMMIT
+    """One runs commit is the driver's --commit; several (one GPU code) leave COMMIT
     to choose among them; the cases given up are named."""
     module = campaigns_module()
     check = {**request_check(), "w_max": 0.47, "given_up": ["s2200-adamw-1.48e-05"],
@@ -1714,7 +1714,7 @@ def test_the_check_command_names_its_commits_and_the_cases_given_up(tmp_path) ->
 
 
 def test_the_check_command_with_no_run_located_names_the_stages_commit(tmp_path) -> None:
-    """Review fa14, concern 4: every case given up and no numerical run located leave
+    """Every case given up and no numerical run located leave
     runs_commits empty; the driver then runs from the stage's checkout commit, the clean
     checkout writing the request, and the command says so (COMMIT, with the reason, when that
     checkout is not clean)."""
@@ -1735,7 +1735,7 @@ def test_the_check_command_with_no_run_located_names_the_stages_commit(tmp_path)
 
 
 def test_the_whole_config_of_a_run_is_its_campaigns(tmp_path) -> None:
-    """The final review of gate B, M2: the config hash a regular run's meta.json records must be
+    """The config hash a regular run's meta.json records must be
     that of its campaign's config and overrides, as the launcher loads them from the tracked
     configs; a run whose recorded config differs in one unrelated key is a problem."""
     run = later(ADAMW, 20, 1.27e-5, 2200)  # a numerical run: experiments/study2_short_k_only
@@ -1776,7 +1776,7 @@ def test_the_whole_config_of_a_run_is_its_campaigns(tmp_path) -> None:
 
 
 def test_a_replay_under_another_w_max_is_refused(monkeypatch, tmp_path, capsys) -> None:
-    """The final review of gate B, I4: the campaign's header records w_max, the launcher logs it
+    """The campaign's header records w_max, the launcher logs it
     with every start, and the replay under another w_max (a fixation record rewritten at gate C,
     say) is refused, the stage incomplete with that reason; a start logged without a header
     records none."""
@@ -1833,7 +1833,7 @@ def judged(runs, judge, campaign, hook=None, verdicts=None) -> tuple[dict, dict]
 
 
 def test_the_allowance_repair_campaign_and_the_blocked_stage(monkeypatch, tmp_path, capsys):
-    """Review fa22, through the campaigns script: (8, 20) fails its validation (AdamW's U-rate
+    """Through the campaigns script: (8, 20) fails its validation (AdamW's U-rate
     loses 6 pp MMLU); at (7, 20) FA's U-rate 2e-5 is not qualified and FA's re-solve has no
     triple, so its allowance holds one repair round, written by the ``repair`` kind under a name
     of its own (the check that spent it) and with cells no other campaign has. Its replacement
@@ -1903,7 +1903,7 @@ def test_the_allowance_repair_campaign_and_the_blocked_stage(monkeypatch, tmp_pa
 
 
 def test_no_b20_candidate_prints_the_feasibility_report(monkeypatch, tmp_path, capsys) -> None:
-    """Review fa22: AdamW's K far below the targets at B = 20, no candidate qualifies; every
+    """AdamW's K far below the targets at B = 20, no candidate qualifies; every
     kind is refused, and the B = 20 feasibility report is printed (never a B = 5 campaign)."""
     real = SCALE.copy()
     try:
@@ -1930,7 +1930,7 @@ def test_no_b20_candidate_prints_the_feasibility_report(monkeypatch, tmp_path, c
 def test_the_check_input_is_written_while_runs_wait_beyond_a_stale_check(
     monkeypatch, tmp_path, capsys
 ) -> None:
-    """Review of Task 2, minor 4: the qualifying verdict went stale after the validation runs
+    """The qualifying verdict went stale after the validation runs
     were made. Those runs wait for the check; its rate input may still be written, and every
     other kind is refused while the records are not whole."""
     runs = base()
@@ -1997,7 +1997,7 @@ def test_the_validation_and_confirmation_campaigns(monkeypatch, tmp_path, capsys
 
 
 def test_a_two_arm_confirmation_keeps_the_look_pauses(monkeypatch, tmp_path, capsys) -> None:
-    """The review of Task 3, M4: with a two-arm selection (the primary-only fallback) the
+    """With a two-arm selection (the primary-only fallback) the
     campaigns script keeps amendment 3's loop: ranges end before look 1, look 1 due holds every
     block, and ``--after-look 1`` lets the blocks before look 2 start."""
     runs = [*base()]
@@ -2259,7 +2259,7 @@ def range_journal(block_runs) -> list[dict]:
 def test_a_confirmation_range_offers_an_endpoint_lost_beside_its_timecourse_twin(
     monkeypatch, tmp_path
 ) -> None:
-    """Review of Task 5, I1: block 3's AdamW-25 endpoint run is lost after its time-course twin
+    """Block 3's AdamW-25 endpoint run is lost after its time-course twin
     finished (and another twin was given up by the launcher). Re-issuing the range 1-10 offers
     that endpoint run: a time-course run never satisfies a confirmation cell."""
     runs = base()
@@ -2290,7 +2290,7 @@ def test_a_confirmation_range_offers_an_endpoint_lost_beside_its_timecourse_twin
 def test_the_timecourse_campaign_leaves_out_runs_whose_endpoint_was_given_up(
     monkeypatch, tmp_path
 ) -> None:
-    """Review of Task 5, M3: a time-course run whose endpoint run the launcher gave up on could
+    """A time-course run whose endpoint run the launcher gave up on could
     never show its identity; the campaign does not run it and names it in its header."""
     runs = base()
     rates = until(runs, "confirmation")["next"]["rates"]
@@ -2363,7 +2363,7 @@ def test_the_prep_driver(monkeypatch, tmp_path, capsys) -> None:
     module = campaigns_module()
     for name in (*module.INVENTORIES, module.V3_RECORD, module.CURVATURE_PANEL):
         assert name in header
-    # Review M9: no FA control runs under amendment 4; the v3 record is restored for
+    # No FA control runs under amendment 4; the v3 record is restored for
     # pod_setup.sh's check of the whole DATA_DIR
     assert "FA controls" not in header
     assert (f"the stage-0 v3 record {module.V3_RECORD} (no run of amendment 4 reads it: it is "
@@ -2827,7 +2827,7 @@ def test_the_summary_prints_the_status_and_refuses_looks_without_a_fixation(
     script(monkeypatch, tmp_path, SUMMARY, runs, "--w-max", str(W_MAX))
     shown = json.loads(capsys.readouterr().out)
     assert shown["next"]["campaign"] == "discovery" and len(shown["next"]["runs"]) == 36
-    # B = 20 only (review fa22)
+    # B = 20 only
     assert [[c["batch"], c["U"]] for c in shown["candidates"]] == [[20, 8.0], [20, 7.0],
                                                                    [20, 6.0]]  # fmt: skip
     assert shown["attempts"][0]["arms"][ADAMW][0]["feasible"] is False
@@ -2877,7 +2877,7 @@ def test_the_summary_prints_the_looks_end_to_end(monkeypatch, tmp_path, capsys) 
     }
     assert shown["next"]["campaign"] == "confirmation"
     # The eligible attempt shows its rates, the rates its check was asked for and the
-    # validation's runs given up (review fa22, C5)
+    # validation's runs given up
     eligible = shown["attempts"][-1]
     assert eligible["outcome"] == "eligible" and set(eligible["rates"]) == set(ARMS)
     assert eligible["numerical"][-1]["request"] == eligible["rates"]
@@ -2911,7 +2911,7 @@ def _sealed_everywhere(node) -> None:
 def test_the_summary_seals_the_prewarmed_harm_until_the_final_analysis(
     monkeypatch, tmp_path, capsys
 ) -> None:
-    """The coordinator's ruling on Task 3's concern 3: the looks wait for the pre-warmed labels
+    """The looks wait for the pre-warmed labels
     (``look_blocks`` is untouched), but before the final analysis neither the printed status nor
     OUT.json carries the pre-warmed arm's h or missing labels; the primary arms' are there."""
     runs = base()
@@ -3003,7 +3003,7 @@ def _pending_summary(monkeypatch, tmp_path, capsys, *, released: bool = False):
 def test_the_summary_seals_the_prewarmed_pending_reason_until_the_final_analysis(
     monkeypatch, tmp_path, capsys
 ) -> None:
-    """Review fa26: a pre-warmed run whose labels are pending (a real incomplete judging
+    """A pre-warmed run whose labels are pending (a real incomplete judging
     receipt) shows only a generic status, in the printed status and OUT.json, while the mechanism
     cohort is unfinished; a primary arm's pending reason stays whole."""
     printed, whole, prewarmed, primary, real, reason = _pending_summary(
@@ -3093,7 +3093,7 @@ def _malformed_summary(monkeypatch, tmp_path, arm: str):
 
 
 def test_the_summary_seals_a_malformed_prewarmed_label_file(monkeypatch, tmp_path, capsys) -> None:
-    """Review fa27, 2: a pre-warmed run whose cached label file holds a label outside the labels
+    """A pre-warmed run whose cached label file holds a label outside the labels
     exits non-zero with only the run, a generic status and the sealed record's path; stdout and
     stderr carry nothing else, and the record (0600) holds the traceback with the label."""
     target, sealed, summary = _malformed_summary(monkeypatch, tmp_path, PREWARMED)
@@ -3122,7 +3122,7 @@ def test_the_summary_keeps_a_primary_runs_label_error_whole(monkeypatch, tmp_pat
 def test_the_summary_refuses_a_sealed_directory_git_could_track(
     monkeypatch, tmp_path, capsys
 ) -> None:
-    """Review fa27, fix round 1: ``--sealed-dir`` in the checkout outside runs/ is refused before
+    """``--sealed-dir`` in the checkout outside runs/ is refused before
     any label is read."""
     runs = base()
     confirmed(runs)
@@ -3168,7 +3168,7 @@ def test_a_prewarmed_label_row_error_in_a_block_is_sealed() -> None:
 def test_the_summary_is_the_same_with_and_without_the_time_course(
     monkeypatch, tmp_path, capsys
 ) -> None:
-    """Review of Task 5, C1: the summary with its looks (every look, the utility family, the
+    """The summary with its looks (every look, the utility family, the
     sensitivities, the blocks and the guard's counts) is byte for byte the same with and without
     the time course's runs of blocks 1-3, labeled far from their endpoints (one of them not
     identical); no label of a time-course run is read. Only ``progress.timecourse`` and the
@@ -3205,7 +3205,7 @@ def test_the_summary_is_the_same_with_and_without_the_time_course(
         outputs[name] = (capsys.readouterr().out, whole)
     (shown, without), (shown_with, with_course) = outputs["without"], outputs["with"]
     # The printed status and looks, byte for byte, but for the time course's counts and the
-    # update scalars' coverage, which report the time course's runs (amendment 4, Task 3).
+    # update scalars' coverage, which report the time course's runs (amendment 4).
     printed = [json.loads(text) for text in (shown, shown_with)]
     assert printed[0].pop("timecourse")["counts"]["missing"] == 30
     assert printed[1].pop("timecourse")["counts"]["missing"] == 21

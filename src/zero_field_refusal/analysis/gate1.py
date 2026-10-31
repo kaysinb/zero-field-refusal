@@ -177,7 +177,7 @@ CALIBRATION_SAMPLE = "sample.jsonl"  # the blind sample, in the judge-calibratio
 CALIBRATION_LABELS = f"judge-{CALIBRATED_JUDGE}.jsonl"  # the judge's labels of the sample
 # The fixed judge calibration (docs/preregistration.md, the Judge row and the amendments of
 # 2026-10-11): the sha256 of its blind sample and of the reference labels imported for it
-# (labeling.import_reference_labels), as fixed by the Gate 1 review of 2026-10-11.
+# (labeling.import_reference_labels), as fixed on 2026-10-11.
 CALIBRATION_SAMPLE_SHA256 = "8e90f49c4f9e40f3172a52361445efb4972d1f0569cdfc75763b58583c46cd8c"
 CALIBRATION_REFERENCE_SHA256 = "bf56f577276383be7aa9554c6a7534839c6f749c01fc89913f4c52b886954d2f"
 COLLAPSE = {"factual_drop_above": 0.10, "benchmark_drop_above": 0.05}

@@ -1,5 +1,5 @@
-"""The contract between the numerical-check tool and the selection (review of Task 2, important
-2): verdicts built by the tool's own ``fa_control_diagnostic.numerical_verdict`` from its
+"""The contract between the numerical-check tool and the selection: verdicts built by the
+tool's own ``fa_control_diagnostic.numerical_verdict`` from its
 synthetic records (the world of tests/test_numerical_check.py), written by its
 ``write_verdict``, read back by ``study2_short.read_numerical`` and through the selection's
 ``numerical_verdict`` and ``selection``. The verdict's shape is never copied here."""
@@ -113,7 +113,7 @@ def test_a_tool_verdict_reads_with_no_stale_reason(world) -> None:  # noqa: F811
 
 
 def test_the_consistency_rule_crosses_from_the_settings_to_the_selection(world) -> None:  # noqa: F811
-    """Review fa21: twin A's consistency rule, frozen in the tracked settings, is the tool's
+    """Twin A's consistency rule, frozen in the tracked settings, is the tool's
     (``NumericalScope.policy``, the comparator's own), every verdict the tool writes carries it,
     and the selection freezes it; a written verdict without it, or with another rule, departs
     from the policy and decides nothing."""
@@ -191,7 +191,7 @@ def test_tool_verdicts_drive_the_selection(world) -> None:  # noqa: F811
 
 
 def test_an_earlier_tool_verdict_keeps_its_marks(world) -> None:  # noqa: F811
-    """The coordinator's ruling after the integration step: a stale verdict with a failing mark
+    """A stale verdict with a failing mark
     and an unfinished entry holds the step at the check, the re-solve not spent. The tool's
     rerun writes a verdict that omits the mark (``write_verdict`` moves the stale one to the
     selection's history): the rate stays unusable, and AdamW is re-solved."""
@@ -244,7 +244,7 @@ def test_a_given_up_numerical_run_reaches_the_tool_and_the_selection_re_solves(
     tmp_path,
     world,  # noqa: F811
 ) -> None:
-    """The final review of gate B, I1: a K-only run the launcher gave up on. The selection's
+    """A K-only run the launcher gave up on. The selection's
     check request names its case in ``given_up``, as the tool names it; the tool reads the
     record, its plan notes the case instead of stopping, the parts record it incomplete twice
     (as for any run not found), and the verdict holds its rate not_qualified. The selection
@@ -297,7 +297,7 @@ def test_a_given_up_numerical_run_reaches_the_tool_and_the_selection_re_solves(
 
 
 def test_a_void_check_calls_for_fresh_numerical_runs(world) -> None:  # noqa: F811
-    """The final review of gate B, I2: a qualified check, then a GPU-path change (HEAD's GPU code
+    """A qualified check, then a GPU-path change (HEAD's GPU code
     becomes ``OTHER``'s): the selection waits at the stale check, which the tool cannot run
     on the old runs. ``void`` moves those runs and the check aside; the loader no longer finds
     them, and the selection calls for the numerical runs again."""
@@ -336,7 +336,7 @@ def test_after_void_a_fresh_numerical_campaign_has_every_attempt(
     tmp_path,
     clean_head,  # noqa: F811
 ) -> None:
-    """The coordinator's ruling on concern C2: ``void`` moves the launcher's log of the campaign
+    """``void`` moves the launcher's log of the campaign
     that made the voided runs (and its attempts' logs, its file under campaigns/ and that file's
     driver), so that the fresh campaign at the same rates, with the same cell names and config
     hashes, gets its full three technical attempts, and an exhausted fresh run is given up: the
@@ -431,15 +431,16 @@ def test_every_baseline_given_up_takes_the_technical_path(
     monkeypatch,
     clean_head,  # noqa: F811
 ) -> None:
-    """Review fa14, 2, through the selection: the launcher gave up on every numerical run of a
+    """Through the selection: the launcher gave up on every numerical run of a
     check. Its request names every case given up, with no runs' commit; the tool's real parts,
     run from the request on the tracked settings, record each without a GPU and write a verdict
     holding every rate and FA control not qualified (technical), with the tool's own GPU code.
-    The selection reads it complete and takes the technical non-qualification path (review
-    fa22): every arm spends its search allowance, re-solved once without those rates; in this
+    The selection reads it complete and takes the technical non-qualification path: every arm spends
+    its search allowance, re-solved once without those rates; in this
     world no arm has a feasible triple without them, so the allowance's repair round follows,
-    proposing no unusable rate (the coordinator's ruling on C2): the next step is that
-    ``repair`` campaign at (8, 20), never the next candidate (the frozen rules before fa22 failed
+    proposing no unusable rate: the next step is that
+    ``repair`` campaign at (8, 20), never the next candidate (the frozen rules before the fixed B =
+    20 scope failed
     the candidate here and went on to (7, 20)), never instability. The check is never asked for
     again."""
     root = tmp_path / "runs"  # no numerical run: the launcher gave up on every one
@@ -482,7 +483,7 @@ def test_every_baseline_given_up_takes_the_technical_path(
                  for lr in lrs}  # fmt: skip
     assert {(u["arm"], u["lr"]) for u in entry["unusable"]} == requested
     assert {u["state"] for u in entry["unusable"]} == {"not_qualified", "control not_qualified"}
-    # The technical path (review fa22): one re-solve per arm, its allowance, infeasible without
+    # The technical path: one re-solve per arm, its allowance, infeasible without
     # those rates; then the allowance's repair round at (8, 20), proposing none of them; never
     # a failure, never instability, and no other candidate follows
     first = after["attempts"][0]

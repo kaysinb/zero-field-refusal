@@ -7,7 +7,7 @@ its selection or its records. File:line references are to commit 1e14ca1.
 **Context.** Two of three FA soft-target controls (seed 2000, B 5, 25 steps, rates 1.21e-5 and
 1.46e-5) stopped by the contamination check: their K grew exponentially from a small residual (×8–20
 per 5 steps), with tiny displacement (K/‖δ‖² ≈ 35), while the regular FA runs at the same rates
-look normal. The coordinator chose a diagnostic, without changing the protocol.
+look normal. A diagnostic was chosen, without changing the protocol.
 
 **Rules.**
 - The diagnostic is outside the confirmation and **blind to outcomes**. Its outputs are only K,
@@ -109,9 +109,7 @@ Each difference gets file:line and a note on whether it can change the dynamics.
 
 ## Revision 1 (frozen)
 
-After review fa5. It supersedes the text above where they differ.
-
-Source: the external review fa5 of the plan ("C as planned — yes with changes").
+It supersedes the text above where they differ.
 
 ### Order
 
@@ -221,11 +219,11 @@ Frozen. All failures are kept and reported.
   perturbation and against the reference.
 
   Outcome: propose a composite criterion (teacher-path checks, perturbation sensitivity and
-  reference agreement on NLL trajectories), validated on fresh seeds. The user decides.
+  reference agreement on NLL trajectories), validated on fresh seeds. The researcher decides.
 - **Branch A — the regular runs are contaminated.** Applies when any D3 pair at FA 1.21e-5 exceeds
   0.06325.
 
-  Outcome: the rates stay unusable as the rule says. The user decides on A (redesign) or on
+  Outcome: the rates stay unusable as the rule says. The researcher decides on A (redesign) or on
   stabilizing the preconditioner. B = 20 stays untested, and is not presumed infeasible.
 - **Ambiguous** (none of the above): add FA 1.46e-5 to D3 once, then report without choosing.
 
@@ -283,7 +281,7 @@ bind the code. Nothing else changes.
 
 ## Revision 3 (frozen)
 
-After review fa8, before any run; no diagnostic output exists. It corrects Revision 2 where a test
+Before any run; no diagnostic output exists. It corrects Revision 2 where a test
 without evidence could support a branch. Nothing else changes. **The principle:** a branch is
 chosen, or excluded, only on complete evidence. When the choice depends on a missing or invalid
 measurement, the outcome is "incomplete", and no branch and no expansion follow.

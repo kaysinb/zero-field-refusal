@@ -3,7 +3,7 @@
 Recalibrates and validates the sequential procedure of the primary contrast between AdamW-25 and
 frozen Adam-25 at K\\*, and measures the bias of interpolating harm to K\\*. Pure numpy on the CPU;
 it reads no run directory and no harm data. Spec: the amendment-3 simulation spec of 2026-10-16
-with its revision 1 (after review fa3: the interpolation design only) and revision 2 (curves on
+with its revision 1 (the interpolation design only) and revision 2 (curves on
 the population scale, look designs, the interpolation estimand and the bias allowance).
 
 Notation. Arms: A = AdamW-25 and F = frozen Adam-25 (the primary contrast), P = pre-warmed
@@ -920,7 +920,7 @@ class Replicates:
     secondary_bootstrap: dict[str, np.ndarray] = field(default_factory=dict)
     secondary_dropped: dict[str, np.ndarray] = field(default_factory=dict)
     secondary_bootstrap_cpu_seconds: float = 0.0
-    # The conditional truth (review fa24, Q1; ``primary_truth``), per replicate when computed:
+    # The conditional truth (``primary_truth``), per replicate when computed:
     # the interpolation contrast over fresh primary-supported blocks and the pointwise one.
     conditional_truth: np.ndarray = field(default_factory=lambda: np.zeros(0))
     conditional_pointwise: np.ndarray = field(default_factory=lambda: np.zeros(0))
@@ -1793,7 +1793,7 @@ def conditional_rates(
     pointwise: np.ndarray,
     allowance: float | None = None,
 ) -> dict[str, Any]:
-    """A design's decisions against each replicate's conditional truth (review fa24, Q1): the
+    """A design's decisions against each replicate's conditional truth: the
     interpolation contrast over fresh primary-supported blocks given the replicate's panel and
     misses, and its pointwise contrast at K*. Coverage of the stopping look's interval (a look
     without an interval, unbounded, does not cover; its share apart); false positive (a positive
@@ -2143,7 +2143,7 @@ def decided_gate_grid(
 ) -> list[Scenario]:
     """Revision 5: the cap scenarios at Δ = ±5 for a prescreened run (``RunSettings.prescreen``):
     ``reps`` is the number of validation gates drawn; only the studies that pass are simulated,
-    which sizes the false equivalence among them (finding N2)."""
+    which sizes the false equivalence among them."""
     return [
         Scenario(
             sd=sd,
@@ -2381,7 +2381,7 @@ def _conditional_worst(rows: Sequence[Mapping], path: Sequence[str], pick: Calla
 
 
 def conditional_checks(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
-    """The primary's decided design against each replicate's conditional truth (review fa24, Q1),
+    """The primary's decided design against each replicate's conditional truth,
     per look design × interval × rule × α × floor and group (and over all): the largest false
     positive and negative at Δ = 0, the largest false equivalence at |Δ| = 5 pp, the smallest
     coverage of the stopping look's interval and the largest share without one, and the
@@ -2581,7 +2581,7 @@ class RunSettings:
     prescreen: bool = False  # simulate only the studies that pass the validation gate
     # The secondary contrasts' intervals; the first is the one the rows' secondary_coverage reads.
     secondary_intervals: tuple[str, ...] = ("t",)
-    # Each replicate's conditional truth of Δ (review fa24, Q1; ``primary_truth``) and the rows'
+    # Each replicate's conditional truth of Δ (``primary_truth``) and the rows'
     # ``conditional`` rates against it.
     conditional: bool = False
 
@@ -2689,7 +2689,7 @@ def _replicate_task(task: tuple[Scenario, Parameters, int, int, RunSettings]):
 
 
 def primary_truth(scenario: Scenario, params: Parameters, base_seed: int) -> PanelTruth:
-    """The conditional truth's engine for the primary contrast (review fa24, Q1): arms A and F as
+    """The conditional truth's engine for the primary contrast: arms A and F as
     the block model draws them, their joint support the primary's (``PanelTruth``). It needs arm
     effects and speeds independent across arms and of the speeds (ρ_u = ρ_uh = 0, as in every
     decided scenario)."""
@@ -3089,7 +3089,7 @@ def inputs_scenario(scenario: Scenario, inputs: Inputs) -> Scenario:
 # attrition). The offsets c_P, then c_A, are solved so that it equals the declared (C1, C2) in
 # every attrition mode; c_F makes F's population rate at K* the baseline.
 #
-# Truth (review fa24, Q1): each replicate's own, the expected interpolated contrast over fresh
+# Truth: each replicate's own, the expected interpolated contrast over fresh
 # supported seed blocks conditional on its 521-prompt panel and its selection misses
 # (``PanelTruth``), against which coverage, false direction and "bounded" are read; the
 # declared population values stay beside it, and power is reported at both.
@@ -3109,7 +3109,7 @@ COMPONENT_MEANS = (
 )
 SD_RATIOS = {"1:1": (1.0, 1.0), "2:1": (1.0, 0.5), "1:2": (0.5, 1.0)}  # (C1, C2) / the larger
 COMPONENT_RHOS = (-0.5, 0.0, 0.5)  # correlation of the components' per-block driving variables
-# Attrition (review fa24, Q3): none, and at a technical failure rate of 10 % or 20 % per run
+# Attrition: none, and at a technical failure rate of 10 % or 20 % per run
 # (amendment 3's failure unit) either independent in every arm or support-dependent (the
 # pre-warmed arm's failures through the shared stream effect β_b, amendment 3's
 # ``failure_correlated`` law; A and F independent at the same rate). The measured zero (Stage A
@@ -3133,7 +3133,7 @@ MECHANISM_RESAMPLES = BOOTSTRAP_RESAMPLES
 MECHANISM_LEVELS = tuple(round(0.95 + 0.005 * i, 3) for i in range(9))  # 0.95 … 0.99
 MECHANISM_COVERAGE = 0.95
 MECHANISM_STREAMS = {"calibration": "mechanism-calibration", "check": "mechanism-check"}
-# The predeclared precision check (review fa24, Q2): a required scenario under the floor plus two
+# The predeclared precision check: a required scenario under the floor plus two
 # MC SEs at R = 10 000 on the calibration stream, i.e. under 95 %, is checked once at 50 000.
 PRECISION_REPS = 50_000
 BORDERLINE_BELOW = MECHANISM_COVERAGE  # the floor at R = 10 000 plus its two MC SEs
@@ -3444,7 +3444,7 @@ class EstimandModel:
         return {**per_arm, "joint": self.p_joint}
 
 
-# The conditional truth (review fa24, Q1): the expected interpolated contrast over fresh supported
+# The conditional truth: the expected interpolated contrast over fresh supported
 # seed blocks, conditional on the replicate's 521-prompt panel and its selection misses.
 
 CONDITIONAL_STEP = 0.02  # the panel convolution's grid (logit units)
@@ -3513,7 +3513,7 @@ def _effect_table(effect: tuple[np.ndarray, np.ndarray], sigma: float, y: np.nda
 
 
 class PanelTruth:
-    """The truth of a replicate (review fa24, Q1): per arm, the expected interpolated harm at K*
+    """The truth of a replicate: per arm, the expected interpolated harm at K*
     over fresh seed blocks supported in every arm given (the joint support), conditional on the
     replicate's prompt panel α (its 521 values) and selection misses τ, averaged over the stream
     effect, speeds, block effects, endpoint noise, failures and labels (label noise has mean 0).
@@ -3853,7 +3853,7 @@ def mechanism_replicate(
         "technical": (causes[:started] == TECHNICAL).sum(axis=0).tolist(),
         "sum": [float(c1.sum()), float(c2.sum())],
         "correlation": correlation,
-        # The replicate's truth: fresh supported blocks given its panel and misses (fa24, Q1).
+        # The replicate's truth: fresh supported blocks given its panel and misses.
         "truth": list(conditional_contrasts(params, alpha, misses)),
     }
     return row
@@ -4049,9 +4049,9 @@ def interval_status(rows: Mapping[str, np.ndarray], q: np.ndarray) -> dict[str, 
 
 def _covered(rows: Mapping[str, np.ndarray], q: np.ndarray, truth: Any) -> np.ndarray:
     """(R, 2): the symmetric interval mean ± q·SE contains the truth ((R, 2) per replicate, or
-    one value per contrast). A missing interval does not cover (review fa24, Q3); a whole-line
+    one value per contrast). A missing interval does not cover; a whole-line
     one (q = ∞, uninformative; the analysis returns no interval for it) is counted as covering,
-    as the brief rules, and reported separately (``interval_status``)."""
+    as amendment 4 rules, and reported separately (``interval_status``)."""
     mean, se = rows["mean"], rows["se"]
     status = interval_status(rows, q)
     value = np.asarray(truth, dtype=float)
@@ -4068,7 +4068,7 @@ def summarize_mechanism(
     seconds: float = 0.0,
 ) -> dict[str, Any]:
     """A mechanism scenario's outputs from its replicates, against each replicate's conditional
-    truth (review fa24, Q1; ``PanelTruth``) with the declared population values beside it: per
+    truth (``PanelTruth``) with the declared population values beside it: per
     level, the simultaneous max-t coverage (a missing interval does not cover) and the shares of
     missing, whole-line and usable intervals; per component its coverage and readings: power at
     the declared value's sign and at the conditional truth's, false direction (a direction
@@ -4108,8 +4108,8 @@ def summarize_mechanism(
         by_level.append({
             "level": level,
             "simultaneous": _rates(both),
-            # Readings need the minimum cohort; below it the intervals are descriptive only
-            # (review fa25): the coverage of each kind apart, with its share of replicates.
+            # Readings need the minimum cohort; below it the intervals are descriptive only:
+            # the coverage of each kind apart, with its share of replicates.
             "simultaneous_readable": _subset_rates(both, reading),
             "simultaneous_descriptive": _subset_rates(both, ~reading),
             "simultaneous_population": _rates(population.all(axis=1)),
@@ -4275,7 +4275,7 @@ def mechanism_checks(
         "floor_rule": "0.95 − 2·√(0.95·0.05/R), R the scenario's replicates",
         "per_level": per_level,
         "level": chosen,
-        # Predeclared (review fa24, Q2): checked once at PRECISION_REPS on the check stream.
+        # Predeclared: checked once at PRECISION_REPS on the check stream.
         "borderline": borderline,
         "readings_at": shown,
         "readings": {group: reading_summary(members, levels.index(shown))
@@ -4286,7 +4286,7 @@ def mechanism_checks(
 def borderline_scenarios(scenarios: Sequence[Mapping[str, Any]], level: float) -> list[str]:
     """The required scenarios whose simultaneous coverage at ``level`` on the calibration stream
     lies below the floor plus two MC SEs at R = ``MECHANISM_REPS``, i.e. below 95 %: predeclared
-    for one check at ``PRECISION_REPS`` replicates (review fa24, Q2)."""
+    for one check at ``PRECISION_REPS`` replicates."""
     out = []
     for s in scenarios:
         if s["settings"]["group"] != "required":

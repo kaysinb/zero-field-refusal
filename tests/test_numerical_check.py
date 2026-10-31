@@ -1,5 +1,5 @@
-"""The numerical check of study 2's selected rates (amendment 4, section 1, with reviews fa12 and
-fa13, and the review of Task 1): its frozen scope and replacement cases, the fixed perturbation
+"""The numerical check of study 2's selected rates (amendment 4, section 1): its
+frozen scope and replacement cases, the fixed perturbation
 norm, the float64 reference against a float64 oracle, which records count (the policy, the GPU
 code, the regular run located now), the states of cases, rates and controls, and the verdict
 record kept per selection; then the whole check on tiny K-only CPU runs with harmful generation
@@ -196,7 +196,7 @@ def test_numerical_cases_are_the_frozen_scope() -> None:
         "reference": "float64 loss, accumulation and optimizer arithmetic; fallback float64 "
                      "loss and accumulation only",
         "twin_a_consistency": {"abs": 1e-08, "rel": 0.0001}}  # fmt: skip
-    # Review fa21: the tracked rule is the comparator's own, the same for every arm and batch
+    # The tracked rule is the comparator's own, the same for every arm and batch
     assert s.consistency_rule == fcd.TWIN_A_CONSISTENCY == {"abs": 1e-08, "rel": 0.0001}
     n = settings().numerical
     assert n.evaluation == "k_only" and n.harmful_generation is False
@@ -239,7 +239,7 @@ def test_numerical_cases_are_the_frozen_scope() -> None:
                     {"twin_a_consistency": {"abs": 1e-08, "rel": 0.001}}):  # fmt: skip
         assert not s.same_policy({**FROZEN, **changed}), changed
     assert not s.same_policy(None) and not s.same_policy({"norm": 5e-5})
-    # A record written before review fa21 (no rule in its settings) is not of this scope
+    # A record written before the consistency rule (no rule in its settings) is not of this scope
     assert not s.same_policy({k: v for k, v in FROZEN.items() if k != "twin_a_consistency"})
     for rule in (None, {"abs": 1e-8}, {"abs": 1e-8, "rel": -1.0}, {"abs": 1e-8, "rel": math.inf},
                  {"abs": 1e-8, "rel": 1e-4, "fields": ["loss"]}):  # fmt: skip
@@ -248,7 +248,7 @@ def test_numerical_cases_are_the_frozen_scope() -> None:
             bad["twin_a_consistency"] = rule
         with pytest.raises(fcd.NumericalError, match="twin_a_consistency"):
             fcd.NumericalScope.of(OmegaConf.create({"numerical": bad}))
-    # The declarative keys too: settings claiming harmful generation are no scope (review nit)
+    # The declarative keys too: settings claiming harmful generation are no scope
     assert dict(s.declared) == {"evaluation": '"k_only"', "harmful_generation": "false"}
     for changed in ({"harmful_generation": True}, {"evaluation": "full"}, {"extra": 1}):
         assert not s.same_policy({**FROZEN, **changed}), changed
@@ -387,7 +387,7 @@ def config_of(name):
 def test_float64_adam_matches_a_float64_oracle(mode) -> None:
     """The float64 reference's arithmetic (``Float64Adam``, on float64 parameters here) against
     the rule written out in float64, on a quadratic: agreement to about 1e-14 relative in every
-    mode (review fa12), in norm (a coordinate passing near zero has no relative error of its
+    mode, in norm (a coordinate passing near zero has no relative error of its
     own to speak of), with every coordinate within 1e-14 of the largest."""
     start, curvature, v0 = quadratic()
     b = torch.nn.Parameter(start.clone())
@@ -409,7 +409,7 @@ def test_float64_adam_matches_a_float64_oracle(mode) -> None:
 
 
 def test_the_prewarmed_reference_leaves_v0_alone() -> None:
-    """Review M5: a float64 v₀ on the parameters' device is copied, not updated in place."""
+    """A float64 v₀ on the parameters' device is copied, not updated in place."""
     start, curvature, v0 = quadratic()
     v0 = v0.double()
     kept = v0.clone()
@@ -438,7 +438,7 @@ def test_prewarmed_float64_reference_matches_optim(mode) -> None:
     torch.testing.assert_close(b.data, a.data, rtol=1e-5, atol=1e-6)
 
 
-# ------------------------------------------------- twin A against its archive (review fa21)
+# ------------------------------------------------- twin A against its archive
 
 RULE = fcd.TWIN_A_CONSISTENCY
 STREAMS = {"training": {"path": "teacher/m/training/seed-2200", "count": 120, "sha256": "t",
@@ -668,7 +668,7 @@ def test_the_stop_is_exact(tmp_path, end, archived, equal) -> None:
 
 
 def test_the_streams_are_compared_exactly(tmp_path) -> None:
-    """Provenance (review fa21): the training prefix and v₀'s preconditioner stream the re-run
+    """Provenance: the training prefix and v₀'s preconditioner stream the re-run
     read against those its run recorded, identity for identity (path, count, sha256, chunks),
     however close the numbers; an arm that reads no v₀ has none on either side."""
     rows, monitor = training_rows(), readings()
@@ -701,7 +701,8 @@ def test_the_streams_are_compared_exactly(tmp_path) -> None:
 # its regular runs (runs/void/<old GPU code>/), or, before the void, under this checkout's runs/
 # or that of the checkout holding it (a worktree). The S2 repeat of 2026-10-21 wrote its own check
 # at runs/numerical/b20-u8/, so the first check is told by its records: written under the bitwise
-# twin-A gate before review fa21, they hold ``archive.equal``. Read: the twin records' numbers and
+# twin-A gate before the consistency rule, they hold ``archive.equal``. Read: the twin records'
+# numbers and
 # the archived regular runs' metrics.jsonl and monitor.jsonl, nothing else.
 S2_TWINS = Path("numerical/b20-u8/twins/s2200")
 # The three cases whose twin A differed from its run bit for bit (S2's verdict f7cf42e3f76f)
@@ -726,9 +727,9 @@ S2_RUNS = next((base for root in (REPO_ROOT, *REPO_ROOT.parents)
 
 @pytest.mark.skipif(S2_RUNS is None, reason="the archived S2 check is not in this checkout")
 def test_the_archived_s2200_twins_are_consistent() -> None:
-    """Review fa21, 3: recomputed from the full rows (never the capped list), every attempt of
+    """Recomputed from the full rows (never the capped list), every attempt of
     the three cases that S2 found unlike their runs is numerically consistent with its run, with
-    fa21's maxima: a largest relative deviation of 3.88e-6 (a gradient norm) and a largest
+    the maxima: a largest relative deviation of 3.88e-6 (a gradient norm) and a largest
     |ΔK_monitor| of 1.16e-5. The seed facts are the same in every record of the seed."""
     largest = dict.fromkeys(fcd.TOLERANCED, 0.0), dict.fromkeys(fcd.TOLERANCED, 0.0)
     differing = 0
@@ -886,7 +887,7 @@ def test_failing_pair_makes_rate_failing(world) -> None:
 
 
 def test_records_are_bound_to_the_policy(world) -> None:
-    """Review I1: a record counts only under the frozen settings and with the policy's
+    """A record counts only under the frozen settings and with the policy's
     perturbations: the first attempt at the norm 5e-5, a second only ×10 the first."""
     found = cases()
     c = found[0]
@@ -925,7 +926,7 @@ def test_records_are_bound_to_the_policy(world) -> None:
 
 
 def test_incomplete_twice_is_not_qualified(world) -> None:
-    """Review fa12: a case still incomplete after its one rerun makes its rate not_qualified, a
+    """A case still incomplete after its one rerun makes its rate not_qualified, a
     technical verdict (unusable at that batch, never called instability), not failing."""
     found = cases()
     case = by_name(found, 2200, "adamw_prewarmed", 1.1e-05)
@@ -958,7 +959,7 @@ def test_incomplete_twice_is_not_qualified(world) -> None:
         assert not fcd.retry_due(records, found, reader=reader())
         records[case.name][2] = attempt(case, 2)  # a complete rerun within the bound
         assert qualify(records, found)["rates"][key] == "qualified"
-    # Review fa21: the gate is consistency; twin A unlike its archive bit for bit counts
+    # The gate is consistency; twin A unlike its archive bit for bit counts
     records = within_all(found)
     records[case.name][1]["twin_A"]["archive"]["bitwise_equal"] = False
     assert qualify(records, found)["rates"][key] == "qualified"
@@ -985,7 +986,7 @@ def test_incomplete_twice_is_not_qualified(world) -> None:
 
 
 def test_an_instability_stop_makes_the_rate_failing(world) -> None:
-    """Review M6: a regular run stopped by an instability rule is evidence against its rate:
+    """A regular run stopped by an instability rule is evidence against its rate:
     failing, with the reason prefix ``instability:``; its FA control is rejected."""
     found = cases()
     case = by_name(found, 2201, "adam_frozen", 1.46e-05)
@@ -1021,7 +1022,7 @@ def test_the_reference_fallback_is_recorded_per_case(world) -> None:
 
 
 def test_a_record_counts_only_for_the_run_located_now(world) -> None:
-    """Review M3: a regular run relaunched, or whose records changed, after the twins leaves
+    """A regular run relaunched, or whose records changed, after the twins leaves
     the old record uncounted."""
     found = cases()
     case = found[4]
@@ -1136,7 +1137,7 @@ def call(monkeypatch, argv, *, untracked=False):
 def test_verdict_schema(world, monkeypatch, capsys) -> None:
     """The record the selection reads, at RUNS_DIR/numerical/b{B}-u{U}/verdicts/<digest>.json
     (and its copy verdict.json), through the script; ``qualified`` iff every rate is qualified
-    and every control accepted; the policy with the regular runs' GPU code (review fa13)."""
+    and every control accepted; the policy with the regular runs' GPU code."""
     found = cases()
     root = world
     out = fcd.numerical_root(20, 8, root)
@@ -1236,7 +1237,7 @@ def test_verdict_schema(world, monkeypatch, capsys) -> None:
     write_records(out, records, controls)
     assert script("--dry-run") == 0 and script("--retry-needed") == 3
     assert not (out / "verdicts").exists() and not (out / "verdict.json").exists()
-    # Review fa13: the regular runs' GPU code unlike the check's, no record counts
+    # The regular runs' GPU code unlike the check's, no record counts
     monkeypatch.setitem(GPU_SHA, RUN_COMMIT, "other")
     v = outcome()
     assert v["qualified"] is False and set(v["rates"].values()) == {"incomplete"}
@@ -1249,7 +1250,7 @@ def test_verdict_schema(world, monkeypatch, capsys) -> None:
 
 
 def test_every_selection_keeps_its_verdict(world, monkeypatch, capsys) -> None:
-    """Review I4: the verdict that made a rate failing stays when the re-solved selection's is
+    """The verdict that made a rate failing stays when the re-solved selection's is
     written; the same selection's earlier verdict moves to the history; a digest file holding
     another selection is never overwritten."""
     root = world
@@ -1331,10 +1332,10 @@ def snapshot(directory: Path) -> dict[str, bytes]:
 
 
 def test_a_dry_run_moves_nothing(world, monkeypatch, capsys) -> None:
-    """Review I2: every --dry-run (and --retry-needed) only reads: at a later commit with the
+    """Every --dry-run (and --retry-needed) only reads: at a later commit with the
     same GPU code, at a commit with other GPU code, and from a dirty checkout, ``out/`` stays
     byte-identical. A verdict from a dirty checkout is refused; a later analysis-only commit
-    keeps every record (review I3: nothing is due)."""
+    keeps every record (nothing is due)."""
     root = world
     out = fcd.numerical_root(20, 8, root)
     records = within_all(cases())
@@ -1374,7 +1375,7 @@ def test_a_dry_run_moves_nothing(world, monkeypatch, capsys) -> None:
 
 
 def test_a_shadowing_config_is_refused(tmp_path, world, monkeypatch, capsys) -> None:
-    """Review N2: a file ``experiments/numerical_check.yaml`` in the working directory (which
+    """A file ``experiments/numerical_check.yaml`` in the working directory (which
     ``load_config`` reads before the tracked one) is not the tracked settings: the writing
     parts refuse it; a dry run only prints."""
     shadow = tmp_path / "cwd"
@@ -1408,7 +1409,7 @@ def test_a_shadowing_config_is_refused(tmp_path, world, monkeypatch, capsys) -> 
 
 def test_a_verdict_counts_its_records_at_another_runs_root(tmp_path, world, monkeypatch,
                                                            capsys) -> None:  # fmt: skip
-    """Review N3: a record names its run relative to the runs root, so a verdict recomputed with
+    """A record names its run relative to the runs root, so a verdict recomputed with
     RUNS_DIR restored elsewhere counts the same records."""
     out = fcd.numerical_root(20, 8, world)
     write_records(out, within_all(cases()), {lr: {1: control(lr), 2: None}
@@ -1429,7 +1430,7 @@ def test_a_verdict_counts_its_records_at_another_runs_root(tmp_path, world, monk
 
 
 def test_the_plan_notes_an_instability_stop(world, monkeypatch, capsys) -> None:
-    """Review N1 and N4: a regular run that an instability rule stopped, conforming otherwise,
+    """A regular run that an instability rule stopped, conforming otherwise,
     is found with a note, and is no problem for the plan; one that also departs from the
     prescribed run (here its protocol version) stays a problem."""
     namespace = runpy.run_path(str(SCRIPT))
@@ -1460,7 +1461,7 @@ def test_the_plan_notes_an_instability_stop(world, monkeypatch, capsys) -> None:
 
 
 def test_the_plan_notes_runs_given_up(tmp_path, world, monkeypatch, capsys) -> None:
-    """The final review of gate B, I1: a case whose regular run the launcher gave up on, named
+    """A case whose regular run the launcher gave up on, named
     in the selection record's ``given_up``, is no problem for the plan but a note: the parts
     record it incomplete, then not qualified. A seed whose only FA run is given up has its other
     cases noted too (that run sets the seed's v₀ and p1, p2 up). Unnamed, a missing run stays a
@@ -1523,7 +1524,7 @@ def test_the_plan_notes_runs_given_up(tmp_path, world, monkeypatch, capsys) -> N
 
 
 def test_run_environment_departures() -> None:
-    """The final review of gate B, I3: the fields a run records are compared (the GPU names as a
+    """The fields a run records are compared (the GPU names as a
     set); a field it does not record departs when this environment records one; the container
     image only when the run recorded one."""
     here = {"hardware.gpus": ["NVIDIA L40S"], "hardware.driver": "580.95",
@@ -1564,7 +1565,7 @@ def test_run_environment_departures() -> None:
 
 
 def test_records_follow_the_gpu_code(tmp_path, world) -> None:
-    """Review I3, option (a), with code_identity on a repository of its own: records written at
+    """With code_identity on a repository of its own: records written at
     a commit X count at a later analysis-only commit Y, and are stale after a change of a GPU
     path (Z)."""
     repo = tmp_path / "repo"
@@ -1603,7 +1604,7 @@ def test_records_follow_the_gpu_code(tmp_path, world) -> None:
 
 
 def test_the_selection_record(tmp_path) -> None:
-    """Review M4: ``rates`` is required, ``batch`` and ``U`` are the only other keys, anything
+    """``rates`` is required, ``batch`` and ``U`` are the only other keys, anything
     else is refused with a clear message."""
     namespace = runpy.run_path(str(SCRIPT))
     parsed = namespace["parse_rates"](["adamw=1e-05,2e-05,3e-05", "adam_frozen=1e-05"])
@@ -1615,7 +1616,7 @@ def test_the_selection_record(tmp_path) -> None:
             "prewarmed_adamw_25": RATES["adamw_prewarmed"]}  # fmt: skip
     record.write_text(json.dumps({"batch": 20, "U": 8, "rates": arms}))
     assert namespace["read_selection"](record, 20, 8.0) == (RATES, [])
-    # The final review of gate B, I1: the cases given up by the launcher, the one optional key
+    # The cases given up by the launcher, the one optional key
     assert namespace["SELECTION_KEYS"] == {"rates", "batch", "U", "given_up"}
     record.write_text(json.dumps({"batch": 20, "U": 8, "rates": arms,
                                   "given_up": ["s2200-adamw-1.32e-05"]}))  # fmt: skip
@@ -1638,7 +1639,7 @@ def test_the_selection_record(tmp_path) -> None:
 
 
 def test_the_cost_model() -> None:
-    """Review M1: 6.5 twin-equivalents per case; the plan prints the cost with and without an
+    """6.5 twin-equivalents per case; the plan prints the cost with and without an
     allowance for a full-float64 reference lost before an AdamW or pre-warmed fallback."""
     namespace = runpy.run_path(str(SCRIPT))
     s = scope()
@@ -1653,7 +1654,7 @@ def test_the_cost_model() -> None:
 
 
 def test_the_check_refuses_other_gpu_code(tmp_path, clean_head, monkeypatch) -> None:
-    """Review fa13: every regular run's recorded commit must have the check's GPU identity, from
+    """Every regular run's recorded commit must have the check's GPU identity, from
     a clean checkout; otherwise neither part runs anything."""
     found = cases()
     root = tmp_path / "runs"
@@ -1758,8 +1759,8 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
                       "then")  # fmt: skip
     disk = next(i for i, line in enumerate(lines) if line.startswith('if [ "$free_kb" -lt 40'))
     namespace = runpy.run_path(str(SCRIPT))
-    # The final review of gate B: the free host memory (M7), then the checkpoints an interrupted
-    # case left cleared (M8), before the disk check and the plan
+    # The free host memory, then the checkpoints an interrupted
+    # case left cleared, before the disk check and the plan
     host = lines.index(f'if ! project-run "$SRC" python -c "{namespace["HOST_FREE"]}" 52.5; then')
     assert lines[host + 1].startswith('  stop "52.5 GB of free host memory are needed')
     cleared = lines.index('rm -rf -- "$OUT/twins/checkpoints"')
@@ -1823,8 +1824,7 @@ def tiny_cases():
 def run_config_of(base, case, device):
     """A tiny numerical run as the stage makes them (experiments/study2_short_k_only): the K-only
     evaluation (``eval.k_only``) and the update scalars on (``tracking.update_scalars``), so
-    that the archive composes the K-only path, the scalars and twin A (the final review of gate
-    B, M3)."""
+    that the archive composes the K-only path, the scalars and twin A."""
     experiment = base / "numerical.yaml"
     experiment.write_text("defaults: [experiments/smoke, eval/study2, schedule/short]\n")
     overrides = [*SMALL, *APPENDABLE, "teacher.chunk_size=12", f"train.steps={STEPS}",
@@ -1913,7 +1913,7 @@ def check_the_records(out, root, *, device, rule_gb=None):
     found = tiny_cases()
     norm = tiny_settings().numerical.perturbation.norm
     the_reader = tiny_reader(root)
-    # The final review of gate B, M3: twin A reproduced K-only runs that recorded the scalars
+    # Twin A reproduced K-only runs that recorded the scalars
     for run in sorted((root / "study2_short").iterdir()):
         meta = json.loads((run / "meta.json").read_text())
         assert meta["inputs"]["k_only"] is True and not (run / "responses").exists(), run.name
@@ -1941,7 +1941,7 @@ def check_the_records(out, root, *, device, rule_gb=None):
         assert the_reader.why_not(record, case) is None, case.name
         archived = record["twin_A"]["archive"]
         assert archived["bitwise_equal"], case.name  # twin A is its run, bitwise
-        assert archived["consistent"] and archived["end"]["equal"], case.name  # review fa21
+        assert archived["consistent"] and archived["end"]["equal"], case.name
         assert set(record["pairs"]) == set(fcd.PAIRS)
         for key, p in record["pairs"].items():
             assert [r["step"] for r in p["D_twin"]] == [1, 3, 6], (case.name, key)
@@ -1962,7 +1962,7 @@ def check_the_records(out, root, *, device, rule_gb=None):
         assert f["scales"]["p1"] * f["direction_norms"]["p1"] == pytest.approx(norm)
         assert f["rounding_heuristic"]["norm"] > 0 and f["residual"]["grad_norm"] > 0
     assert len({f["v0_sha256"] for f in facts.values()}) == 3  # each seed its v₀
-    # The final review of gate B, M7: each record holds the host's peak resident memory and the
+    # Each record holds the host's peak resident memory and the
     # free host memory when it was written
     for entry in host:
         assert set(entry) == {"peak_rss_gb", "available_gb", "meminfo_gb", "cgroup_gb"}
@@ -2028,7 +2028,7 @@ def test_no_harm_paths(archive, tmp_path, monkeypatch, clean_head, capsys) -> No
     shutil.rmtree(out / "twins" / "s2")
     assert "tracked settings" in str(call(monkeypatch, argv))
     assert call(monkeypatch, [*argv, "--dry-run"]) == 0  # only printing is allowed
-    # Review fa13: GPU code unlike the regular runs' runs nothing; the plan fails on it
+    # GPU code unlike the regular runs' runs nothing; the plan fails on it
     shutil.rmtree(out / "controls")
     monkeypatch.setitem(GPU_SHA, RUN_COMMIT, "other")
     assert run_script(monkeypatch, config, root, "plan", "--device", "cpu") == 1
@@ -2046,7 +2046,7 @@ def test_no_harm_paths(archive, tmp_path, monkeypatch, clean_head, capsys) -> No
 
 def test_the_parts_record_an_instability_stop(archive, tmp_path, monkeypatch, clean_head,
                                               capsys) -> None:  # fmt: skip
-    """Review N1, at the driver's level: an FA regular run that the ×10 gradient rule stopped
+    """At the driver's level: an FA regular run that the ×10 gradient rule stopped
     lets the plan pass (with a note); ``control`` and ``twins`` record it; the verdict reads its
     rate failing (``instability:``) and its FA control rejected."""
     env, root = copy_world(archive, tmp_path, monkeypatch)
@@ -2085,7 +2085,7 @@ def test_the_parts_record_an_instability_stop(archive, tmp_path, monkeypatch, cl
 
 def doctored(run_dir: Path, factor: float) -> tuple[float, float]:
     """The archived run's first gradient norm moved up by ``factor`` times twin A's tolerance
-    (review fa21; twin A reproduces the tiny CPU runs bit for bit); returns (before, after)."""
+    (twin A reproduces the tiny CPU runs bit for bit); returns (before, after)."""
     metrics = run_dir / "metrics.jsonl"
     rows = [json.loads(line) for line in metrics.read_text().splitlines()]
     row = next(r for r in rows if "loss" in r)
@@ -2097,7 +2097,7 @@ def doctored(run_dir: Path, factor: float) -> tuple[float, float]:
 
 def test_a_twin_a_inside_the_tolerance_goes_on_to_the_pairs(archive, tmp_path, monkeypatch,
                                                             clean_head) -> None:  # fmt: skip
-    """Review fa21: a doctored archive half the tolerance away from twin A. Twin A is consistent,
+    """A doctored archive half the tolerance away from twin A. Twin A is consistent,
     not bit for bit; the pairs and the reference run against it, and its rate qualifies as the
     undoctored world's does."""
     env, root = copy_world(archive, tmp_path, monkeypatch)
@@ -2130,7 +2130,7 @@ def test_a_twin_a_inside_the_tolerance_goes_on_to_the_pairs(archive, tmp_path, m
 def test_a_twin_a_unlike_its_archive_is_incomplete_twice(
     archive, tmp_path, monkeypatch, clean_head, capsys
 ) -> None:
-    """A doctored archive just outside twin A's tolerance (1.01 times it, review fa21): twin A
+    """A doctored archive just outside twin A's tolerance (1.01 times it): twin A
     is not consistent, no pair is run, the case is incomplete and its reason names the field,
     the step and the values; its rerun in a fresh process (``twins --retry``) differs again,
     and the rate is not_qualified. The record names the doctored run, as located when it ran."""
@@ -2176,7 +2176,7 @@ def test_a_twin_a_unlike_its_archive_is_incomplete_twice(
 
 
 def test_twin_a_reads_the_streams_its_run_read(archive, tmp_path, monkeypatch, clean_head) -> None:
-    """Provenance (review fa21): the streams twin A read, the training prefix and, for an arm
+    """Provenance: the streams twin A read, the training prefix and, for an arm
     that reads v₀, the seed's preconditioner stream, are compared exactly with those its run
     recorded (meta.json). A run that recorded another preconditioner stream is incomplete,
     however equal its numbers; an AdamW case reads no v₀ and its run records none."""
@@ -2211,7 +2211,7 @@ def test_twin_a_reads_the_streams_its_run_read(archive, tmp_path, monkeypatch, c
 
 
 def test_the_reference_falls_back_in_a_case(archive, tmp_path, monkeypatch, clean_head) -> None:
-    """Review M2: the full-float64 reference of one case meets the memory cap
+    """The full-float64 reference of one case meets the memory cap
     (``torch.OutOfMemoryError``); its fallback is recorded in the attempt and listed by the
     verdict."""
     env, root = copy_world(archive, tmp_path, monkeypatch)
@@ -2250,7 +2250,7 @@ def test_a_missing_or_unstable_run_is_recorded(archive, tmp_path, monkeypatch,
                                                clean_head) -> None:  # fmt: skip
     """A case without its regular run is recorded incomplete with why, and a seed without its FA
     run records every case of the seed. A regular run stopped by an instability rule is
-    recorded as such (review M6), its rate failing and its FA control rejected; one stopped
+    recorded as such, its rate failing and its FA control rejected; one stopped
     otherwise is technical. A control without its run is recorded incomplete."""
     env, root = copy_world(archive, tmp_path, monkeypatch)
     s = tiny_settings()
@@ -2280,7 +2280,7 @@ def test_a_missing_or_unstable_run_is_recorded(archive, tmp_path, monkeypatch,
     for case, terminal in ((adamw1, unstable), (fa1, interrupted), (prewarmed1, unstable)):
         path = fcd.locate_case(root, scope_, case) / "terminal.json"
         path.write_text(json.dumps({**json.loads(path.read_text()), **terminal}))
-    # Review N4: a run that departs otherwise (its protocol version) is technical, even when an
+    # A run that departs otherwise (its protocol version) is technical, even when an
     # instability rule stopped it
     config = fcd.locate_case(root, scope_, prewarmed1) / "config.yaml"
     config.write_text(config.read_text().replace("protocol_version: 1", "protocol_version: 2"))
@@ -2322,7 +2322,7 @@ def test_a_missing_or_unstable_run_is_recorded(archive, tmp_path, monkeypatch,
     assert "0 finished runs" in record["reason"] and "traceback" in record
 
 
-# --------------------------------------- memory: one seed's setup at a time (review fa14, 1)
+# --------------------------------------- memory: one seed's setup at a time
 
 
 class Allocations:
@@ -2403,7 +2403,7 @@ WATCHED = ["monitor", "p1 direction", "replayed targets", "residual", "second mo
 
 @pytest.mark.parametrize("attempt, failing", [(1, None), (2, None), (1, 1)])
 def test_seed_setups_do_not_overlap(archive, tmp_path, monkeypatch, attempt, failing) -> None:
-    """Review fa14, 1, on the CPU: when a seed's setup starts (its first allocation), nothing the
+    """On the CPU: when a seed's setup starts (its first allocation), nothing the
     setups of the seeds before allocated is reachable any more (after ``gc.collect()``): their
     models, θ₀, v₀, the residual, batch 0's replayed targets, the directions and the monitor.
     So for a first attempt, a rerun (the retry path, attempt 2), and a seed whose setup fails
@@ -2448,7 +2448,7 @@ def test_seed_setups_do_not_overlap(archive, tmp_path, monkeypatch, attempt, fai
 
 
 def test_setup_only_tensors_are_released_before_yield(archive, tmp_path, monkeypatch) -> None:
-    """Review fa14, 1: inside ``twin_setup``, at its yield, batch 0's replayed targets are no
+    """Inside ``twin_setup``, at its yield, batch 0's replayed targets are no
     longer referenced, and the residual only by ``shared``: once the caller pops it
     (``seed_directions`` does), it is freed. At the exit ``shared`` is emptied, and nothing of
     the setup outlives the caller's own references."""
@@ -2473,7 +2473,7 @@ def test_setup_only_tensors_are_released_before_yield(archive, tmp_path, monkeyp
 
 
 def test_the_controls_setup_is_released(archive, tmp_path, monkeypatch) -> None:
-    """Review fa14, 1, for the same-path controls: their setup is built once (one student);
+    """For the same-path controls: their setup is built once (one student);
     each control's own reference model is gone when the next control allocates its own, a
     failed control's too, and nothing of the part is reachable once it returns."""
     env, root = copy_world(archive, tmp_path, monkeypatch)
@@ -2551,9 +2551,9 @@ def given_up_reason(request) -> str:
 
 def test_a_given_up_run_lets_the_driver_finish(archive, tmp_path, monkeypatch, clean_head,
                                                capsys) -> None:  # fmt: skip
-    """The final review of gate B, I1, end to end: a K-only run the launcher gave up on, named
+    """End to end: a K-only run the launcher gave up on, named
     in the selection record (``given_up``), which the driver passes to every part with the
-    record itself (``--request``, review fa14, 2). The plan notes it, the parts record its case
+    record itself (``--request``). The plan notes it, the parts record its case
     incomplete twice, given up by the launcher with the request as evidence, and the verdict
     holds its rate not_qualified (technical) with nothing left incomplete: the driver ends."""
     env, root = copy_world(archive, tmp_path, monkeypatch)
@@ -2639,7 +2639,7 @@ def no_gpu(monkeypatch) -> None:
 
 def test_every_baseline_given_up_finishes_without_a_gpu(archive, tmp_path, monkeypatch,
                                                         clean_head, capsys) -> None:  # fmt: skip
-    """Review fa14, 2, the extreme case: the launcher gave up on every numerical run (the tiny
+    """The extreme case: the launcher gave up on every numerical run (the tiny
     archive without any), and the check request names every case. The driver's steps all exit
     without a step that needs a GPU (no environment, model, setup or memory rule): the code and
     environment checks, with nothing to compare, are skipped with a note; each case and FA
@@ -2699,7 +2699,7 @@ def test_every_baseline_given_up_finishes_without_a_gpu(archive, tmp_path, monke
 
 def test_a_seed_given_up_whole_beside_others_finishes(archive, tmp_path, monkeypatch, clean_head,
                                                       capsys) -> None:  # fmt: skip
-    """Review fa14, 2, a mixed case: every run of seed 1 given up, and the FA run at 1e-3 on seed
+    """A mixed case: every run of seed 1 given up, and the FA run at 1e-3 on seed
     0 (with it, its same-path control); the others are located. The driver finishes: the cases
     given up and that control are recorded without a GPU (their reruns build no environment),
     the rest are checked as ever; their rates are not qualified, the others qualified or failing,
@@ -2753,7 +2753,7 @@ def test_a_seed_given_up_whole_beside_others_finishes(archive, tmp_path, monkeyp
 
 def test_another_run_environment_is_refused(archive, tmp_path, monkeypatch, clean_head,
                                             capsys) -> None:  # fmt: skip
-    """The final review of gate B, I3: a regular run whose meta.json records another driver,
+    """A regular run whose meta.json records another driver,
     another package version, or a container image this process does not run in: the plan
     exits 1 naming the field, and ``control`` and ``twins`` exit 7 recording nothing."""
     env, root = copy_world(archive, tmp_path, monkeypatch)
@@ -2789,12 +2789,12 @@ def test_another_run_environment_is_refused(archive, tmp_path, monkeypatch, clea
 
 
 def test_void_moves_what_another_gpu_code_made(world, monkeypatch, capsys) -> None:
-    """The final review of gate B, I2: after a GPU-path change (HEAD at ``OTHER``), ``void``
+    """After a GPU-path change (HEAD at ``OTHER``), ``void``
     moves, never deletes, every numerical run at B whose recorded commit's GPU code is not
     HEAD's and the check's directory to RUNS_DIR/void/<old GPU code>/, with an inventory of
     every file and its sha256 and a record; a run made at HEAD's GPU code stays. With them go
     the launcher's log of the campaign that made them, its attempts' logs and the campaign's
-    file under campaigns/ with its driver (the coordinator's ruling on concern C2). It refuses
+    file under campaigns/ with its driver. It refuses
     on a dirty checkout, with nothing to void, before moving a run of another role, and when
     the campaign's log also names a run it leaves in place."""
     s = scope()
@@ -2895,7 +2895,7 @@ def void_at(world, monkeypatch, upper=8, *extra):
 
 def test_void_refuses_another_us_check_and_records_a_missing_one(world, monkeypatch,
                                                                  capsys) -> None:  # fmt: skip
-    """The coordinator's ruling on the re-review's N1: the numerical runs at B serve every U's
+    """The numerical runs at B serve every U's
     check, so a check directory of another U at B refuses the void, nothing moved (a wrong
     --upper included); without the check directory of the given U (a GPU-path change between
     the K-only runs and their check) the runs move and the record says "no check directory"."""
@@ -2921,7 +2921,7 @@ def test_void_refuses_another_us_check_and_records_a_missing_one(world, monkeypa
 def test_void_refuses_mixed_codes_an_existing_destination_or_an_unclean_run(
     world, monkeypatch, capsys
 ) -> None:
-    """The re-review's N2: old runs of several GPU codes, a destination that exists, and a run
+    """Old runs of several GPU codes, a destination that exists, and a run
     that records no clean commit each refuse the void, nothing moved."""
     first = fcd.locate_case(world, scope(), cases()[0]) / "meta.json"
     original = first.read_text()
@@ -2951,9 +2951,9 @@ def test_void_refuses_mixed_codes_an_existing_destination_or_an_unclean_run(
 
 @pytest.mark.parametrize("role", ["validation", "confirmation", "timecourse"])
 def test_void_refuses_once_s3_has_started(world, monkeypatch, capsys, role) -> None:
-    """The coordinator's ruling on concern C1: one run of the role validation, confirmation or
+    """One run of the role validation, confirmation or
     timecourse at B, whatever its GPU code, refuses the void, and nothing moves: a GPU-path
-    change after S3 has started goes to the coordinator (a budget decision)."""
+    change after S3 has started is refused here (a budget decision)."""
     monkeypatch.setattr(fcd, "git_state", lambda *a, **k: {"commit": OTHER, "dirty": False})
     started = fcd.NumericalCase(2100, "adamw", 1.32e-05, 20, 8)
     fake_runs(world, [started], commit=OTHER)
@@ -3017,7 +3017,7 @@ def test_cuda_pipeline(cuda_archive, cuda_rule, tmp_path, monkeypatch, clean_hea
 
 @needs_cuda
 def test_seed_setups_do_not_overlap_on_cuda(cuda_archive, tmp_path, monkeypatch) -> None:
-    """Review fa14, 1, on a GPU (the tiny model): ``torch.cuda.memory_allocated()`` when a
+    """On a GPU (the tiny model): ``torch.cuda.memory_allocated()`` when a
     seed's setup starts equals its value before the first seed's, for first attempts, reruns
     (the retry path) and after a seed whose setup failed once it had allocated. The same-path
     controls each start beside the setup alone, and every part ends where it began."""

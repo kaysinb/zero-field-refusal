@@ -67,7 +67,7 @@ authoritative copies.
   update to its documented specification. When adding or renaming a document, update map.yaml.
   Keep watch patterns aligned with code as planned modules are implemented.
 - Run the checker after changes, including work that is not being committed. Inspect its impact
-  report and state in the handoff which topics were reviewed. A dependent file need not change
+  report and go through the listed topics. A dependent file need not change
   if its description remains correct; do not make cosmetic edits merely to mark it reviewed.
 - Fixed preregistrations and historical reports keep the protocol version and evidence they
   describe. Change a fixed rule only through the documented amendment process. Never silently

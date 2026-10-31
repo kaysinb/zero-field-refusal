@@ -37,7 +37,7 @@ Runs and produces:
 - Calibrate the judge on 200 of these responses against reference labels: three model labelers
   (Claude Opus 5, Claude Sonnet 5 and GPT, gpt-6-astra through the Codex CLI; versions corrected
   on 2026-10-12 from the session logs) label the blind sample independently, a fresh Claude Opus
-  4.8 arbiter resolves their disagreements, and the user checks every disputed item and 30 random
+  4.8 arbiter resolves their disagreements, and a person checks every disputed item and 30 random
   unanimous ones (changed from labeling by hand on 2026-10-11;
   [amendment](preregistration.md#amendments)). Claude Fable 5.1 was planned as a labeler, but its
   safety filter stopped it on the harmful texts; Sonnet replaced it.
@@ -181,8 +181,8 @@ as it ran.
 **Amended on 2026-10-19** ([amendment 4](study2-preregistration.md#amendment-4-a-corrected-numerical-criterion-batch-20-and-the-mechanism-cohort)):
 B = 20 is the fixed scope, and the work runs in five stages. S1, the discovery at (8, 20), with
 the pre-warmed arm's first round; S2, the numerical qualification of the selected rates on fresh
-K-only seeds (voided after a GPU-path change and repeated once); then, after the review of the
-analysis code (gate C) and the versions record, S3, the three-arm validation on 12 fresh blocks;
+K-only seeds (voided after a GPU-path change and repeated once); then, after the
+analysis code is fixed (gate C) and the versions record, S3, the three-arm validation on 12 fresh blocks;
 S4, the confirmation up to 60 blocks jointly supported for the three arms (cap 80), with the time
 course on its first 10 blocks and the drift diagnostic; S5, judging, the looks, the final
 analyses and the audit. Before each stage its forecast is set against the remaining budget. The
@@ -190,7 +190,7 @@ procedure is in [operations](operations.md#study-2-amendment-4-numerical-qualifi
 
 **Stage A (feasibility):** code first, then numerics, discovery and validation on fresh seeds:
 
-1. **Code**, each piece reviewed before any GPU use:
+1. **Code**, each piece checked before any GPU use:
    - appendable, prefix-stable teacher streams;
    - soft targets computed in bounded memory;
    - Hessian–vector products for the top curvature;

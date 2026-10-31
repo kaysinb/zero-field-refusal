@@ -457,7 +457,7 @@ def test_the_midpoint_repairs_the_widest_bracket() -> None:
 
 
 def test_the_allowance_round_never_proposes_an_unusable_rate() -> None:
-    """The coordinator's ruling on C2 (review fa22): the search allowance's repair round keeps an
+    """The search allowance's repair round keeps an
     unusable rate's K as data, but never proposes it. Here 1.09e-5 was run and found unusable
     by a numerical check, its median K exactly the target 5: re-targeting lands on it."""
     records = {
@@ -865,7 +865,7 @@ def test_two_verdicts_at_8_20_a_failing_fa_rate_and_the_resolved_selection(tmp_p
                        facts=commits(runs), reuse=reusable)  # fmt: skip
     assert result["unread_verdicts"] == [verdict_path(other, upper=7.0)]
     assert "a verdict the selection did not read marks ['adamw|1.5e-05']" in result["problems"][0]
-    # No campaign on such records: the step waits as ``pending`` (review of Task 2, minor 5).
+    # No campaign on such records: the step waits as ``pending``.
     assert result["next"] == {"campaign": "incomplete"}
     assert result["pending"]["campaign"] == "validation"
     # A verdict whose name is not the digest of its rates: malformed, no conclusion.
@@ -914,7 +914,7 @@ def test_a_replacement_u_rate_gets_its_cases_on_2201_and_2202() -> None:
 def test_an_unusable_fa_control_is_like_a_failing_rate() -> None:
     # FA's U-rate's control rejected: FA has no triple at U = 8 without 2.17e-5, so its
     # allowance's repair round re-targets U; the round never proposes an unusable rate, and
-    # proposes 2.18e-5 instead (review fa22, the coordinator's ruling on C2).
+    # proposes 2.18e-5 instead.
     def judge(rejected):
         return lambda check: verdict_of(
             check,
@@ -953,7 +953,7 @@ def test_an_unusable_fa_control_is_like_a_failing_rate() -> None:
 def test_old_controls_are_reported_not_used() -> None:
     # Amendment 3's history at B = 5: its targeted round at (8, 5) and three FA controls, two of
     # them rejected. B = 20 fails here (AdamW's K stays far below the targets); B = 5 is never
-    # visited (review fa22), so the history stays unreached and decides nothing.
+    # visited, so the history stays unreached and decides nothing.
     scale = {**SCALE, (ADAMW, 20): 0.2}
     runs = grids(scale)
     history = {ADAMW: [1.17e-5, 1.37e-5], FA: [1.27e-5, 1.49e-5, 1.74e-5]}
@@ -1094,7 +1094,7 @@ def test_primary_only_fallback_end_to_end() -> None:
 
 @pytest.mark.usefixtures("amendment4_order")
 def test_the_fallback_carries_a_primary_re_solve_of_pass_1() -> None:
-    """Review of Task 2, critical 1; review fa22: pass 1 re-solved AdamW at (8, 20) (1.48e-5
+    """Pass 1 re-solved AdamW at (8, 20) (1.48e-5
     failing), spending its search allowance there, and failed there on the pre-warmed arm (its
     rates failing, its allowance's repair rates out of their utility bounds). The fallback's
     check of AdamW's replacement 1.5e-5 finds it failing: AdamW's allowance at the candidate
@@ -1249,7 +1249,7 @@ def test_validation_failure_moves_on() -> None:
 
 
 def test_a_technical_validation_shortfall_blocks() -> None:
-    """The coordinator's ruling on C3 (review fa22; 10 of 12 unchanged): a validation that fails
+    """The 10 of 12 unchanged: a validation that fails
     only because blocks are unsupported for technical causes (here AdamW's K* run stopped out of
     memory on seeds 2100-2102: 9 of 12 jointly supported), with no instability and no utility
     failure, blocks the stage for a human decision. The same shortfall with a cause in K (the
@@ -1319,7 +1319,7 @@ def test_a_three_arm_validation_failure_falls_back_to_the_primary_validation() -
 
 
 def test_no_candidate_gives_a_b20_feasibility_report() -> None:
-    """Review fa22: when no candidate qualifies, the stage ends ``infeasible`` (the name kept)
+    """When no candidate qualifies, the stage ends ``infeasible`` (the name kept)
     with ``scope`` "B=20" and a feasibility report, per candidate and arm, of what failed and
     why, the scientific failures apart from the technical ones; never a B = 5 candidate."""
     wide = {ADAMW: {2000: 0.8, 2001: 1.0, 2002: 1.3}}  # wider than the targets' spacing
@@ -1414,7 +1414,7 @@ def test_no_candidate_gives_a_b20_feasibility_report() -> None:
 
 
 def test_a_technical_rate_spends_the_allowance_then_blocks() -> None:
-    """Review fa22, with S2's shape at (8, 20): FA's lowest rate and the pre-warmed arm's U-rate
+    """With S2's shape at (8, 20): FA's lowest rate and the pre-warmed arm's U-rate
     not qualified (technical). Each arm spends its search allowance once: here the re-solve finds
     a replacement for both. The replacements not qualified again, the stage is blocked for a
     human decision, not moved on to (7, 20): a technical rate never decides the candidate."""
@@ -1466,8 +1466,8 @@ def test_a_technical_rate_spends_the_allowance_then_blocks() -> None:
     seen, result, _ = drive(runs, scale=scale, judge=judge(first))
     assert seen[-1] == "done" and (result["next"]["U"], result["next"]["three_arm"]) == (8.0, True)
     assert result["next"]["rates"] == resolved
-    # A re-solve with no feasible triple gets the allowance's repair round (the coordinator's
-    # ruling on C2). In S2's shape at the world's own scale the pre-warmed U-rate 1.74e-5 is
+    # A re-solve with no feasible triple gets the allowance's repair round.
+    # In S2's shape at the world's own scale the pre-warmed U-rate 1.74e-5 is
     # the one rate near U: re-targeting U lands on it (its K still interpolated), so the round
     # proposes the nearest admissible rate inside its bracketing pair (1.59e-5, 1.74e-5),
     # 1.73e-5, never the unusable one; run and checked, it qualifies and the stage is done.
@@ -1492,7 +1492,7 @@ def test_a_technical_rate_spends_the_allowance_then_blocks() -> None:
 
 
 def test_the_allowance_repair_round_is_a_repair_campaign() -> None:
-    """Review fa22: when the re-solve after a numerical exclusion has no feasible triple, the
+    """When the re-solve after a numerical exclusion has no feasible triple, the
     arm's allowance holds one deterministic repair round (the ``repair`` kind and algorithm, K
     and utility only), named after the check that spent it; its replacement is checked again.
     Here (8, 20) fails its validation (AdamW's U-rate loses 6 pp MMLU), and at (7, 20) FA's
@@ -1606,7 +1606,7 @@ def test_prewarmed_only_failure_keeps_b20() -> None:
 
 @pytest.mark.usefixtures("amendment4_order")
 def test_the_allowance_carries_into_the_primary_pair() -> None:
-    """Review fa22: the allowance carries from a candidate's three-arm attempt into its primary
+    """The allowance carries from a candidate's three-arm attempt into its primary
     pair's and is never reset. At (8, 20) AdamW's K* rate is not qualified: AdamW spends its
     allowance (re-solved to 1.5e-5) while the pre-warmed arm fails the candidate (its rates
     failing, its allowance's repair rates out of their utility bounds). In the primary pair at
@@ -1641,7 +1641,7 @@ def test_the_allowance_carries_into_the_primary_pair() -> None:
 
 @pytest.mark.usefixtures("amendment4_order")
 def test_a_technical_stop_beside_a_scientific_failure_blocks_the_primary_pair() -> None:
-    """Review of fa22, I1: one allowance in all per arm, batch and U, across passes. At (8, 20)
+    """One allowance in all per arm, batch and U, across passes. At (8, 20)
     AdamW's K* rate is not qualified and the pre-warmed U-rate failing: both spend their
     allowances. The second check finds AdamW's replacement 1.5e-5 not qualified (technical)
     and the pre-warmed replacement failing (scientific): the candidate fails on the pre-warmed
@@ -1747,7 +1747,7 @@ def test_a_mark_beside_a_spent_stop_stops_the_pinned_pair() -> None:
 
 
 def test_the_nearest_admissible_rate_crosses_a_decade() -> None:
-    """Review of fa22, M1: the allowance round's substitute walks the 3-digit grid of each
+    """The allowance round's substitute walks the 3-digit grid of each
     rate's own decade, so below 1.00e-5 comes 9.99e-6, not 9.9e-6."""
     nearest = study2_short._nearest_admissible
     assert nearest(1.0e-5, 9.95e-6, 1.02e-5, {1e-5}) == 9.99e-6
@@ -1757,7 +1757,7 @@ def test_the_nearest_admissible_rate_crosses_a_decade() -> None:
 
 
 def test_a_cause_lifted_by_technical_exclusions_blocks_after_the_allowance() -> None:
-    """Review of fa22, M2: after the allowance's repair, an arm left without a triple is judged
+    """After the allowance's repair, an arm left without a triple is judged
     by lifting its technical exclusions, whatever the marks of its last verdict. FA's 1.86e-5 is
     not qualified and 2.17e-5's control rejected; the round proposes 1.85e-5 and 2.18e-5, and
     1.85e-5 is out of its utility bounds: no triple. Lifting 1.86e-5 gives (1.59e-5, 1.86e-5,
@@ -1789,7 +1789,7 @@ def test_a_cause_lifted_by_technical_exclusions_blocks_after_the_allowance() -> 
 
 
 def test_a_utility_member_left_without_a_bound_by_technical_failures_blocks() -> None:
-    """Review of fa22, M3: AdamW's K* rate reads below K* on every validation seed but 2103, so
+    """AdamW's K* rate reads below K* on every validation seed but 2103, so
     that its r_5 1.27e-5 brackets K* there only; its runs on the other seeds ran out of memory.
     Every block stays jointly supported, but the utility member (AdamW, 1.27e-5) has one
     completed run and no bound: a technical failure, so the stage blocks. Its runs completed
@@ -1828,7 +1828,7 @@ def test_a_utility_member_left_without_a_bound_by_technical_failures_blocks() ->
     first = result["attempts"][0]
     assert (first["failed_at"], result["attempts"][1]["U"]) == ("validation", 7.0)
     # Blocks 2100-2102 lost too (their U-rate runs out of memory: 9 of 12, 12 but for them):
-    # a run that both faults name is listed once (the second re-review, nit).
+    # a run that both faults name is listed once.
     seen, result, _ = drive(grids(), hook=hook(oom=True, lost=(2100, 2101, 2102)))
     step = result["next"]
     assert (step["blocked"], step["at"]) == ("technical", "validation")
@@ -1839,10 +1839,10 @@ def test_a_utility_member_left_without_a_bound_by_technical_failures_blocks() ->
 
 
 def test_the_feasibility_report_files_technical_losses_as_technical() -> None:
-    """Review of fa22, M4: a validation block unsupported for a technical cause (an endpoint run
+    """A validation block unsupported for a technical cause (an endpoint run
     out of memory) is listed under technical, one unsupported by K under scientific, and a
     utility member without a bound under technical; a block lost with an instability stop among
-    its failures is scientific (its second re-review, minor 2)."""
+    its failures is scientific."""
     runs = validation_runs()
     lost = {(ADAMW, 1.2e-5, 2100), (ADAMW, 1.4e-5, 2101), (ADAMW, 1.2e-5, 2102)}
     runs = [r for r in runs if (r.arm, r.lr, r.seed) not in lost]
@@ -1870,7 +1870,7 @@ def test_the_feasibility_report_files_technical_losses_as_technical() -> None:
 
 def test_a_technical_exclusion_never_decides_a_later_candidate() -> None:
     """Technical marks never decide a candidate, at a later candidate's discovery either (this
-    implementation's reading of review fa22): AdamW's 1.48e-5 is not qualified at (8, 20) and
+    implementation's reading): AdamW's 1.48e-5 is not qualified at (8, 20) and
     re-solved; the candidate then fails its validation (AdamW's U-rate loses 6 pp MMLU). At
     (7, 20) AdamW's targeted rates are out of their utility bounds, and without 1.48e-5 no
     triple is left after its rounds; with it lifted there is one, so the arm is stopped by the
@@ -2029,7 +2029,7 @@ def test_numerical_verdict_reads_the_tools_record() -> None:
         (FA, 1.86e-5, "control not_qualified")]  # fmt: skip
     assert found["unusable"][1]["reasons"] == ["case s2200 incomplete twice"]
     assert found["unusable"][1]["why"] == "not qualified (technical)"
-    # A control's reasons sit under its FA rate's key, prefixed "control: " (Task 1).
+    # A control's reasons sit under its FA rate's key, prefixed "control: ".
     assert found["unusable"][2]["reasons"] == ["control: incomplete after its rerun"]
     # The record keeps the GPU-code check that let the verdict hold at the checkout.
     assert found["reuse"]["head"]["reusable"] and found["reuse"]["runs"] == {}
@@ -2073,7 +2073,7 @@ def _gpu(record, **changes):
          "stale", "gaussian None"),
         (lambda r: {**r, "policy": {**r["policy"], "reference": "float64"}}, "stale",
          "reference 'float64', frozen 'float64 loss, accumulation"),
-        # Review fa21: twin A's consistency rule is frozen; a verdict without it departs
+        # Twin A's consistency rule is frozen; a verdict without it departs
         (lambda r: {**r, "policy": {k: v for k, v in r["policy"].items()
                                     if k != "twin_a_consistency"}}, "stale",
          "twin_a_consistency None, frozen {'abs': 1e-08, 'rel': 0.0001}"),
@@ -2117,7 +2117,7 @@ def test_incomplete_or_stale_verdict_is_not_a_pass(change, state, reason) -> Non
 
 
 def test_the_tools_tracked_consistency_rule_must_be_the_frozen_one(monkeypatch) -> None:
-    """Review fa21: the selection restates twin A's consistency rule (``NUMERICAL_POLICY``); the
+    """The selection restates twin A's consistency rule (``NUMERICAL_POLICY``); the
     numerical-check tool's tracked settings must hold the same, or no verdict decides."""
     record = verdict_of(request_check())
     assert record["policy"]["twin_a_consistency"] == {"abs": 1e-08, "rel": 0.0001}
@@ -2141,7 +2141,7 @@ def test_a_verdict_holds_across_analysis_only_commits_and_not_gpu_changes() -> N
     # Runs at an analysis-only descendant of the verdict's commit ran the same GPU code.
     later = read(record, commit="a" * 40)
     assert later["state"] == "complete" and later["reuse"]["runs"]["a" * 40]["reusable"]
-    # Task 1 records the check's commits as a list (an older record: one commit).
+    # The tool records the check's commits as a list (an older record: one commit).
     listed = {**record, "policy": {**record["policy"], "tool_commit": [COMMIT, "a" * 40]}}
     assert read(listed)["state"] == "complete"
     # The runs of one check made at several commits: each one's GPU code must be the verdict's.
@@ -2248,7 +2248,7 @@ def test_the_machine_never_passes_an_incomplete_stale_or_unread_check() -> None:
                  {"commit": None, "dirty": None}):  # fmt: skip
         found = at({path: good}, {**commits(runs), replaced: fact})
         assert found["campaign"] == "incomplete"
-    # A replacement made at another commit (review of Task 2, important 1): valid when its GPU
+    # A replacement made at another commit: valid when its GPU
     # code is the verdict's (an analysis-only descendant), stale when it is not or unknown.
     descendant = {**commits(runs), replaced: {"commit": "a" * 40, "dirty": False}}
     assert at({path: good}, descendant)["campaign"] == "validation"
@@ -2260,10 +2260,10 @@ def test_the_machine_never_passes_an_incomplete_stale_or_unread_check() -> None:
 
 
 def test_a_numerical_run_given_up_lets_the_check_go_on() -> None:
-    """Review of Task 2, minor 3: a numerical run the launcher gave up on after its recovery
+    """A numerical run the launcher gave up on after its recovery
     round does not hold the check back; the tool reads its case as not qualified (technical),
-    and its rate leaves the batch like any unusable one, spending its arm's search allowance
-    (review fa22): here AdamW's K* rate, re-solved."""
+    and its rate leaves the batch like any unusable one, spending its arm's search
+    allowance: here AdamW's K* rate, re-solved."""
     runs = grids()
     _, result, _ = drive(runs, until="numerical")
     key = (ADAMW, 20, 1.48e-5, 2200)
@@ -2292,7 +2292,7 @@ def test_a_numerical_run_given_up_lets_the_check_go_on() -> None:
 
 
 def test_a_stale_verdict_keeps_its_marks() -> None:
-    """Review of Task 2, minor 4: a rate a verdict marks failing stays unusable at its batch
+    """A rate a verdict marks failing stays unusable at its batch
     when the verdict goes stale; the re-solved selection's own verdict still decides."""
     runs = grids()
     judge = lambda check: verdict_of(check, {("adamw", 1.48e-5): "failing"})  # noqa: E731
@@ -2310,7 +2310,7 @@ def test_a_stale_verdict_keeps_its_marks() -> None:
 
 
 def test_a_verdict_with_an_incomplete_entry_decides_no_re_solve() -> None:
-    """The coordinator's ruling after fix round 1: a stale verdict that marks AdamW 1.48e-5
+    """A stale verdict that marks AdamW 1.48e-5
     failing but still holds an incomplete entry is not a basis for the re-solve. The next step
     reruns the check, the re-solve is not spent, and once the check is complete the failing
     mark re-solves AdamW as usual."""
@@ -2348,7 +2348,7 @@ def test_a_verdict_with_an_incomplete_entry_decides_no_re_solve() -> None:
 
 
 def test_a_verdict_lacking_an_entry_decides_no_re_solve() -> None:
-    """Re-review 2, new minor 2: a verdict that marks AdamW 1.48e-5 failing but lacks the
+    """A verdict that marks AdamW 1.48e-5 failing but lacks the
     control of an FA rate, or tested FA's U-rate on fewer seeds than its cases, has evidence
     still to come: the next step is the check, and the re-solve is not spent."""
     runs = grids()
@@ -2372,7 +2372,7 @@ def test_a_verdict_lacking_an_entry_decides_no_re_solve() -> None:
 
 
 def test_an_earlier_verdict_keeps_its_marks() -> None:
-    """The coordinator's ruling after the integration step: the tool moves a selection's
+    """The tool moves a selection's
     earlier verdict to verdicts/history/<digest>/ when it writes the selection's verdict again.
     A rate the earlier verdict marks failing stays unusable, though it was stale with an
     unfinished entry and the new verdict omits the mark; the new verdict decides the step."""
@@ -2405,7 +2405,7 @@ def test_an_earlier_verdict_keeps_its_marks() -> None:
     step = at({path: unfinished, moved: earlier})["next"]
     assert (step["campaign"], step["state"]) == ("numerical-check", "incomplete")
     # An earlier verdict that is not one of this selection, or a record at another batch in
-    # its directory (re-review 2, new minor 1): no conclusion.
+    # its directory: no conclusion.
     other = verdict_of(request_check({**SELECTED20, ADAMW: [1.27e-5, 1.5e-5, 1.74e-5]}))
     elsewhere = verdict_of(check, {("adamw", 1.48e-5): "failing"}, batch=5)
     for record, why in ((other, "not an earlier verdict of the selection"),
@@ -2423,7 +2423,7 @@ def test_an_earlier_verdict_keeps_its_marks() -> None:
 
 
 def test_runs_beyond_a_stale_check_wait_for_it() -> None:
-    """Review of Task 2, minor 4: a GPU-path change after the validation runs were made leaves
+    """A GPU-path change after the validation runs were made leaves
     the qualifying verdict stale. The problems name the stale check first; every other one is a
     run made beyond it (``beyond_stale``), so the check's input may still be written."""
     runs = grids()
@@ -2445,7 +2445,7 @@ def test_runs_beyond_a_stale_check_wait_for_it() -> None:
 
 
 def test_the_selection_refuses_a_w_max_other_than_the_issued_campaigns() -> None:
-    """The final review of gate B, I4: w_max is frozen since S1. Under the w_max an issued
+    """w_max is frozen since S1. Under the w_max an issued
     campaign's header recorded the replay goes on; under another, or against a header holding
     no number, it is refused before anything is selected."""
     runs = grids()
@@ -2589,7 +2589,7 @@ def test_replay_on_current_records_prescribes_b20_discovery(archived) -> None:
     first = result["rounds"][f"{PREWARMED}/B=20/U=8"]["first"]
     assert first["proposal"]["rates"] == union and first["proposal"]["joint"]
     # Amendment 3's B = 5 history: its targeted round is never reached (B = 20 is the fixed
-    # scope, review fa22), its controls are reported and not used.
+    # scope), its controls are reported and not used.
     assert len(result["not_reached"]) == 18
     assert all(", 5, " in entry for entry in result["not_reached"])
     reported = [(c["batch"], c["lr"], c["accepted"], c["used"])
@@ -2599,7 +2599,7 @@ def test_replay_on_current_records_prescribes_b20_discovery(archived) -> None:
     assert result["stream_time"]["runs"] == 96 and result["stream_time"]["chunks"] == 162
 
 
-# The archived records up to the S2 repeat (the final review of gate B, M12): S1's discovery at
+# The archived records up to the S2 repeat: S1's discovery at
 # (8, 20), 33 runs of 2026-10-20, and the repeated numerical stage's 15 K-only runs of
 # 2026-10-21, whose check (verdicts/f7cf42e3f76f.json under the runs root's numerical/b20-u8/)
 # qualified every selected rate. The voided first S2 (runs/void/) is not read.
@@ -2685,7 +2685,7 @@ def test_replay_after_the_s2_repeat_prescribes_the_three_arm_validation(
     """The selection, replayed on the archived records up to the S2 repeat (the 155 runs before
     S1, S1's 33 and the repeat's 15, read by their recorded run ids; K, numerics and utility
     only) with the repeat's verdict, prescribes the three-arm validation at (U, B) = (8, 20)
-    with the frozen rates (the final review of gate B, M12). The replay checks the verdict's GPU
+    with the frozen rates. The replay checks the verdict's GPU
     code as of study 2's last commit 028b953, because later studies change GPU paths. Skipped
     where the records, the verdict or the commits are absent."""
     runs, theta0 = archived
@@ -3641,14 +3641,14 @@ def recorded(tmp_path: Path, name: str, evaluate_at: tuple[int, ...], *, other: 
 
 def tolerance_away(x: float, factor: float) -> float:
     """y > x > 0 with y − x = factor·(abs + rel·max(|x|, |y|)): ``factor`` times twin A's
-    tolerance (review fa21)."""
+    tolerance."""
     rule = study2_short.NUMERICAL_POLICY["twin_a_consistency"]
     return (x + factor * rule["abs"]) / (1 - factor * rule["rel"])
 
 
 def test_timecourse_identity(tmp_path) -> None:
-    """A time-course run against its endpoint run (amendment 4, section 4; review fa21:
-    numerical consistency): identical whatever the timings, memory peaks and K_harmful (never
+    """A time-course run against its endpoint run (amendment 4, section 4: numerical consistency):
+    identical whatever the timings, memory peaks and K_harmful (never
     read); consistent when only the named continuous fields differ, within twin A's tolerance;
     excluded just over it, on a value not finite, on any difference in a discrete outcome (the
     accuracies, the departure's median and p90), or on a one-bit difference in any other field;
@@ -3708,7 +3708,7 @@ def test_timecourse_identity(tmp_path) -> None:
     def diagnosed(rows: list) -> dict:  # the scoring diagnostics' row in metrics.jsonl
         return next(r for r in rows if "K_scoring" in r)
 
-    # Review fa21: each named continuous field half the tolerance away is consistent
+    # Each named continuous field half the tolerance away is consistent
     consistent = {
         "training": edited("metrics.jsonl", several(
             lambda rows: move(training(rows, 7), "grad_norm", 0.5),
@@ -3763,7 +3763,7 @@ def test_timecourse_identity(tmp_path) -> None:
             "metrics.jsonl", lambda rows: training(rows, 5).update(loss=math.nan)),
         "update_norm inf against 0.005, outside the tolerance": edited(
             "update_scalars.jsonl", lambda rows: rows[4].update(update_norm=math.inf)),
-        # The discrete outcomes exactly, even inside the tolerance (review fa21): the accuracies
+        # The discrete outcomes exactly, even inside the tolerance: the accuracies
         # (k/N) and the departure's median and p90 (a histogram's bin edges)
         "eval/benchmark_accuracy 0.6000000000000001 against 0.6": edited(
             "metrics.jsonl", lambda rows: bump(rows[-1], "eval/benchmark_accuracy")),
@@ -3788,7 +3788,7 @@ def test_timecourse_identity(tmp_path) -> None:
         "a row missing": edited("update_scalars.jsonl", lambda rows: rows.pop()),
         "is of ('adamw_25', 20, 1.48e-05, 3001)": dataclasses.replace(endpoint, seed=3001),
         "a record does not read": edited("update_scalars.jsonl", lambda rows: None),
-        # A missing record never compares as equal (review of Task 5, M2).
+        # A missing record never compares as equal.
         **{f"has no {record}": edited(record, None)
            for record in ("metrics.jsonl", "monitor.jsonl", "update_scalars.jsonl", "meta.json")},
     }  # fmt: skip
@@ -3806,7 +3806,7 @@ def test_timecourse_identity(tmp_path) -> None:
                                edited("update_scalars.jsonl", None, endpoint))  # fmt: skip
     assert both["state"] == "excluded" and "a record does not read" in both["reasons"][0]
 
-    # NaN on both sides: bit for bit alike, but never consistent, so excluded (review fa23: the
+    # NaN on both sides: bit for bit alike, but never consistent, so excluded (the
     # rule applies to bit-equal records too)
     def nan(rows: list) -> None:
         rows[2]["cos_update_grad"] = math.nan
@@ -3872,7 +3872,7 @@ def test_timecourse_identity(tmp_path) -> None:
 
 
 def test_a_deviation_like_s2s_is_consistent(tmp_path) -> None:
-    """The coordinator's ruling on fa21's concern C1: a time-course run whose training departs
+    """A time-course run whose training departs
     from its endpoint run's at the fp32 level from step 11 on, as S2's twins did (relative
     deviations up to 3.9e-6), the deviation carried into every continuous number after it (the
     gradient's and displacement's norms, the monitor's and the diagnostics' K, the update
@@ -3929,7 +3929,7 @@ def test_a_deviation_like_s2s_is_consistent(tmp_path) -> None:
 
 def test_timecourse_identity_reports_the_rayleigh_records_beside(tmp_path) -> None:
     """The endpoint Rayleigh records (R, ‖δ‖, δᵀH₀δ) are compared beside the identity, without
-    their timings and peaks, and never decide it (review of Task 5, M1): None when either run
+    their timings and peaks, and never decide it: None when either run
     lacks one or its measurement failed."""
     from zero_field_refusal.analysis.study2_short import timecourse_identity
 

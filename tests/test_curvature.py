@@ -159,7 +159,7 @@ def test_lanczos_converges_to_the_top_eigenvalue_and_consumes_its_start() -> Non
 
 
 def test_a_small_residual_early_is_no_reason_to_stop() -> None:
-    # The reviewers' cases (r8, r9): a random start barely overlaps the top eigenvector, and the
+    # The hard cases: a random start barely overlaps the top eigenvector, and the
     # Ritz value rests near a lower eigenvalue with a residual under 1 % before the top one
     # emerges. A residual-based stop would end there; the fixed number of steps does not.
     operator, top, generator = known_operator(400, [500.0, 470.0, 460.0])

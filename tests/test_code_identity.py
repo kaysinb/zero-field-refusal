@@ -31,7 +31,7 @@ from zero_field_refusal.code_identity import (
         ("configs/experiments/study2_short.yaml", True),
         ("pyproject.toml", True),
         ("uv.lock", True),
-        # The run environment's image (review M4): its build and its launcher
+        # The run environment's image: its build and its launcher
         ("Dockerfile", True),
         (".dockerignore", True),
         (".python-version", True),
@@ -109,7 +109,7 @@ def test_identity_reads_the_commit_not_the_working_tree(repo: Path) -> None:
 
 
 def test_an_image_change_voids_the_qualification(repo: Path) -> None:
-    """Review M4: the files that build the run environment are GPU paths, so a change of the
+    """The files that build the run environment are GPU paths, so a change of the
     image's definition is a GPU-code change."""
     files = {"Dockerfile": "FROM a\n", "docker/project-run.py": "x = 1\n",
              ".python-version": "3.12\n", ".dockerignore": "**\n",

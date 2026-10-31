@@ -782,7 +782,7 @@ def altered_replay(change):
 @pytest.mark.parametrize(
     ("change", "projections_close"),
     [
-        (lambda row: row.flip(-1), False),  # unsampled entries moved: the reviewer's case
+        (lambda row: row.flip(-1), False),  # unsampled entries moved
         (lambda row: row + 1e-6, True),  # a few ulps: bytes differ, projections barely move
     ],
 )

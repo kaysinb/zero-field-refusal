@@ -1,14 +1,14 @@
 """Gate C (amendment 4: the analysis, the simulation and the fixation) changes no code a GPU run
 executes: no GPU path (``code_identity.is_gpu_path``) and none of the modules the launcher and
 the GPU tools load, which the GPU identity leaves out (``analysis/__init__.py`` and its imports,
-``analysis/stage_a.py``; the final review of gate B, I5 and M10).
+``analysis/stage_a.py``).
 
 The guarantee is study 2's: it held for every study-2 commit up to its last one, ``STUDY2_LAST``
 (study 2's versions record after amendment 5), and the tests compare the gate-B commit with that
 one, not with HEAD. Study 3 changes GPU paths by design and carries its own GPU-code identity in
 every qualification record.
 
-The gate-B record (docs/study2-short-gate-b.json) names the commit gate B was reviewed at and its
+The gate-B record (docs/study2-short-gate-b.json) names the commit gate B was fixed at and its
 GPU-code sha256; it is updated if gate B changes. These tests read only that record and the two
 commits."""
 

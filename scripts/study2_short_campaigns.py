@@ -72,8 +72,8 @@ identity could never be shown. The loaded runs are split here once (``split_time
 time-course run never counts as a run of its key in another campaign (a confirmation range
 re-issued to complete it offers an endpoint run lost beside its time-course twin), and never
 enters a block, a look or the mechanism cohort; the stage's summary reports each against its
-endpoint run (``timecourse_identity``: identical bit for bit, or numerically consistent, review
-fa21; else excluded), with the failed and missing
+endpoint run (``timecourse_identity``: identical bit for bit, or numerically consistent;
+else excluded), with the failed and missing
 ones per seed and arm (``progress``'s ``timecourse``).
 
 - --runs holds every run so far: Stage A's (study2_stage_a, study2_controls), whose 25-step grids
@@ -84,8 +84,7 @@ ones per seed and arm (``progress``'s ``timecourse``).
   for every kind. A --w-max given beside it must equal it. Every campaign's header records
   w_max, where it came from and the code revision, and its YAML ``header: {w_max: ...}``, which
   the launcher logs with every start it makes: w_max is frozen since S1, and a replay under
-  another value than one an issued campaign recorded is refused (``issued_w_max``; the final
-  review of gate B, I4).
+  another value than one an issued campaign recorded is refused (``issued_w_max``).
 - --runs-root is RUNS_DIR, required for every kind: its numerical/ holds the numerical-check
   verdicts (``read_numerical``), and its launch/ journal (``launch.launch_records``) tells which
   runs the launcher gave up on after their recovery round (``exhausted_runs``: technical
@@ -583,7 +582,7 @@ def campaign(
         notes.insert(0, f"the versions record {args.versions}, sha256 {_sha256(args.versions)}")
     facts = {r.run_id: run_facts(r.run_dir) for r in loaded if r.arm in (*ARMS, FA_CONTROL_ARM)}
     # The time course's runs, split once here: no campaign's bookkeeping ever counts one of them
-    # as a run of its key (review of Task 5, I1).
+    # as a run of its key.
     runs, courses = split_timecourse(loaded, facts)
     try:
         exhausted = exhausted_runs(records, abandoned=abandoned)
@@ -601,7 +600,7 @@ def campaign(
         step = chosen["pending"]
     elif state["problems"]:
         parser.error("the stage's records are not whole: " + "; ".join(state["problems"]))
-    if step.get("blocked"):  # technical marks only (review fa22): no campaign, a human decision
+    if step.get("blocked"):  # technical marks only: no campaign, a human decision
         parser.error(blocked_message(step))
     if step["campaign"] == "infeasible":  # the B = 20 feasibility report, not a confirmation
         print(json.dumps(step["feasibility"], indent=2))
@@ -699,7 +698,7 @@ def campaign(
 
 
 def blocked_message(step: dict) -> str:
-    """The refusal of a stage stopped by technical marks only (review fa22): the candidate, the
+    """The refusal of a stage stopped by technical marks only: the candidate, the
     gate, the reasons and the rates with theirs, for a human decision."""
     rates = "; ".join(f"{r['arm']} {r['lr']:g}: {r['why']}"
                       + (f" ({'; '.join(r['reasons'])})" if r.get("reasons") else "")
@@ -724,13 +723,13 @@ def _in_checkout(path: Path) -> str:
 
 
 def check_command(check: dict, selection: Path, checkout: str | None = None) -> list[str]:
-    """The numerical check's whole command and what it needs (the final review of gate B, M1):
+    """The numerical check's whole command and what it needs:
     the driver written from the selection record at ``selection`` for the commit whose source
     the Pod runs (the numerical runs' own, ``runs_commits``; any of them when there are several,
     their GPU code being one), with the request's w_max, the cases given up by the launcher and
     where the check writes. When no numerical run is located (every case given up by the
-    launcher), ``runs_commits`` is empty and the driver runs from the stage's checkout commit
-    (review fa14, concern 4): ``checkout``, the commit of the clean checkout writing the request,
+    launcher), ``runs_commits`` is empty and the driver runs from the stage's checkout commit:
+    ``checkout``, the commit of the clean checkout writing the request,
     or COMMIT, said so, when that checkout is not clean."""
     commits = check["runs_commits"]
     if len(commits) == 1:
@@ -855,7 +854,7 @@ def main() -> None:
         header = comment(f"Written by {writer}, with w_max {w_max!r} from {source}{under}. "
                          "Do not edit.")  # fmt: skip
         header += [line for text in prerequisites for line in comment(text)]
-        # The final review of gate B, I4: the header's w_max, which the launcher logs with every
+        # The header's w_max, which the launcher logs with every
         # start, so that a replay under another w_max is refused (``issued_w_max``); and the
         # versions record a versioned campaign is written under (``issued_versions``)
         values = {"w_max": w_max}

@@ -153,7 +153,7 @@ def test_a_cell_name_that_is_not_a_string_is_a_campaign_error(tmp_path, monkeypa
 
 
 def test_the_campaigns_header_goes_into_every_start(tmp_path) -> None:
-    """The final review of gate B, I4: a campaign's optional ``header`` (study 2's records the
+    """A campaign's optional ``header`` (study 2's records the
     w_max it was written under) is logged with every start; without one, nothing is added; a
     header that is not a mapping of plain values is refused."""
     path = campaign(tmp_path, "header: {w_max: 0.47, source: fixation}\n" + CELLS)

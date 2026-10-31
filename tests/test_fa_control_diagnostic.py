@@ -582,7 +582,7 @@ def test_an_ambiguous_branch_expands_once_then_reports_without_choosing() -> Non
 
 @pytest.mark.parametrize("check", [*SHARED, "iii_equals_record", "iii_without_a_control"])
 def test_each_failed_shared_state_check_makes_the_outcome_incomplete(check) -> None:
-    """Revision 3, 1 (review fa8 reached F with each of these checks false): every D1
+    """Revision 3, 1: every D1
     shared-state check gates every branch, A, B and F alike."""
     for changes, valid in (({}, "F"), ({"same_path": 0.2}, "B"),
                            ({"pairs": {"fa-1.21e-05": {"p1": 1.0}}}, "A")):  # fmt: skip
@@ -628,7 +628,7 @@ def test_an_undecided_path_criterion_makes_the_outcome_incomplete(norms) -> None
 
 
 def lost_to_rounding():
-    """Review fa8's reproduction: both attempts of a perturbation realize no displacement."""
+    """Both attempts of a perturbation realize no displacement."""
     p = torch.nn.Parameter(torch.ones(1000))
     attempts = fcd.apply_perturbation([("w", p)], {"w": torch.ones(1000)}, ones, 1e-12,
                                       survival_share=0.5, rounding_scale=10)  # fmt: skip
@@ -639,7 +639,7 @@ def lost_to_rounding():
 
 @pytest.mark.parametrize("key", ["p1", "p2", "p3", "p4"])
 def test_a_perturbation_lost_to_rounding_is_never_within(key) -> None:
-    """Revision 3, 2 (review fa8 reached F with two attempts of zero realized displacement):
+    """Revision 3, 2:
     after its single ×10 retry, a perturbation that does not survive leaves its pair
     incomplete, never within; it can still be exceeding."""
     attempts = lost_to_rounding()
@@ -682,7 +682,7 @@ def test_an_incomplete_pair_at_the_failing_rate_is_not_a() -> None:
 
 
 def test_a_one_point_control_series_is_incomplete_not_b() -> None:
-    """Review fa8 reproduced B from a one-point scoring series: "not below" is no evidence.
+    """A one-point scoring series must not reach B: "not below" is no evidence.
     Revision 3, 3: the control is exceeding only on its complete series, or when it diverged."""
     out = decide(*outputs(same_path=control(0.2, steps=[1])))
     assert (out["branch"], out["expand"], out["facts"]["step"]) == ("incomplete", None, 3)
@@ -738,7 +738,7 @@ def test_missing_outputs_leave_the_branch_incomplete() -> None:
 
 
 def test_a_failed_determinism_check_wins_over_branch_a() -> None:
-    """Review I4, probe 4: the determinism check comes before A (Revision 2, 9)."""
+    """The determinism check comes before A (Revision 2, 9)."""
     d1, _, cases = outputs(pairs={"fa-1.21e-05": {"p1": 1.0}})
     out = decide(d1, written({"bitwise_equal": False}), cases)
     assert out["branch"] == "incomplete"
@@ -747,7 +747,7 @@ def test_a_failed_determinism_check_wins_over_branch_a() -> None:
 
 @pytest.mark.parametrize("case", ["fa-1.21e-05", "fa-1e-05", "adamw-1.32e-05"])
 def test_a_case_needs_every_pair(case) -> None:
-    """Review I4, probes 1 and 2: an empty pair set, or one without the reference, is no
+    """An empty pair set, or one without the reference, is no
     evidence that the pairs stay within the bound."""
     d1, determinism, cases = outputs()
     cases[case]["pairs"] = {}
@@ -760,7 +760,7 @@ def test_a_case_needs_every_pair(case) -> None:
 
 @pytest.mark.parametrize("case", ["fa-1.21e-05", "fa-1e-05", "adamw-1.32e-05"])
 def test_a_twin_a_unlike_its_archive_makes_the_branch_incomplete(case) -> None:
-    """Review I1, probe 3: no pair is read against a twin A that is not the archived run."""
+    """No pair is read against a twin A that is not the archived run."""
     d1, determinism, cases = outputs()
     cases[case]["twin_A"]["archive"]["bitwise_equal"] = False
     out = decide(d1, determinism, cases)
@@ -814,7 +814,7 @@ def test_kept_outputs_must_come_from_this_commit(tmp_path) -> None:
 
 
 def test_the_control_s_state_and_a_pair_s_series() -> None:
-    """Review I2 and Revision 3, 3: a NaN never hides under ``max`` (it is a divergence); a
+    """Revision 3, 3: a NaN never hides under ``max`` (it is a divergence); a
     missing step is incomplete, not unbounded."""
     steps = [1, 5, 10]
 
@@ -841,7 +841,7 @@ def test_the_control_s_state_and_a_pair_s_series() -> None:
 
 
 def test_a_failed_float64_reference_is_kept(monkeypatch) -> None:
-    """Review M3: the out-of-memory attempt's rows and D_twin readings stay in the record."""
+    """The out-of-memory attempt's rows and D_twin readings stay in the record."""
 
     def run_twin(cfg, twins, *, eval_at, precision, compare_dir, progress=None):
         if precision == "float64":
@@ -859,7 +859,7 @@ def test_a_failed_float64_reference_is_kept(monkeypatch) -> None:
 
 
 def test_the_initial_states_are_built_from_each_run_s_own_v0() -> None:
-    """Review M5: the optimizer state's v hash compares two estimates, not one twice."""
+    """The optimizer state's v hash compares two estimates, not one twice."""
     params = [torch.nn.Parameter(torch.zeros(3))]
     cfg = OmegaConf.create({"optimizer": {"name": "adam_frozen", "lr": 1e-5, "beta1": 0.9,
                                           "eps": 1e-8, "weight_decay": 0.0}})  # fmt: skip
@@ -876,14 +876,14 @@ def test_the_memory_rule_and_the_monitor_cache() -> None:
     assert fcd.peak_memory(CPU) == {}
     cfg = OmegaConf.create({"eval": {"monitor": {"cache": {"primary": "none",
                                                            "secondary": "host"}}}})  # fmt: skip
-    with pytest.raises(fcd.DiagnosticError, match="primary"):  # review M2
+    with pytest.raises(fcd.DiagnosticError, match="primary"):
         fcd.operational_monitor(cfg)
     cfg.eval.monitor.cache.primary = "host"
     assert fcd.operational_monitor(cfg).eval.monitor.cache.secondary == "none"
 
 
 def test_the_script_refuses_every_harmful_prompt_set() -> None:
-    """Review M7: a runtime guard on the Pod, not only in the tests."""
+    """A runtime guard on the Pod, not only in the tests."""
     namespace = runpy.run_path(str(SCRIPT))
     env = Environment(tokenizer=None, end_ids=END_IDS, pad_id=PAD_ID, device=CPU, new_model=None,
                       prompt_set=lambda name: [name], data_root=Path("."))  # fmt: skip
@@ -954,12 +954,12 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
              f"step {run} branch"]  # fmt: skip
     positions = [lines.index(line) for line in order]
     assert positions == sorted(positions)
-    # Review M1: a failed determinism check (exit 2) still records the branch, then stops.
+    # A failed determinism check (exit 2) still records the branch, then stops.
     d3 = lines.index(f"{run} d3")
     assert lines[d3 + 1 : d3 + 6] == ["rc=$?", "set -e", 'if [ "$rc" -ne 0 ]; then',
                                       f'  if [ "$rc" -eq 2 ]; then step {run} branch; fi',
                                       '  exit "$rc"']  # fmt: skip
-    # Review r3 m1: an incomplete D1 records the branch (incomplete, with why) and stops with
+    # An incomplete D1 records the branch (incomplete, with why) and stops with
     # exit 5 before D2; a complete one goes on.
     d1 = lines.index(f"step {run} d1")
     read = namespace_of_script()["READ_FIELD"]
@@ -981,7 +981,7 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
         assert done.returncode == code, done.stderr
         assert ("step: " in done.stdout and "branch" in done.stdout) == (status == "incomplete")
         assert ("on to D2" in done.stdout) == (status == "complete")
-    # Re-review N2: a D2 failure is recorded (by D2, else here) and D3 goes on.
+    # A D2 failure is recorded (by D2, else here) and D3 goes on.
     d2 = lines.index(f"{run} d2")
     assert lines[d2 + 1 : d2 + 4] == ["d2=$?", "set -e", 'if [ "$d2" -ne 0 ]; then']
     record = namespace_of_script()["D2_FAILURE_RECORD"]
@@ -990,7 +990,7 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
     stops = [line for line in lines[d2 + 1 : d3]
              if line.strip().startswith("exit") or "; exit" in line]  # fmt: skip
     assert not stops  # nothing stops between D2 and D3
-    # Re-review N1: a failed expansion records the branch (the three cases'), then stops; the
+    # A failed expansion records the branch (the three cases'), then stops; the
     # final branch is printed, and an incomplete one, or a D2 failure, ends non-zero.
     expansion = lines.index(f"    {run} d3 --expansion")
     assert lines[expansion + 1 : expansion + 6] == [
@@ -1004,7 +1004,7 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
         'if [ "$outcome" = incomplete ]; then exit 5; fi']  # fmt: skip
     assert lines[final + 4].startswith('if [ "$d2" -ne 0 ]; then') and "exit 6" in lines[final + 4]
     assert lines[-1].endswith('the diagnostic is complete: $OUT"')
-    # Review M8 and re-review N3: a free GPU (no compute process, under 1000 MiB in use), the
+    # A free GPU (no compute process, under 1000 MiB in use), the
     # disk for D3's checkpoints, and a log in the output directory.
     gpu = lines.index('if [ -n "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)" ]; '
                       "then")  # fmt: skip
@@ -1228,7 +1228,7 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
         assert case["status"] == "complete" and case["K_star"] == pytest.approx(math.sqrt(40))
         archive = case["twin_A"]["archive"]
         assert archive["bitwise_equal"]  # each twin A is its archived run, bitwise
-        # ... and so consistent with it: its stop and the streams it read too (review fa21)
+        # ... and so consistent with it: its stop and the streams it read too
         assert archive["consistent"] and archive["end"]["equal"]
         assert archive["streams"]["training"]["equal"] and archive["mismatch_count"] == 0
         assert set(case["pairs"]) == {"p1", "p2", "p3", "p4", "reference"}
@@ -1300,7 +1300,7 @@ def test_a_run_that_differs_from_its_archive_stops_d3(world) -> None:
 
 
 def test_a_doctored_archive_or_record_makes_the_outcome_incomplete(world, monkeypatch) -> None:
-    """Review I1: twin A of FA 1.21e-5 against a doctored archive makes that case incomplete,
+    """Twin A of FA 1.21e-5 against a doctored archive makes that case incomplete,
     with no pair run; a doctored control record makes D1's (iii) check fail."""
     env, root = world
     s = tiny_settings()
@@ -1357,7 +1357,7 @@ def test_d1_is_incomplete_when_a_shared_state_check_fails(world, monkeypatch) ->
 
 
 def test_a_d2_failure_is_recorded_and_kept(world, tmp_path, monkeypatch) -> None:
-    """Re-review N2: the script records D2's failure before it exits; a later success keeps
+    """The script records D2's failure before it exits; a later success keeps
     that record under another name."""
     env, root = world
     config = tmp_path / "settings.yaml"

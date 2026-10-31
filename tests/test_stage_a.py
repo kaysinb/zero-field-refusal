@@ -784,7 +784,7 @@ def test_the_script_writes_the_summary_and_the_selection_once(tmp_path, monkeypa
         runpy.run_path(str(script), run_name="__main__")
 
 
-# Review r12: the conditions of the runs, not only their keys.
+# The conditions of the runs, not only their keys.
 def _rewrite(root: Path, name: str, **changes) -> None:
     """Rewrite one discovery run of ``search`` with other conditions, keeping its key."""
     run_dir = next(root.rglob(name))

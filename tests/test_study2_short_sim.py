@@ -815,8 +815,8 @@ def test_selection_miss_modes() -> None:
     assert np.unique(rate).size == 9 and np.abs(rate).max() <= 0.1
 
 
-def test_coarse_discovery_brackets_reproduce_the_reviewers_spurious_contrast() -> None:
-    # fa2: curves equal at K* (h = 0.15) with slopes 4 and 2, interpolated at the median brackets.
+def test_coarse_discovery_brackets_reproduce_a_spurious_contrast() -> None:
+    # Curves equal at K* (h = 0.15) with slopes 4 and 2, interpolated at the median brackets.
     c = logit(0.15)
     estimates = []
     for arm, slope in ((0, 4.0), (1, 2.0)):

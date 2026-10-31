@@ -646,14 +646,14 @@ def test_a_cache_that_changes_k_stops_the_run(env, tmp_path, monkeypatch) -> Non
 def test_a_k_only_evaluation_reads_no_harmful_prompt_and_measures_what_the_sealed_one_does(
     env, tmp_path, monkeypatch
 ) -> None:
-    """Study 2's numerical runs (amendment 4, review fa12): with ``eval.k_only`` no harmful
+    """Study 2's numerical runs (amendment 4): with ``eval.k_only`` no harmful
     prompt set is read and no response to a harmful prompt is generated; K, the monitor and
     utility equal those of the sealed evaluation, and training is unaffected (on CUDA as well:
     the next test)."""
     from zero_field_refusal.analysis.stage_a import TrajectoryError, load_trajectory
 
     k_only = k_only_equals_sealed(env, tmp_path, monkeypatch)
-    # Its records must say it is K-only (review of Task 2, minor 7).
+    # Its records must say it is K-only.
     meta_path = k_only / "meta.json"
     meta = json.loads(meta_path.read_text())
     for changed, message in (
@@ -674,7 +674,7 @@ def test_a_k_only_evaluation_reads_no_harmful_prompt_and_measures_what_the_seale
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
 def test_cuda_k_only_equals_sealed(gpu_env, tmp_path, monkeypatch) -> None:  # noqa: F811
-    """Study 2's numerical runs on CUDA (review of Task 2, minor 6): the K-only twin of a sealed
+    """Study 2's numerical runs on CUDA: the K-only twin of a sealed
     run reads no harmful prompt and measures K, the monitor and utility as the sealed run does,
     its training the same."""
     k_only = k_only_equals_sealed(gpu_env, tmp_path, monkeypatch, "execution.device=cuda")
@@ -735,7 +735,7 @@ def k_only_equals_sealed(env, tmp_path, monkeypatch, *overrides: str) -> Path:
 
 
 def test_a_k_only_numerical_run_writes_what_the_numerical_check_reads(env, tmp_path) -> None:
-    """Task 1's contract: a K-only FA run of role numerical still writes its metrics, monitor
+    """The contract: a K-only FA run of role numerical still writes its metrics, monitor
     readings and terminal record, and in meta.json its commit and the v₀ and training streams it
     read, with the role in its archived config; only the harmful generation, the kl_harmful
     stream and the harm outputs are absent."""
@@ -1176,7 +1176,7 @@ def intermediate_evaluations(env, tmp_path, monkeypatch, arm: str, *overrides: s
 
 @pytest.mark.parametrize("arm", list(ARMS))
 def test_intermediate_evaluations_do_not_change_step_25(env, tmp_path, monkeypatch, arm) -> None:
-    """Review focus of amendment 4's Task 5: the time course's evaluations at steps 1, 5 and 10
+    """Amendment 4's time course: its evaluations at steps 1, 5 and 10
     change nothing in training, so its step 25 is its endpoint run's, bit for bit, on all three
     arms; the analysis' identity check reads the two runs as identical."""
     dirs = intermediate_evaluations(env, tmp_path, monkeypatch, arm)
@@ -1200,7 +1200,7 @@ def test_cuda_intermediate_evaluations_do_not_change_step_25(
     arm,
 ) -> None:
     """The same on CUDA, for each arm: FA-25 (Adam with v₀ frozen), AdamW-25 and pre-warmed
-    AdamW-25 (review M11)."""
+    AdamW-25."""
     from zero_field_refusal.analysis.stage_a import load_trajectory
     from zero_field_refusal.analysis.study2_short import timecourse_identity
 

@@ -27,7 +27,7 @@ def test_agreement_fails_on_the_median_or_the_95th_percentile() -> None:
 @pytest.mark.parametrize(
     ("monitor", "scoring"),
     [
-        ([5.0, 100.0], [5.0, float("nan")]),  # the reviewer's case: NaN dropped by the K filter
+        ([5.0, 100.0], [5.0, float("nan")]),  # NaN dropped by the K filter
         ([5.0] * 99 + [float("inf")], [5.0] * 100),  # one in 100, beyond the 95th percentile
         ([float("nan"), 5.0], [1.0, 5.0]),  # even below the K at which agreement is read
     ],

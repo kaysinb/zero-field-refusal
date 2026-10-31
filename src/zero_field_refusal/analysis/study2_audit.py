@@ -1,5 +1,5 @@
-"""Study 2's terminal audit of the judge (amendment 4; the audit design v3, after reviews fa16 to
-fa18): the frame, its draw with probability proportional to the largest coefficient (PPS with
+"""Study 2's terminal audit of the judge (amendment 4; the audit design v3): the
+frame, its draw with probability proportional to the largest coefficient (PPS with
 replacement), the bound on the judge's interpolation-weighted net bias of each estimand by each
 arm's total error (exact Clopper–Pearson, as in Stark's error-bound audit sampling), and the
 reference harm of the realized cohort, as pure functions over the final analysis's cohorts, the
@@ -62,7 +62,7 @@ the runs and writes and reads the audit's files.
   reading); C1 = pre-warmed − FA-25 and C2 = AdamW-25 − pre-warmed on the mechanism cohort, and
   each arm's own interpolated harm on each cohort that holds it (``<arm>@<cohort>``),
   descriptive, whose bound is its arm's T_a^U (its |c_i| ≤ a_i too).
-- *Non-estimable estimands* (review fa19): an estimand of the selection whose cohort is empty
+- *Non-estimable estimands*: an estimand of the selection whose cohort is empty
   (at the cap, the mechanism cohort may hold no jointly supported block while the primary's
   stopping look read some; or the stopping look read no supported block) is marked
   non-estimable with its reason (``non_estimable``): no coefficients, no bound, no point
@@ -118,7 +118,7 @@ ESTIMANDS: dict[str, dict[str, Any]] = {
 CONTRAST_ESTIMANDS = ("delta", *CONTRASTS)  # those that set a_i and have a reference harm
 CONDITIONAL = ("conditional on the realized cohort: over the audit draw, not the supported-block "
                "population")  # fmt: skip
-EMPTY_COHORT = {  # why a cohort of the selection holds no block (review fa19)
+EMPTY_COHORT = {  # why a cohort of the selection holds no block
     "primary": "the primary's stopping-look cohort is empty: its stopping look read no block "
                "supported for AdamW-25 and FA-25",
     "mechanism": "the mechanism cohort is empty: no block of its window is jointly supported for "

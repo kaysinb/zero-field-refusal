@@ -1,11 +1,10 @@
 <!-- Frozen copy of docs/study2-preregistration.md at commit 937a90f, the protocol before
-amendment 3. Only relative links were adjusted for this directory. Do not edit. -->
+amendment 3. Only relative links and attribution wording were adjusted. Do not edit. -->
 
 # Study 2 preregistration
 
-Status: `approved` (2026-10-14). The user approved the study-2 design; this document and the
-study-2 code passed the review of the coordinator and the second reviewer (rounds r6 to r15)
-before any study-2 run. Items marked *to be fixed at Stage B* are frozen by the procedure of
+Status: `approved` (2026-10-14). The researcher decided the study-2 design; this document and
+the study-2 code were fixed before any study-2 run. Items marked *to be fixed at Stage B* are frozen by the procedure of
 [Stage B](#stage-b--fixation), before any confirmatory run; every other item is fixed, and a
 change goes through [Amendments](#amendments).
 
@@ -32,12 +31,12 @@ problems:
 
 ## Relation to the approved design
 
-This document implements the study-2 design approved by the user on 2026-10-14. Two rules
+This document implements the study-2 design the researcher decided on 2026-10-14. Two rules
 differ from it, both settled before any study-2 data:
 
 - **U also needs reachability.** The design chose U "by utility only", meaning "not by harm".
   U here needs both utility and reachability on all discovery seeds of both long arms. Neither
-  condition looks at the outcome. This is the coordinator's clarification within the approved
+  condition looks at the outcome. This is a clarification within the approved
   design.
 - **Batch priority** (a prospective change before any data). Among eligible batches, the larger U
   is preferred first and cost second, where the design ranked by cost alone. At a larger U the
@@ -346,7 +345,7 @@ Harm does not enter the gate.
 | Numerically clean SGD reaches U = 7 at neither batch | The *barrier* branch: the primary result is the characterized barrier (K(T) curves, curvature, plateaus) |
 | No batch is eligible for another reason (AdamW-long does not reach U, or utility fails) | Stop this confirmatory design; report the feasibility result |
 | A batch is eligible but validation fails reachability or utility | Stop this confirmatory design; report the feasibility result |
-| The selected batch is 20 and the projected study cost exceeds $320 | A separate decision of the user before Stage B |
+| The selected batch is 20 and the projected study cost exceeds $320 | A separate decision of the researcher before Stage B |
 | Validation passes | Proceed to Stage B |
 
 **The barrier branch.**
@@ -502,7 +501,7 @@ on MMLU and at most 10 pp on the factual questions. Seeds are never removed to m
 - **Audit.** One terminal audit of 400 items per primary arm.
   - **Sampling:** stratified by arm, K band and the judge's own label, with recorded inclusion
     probabilities, spread over seeds and prompts.
-  - **Reference labels:** GPT and Grok label independently; the user checks every disagreement
+  - **Reference labels:** GPT and Grok label independently; a person checks every disagreement
     and 10 % of the agreements. A failed reference output is a missing label, never a safe one.
   - **Fixed in advance:** the audit's size and sampling for both possible stopping looks are
     *to be fixed at Stage B*. Audit results never trigger further training.
@@ -547,8 +546,7 @@ Format: date, item, old value → new value, reason, and which data had been see
 
 ### Amendment 1: the monitor panel
 
-Decided on 2026-10-15, during Stage A's discovery, with the harm labels closed, on the
-coordinator's decision after the second reviewer's review, before any data under the new
+Decided on 2026-10-15, during Stage A's discovery, with the harm labels closed, before any data under the new
 monitor.
 
 - **What failed.** Over the 14 full evaluations of the discovery runs so far (AdamW-long at
@@ -625,7 +623,7 @@ monitor.
 
 ### Amendment 2: the full controls' gradient rule
 
-Decided on 2026-10-16 by the user, after Stage A's search had resolved, with the harm labels
+Decided on 2026-10-16 by the researcher, after Stage A's search had resolved, with the harm labels
 closed. It was adopted after the rule's firings had been seen, and is disclosed as such: the
 outcome under the preregistered rule and the outcome under this amendment are reported side by
 side.
@@ -674,7 +672,7 @@ side.
   the stopped controls stay in `study2_controls` as records.
 - **The screen stays as it was.** Its stops came from the same rule, on single batches without
   growth: at B = 5, 0.002–0.004 all stopped at step 12; at B = 20, 0.003 and 0.004 both stopped
-  at step 17. Its edges, and so the candidates, are likely lower bounds. The user decided on
+  at step 17. Its edges, and so the candidates, are likely lower bounds. The researcher decided on
   2026-10-16 to keep them, as SGD-long's part of the study becomes descriptive. The report states
   this caveat.
 - **Reporting.**

@@ -311,7 +311,7 @@ def test_the_replay_reproduces_the_fingerprint_recorded_at_sampling(teacher) -> 
 
 
 def test_the_fingerprint_sees_changes_the_sampled_token_misses(teacher) -> None:
-    # The reviewer's case: permute the entries of every position except the sampled token.
+    # Permute the entries of every position except the sampled token.
     samples, distributions = run(teacher, n=4, record_distributions=True)
     permuted = []
     for s, row in zip(samples, distributions, strict=True):

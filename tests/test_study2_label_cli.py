@@ -1,4 +1,4 @@
-"""Study 2's sealed labeling command (analysis.study2_label_cli; review fa27): which runs are
+"""Study 2's sealed labeling command (analysis.study2_label_cli): which runs are
 sealed, what is printed of them on a real labeling state (tests/test_study2_labels.py's runs,
 labeled through ``run_judging.label_runs`` against a fake judge server), the sealed record and the
 exit codes. Synthetic text only; output is captured at the file-descriptor level (capfd)."""
@@ -159,7 +159,7 @@ def assert_allowlisted(lines: list[dict], err: str, sealed: dict[str, str], reco
 def test_a_prewarmed_run_with_unparseable_items_shows_its_status_alone(
     monkeypatch, tmp_path, capfd
 ) -> None:
-    """Review fa27, 1: a pre-warmed run whose six items never parse, on its first labeling and on
+    """A pre-warmed run whose six items never parse, on its first labeling and on
     the completed receipt's reuse (``kept``): only its allowlisted status is printed and the exit
     is 0 (scripts/label_runs.py would print ``"unparseable": 6`` and exit non-zero); the sealed
     record holds the summary, 0600 in a 0700 directory."""
@@ -360,7 +360,7 @@ def test_the_statuses_and_exit_codes_of_sealed_runs(monkeypatch, tmp_path, capfd
 def test_a_lost_receipt_shows_the_same_status_whatever_the_rounds(
     monkeypatch, tmp_path, capfd
 ) -> None:
-    """Review fa27, fix round 1 (the reviewer's probe): a run whose outputs all parsed in round 1
+    """A run whose outputs all parsed in round 1
     and one that used three rounds, labeled through the command, lose their receipts: both show
     "not complete" (three rounds would tell that outputs stayed unparseable after the second)."""
     root = tmp_path / "runs"
@@ -382,7 +382,7 @@ def test_a_lost_receipt_shows_the_same_status_whatever_the_rounds(
 def test_a_judge_gone_in_the_sealed_call_shows_one_status(
     monkeypatch, tmp_path, capfd, tokenizer_up
 ) -> None:
-    """Review fa27, fix rounds 1 and 2 (the reviewers' probes): the judge answers six requests,
+    """The judge answers six requests,
     then its generation is gone, its tokenizer too or (``tokenizer_up``) still answering. A run
     whose outputs parse is labeled in round 1, before it goes, and the re-probe's synthetic
     judgment finds it gone; one whose outputs do not parse needs round 2, which fails. Either way
@@ -487,7 +487,7 @@ def test_an_error_that_is_no_judge_failure_stays_the_runs_own(monkeypatch, tmp_p
 
 
 def test_a_sealed_directory_git_could_track_is_refused(monkeypatch, tmp_path, capfd) -> None:
-    """Review fa27, fix round 1: ``--sealed-dir`` in the checkout outside runs/ (which Git
+    """``--sealed-dir`` in the checkout outside runs/ (which Git
     ignores) is refused before anything is sent; the default is ``$RUNS_DIR/sealed``."""
     run = study2_run(tmp_path / "runs", "prewarmed", PREWARMED)
     fake = FakeWildGuard([REFUSAL])

@@ -41,7 +41,7 @@ course's runs (amendment 4, section 4) are split from the others where they are 
 (analysis.study2_short.split_timecourse): no look, label read, utility family, sensitivity or
 contrast ever sees them; the status prints their counts with the failed and missing runs per
 seed and arm (``timecourse``), and OUT.json's ``progress.timecourse`` reports each (its numerical
-consistency with its endpoint run: identical, consistent, excluded or pending, review fa21),
+consistency with its endpoint run: identical, consistent, excluded or pending),
 without labels. ``scalars`` reports the update scalars' coverage of every
 regular run of every role (analysis.study2_short.scalars_coverage): whether update_scalars.jsonl
 exists with one row per update step (1-25 for a run that finished) and, for the pre-warmed arm,
@@ -67,7 +67,7 @@ traceback to a sealed record (analysis.study2_label_cli.write_sealed_record:
 ``<sealed dir>/summary-<UTC timestamp>-<judge>.json``, --sealed-dir, default $RUNS_DIR/sealed,
 refused where Git could track it; never opened before the final analysis) and exits non-zero
 with only the runs, a generic status and the record's path; the primary arms' errors are raised
-as they are (review fa27). Amendment 3's secondary contrasts are not computed: amendment 4's
+as they are. Amendment 3's secondary contrasts are not computed: amendment 4's
 mechanism cohort replaces them. Then ``final``, amendment 4's final analysis, computed once the
 confirmation has ended: with three arms, once the mechanism cohort has ended, its blocks are
 labeled and the primary has stopped; with two arms, once the primary has stopped. It holds the
@@ -295,15 +295,15 @@ def _attempt(a: dict[str, Any]) -> dict[str, Any]:
             "stopped_technical": a.get("stopped_technical", []),
             "reasons": a["reasons"], "excluded": a["excluded"],
             "excluded_kinds": a.get("excluded_kinds", {}),
-            # The search allowance per arm (review fa22), spent here or carried from pass 1
+            # The search allowance per arm, spent here or carried from pass 1
             "allowance": a.get("allowance", {}),
             "allowance_carried": a.get("allowance_carried", []),
             "allowance_owed": a.get("allowance_owed", []),
             "arms": {arm: [_selection(s) for s in d["selections"]]
                      for arm, d in a["arms"].items()},
             # The rates the visit holds once eligible (None before), each check with the rates
-            # it was asked for, and the validation's runs given up by the launcher (review fa22,
-            # C5: what a reader of the status needs to follow the order)
+            # it was asked for, and the validation's runs given up by the launcher (what a
+            # reader of the status needs to follow the order)
             "rates": a.get("rates"),
             "numerical": [{k: e.get(k) for k in ("check", "verdict", "request", "state",
                                                  "reasons", "unusable", "unfinished", "history",
@@ -337,7 +337,7 @@ def read_labels(state, runs, judge: str) -> tuple[dict[str, list[dict[str, Any]]
     block, by run id, and the runs whose labels are pending, by run id with the reason. A run
     without a label file is not labeled yet and left out; one whose labels have no completed
     judging receipt matching them (``LabelsPending``) is pending and left out too. Any other
-    problem of a label file raises: a pre-warmed run's as ``SealedLabelError`` (review fa27),
+    problem of a label file raises: a pre-warmed run's as ``SealedLabelError``,
     whose message carries no label-derived value."""
     by_id = {run.run_id: run for run in runs}
     identity = judge_identity(load_config(f"judge/{judge}"))
@@ -437,8 +437,8 @@ def open_pending(found: dict[str, Any], pending: dict[str, str], final: dict[str
 
 def _sealed(entry: dict[str, Any]) -> dict[str, Any]:
     """A look block as the summary records it: without the pre-warmed arm's h and missing labels,
-    which only the final analysis opens (the mechanism cohort's; the coordinator's ruling on
-    Task 3's concern 3). ``look_blocks`` itself is untouched: the looks read the same entries."""
+    which only the final analysis opens (the mechanism cohort's). ``look_blocks`` itself is
+    untouched: the looks read the same entries."""
     return {key: ({arm: v for arm, v in value.items() if arm != PREWARMED}
                   if key in ("h", "missing") else value)
             for key, value in entry.items()}  # fmt: skip
@@ -446,10 +446,10 @@ def _sealed(entry: dict[str, Any]) -> dict[str, Any]:
 
 def seal(exc: SealedLabelError, directory: Path, judge: str) -> NoReturn:
     """Exit after an error on the pre-warmed arm's labels: its traceback goes to a sealed record,
-    and only the runs, the generic status and the record's path are shown (review fa27)."""
+    and only the runs, the generic status and the record's path are shown."""
     path = write_sealed_record(directory, "summary", judge, {
-        "what": "A sealed error of scripts/study2_short_summary.py on the pre-warmed arm's labels "
-                "(review fa27). Opened in the final analysis, never before.",
+        "what": "A sealed error of scripts/study2_short_summary.py on the pre-warmed arm's labels. "
+                "Opened in the final analysis, never before.",
         "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "command": sys.argv,
         "code": git_state(),
@@ -461,8 +461,8 @@ def seal(exc: SealedLabelError, directory: Path, judge: str) -> NoReturn:
 
 def read_timecourse_labels(state, courses, judge: str) -> tuple[dict, dict[str, str]]:
     """The label rows of the time course's runs that count (``progress``'s ``timecourse``:
-    identical or numerically consistent with their endpoint run, ``IDENTITY_COUNTED``, review
-    fa21), by run id, and those whose labels are pending, with the reason, as ``read_labels``
+    identical or numerically consistent with their endpoint run, ``IDENTITY_COUNTED``), by run
+    id, and those whose labels are pending, with the reason, as ``read_labels``
     reads them: only in the final analysis (amendment 4, section 4: sealed until then)."""
     by_id = {run.run_id: run for run in courses}
     identity = judge_identity(load_config(f"judge/{judge}"))
@@ -768,7 +768,7 @@ def main() -> None:
             parser.error("the versions record does not hold: " + "; ".join(problems))
     facts = {r.run_id: run_facts(r.run_dir) for r in loaded if r.arm in (*ARMS, FA_CONTROL_ARM)}
     # The time course's runs, split once here: the looks, their labels, the utility family, the
-    # sensitivities and the contrasts read ``runs`` only (review of Task 5, C1).
+    # sensitivities and the contrasts read ``runs`` only.
     runs, courses = split_timecourse(loaded, facts)
     try:
         exhausted = exhausted_runs(records, abandoned=abandoned)
@@ -787,7 +787,7 @@ def main() -> None:
         digest = hashlib.sha256(args.abandoned.read_bytes()).hexdigest()
         record["abandonment_record"] = {"path": str(args.abandoned), "sha256": digest}
     # The update scalars' coverage of every regular run, the time course's included: reported,
-    # never gating (review of Task 6, M4).
+    # never gating.
     coverage = scalars_coverage([*runs, *courses], facts)
     record["scalars"] = coverage
     shown["scalars"] = _coverage_shown(coverage)

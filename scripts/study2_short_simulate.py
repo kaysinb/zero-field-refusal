@@ -45,7 +45,7 @@ docs/study2-short-b20-inputs.json, read by ``sim.read_inputs``):
   10 000 replicates per scenario and the stress grid at --stress-reps, default 2 000) on the
   ``mechanism-calibration`` stream, every level of ``sim.MECHANISM_LEVELS`` (0.95 … 0.99)
   evaluated from the same bootstrap draws, with --bootstrap resamples per replicate and interval
-  (default 2 000). Coverage is of each replicate's conditional truth (review fa24, Q1: fresh
+  (default 2 000). Coverage is of each replicate's conditional truth (fresh
   supported seed blocks given its prompt panel and selection misses, ``sim.PanelTruth``), a
   missing interval not covering. Its verdict ``checks`` (``sim.mechanism_checks``) applies the
   calibration rule: every required scenario (normal and skewed at SD 5 and 10 pp; 1 620 with
@@ -143,7 +143,7 @@ pointwise readings can differ in two ways only: revision 5 used the bias run's u
 0.010841274718211662, where the modes use the recorded DECIDED_ALLOWANCE 0.010841 (for kink at
 Δ = 0 one replicate of 20 000 then differs, pointwise equivalence 76.775 against 76.770 %;
 ``--allowance 0.010841274718211662`` restores it exactly); and main's readings predate the
-equivalence mask (review N1), for which families reran kink and stress_slopes.
+equivalence mask, for which families reran kink and stress_slopes.
 
 Writes to --out (default: $RUNS_DIR/analysis/study2_short_sim/<mode>-<UTC timestamp>/):
 - summary.json: settings, versions, run time, the spread calibrations, every scenario (its
@@ -662,7 +662,7 @@ def mechanism_main(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
         grid = [m for m in grid if any(fnmatch.fnmatch(m.name, p) for p in args.scenarios)]
     if args.reps is not None:
         grid = [replace(m, reps=args.reps) for m in grid]
-    # The predeclared precision check (review fa24, Q2): the calibration run's borderline
+    # The predeclared precision check: the calibration run's borderline
     # scenarios, once, at PRECISION_REPS replicates on the check stream. Only a check from a
     # calibration summary (--level-from) over the whole required grid at its replicates is
     # binding; a borderline scenario missing from the grid is an error, never dropped.
@@ -944,7 +944,7 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
                             f"committed level {committed}"}  # fmt: skip
     elif level is not None:
         # One check at the chosen level, 0.95 included; the borderline scenarios at
-        # PRECISION_REPS; no repetition (review fa24, Q2).
+        # PRECISION_REPS; no repetition.
         precision = (
             [] if args.precision_reps is None else ["--precision-reps", str(args.precision_reps)]
         )
@@ -957,7 +957,7 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
     for mode, name in FINAL_PRIMARY.items():
         primary = [*common, "--spread-replicates", str(args.spread_replicates),
                    "--spread-blocks", str(args.spread_blocks)]  # fmt: skip
-        if mode == "decided":  # the recheck against the conditional truth of Δ (fa24, Q1)
+        if mode == "decided":  # the recheck against the conditional truth of Δ
             primary.append("--conditional")
         main([mode, *primary, "--out", str(out / name)])
         archived = runs_root() / ARCHIVED[mode]
@@ -1068,7 +1068,7 @@ def mechanism_markdown(summary: dict) -> str:
         "Simultaneous max-t coverage of both components' conditional truths (each replicate's: "
         "fresh supported seed blocks given its prompt panel and misses), against "
         "0.95 − 2·√(0.95·0.05/R) per scenario at its own R. A missing interval does not cover; a "
-        "whole-line one (q = ∞) is uninformative, counted as covering as the brief rules and "
+        "whole-line one (q = ∞) is uninformative, counted as covering as amendment 4 rules and "
         "reported separately; the analysis itself returns no interval for it. Required: normal "
         "and skewed at SD 5 and 10 pp. At exactly 95 % coverage the expected number below the "
         "floor is 2.3 % of a cell's scenarios and the chance of at least one is nearly 1 (in "
@@ -1122,7 +1122,7 @@ def mechanism_markdown(summary: dict) -> str:
 
 
 def check_text(check: dict) -> str:
-    """The single check (review fa24, Q2) as its record has it: the level, whether it binds,
+    """The single check as its record has it: the level, whether it binds,
     the borderline set predeclared on the calibration stream with its replicates and floor, the
     floor of the others, the verdict and the scenarios short of their floor."""
     borderline = check.get("borderline") or []
@@ -1354,8 +1354,8 @@ def markdown(summary: dict) -> str:
             "## Against the conditional truth",
             "",
             "Each replicate's truth is the expected interpolated contrast over fresh supported "
-            "seed blocks, conditional on its 521-prompt panel and selection misses (review fa24, "
-            "Q1). Conditional rate / population rate; coverage of the stopping look's interval "
+            "seed blocks, conditional on its 521-prompt panel and selection misses. "
+            "Conditional rate / population rate; coverage of the stopping look's interval "
             "(a look without an interval does not cover). Reported only: no fixed level changes.",
             "",
             conditional_checks_table(summary["conditional_checks"]),

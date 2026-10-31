@@ -1,5 +1,5 @@
 """Label study-2 run directories with a judge, the sealed runs' output sealed (amendment 4,
-sections 3 and 4; review fa27).
+sections 3 and 4).
 
     python -m zero_field_refusal.analysis.study2_label_cli --judge NAME RUN_DIR [RUN_DIR ...] \
         [--workers N] [--sealed-dir DIR]
@@ -31,8 +31,8 @@ one handler on the root logger): its output, every exception it raises (a ``Keyb
 too) and its traceback go into the sealed record, never to the terminal. When the open call's
 judge failed (``RoundFailed``), the sealed call is not made and its runs are "not attempted",
 as scripts/label_runs.py leaves the runs after a failed round; so nothing of a sealed run
-changes what is printed of an open one. **A judge failure in the sealed call** (review fa27, fix
-rounds 1 and 2): when that call stopped on a failed round (``RoundFailed``, the runs after it
+changes what is printed of an open one. **A judge failure in the sealed call**:
+when that call stopped on a failed round (``RoundFailed``, the runs after it
 not attempted), or the judge fails its re-probe after the call, every sealed run of the call is
 "not complete", whatever happened to it: which run was hit, and whether a retry round was
 needed at all, depends on its outputs' parsing. The re-probe is the WildGuard token check
@@ -54,7 +54,7 @@ attempted" summary; "labeled" when the run's judging receipt names this judge an
 as it is now (its sha256), "not complete" otherwise. It never depends on an unparseable or
 missing count, nor on the rounds a run used: a completed receipt with missing labels is
 "labeled". A receipt written again for its unchanged label file (``restored``) is "not complete",
-whatever its rounds (review fa27, fix round 1: under this command alone, three rounds mean that
+whatever its rounds (under this command alone, three rounds mean that
 outputs stayed unparseable after the second); a rerun keeps it (complete) or resumes it, and it
 is "labeled" either way. A run that cannot be labeled yet (no published terminal record) is "not
 complete"; one that recorded no evaluation has nothing to label, and is "labeled". The residuals
@@ -123,7 +123,7 @@ from .study2_short import (
     seed_role,
 )
 
-# The allowlisted statuses of a sealed run (review fa27), nothing else is printed of it
+# The allowlisted statuses of a sealed run, nothing else is printed of it
 LABELED = "labeled (details sealed until the final analysis)"
 INCOMPLETE = "not complete: rerun the labeling (details sealed)"
 ERROR = SEALED_ERROR
@@ -134,7 +134,7 @@ SEALED_DIR = "sealed"  # under $RUNS_DIR
 # run_judging's summary of a run that recorded no evaluation (``_label_run``): nothing to label
 NOTHING_TO_LABEL = "no evaluation recorded"
 UNCLASSIFIABLE = "unclassifiable"
-# The judge's re-probe after the sealed call (fix round 2): one fixed, harmless synthetic pair,
+# The judge's re-probe after the sealed call: one fixed, harmless synthetic pair,
 # never a study item, judged through a temporary label file.
 PROBE_ITEM = {"item_id": "probe/synthetic",
               "prompt": "What is the boiling point of water at sea level?",
@@ -252,7 +252,7 @@ def sealed_status(summary: Mapping[str, Any], run_dir: Path, judge: str) -> str:
         return LABELED  # its labeling is over: there is nothing to label
     if skipped is not None:  # not labelable yet
         return INCOMPLETE
-    if summary.get("restored"):  # whatever its rounds, which would tell its parsing (fix round 1)
+    if summary.get("restored"):  # whatever its rounds, which would tell its parsing
         return INCOMPLETE
     return LABELED if _receipt(run_dir, judge) is not None else INCOMPLETE
 
@@ -355,7 +355,7 @@ def label_study2(
                     judge_answers(make_client)
             except BaseException:
                 probed, judge_failed = traceback.format_exc(), True
-    if judge_failed:  # one status for the call: who was hit depends on parsing (fix rounds 1, 2)
+    if judge_failed:  # one status for the call: who was hit depends on parsing
         statuses = [INCOMPLETE] * len(sealed)
     elif not attempted or trace is not None:
         statuses = [ERROR if trace is not None else NOT_ATTEMPTED_STATUS] * len(sealed)

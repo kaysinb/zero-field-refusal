@@ -2,7 +2,7 @@
 
 This report records how stage 1 ran on 2026-10-11: compute, runs, the choice of the sweep rates,
 cell stability, the 0.5B SGD diagnosis, the judge labeling, incidents and costs. It summarizes no
-judge label and no refusal outcome. Gate 1 and the outcomes wait for two decisions of the user:
+judge label and no refusal outcome. Gate 1 and the outcomes wait for two decisions of the researcher:
 the proposed amendment on eligible cells, and the reference ensemble of the
 [judge check](../preregistration.md#judge-check-across-optimizers). Aggregates only.
 
@@ -103,7 +103,7 @@ divergence and collapse alone. A pilot is its own cell.
   - second round on SGD 25 × 20: 0.0244, 0.0262, 0.0280 between 0.0228 and 0.03;
   - second round on SGD 100 × 5: 0.0186, 0.0199, 0.0213 between 0.0173 and 0.0228.
 
-**Chosen rates** (accepted by the coordinator before phase B):
+**Chosen rates** (fixed before phase B):
 
 - **SGD 25 × 20, 1.5B:** 0.0228, 0.0244, 0.0262 and 0.0280, the largest stable rate.
 - **Frozen Adam:** 5·10⁻⁶, 1·10⁻⁵ and 2·10⁻⁵.
@@ -144,7 +144,7 @@ collapse.
   collapsed pilots and cells widen the common range. Over eligible cells only, K\* is 2.26, with
   common range [2.13, 2.41].
 - **The proposed amendment.** It would base the primary common range, K\*, the decisive cells,
-  the curves and the fallback comparator on eligible cells. It awaits the user's decision.
+  the curves and the fallback comparator on eligible cells. It awaits the researcher's decision.
 
 ## SGD on 0.5B
 

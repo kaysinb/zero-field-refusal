@@ -1,7 +1,7 @@
-"""Study 2's terminal audit of the judge (amendment 4; the audit design v3, after review fa18): the
+"""Study 2's terminal audit of the judge (amendment 4; the audit design v3): the
 frame, the PPS-with-replacement draw by the largest coefficient, the Clopper–Pearson bound on each
 arm's total error and the bias bound of each estimand, the Hansen–Hurwitz estimate, the reference
-harm, the non-estimable estimands of an empty cohort (review fa19), the fixation record's
+harm, the non-estimable estimands of an empty cohort, the fixation record's
 ``audit`` key, and the command line's (analysis.study2_audit_cli) draw (behind the summary's final
 analysis, with D7's blinding) and estimate. Synthetic frames, labels and texts only: no real
 label, prompt or response."""
@@ -129,7 +129,7 @@ def label_rows(labels: dict) -> dict:
 
 def world(monkeypatch, *, three_arm=True, blocks=60, prompts=20, seed=0, harm=None,
           supported=True):  # fmt: skip
-    """The summary's state, looks and final analysis over synthetic blocks, computed by Task 3's
+    """The summary's state, looks and final analysis over synthetic blocks, computed by the
     functions (``look_blocks``, ``looks``, ``mechanism_state``, the summary's ``final_analysis``),
     and the judge's item labels of every bracket run. With ``supported`` false, no arm is
     supported in any block (cause ``bracketing``)."""
@@ -359,7 +359,7 @@ def closed(draws: int) -> float:
 @pytest.mark.parametrize("primary", [36, 60])
 def test_the_zero_error_bound_is_the_closed_form(primary) -> None:
     """With no error drawn, T_a^U = A_a [1 − (0.025/3)^{1/n_a}] and U_E sums E's arms; on the
-    synthetic frame (60 blocks), fa18's half-widths: Δ 3.33 pp at a stop at 36 (A = 1.4) and
+    synthetic frame (60 blocks), the expected half-widths: Δ 3.33 pp at a stop at 36 (A = 1.4) and
     2.38 pp at 60; C1 and C2 4.03 pp and 3.56 pp."""
     frame = frame_of(12, blocks=60, prompts=5, primary=primary)
     drawn = draw_audit(frame, SIZES, SEED, three_arm=True)
@@ -450,7 +450,7 @@ def test_the_two_arm_case_draws_no_prewarmed_item(monkeypatch) -> None:
 
 
 def test_an_empty_cohort_is_non_estimable_and_adds_no_weight() -> None:
-    """Review fa19. An empty mechanism cohort (at the cap, no block jointly supported while the
+    """An empty mechanism cohort (at the cap, no block jointly supported while the
     primary's stopping look read some): C1, C2 and the arms' harms on it are non-estimable with
     the reason and have no coefficients; a_i is |c_i^Δ| alone, A_a = 1 for AdamW-25 and FA-25,
     and their draws are the two-arm selection's; the pre-warmed arm, with no item of weight,
@@ -613,7 +613,7 @@ def largest_miss(level: float) -> float:
 
 
 def test_the_largest_miss_sits_just_below_alpha() -> None:
-    """Review M1, sharpened. At a boundary p = p^U(x0), P(X ≤ x0 | p) = α: just above it the bound
+    """At a boundary p = p^U(x0), P(X ≤ x0 | p) = α: just above it the bound
     misses exactly X ≤ x0, with probability just below α; just below it P(X ≤ x0 | p) is just
     above α, but the bound covers x0 and the miss is P(X ≤ x0 − 1 | p) < α. The largest miss over
     those points and a fine grid lies in (0.9 α, α]. A split of 0.025/2 per arm (1.5 α) leaves
@@ -644,7 +644,7 @@ def even_frame(seed: int, blocks: int, prompts: int, rate: float):
 
 def test_the_one_percent_width_is_pinned() -> None:
     """At exactly 1 % errors (every a_i equal), E[U_Δ] = Σ_a A_a E[p^U(X_a)], X_a ~ Binomial(400,
-    0.01): 0.0582 with A_a = 1, fa18's about 5.8 pp at 60 blocks; the mean U_Δ over 2000 draws
+    0.01): 0.0582 with A_a = 1, the expected about 5.8 pp at 60 blocks; the mean U_Δ over 2000 draws
     through draw_audit, arm_bounds and bias_bound lies within 2 % of it."""
     frame, reference = even_frame(19, 2, 50, 0.01)
     a = weights(frame)
@@ -663,7 +663,7 @@ def test_the_one_percent_width_is_pinned() -> None:
 
 
 def test_hansen_hurwitz_counts_every_missing_draw() -> None:
-    """Review of 02826e5, item 3: with every AdamW-25 draw missing the estimate is None, and the
+    """With every AdamW-25 draw missing the estimate is None, and the
     missing draws of every arm are counted, FA-25's after AdamW-25's too."""
     frame = frame_of(17, blocks=4, prompts=30, three_arm=False)
     drawn = draw_audit(frame, SIZES, SEED, three_arm=False)
@@ -678,7 +678,7 @@ def test_hansen_hurwitz_counts_every_missing_draw() -> None:
 
 
 def test_hansen_hurwitz_divides_by_the_responding_draws() -> None:
-    """Review of 02826e5, item 4: with errors and missing references (n'_a < n_a), each arm's
+    """With errors and missing references (n'_a < n_a), each arm's
     mean runs over its responding draws, the design's divisor n'_a (missing completely at
     random, descriptive only), not over n_a."""
     frame = frame_of(18, blocks=4, prompts=30, three_arm=False)
@@ -703,7 +703,7 @@ def test_hansen_hurwitz_divides_by_the_responding_draws() -> None:
 
 
 def test_the_near_tight_coverage_catches_a_miscalibrated_level() -> None:
-    """Review M1. An arm's own harm with every error a false positive on items of equal a_i is
+    """An arm's own harm with every error a false positive on items of equal a_i is
     tight: |B| = A·p and U = A·p^U(x), so the bound misses exactly when Clopper–Pearson does. At
     p = 20/862 the miss probability at the fixation's arm level lies in (0.35 α, α], and a level
     with α halved or doubled leaves that window; 20 000 draws through draw_audit, arm_bounds and
@@ -929,7 +929,7 @@ def test_draw_checks_the_record_the_running_confirmation_named(monkeypatch, tmp_
 
 
 def test_an_error_after_the_gate_refuses(monkeypatch, tmp_path, capsys) -> None:
-    """Review nit: a label pending or another error after the gate exits 2 with "refused" and
+    """A label pending or another error after the gate exits 2 with "refused" and
     writes nothing."""
     cli = study2_audit_cli
     worlds = world(monkeypatch, blocks=60, prompts=4)
@@ -947,7 +947,7 @@ def test_an_error_after_the_gate_refuses(monkeypatch, tmp_path, capsys) -> None:
 
 
 def test_draw_refuses_when_no_estimand_is_estimable(monkeypatch, tmp_path, capsys) -> None:
-    """Review fa19: with no arm supported in any of the 80 blocks, Task 3's final analysis is
+    """With no arm supported in any of the 80 blocks, the final analysis is
     available (the primary stopped at its cap look with no supported block, the mechanism cohort
     ended at the cap empty), but every estimand is non-estimable: ``draw`` refuses (exit 2) with
     both cohorts' reasons, reads no label and writes nothing."""
@@ -978,7 +978,7 @@ def test_draw_writes_blinded_files_and_estimate_reads_them(monkeypatch, tmp_path
     origins, the judge's label, a_i, q_i, A_a and the multiplicities (400, 400 and 200 draws);
     counts printed, never a text. ``estimate`` reads them back with the resolved references and
     prints the arms' bounds, the bias bounds and the reference harm; it records selection.json's
-    sha256 and refuses changed files or a changed judge-rated estimate (review M4)."""
+    sha256 and refuses changed files or a changed judge-rated estimate."""
     cli = study2_audit_cli
     worlds = world(monkeypatch, blocks=60, prompts=40)
     reads = []
@@ -1037,7 +1037,7 @@ def test_draw_writes_blinded_files_and_estimate_reads_them(monkeypatch, tmp_path
     assert all(arms[arm]["T_upper"] == pytest.approx(arms[arm]["A"] * arms[arm]["p_upper"])
                for arm in ARMS)  # fmt: skip
     # The levels as wired: each arm at the fixation's arm level (never the bias level), the
-    # estimands jointly at 0.975 (review of 02826e5, item 1).
+    # estimands jointly at 0.975.
     for arm in ARMS:
         assert arms[arm]["level"] == ARM_LEVEL
         assert arms[arm]["p_upper"] == clopper_pearson_upper(
@@ -1152,7 +1152,7 @@ def archive(monkeypatch, tmp_path, runs) -> tuple[list[str], str]:
 
 def test_draw_on_a_synthetic_archive_runs_the_real_final_state(monkeypatch, tmp_path,
                                                                 capsys) -> None:  # fmt: skip
-    """Review M3: ``draw`` through the real ``final_state`` on a synthetic archive of 60
+    """``draw`` through the real ``final_state`` on a synthetic archive of 60
     three-arm confirmation blocks (``archive``). The primary stops at look 1; the frame's
     judge-rated Δ, C1 and C2 match the final analysis, the audit is drawn."""
     runs = base()
@@ -1185,7 +1185,7 @@ def unbracketed(run):
 def test_a_capped_confirmation_with_an_empty_mechanism_cohort_audits_delta(
     monkeypatch, tmp_path, capsys
 ) -> None:
-    """Review fa19, the capped outcome: the pre-warmed arm brackets K* in none of the 80 blocks,
+    """The capped outcome: the pre-warmed arm brackets K* in none of the 80 blocks,
     so through the real ``final_state`` and ``final_analysis`` (``archive``) the confirmation ends
     at the cap with the primary stopped at look 1 (36 supported blocks) and no block in the
     mechanism cohort. ``draw`` succeeds: C1, C2 and the arms' harms on the mechanism cohort are
@@ -1266,7 +1266,7 @@ def test_a_capped_confirmation_with_an_empty_mechanism_cohort_audits_delta(
 
 def test_draw_seals_an_error_on_the_prewarmed_labels_before_its_gate(monkeypatch, tmp_path,
                                                                      capsys) -> None:  # fmt: skip
-    """Review fa27: ``draw`` computes the summary's looks before its gate, reading the bracket
+    """``draw`` computes the summary's looks before its gate, reading the bracket
     runs' label counts. A pre-warmed run whose labels raise there (a label outside the labels, in
     the message) refuses with only the run, a generic status and the sealed record's path; the
     record holds the traceback, and nothing is drawn."""
@@ -1299,7 +1299,7 @@ def test_draw_seals_an_error_on_the_prewarmed_labels_before_its_gate(monkeypatch
 
 
 def test_draw_refuses_a_sealed_directory_git_could_track(tmp_path, capsys) -> None:
-    """Review fa27, fix round 1: as ``--out``, ``--sealed-dir`` is refused in the checkout outside
+    """As ``--out``, ``--sealed-dir`` is refused in the checkout outside
     runs/."""
     tracked = REPO_ROOT / "docs" / "sealed-test"
     with pytest.raises(SystemExit) as stopped:

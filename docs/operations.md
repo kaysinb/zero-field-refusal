@@ -219,7 +219,7 @@ with a `..` component, and no two inventory paths that flatten to the same name 
 `_`). Later versions of the script refuse paths that leave `DATA_DIR` and symbolic links in it,
 and number their copies of the inventories.
 
-**Setup of a study-2 Pod.** From the checkout of the reviewed commit (a Git bundle), restore only
+**Setup of a study-2 Pod.** From the checkout of the chosen commit (a Git bundle), restore only
 what the study needs, naming the inventories explicitly: the bucket also holds a superseded
 prompt build (`data/prompts/7f7ed5f91950`), which no Pod restores. Run `pod_setup.sh` alone,
 with nothing else running on the Pod: its checks do not guard against a concurrent writer to
@@ -471,7 +471,7 @@ bash scripts/pod_setup.sh $A/inventory-2026-10-11.tsv $A/inventory-2026-10-14-st
 ```
 
 The prep driver's header names the same inventories. Then write and run the driver, from the
-reviewed commit:
+chosen commit:
 
 ```bash
 python scripts/study2_short_campaigns.py prep --seeds 2000 2001 2002 --batch 5 --commit SHA \
@@ -667,8 +667,8 @@ in the checkout), and refuse when:
   of the record itself). Any other descendant is refused unless `code.allow_descendants` is true;
   a commit that does not descend from it always is;
 - a tracked file has uncommitted changes, staged or not, or a file anywhere in the checkout is
-  untracked and not ignored by the checkout's `.gitignore` files (keep local work directories,
-  such as `.superpowers/`, in `.gitignore`: `.git/info/exclude` and a user's excludes file do not
+  untracked and not ignored by the checkout's `.gitignore` files (keep local work directories
+  in `.gitignore`: `.git/info/exclude` and a user's excludes file do not
   count). The runs read a dirty tree the same way (`tracking.worktree_changes`), whatever
   `status.showUntrackedFiles`, `.git/info/exclude` and `core.excludesFile` say;
 - `model` is not the model of `experiments/study2_short`;
@@ -805,9 +805,9 @@ only; judge labels are read by the looks, the final analyses and the audit alone
 ### Code, gates and what may change
 
 - **Gate B** is the code every GPU run executes. Its record, `docs/study2-short-gate-b.json`,
-  names the commit gate B was reviewed at (`e380bcc`) and its GPU-code identity (119 files,
+  names the commit gate B was fixed at (`e380bcc`) and its GPU-code identity (119 files,
   sha256 `5cddd583…7680`; `code_identity.gpu_code_identity`). S1 ran from `aa17a99`, gate B as
-  first approved (review fa15; GPU code `78b166a2…`); the fa21 change then touched only the
+  first fixed (GPU code `78b166a2…`); the change to twin A's consistency rule then touched only the
   numerical check's code and settings, and S1 stands. The S2 repeat ran from `aa4c007`, with
   gate B's current GPU code.
 - **Gate C** (the analysis, the simulation, the audit, the fixation and the docs) changes no GPU
@@ -867,7 +867,7 @@ only; judge labels are read by the looks, the final analyses and the audit alone
   and `/root/zfr-env.sh`, themselves.
 - **SSH.** Use direct SSH to the Pod's public IP and mapped port. Read the host key from the Pod's
   logs and pin it in a known-hosts file before the first connection.
-- **Code.** A Git bundle of the reviewed commit, checked out clean under
+- **Code.** A Git bundle of the chosen commit, checked out clean under
   `/workspace/code/zero-field-refusal/<commit>/source` (the drivers check the commit and that the
   checkout is clean, as the runs read it). The numerical check needs the commit objects of the
   K-only runs' commits in that checkout: a shallow clone makes its code check refuse.
@@ -898,7 +898,7 @@ only; judge labels are read by the looks, the final analyses and the audit alone
 - **Disk:** the numerical check keeps one case's checkpoints at a time (up to 31.4 GB at 1.5B,
   deleted when the case is done); its driver clears those an interrupted case left and needs
   40 GB free under its output directory. The drift driver needs 5 GB.
-- **The run environment** (the final review of gate B, I3). The check compares each K-only run's
+- **The run environment.** The check compares each K-only run's
   recorded environment (`meta.json`: the GPU names, the driver, `torch_cuda`, Python, the
   packages, and the container image when recorded) with its own. A difference stops it with
   `RUN ENVIRONMENT MISMATCH: <field>: …`: `plan` exits 1, `control` and `twins` record nothing and
@@ -923,7 +923,7 @@ only; judge labels are read by the looks, the final analyses and the audit alone
 
 ### S1: discovery at (8, 20)
 
-Locally, at the reviewed commit (`R` and `THETA0` as in amendment 3's commands; campaigns and
+Locally, at the chosen commit (`R` and `THETA0` as in amendment 3's commands; campaigns and
 summaries go under `$RUNS_DIR`, here `runs/`):
 
 ```bash
@@ -1031,7 +1031,7 @@ python scripts/study2_short_summary.py --runs $R --theta0 $THETA0 --fixation $F 
 
 ### The void and the repeat of a numerical stage
 
-A GPU-path change after the K-only runs (S2's: the fa21 comparator, `e380bcc`) leaves their
+A GPU-path change after the K-only runs (S2's: the comparator of twin A's consistency rule, `e380bcc`) leaves their
 records unusable: the tool refuses runs whose GPU code is not its own. At a clean checkout of the
 new commit, both on the Pod and in the local record store:
 
@@ -1049,7 +1049,7 @@ python scripts/numerical_check.py void --batch 20 --upper 8 --runs-root "$RUNS_D
 - **It refuses** on a checkout that is not clean; when no run's GPU code differs; when it would
   move a run of another role, or one whose GPU code cannot be read; when the old runs hold several
   GPU codes; when the destination exists; when a launcher journal it would move also names a run
-  it leaves in place; and, for the coordinator to decide, when S3 has started (a validation,
+  it leaves in place; and, for the researcher to decide, when S3 has started (a validation,
   confirmation or time-course run exists at B: voiding those means spending on S3 again) or when
   a check directory of another U exists at B. Without `numerical/b{B}-u{U}/` (a change between
   the K-only runs and their check) it moves the rest and records "no check directory".
@@ -1065,7 +1065,7 @@ python scripts/numerical_check.py void --batch 20 --upper 8 --runs-root "$RUNS_D
 
 ### S3: validation
 
-After the second reviewer approves gate C, write and commit the versions record (amendment 3's
+After gate C passes, write and commit the versions record (amendment 3's
 procedure above), from a clean checkout of the commit that validation and confirmation run from.
 Then:
 
@@ -1249,7 +1249,7 @@ inventory. It enters no decision.
 
 ### Labeling and sealed output
 
-Study 2 labels its runs only with the sealed labeling command (review fa27), which wraps
+Study 2 labels its runs only with the sealed labeling command, which wraps
 `run_judging.label_runs` in the analysis package (a new script would be a GPU path):
 
 ```bash
@@ -1300,10 +1300,10 @@ python -m zero_field_refusal.analysis.study2_label_cli --judge wildguard RUN_DIR
   - **Request counts:** the judge server's access log and its statistics count the requests of
     every round.
 
-  These are documented limits of the blinding (review fa28): batching reduces what they
+  These are documented limits of the blinding: batching reduces what they
   attribute to a run but does not remove them, and no scientific decision may use a labeling's
   timing, its request counts or a call's status.
-- **These rules are procedural protection, not enforced access control** (review fa28): nothing
+- **These rules are procedural protection, not enforced access control:** nothing
   technically prevents running `label_runs.py` on a study-2 run or opening a sealed record. They
   hold because every operator follows them.
 - **Exit:** non-zero for the open runs exactly as `label_runs.py`; for the sealed runs only for
@@ -1313,7 +1313,7 @@ python -m zero_field_refusal.analysis.study2_label_cli --judge wildguard RUN_DIR
 - **An "error" that stays after a rerun:** the run waits. An outcome-blind helper may open its
   record and relays only the exception's class and one remedy from this list: rerun; restore the
   label file from the archive; exclude the run by a recorded decision. Never a count or a value.
-  The coordinator decides.
+  The researcher decides.
 - **The sealed record:** `$RUNS_DIR/sealed/labeling-<UTC timestamp>-<judge>.json` (the directory
   0700, the file 0600), one per invocation with a sealed run. It holds the sealed runs' full
   summaries, the captured output and any traceback; only its path is printed. The summary's and
@@ -1389,7 +1389,7 @@ python scripts/study2_short_simulate.py final --inputs runs/analysis/study2_shor
   `docs/study2-short-b20-inputs.json`, and nothing without a fixed level. Run without it on a Pod,
   the two are written in the checkout from `final.json` and the inputs record, with the tracked
   record's pin in `tests/test_study2_short_campaigns.py` updated, and committed before the versions
-  record. Without a fixed level nothing is written and the outcome goes to the second reviewer.
+  record. Without a fixed level nothing is written and the outcome goes to the researcher.
 - Download the output before stopping the Pod, and archive it with an inventory.
 
 ## Study 2, FA soft-control diagnostic
@@ -2665,7 +2665,7 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   lines ([sealed output](#labeling-and-sealed-output)).
 - The Pod has no SSH and no persistent storage: stop it as soon as the labels are written; the
   labels and their raw outputs stay local next to the sample or in the run directories.
-- **Deadline without SSH.** When a hard stop is needed (the user away), the start command is
+- **Deadline without SSH.** When a hard stop is needed with nobody attending, the start command is
   `bash -c` running [`scripts/pod_deadline_watch.py`](../scripts/pod_deadline_watch.py) in the
   background before `exec vllm serve …`, with `ZFR_DEADLINE_EPOCH` in the environment as the cap
   (without a deadline file the cap is the deadline). Check
@@ -2884,7 +2884,7 @@ Decided 2026-10-11. Three places, each with one role:
 | Place | Holds | Rules |
 |---|---|---|
 | This machine (the checkout, `./data`, `./runs`, `scratchpad/`) | code, documents, reports, scratchpad notes and small run results: run directories, judge labels, calibration samples and reference labels | Large data (teacher streams, soft-target distributions, checkpoints, model weights) takes at most 10 GB for the whole project here; beyond that it stays on the Pod's working storage and in the bucket. |
-| Working storage of the Pod (from stage 1) | model weights and caches, teacher streams, soft-target distributions while they exist, intermediate files, and the run directories of ongoing runs | Mounted at `/workspace`, so the [container defaults](#containers) put `DATA_DIR`, `RUNS_DIR` and the caches on it. Preferred: a Runpod network volume (Standard, about 50 GB, $0.07 per GB and month) in a data center with L40S capacity. Where no such data center exists, the Pod's own volume disk, which lives on its machine and goes with the Pod. Either way it is working storage, not a backup, and it is deleted only with the user's approval. |
+| Working storage of the Pod (from stage 1) | model weights and caches, teacher streams, soft-target distributions while they exist, intermediate files, and the run directories of ongoing runs | Mounted at `/workspace`, so the [container defaults](#containers) put `DATA_DIR`, `RUNS_DIR` and the caches on it. Preferred: a Runpod network volume (Standard, about 50 GB, $0.07 per GB and month) in a data center with L40S capacity. Where no such data center exists, the Pod's own volume disk, which lives on its machine and goes with the Pod. Either way it is working storage, not a backup, and it is deleted only with the researcher's approval. |
 | `ARTIFACT_REMOTE`, a private, versioned Google Cloud Storage bucket | everything to be kept: finalized run directories, teacher streams, labels, inventories, scratchpad snapshots | Create and read only, no overwrite or delete ([archive](#rented-machines)). |
 
 Stage 1 (decided 2026-10-11): no data center offered both L40S and network volumes, so the
