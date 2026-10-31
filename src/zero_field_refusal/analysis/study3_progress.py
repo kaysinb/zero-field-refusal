@@ -137,10 +137,10 @@ froze is checked by the simulation record's reader (``study3_decisions``, the J 
 record against its committed fixation and the results' tests), so a record read here has passed
 it; it is not checked again here.
 
-**The simulation's reading** (amendment 7, "The simulation's stops"; ``simulation_reading``). A
-withheld P–F keeps P through the validation; then P leaves the arms (``withhold_pf`` on the route,
-no closure): the n record names A–F alone, the blocks hold four runs and P's counter does not hold
-the stop.
+**The simulation's reading** (amendment 7, "The simulation's stops"; ``simulation_reading``). Each
+comparison reads at the cap against its own floor. A withheld P–F keeps P through the validation;
+then P leaves the arms (``withhold_pf`` on the route, no closure): the n record names A–F alone, the
+blocks hold four runs and P's counter does not hold the stop.
 
 **The confirmation** ("Confirmation"). One block per campaign, in seed order from 10400, up to the
 cap C(N) (``cap_of``; the cells of every seed up to the cap are prescribed, no further). The
@@ -390,7 +390,8 @@ BUDGET_STOP = "budget_stop"  # the researcher's budget decision is stop
 TERMINAL = (SCIENTIFIC_REPORT, DESIGN_STOP, BUDGET_STOP)
 CONFIRMED, DESCRIPTIVE = "confirmed", "descriptive"  # the outcome at done: A–F's reading
 CONFIRMATORY = "confirmatory"
-CONFIRMATORY_AT = 36  # "Confirmation": at the cap, confirmatory with at least 36 supported blocks
+# "Confirmation": at the cap, confirmatory with at least 36 supported blocks, or the raised floor
+REGISTERED_FLOORS = {"A-F": 36, "P-F": 36}
 COMPARISONS = {"A-F": "AF", "P-F": "PF"}  # the n record's names of the comparisons, study3_blocks'
 ACTIVE = (["A-F"], ["A-F", "P-F"])
 CAMPAIGNS = ("search-round0", "search-round1", "numerical", "repair", "validation",
@@ -1620,7 +1621,8 @@ class _Walk:
             for seed in seeds])  # fmt: skip
         self._successor_of(stage, candidate, "confirmation")  # (4) before its blocks
         self._other_commits(stage, step_key(candidate, "confirmation"))
-        state = confirmation_state(self.endpoints, candidate, n["N"], self._comparisons())
+        state = confirmation_state(self.endpoints, candidate, n["N"], self._comparisons(),
+                                   floors=self.reading["floors"])  # fmt: skip
         self.extra["confirmation"] = state
         self._block_on(stage, state["problems"])
         conditions = {arm: _Arm(hold=self._holds_at(candidate, arm, ("confirmation",)))
@@ -2288,8 +2290,9 @@ def _technical_case(entry: Mapping[str, Any], reading: Mapping[str, Any]) -> boo
 
 
 def confirmation_state(
-    endpoints: Iterable[Endpoint], candidate: int, N: int, active: Sequence[str]
-) -> dict[str, Any]:
+    endpoints: Iterable[Endpoint], candidate: int, N: int, active: Sequence[str],
+    *, floors: Mapping[str, int | None] = REGISTERED_FLOORS,
+) -> dict[str, Any]:  # fmt: skip
     """The confirmation of a candidate ("Confirmation"; module docstring): ``started``, the
     blocks started, in seed order, as the distinct seeds of its starts in the launch journal
     (a start with no directory yet included; a retry of a label adds no block); ``blocks`` (per
@@ -2299,9 +2302,10 @@ def confirmation_state(
     ``held_up`` (that block), ``cohorts`` (the first N supported blocks by seed order),
     ``supported`` (every supported block started, in any order); the ``stop`` (every active
     counter at N, or the cap C(N) blocks started); the ``readings`` once stopped
-    (``confirmatory`` for a comparison at N, and at the cap with at least 36 supported blocks,
-    ``descriptive`` with fewer; None while a block it needs is unfinished) and ``analysis``, the
-    blocks each is read on (its cohort, or at the cap all its supported blocks); ``technical``
+    (``confirmatory`` for a comparison at N, and at the cap with at least its floor of supported
+    blocks, ``floors``, the simulation record's on the route, ``descriptive`` with fewer; None
+    while a block it needs is unfinished) and ``analysis``, the blocks each is read on (its cohort,
+    or at the cap all its supported blocks); ``technical``
     and ``open`` (the unfinished blocks and their runs: an open block's runs are those that have
     not ended, none when it only lacks cells); ``problems`` (blocks started out of seed order or
     beyond the cap); ``may_start_next`` (False once stopped, with a problem, while a started block
@@ -2366,7 +2370,7 @@ def confirmation_state(
             readings[comparison], analysis[comparison] = CONFIRMATORY, cohorts[comparison]
         elif why == "cap" and not unfinished:
             count = len(supported[comparison])
-            readings[comparison] = CONFIRMATORY if count >= CONFIRMATORY_AT else DESCRIPTIVE
+            readings[comparison] = CONFIRMATORY if count >= floors[comparison] else DESCRIPTIVE
             analysis[comparison] = supported[comparison]
         else:
             readings[comparison], analysis[comparison] = None, None

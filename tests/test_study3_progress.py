@@ -2474,6 +2474,30 @@ def test_the_reading_at_the_cap_is_confirmatory_from_36_supported_blocks(support
     assert state["may_start_next"] is False
 
 
+@pytest.mark.parametrize("supported, floors, readings", [
+    (40, {"A-F": 36, "P-F": 36}, ("confirmatory", "confirmatory")),
+    (40, {"A-F": 41, "P-F": 36}, ("descriptive", "confirmatory")),
+    (40, {"A-F": 36, "P-F": 41}, ("confirmatory", "descriptive")),
+])  # fmt: skip
+def test_the_reading_at_the_cap_is_against_each_comparisons_floor(supported, floors, readings):
+    """The raised floor of one comparison leaves the other's reading as it is (amendment 7, "The
+    floor"), on the route as in the state."""
+    seeds = list(SEEDS["confirmation"][1])
+    study = Study()
+    study.record("engineering")
+    study.simulation(floors=floors)
+    study.search()
+    study.numerical()
+    study.validation()
+    study.n(N=60)
+    low = {**unsupported(seeds[supported:74]), **unsupported(seeds[supported:74], "P")}
+    study.confirmation(count=74, special=low)
+    result = study.advance()
+    assert (result["stage"], result["reason"]) == ("done", "cap_reached")
+    assert result["readings"] == dict(zip(("A-F", "P-F"), readings, strict=True))
+    assert result["outcome"] == ("confirmed" if readings[0] == "confirmatory" else "descriptive")
+
+
 def test_at_the_cap_an_unfinished_block_leaves_the_reading_open() -> None:
     seeds = list(SEEDS["confirmation"][1])
     endpoints = confirmation_endpoints(74, arms=("A", "F"), special={
