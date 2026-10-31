@@ -211,14 +211,17 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   of the screen again on its own streams with the denser mask, in the same part, its A–F
   detections counted over the studies the power counts, at the N the rule chose (before any
   n_min increase: not the power of the final increased design);
-- *scan-<n>*: when ``power_af`` at L (0.975 without an L) is short, the power scenarios again
-  from the same streams with N at least n = 60, 61, …, to the first n whose smallest power
+- *scan-<level>-<n>*: when ``power_af`` at L (0.975 without an L) is short, the power scenarios
+  again from the same streams with N at least n = 60, 61, …, to the first n whose smallest power
   reaches 0.80 or whose cap exceeds the 200 reserved seeds;
-- *verification*: C01–C17 on the verification stream in ``"procedure"`` mode at L,
-  ``VERIFICATION_RESAMPLES``, N at least ``n_min`` when the power was short. When the scan
-  stopped at an n whose cap exceeds the 200 reserved seeds, no n is attainable
-  (``unattainable_n``): the verification is not run, its tests are not due and the record fails
-  (the design stop, ``NO_ATTAINABLE_N``).
+- *verification-<level>*: C01–C17 on that level's own stream (M28) in ``"procedure"`` mode at L,
+  ``VERIFICATION_RESAMPLES``, N at least ``n_min`` when the power was short. A failure of A–F's
+  tests at or above its floor advances L (amendment 7, "A failure at L") to the next level that
+  passes its screen, with the power and any scan computed again at that level before its draws;
+  L is never lowered, no stream rerolled, every failed result kept, and with no level left the
+  record fails. A failure of P–F alone advances nothing: P–F is withheld (M29). When a scan
+  stopped at an n whose cap exceeds the 200 reserved seeds, no n is attainable: that level's
+  verification is not run, its tests are not due and the record fails (``NO_ATTAINABLE_N``).
 
 **Rulings** (the study's frozen settings, each with its one-line source):
 - M1, the harm model of block differences: additive on the probability scale, σ calibrated so
@@ -323,9 +326,10 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   and P–F's its marginal and the joint ones; a joint cap test at a floor counts the studies in which
   each active comparison's reading is confirmatory at that floor. A failure of P–F alone advances
   nothing: **there are no mixed levels**, the identities carry one level, so P–F is read at A–F's L
-  or not at all, and no joint check moves L (none reads A–F's reading today: A–F's tests are its
-  marginal ones). A–F's analysis set does not depend on P's activity (M16), so a verification with
-  P–F active verifies a confirmation with P withheld; decided.
+  or not at all. Only a failure of A–F's tests advances L, or a joint check that A–F's reading
+  depended on, and none does: A–F's reading rests on its own counter and the cap. A–F's analysis
+  set does not depend on P's activity (M16), so a verification with P–F active verifies a
+  confirmation with P withheld; decided.
 - M24, the coverage test's interval: the primary computation's only (the registration's coverage
   concerns "the interval"); decided.
 - M25, the sizes of the dry run's Part II (amendment 4): M = 200, 200 screen and 1 000
@@ -3422,7 +3426,7 @@ PART_KIND, SCREEN_KIND, VERIFICATION_KIND = (
     "simulation-verification",
 )
 RESULTS_KIND = "simulation-results"
-PHASES = ("gates", "screen")  # and "scan-<n>", one per n of the n_min scan, and a verification's
+PHASES = ("gates", "screen")  # and per level "scan-<level>-<n>" and "verification-<level>"
 CALIBRATION_TOLERANCE = 1e-9  # the recomputed calibration's floats, relative
 # ... or within an absolute floor, the solvers' own precision on the field's scale, so that a
 # result near 0 (Δ = 0's attained truth, an offset o⁰ near 0) compares by its precision
@@ -3448,7 +3452,7 @@ CALIBRATION_FLOORS: dict[str, float] = {
     "attained_delta_pp": PP_FLOOR,
 }
 QUANTILES = {"q10": Fraction(1, 10), "q50": Fraction(1, 2), "q90": Fraction(9, 10)}
-_SCAN = re.compile(r"scan-([1-9][0-9]*)")
+_SCAN = re.compile(r"scan-(0\.[0-9]{3})-([1-9][0-9]*)")
 _VERIFICATION = re.compile(r"verification-(0\.[0-9]{3})")
 _PART_NAME = re.compile(r"[0-9]{6}\.json")
 _NAME = re.compile(r"[A-Za-z0-9_-]+")
@@ -3475,6 +3479,11 @@ def verification_phase(level: float) -> str:
     return f"verification-{level_slot(level)}"
 
 
+def scan_phase(level: float, n: int) -> str:
+    """The phase of the n_min scan at ``level`` and ``n``."""
+    return f"scan-{level_slot(level)}-{n}"
+
+
 def verification_base(base: int, level: float) -> int:
     """``level``'s preassigned verification stream (M28), from the verification stream ``base``
     and the level alone, so that no level's draws depend on whether another's ran."""
@@ -3486,20 +3495,21 @@ def _phase_ok(phase: Any) -> bool:
         return True
     if not isinstance(phase, str):
         return False
+    slots = [level_slot(lv) for lv in LEVELS]
     found = _VERIFICATION.fullmatch(phase)
     if found is not None:
-        return found.group(1) in [level_slot(lv) for lv in LEVELS]
+        return found.group(1) in slots
     found = _SCAN.fullmatch(phase)
-    return found is not None and int(found.group(1)) >= MIN_N
+    return found is not None and found.group(1) in slots and int(found.group(2)) >= MIN_N
 
 
 def part_path(runs_root: str | Path, phase: str, scenario: str, first: int) -> Path:
     """The part of ``scenario``'s studies from index ``first`` in ``phase`` (``gates``,
-    ``screen``, ``scan-<n>`` or ``verification-<level>``):
+    ``screen``, ``scan-<level>-<n>`` or ``verification-<level>``):
     ``parts/<phase>/<scenario>/<first>.json`` under the simulation's folder."""
     if not _phase_ok(phase):
-        raise ValueError(f"no phase {phase!r} (phases: {PHASES}, scan-<n>, n ≥ {MIN_N}, and "
-                         "verification-<level>)")  # fmt: skip
+        raise ValueError(f"no phase {phase!r} (phases: {PHASES}, scan-<level>-<n>, n ≥ {MIN_N}, "
+                         "and verification-<level>)")  # fmt: skip
     if not (isinstance(scenario, str) and _NAME.fullmatch(scenario)):
         raise ValueError(f"scenario {scenario!r} is no folder name")
     if not (_integer(first) and 0 <= first < 10**6):
@@ -4099,6 +4109,37 @@ def _short_of(m: int, tests: Sequence[tuple[float, str, int | None]]) -> Callabl
     return lambda rows: max(m - sum(_counts_for(o, *t) for o in rows) for t in tests)
 
 
+def _power_scan(pool: Workers | None, runs_root: Path, context: Context, commit: str, level: float,
+                floor: int, blocks: int,
+                power: Mapping[str, Mapping[str, int]]) -> list[dict]:  # fmt: skip
+    """The n_min scan at ``level`` when A–F's power there (``power``: its counts per scenario, on
+    the screen) is short: the power scenarios again from the same streams with N at least n = 60,
+    61, …, read at A–F's ``floor``, to the first n whose smallest power reaches the requirement or
+    whose cap exceeds the reserved seeds; empty when the power is not short."""
+    d = _decisions
+    m = d.COVERAGE_RUNS
+    if min(c["correct"] for c in power.values()) / m >= d.POWER_REQUIRED:
+        return []
+    bound, base = d.MAX_DRAWS_FACTOR * m, context.fixation["streams"]["calibration"]
+    reserved = len(SEEDS["confirmation"][1])
+    scenarios = context.of("power")
+    scan, n = [], MIN_N
+    while True:
+        phase = scan_phase(level, n)
+        units = {sc.name: Unit(phase, sc.name, 0, 1, base, d.SCREEN_RESAMPLES, (level,), blocks, n)
+                 for sc in scenarios}  # fmt: skip
+        found = _phase(pool, runs_root, context, commit, units, bound, _screen_short(m, (level,)))
+        counts = {}
+        for sc in scenarios:
+            c = _direction_counts(found[sc.name], sc, "A-F", level, m, bound, floor)
+            counts[sc.name] = {"correct": c["correct"], "studies": c["studies"]}
+        scan.append({"n": n, "by_scenario": counts})
+        reached = min(c["correct"] for c in counts.values()) / m >= d.POWER_REQUIRED
+        if reached or cap_of(n) > reserved:
+            return scan
+        n += 1
+
+
 def _screen(runs_root: Path, context: Context, commit: str,
             pool: Workers | None) -> dict[str, Any]:  # fmt: skip
     """The gates, the screen and the n_min scan (§"Simulation before validation"), drawn
@@ -4139,25 +4180,8 @@ def _screen(runs_root: Path, context: Context, commit: str,
     report = {level_slot(lv): {sc.name: _report_counts(rows[sc.name], sc, lv, m, bound)
                                for sc in power_scenarios} for lv in LEVELS}  # fmt: skip
     at = d.POWER_LEVEL if selected is None else selected
-    scan = []
-    by = power["A-F"][level_slot(at)]
-    if min(c["correct"] for c in by.values()) / m < d.POWER_REQUIRED:
-        reserved = len(SEEDS["confirmation"][1])
-        n = MIN_N
-        while True:
-            found = _phase(pool, runs_root, context, commit,
-                           units(f"scan-{n}", power_scenarios, (at,), blocks, n), bound,
-                           _screen_short(m, (at,)))  # fmt: skip
-            counts = {}
-            for sc in power_scenarios:
-                c = _direction_counts(found[sc.name], sc, "A-F", at, m, bound,
-                                      floors[at]["A-F"] or FLOORS[0])  # fmt: skip
-                counts[sc.name] = {"correct": c["correct"], "studies": c["studies"]}
-            scan.append({"n": n, "by_scenario": counts})
-            reached = min(c["correct"] for c in counts.values()) / m >= d.POWER_REQUIRED
-            if reached or cap_of(n) > reserved:
-                break
-            n += 1
+    scan = _power_scan(pool, runs_root, context, commit, at, floors[at]["A-F"] or FLOORS[0], blocks,
+                       power["A-F"][level_slot(at)])  # fmt: skip
     reported = {sc.name: _reported_gate(context, sc, gate_rows[sc.name][:m], m)
                 for sc in context.of("gate")}  # fmt: skip
     for sc in screened:
@@ -4308,15 +4332,19 @@ def read_screen(runs_root: str | Path, context: Context, commit: str | None = No
     return screen
 
 
-def unattainable_n(screen: Mapping[str, Any]) -> int | None:
-    """The n at which the screen's n_min scan stopped with its cap beyond the reserved
-    confirmation seeds (``cap_of(n)`` > 200): no N within them reaches the power, so none is
-    attainable, the verification is not run and the record fails (``NO_ATTAINABLE_N``, the
-    design stop). None when the scan is empty or stopped at a power reached within them."""
-    scan = screen["gates"]["n_scan"]
+def _scan_beyond(scan: Sequence[Mapping[str, Any]]) -> int | None:
+    """The n at which an n_min scan stopped with its cap beyond the reserved confirmation seeds
+    (``cap_of(n)`` > 200); None when it is empty or stopped at a power reached within them."""
     if scan and cap_of(scan[-1]["n"]) > len(SEEDS["confirmation"][1]):
         return scan[-1]["n"]
     return None
+
+
+def unattainable_n(screen: Mapping[str, Any]) -> int | None:
+    """The n at which the screen's n_min scan stopped beyond the reserved seeds
+    (``_scan_beyond``): no N within them reaches the power, so none is attainable, the verification
+    is not run and the record fails (``NO_ATTAINABLE_N``, the design stop)."""
+    return _scan_beyond(screen["gates"]["n_scan"])
 
 
 def no_attainable_n(n: int) -> str:
@@ -4326,40 +4354,37 @@ def no_attainable_n(n: int) -> str:
             f"({NO_ATTAINABLE_N}), the design stop; the verification is not run")  # fmt: skip
 
 
-def _verification_floor(screen: Mapping[str, Any]) -> int:
-    """N's floor in the verification: ``n_min`` when the screen found the power short (the last
-    n of its scan), else 60. ``SimulationError`` when no n is attainable (``unattainable_n``):
-    the verification is not run."""
-    n = unattainable_n(screen)
-    if n is not None:
-        raise SimulationError(no_attainable_n(n))
-    scan = screen["gates"]["n_scan"]
-    return scan[-1]["n"] if scan else MIN_N
-
-
-def _verification(runs_root: Path, context: Context, commit: str, screen: Mapping[str, Any],
-                  pool: Workers | None) -> dict[str, Any]:  # fmt: skip
-    """The binding verification (§"Simulation before validation", "Fidelity"): C01–C17 in
-    ``"procedure"`` mode at L, 100 000 resamples, the realized route (candidate 1, then 2),
-    N at least ``n_min`` when the power was short, P–F where its gate passed, the attained N and
-    caps; per test the first M studies by index (A–F and the joint test: confirmed at L; P–F:
-    confirmed with P–F active; at the cap, confirmatory at its comparison's floor on the screen),
-    never past 4·M draws. A P–F without a floor on the screen is withheld: its tests and the joint
-    tests are not due. Its summary (``verification.json``): ``verified``, whether A–F's tests pass
-    at its floor, and ``pf_confirmatory``, whether P–F's and the joint tests pass at P–F's."""
+def _verify_level(runs_root: Path, context: Context, commit: str, screen: Mapping[str, Any],
+                  level: float, pool: Workers | None) -> dict[str, Any]:  # fmt: skip
+    """One level's verification (§"Simulation before validation", "Fidelity"): first the power and
+    any n_min scan at this level (the screen's, at the level it selected; else computed here, read
+    at this level's floor, before any of its draws); no n attainable, it is not run (``verified``
+    null). Else C01–C17 in ``"procedure"`` mode on the level's own stream (``verification_base``),
+    100 000 resamples, the realized route (candidate 1, then 2), N at least ``n_min`` when the power
+    was short, P–F where its gate passed, the attained N and caps; per test the first M studies by
+    index (A–F and the joint test: confirmed at the level; P–F: confirmed with P–F active; at the
+    cap, confirmatory at its comparison's floor on the screen), never past 4·M draws. A P–F without
+    a floor on the screen is withheld: its tests and the joint tests are not due. ``verified``:
+    whether A–F's tests pass at its floor; ``pf_confirmatory``: whether P–F's and the joint tests
+    pass at P–F's."""
     fixation, d = context.fixation, _decisions
     m, j = d.COVERAGE_RUNS, fixation["J"]
     bound = d.MAX_DRAWS_FACTOR * m
-    level = selected_level(screen["tests"], j, m)
-    if level is None:
-        raise SimulationError("no level passed the screen: the verification is not due")
-    n_floor, blocks = _verification_floor(screen), screen["validation_blocks"]
+    blocks = screen["validation_blocks"]
     floors = _floors_at(screen["tests"], level, j, m)
+    scan = (screen["gates"]["n_scan"] if level == selected_level(screen["tests"], j, m)
+            else _power_scan(pool, runs_root, context, commit, level, floors["A-F"], blocks,
+                             screen["gates"]["power"]["A-F"][level_slot(level)]))  # fmt: skip
+    base = verification_base(fixation["streams"]["verification"], level)
+    entry = {"level": level, "stream": base, "floors": floors, "n_scan": scan, "n_floor": None,
+             "verified": None, "pf_confirmatory": False, "tests": []}  # fmt: skip
+    if _scan_beyond(scan) is not None:
+        return entry
+    n_floor = scan[-1]["n"] if scan else MIN_N
     wanted = [(level, "A-F", floors["A-F"])]
     if floors["P-F"] is not None:
         wanted += [(level, "P-F", floors["P-F"]), (level, "joint", floors["P-F"])]
     needed = _short_of(m, wanted)
-    base = verification_base(fixation["streams"]["verification"], level)
     units = {sc.name: Unit(verification_phase(level), sc.name, 0, 1, base,
                            d.VERIFICATION_RESAMPLES, (level,), blocks, n_floor)
              for sc in context.of("coverage")}  # fmt: skip
@@ -4372,8 +4397,31 @@ def _verification(runs_root: Path, context: Context, commit: str, screen: Mappin
             tests.append(_not_due(identity) if floor is None else
                          _test_row(identity, level, found, m, bound, j, (floor,)))  # fmt: skip
     due = [row for row in tests if row["due"]]
-    verified = not floor_failures(due, "A-F", floors["A-F"], j, m)
-    confirmatory = floors["P-F"] is not None and not floor_failures(due, "P-F", floors["P-F"], j, m)
+    entry.update(n_floor=n_floor, tests=tests,
+                 verified=not floor_failures(due, "A-F", floors["A-F"], j, m),
+                 pf_confirmatory=floors["P-F"] is not None and not floor_failures(
+                     due, "P-F", floors["P-F"], j, m))  # fmt: skip
+    return entry
+
+
+def _verification(runs_root: Path, context: Context, commit: str, screen: Mapping[str, Any],
+                  pool: Workers | None) -> dict[str, Any]:  # fmt: skip
+    """The binding verification (amendment 7, "A failure at L"): at L on the screen and, while A–F's
+    tests fail at or above its floor, at the next level that passes its screen (``_verify_level``),
+    never at a lower one, no stream rerolled, every result kept. A failure of P–F alone advances
+    nothing. Its summary (``verification.json``): the ``levels`` tried, and ``level``, the one that
+    verified or the one no n is attainable at; null when no level is left."""
+    fixation, d = context.fixation, _decisions
+    m, j = d.COVERAGE_RUNS, fixation["J"]
+    level = selected_level(screen["tests"], j, m)
+    if level is None:
+        raise SimulationError("no level passed the screen: the verification is not due")
+    levels = []
+    while level is not None:
+        levels.append(_verify_level(runs_root, context, commit, screen, level, pool))
+        if levels[-1]["verified"] is not False:
+            break
+        level = selected_level(screen["tests"], j, m, above=level)
     return {
         "kind": VERIFICATION_KIND,
         "fixation": dict(context.ref),
@@ -4381,13 +4429,9 @@ def _verification(runs_root: Path, context: Context, commit: str, screen: Mappin
         "M": m,
         "J": j,
         "level": level,
-        "floors": floors,
-        "verified": verified,
-        "pf_confirmatory": confirmatory,
-        "n_floor": n_floor,
-        "validation_blocks": blocks,
+        "validation_blocks": screen["validation_blocks"],
         "resamples": d.VERIFICATION_RESAMPLES,
-        "tests": tests,
+        "levels": levels,
     }
 
 
@@ -4441,10 +4485,10 @@ def _moment_task(task: tuple) -> tuple[float, float]:
 
 def run_verification(context: Context, runs_root: str | Path, commit: str, *,
                      workers: int) -> Path:  # fmt: skip
-    """The run's step 4 (``_verification``), after the screen of this fixation and commit, on
-    the verification stream; written once (``verification.json``), never rerolled.
+    """The run's step 4 (``_verification``), after the screen of this fixation and commit, each
+    level on its own verification stream; written once (``verification.json``), never rerolled.
     ``SimulationError``: no screen of this fixation and commit, no L (not due), no attainable
-    n (``unattainable_n``: not run), ``verification.json`` present, or a part of another
+    n at L (``unattainable_n``: not run), ``verification.json`` present, or a part of another
     fixation or commit."""
     runs_root = Path(runs_root)
     path = verification_path(runs_root)
@@ -4467,7 +4511,7 @@ def run_verification(context: Context, runs_root: str | Path, commit: str, *,
 
 
 def verification_summary(runs_root: str | Path, context: Context, commit: str) -> dict[str, Any]:
-    """``verification.json``'s content from the parts as they are (nothing drawn), at the L of
+    """``verification.json``'s content from the parts as they are (nothing drawn), from the L of
     this fixation's and commit's screen."""
     screen = read_screen(runs_root, context, commit)
     return _verification(Path(runs_root), context, commit, screen, None)
@@ -4478,10 +4522,10 @@ def results_record(screen: Mapping[str, Any], verification: Mapping[str, Any] | 
                    written_at: str) -> dict[str, Any]:  # fmt: skip
     """``results.json`` (§"The results file"), from the screen's and the verification's
     summaries as they are: the rows of the calibration tests, then those of the verification
-    (each not due when no level passed, or when no n is attainable, ``unattainable_n``: the
-    verification is not run), in the fixation's order; the gates (the powers at L, or
-    0.975 without one, the power at the fixation's denser missing rate beside them, M6b; the
-    scan; the detection powers at J) and the reported figures.
+    (each not due at a level not tried), in the fixation's order; the gates at the last level
+    tried, 0.975 without one (the powers, the power at the fixation's denser missing rate beside
+    them, M6b; the scan; the detection powers at J); the levels tried, ``verifications``, and the
+    reported figures.
     ``written_at`` is given (the code commit's time, so that a resumed run's results are an
     uninterrupted one's, byte for byte). ``SimulationError`` for summaries of another fixation
     or commit, a verification missing at L, or one given when no n is attainable."""
@@ -4494,19 +4538,22 @@ def results_record(screen: Mapping[str, Any], verification: Mapping[str, Any] | 
             raise SimulationError(f"the {name} is of another fixation or commit than "
                                   f"{code['commit']}")  # fmt: skip
     level = selected_level(screen["tests"], j, m)
-    rows = list(screen["tests"])
     skipped = None if level is None else unattainable_n(screen)
     if skipped is not None and verification is not None:
         raise SimulationError(f"a verification is given, but {no_attainable_n(skipped)}")
-    if level is None or skipped is not None:
-        rows += [_not_due(i) for i in fixation["tests"]["list"] if i[0] == "verification"]
-    elif verification is None or verification.get("level") != level:
+    if level is not None and skipped is None and verification is None:
         raise SimulationError(f"level {level} passed the screen: its verification is due")
+    tried = [] if verification is None else verification["levels"]
+    if verification is not None:
+        level = verification["level"]
+    verified = {tuple(r["test"]): r for entry in tried for r in entry["tests"]}
+    rows = [*screen["tests"], *(verified.get(tuple(i), _not_due(i))
+                                for i in fixation["tests"]["list"]
+                                if i[0] == "verification")]  # fmt: skip
+    if tried:
+        at, scan = tried[-1]["level"], tried[-1]["n_scan"]
     else:
-        verified = {tuple(r["test"]): r for r in verification["tests"]}
-        rows += [verified.get(tuple(i), _not_due(i)) for i in fixation["tests"]["list"]
-                 if i[0] == "verification"]  # fmt: skip
-    at = d.POWER_LEVEL if level is None else level
+        at, scan = (d.POWER_LEVEL if level is None else level), screen["gates"]["n_scan"]
     power = screen["gates"]["power"]
     gates = {
         "safe_pass_rate": screen["gates"]["safe_pass_rate"],
@@ -4518,7 +4565,7 @@ def results_record(screen: Mapping[str, Any], verification: Mapping[str, Any] | 
             "missing_rate": fixation["missing_labels"]["report"]["missing_rate"],
             "by_scenario": screen["gates"]["power_report"][level_slot(at)],
         },
-        "n_scan": screen["gates"]["n_scan"],
+        "n_scan": scan,
         "detection_power": d.detection_power(j, m),
     }
     return {
@@ -4535,6 +4582,7 @@ def results_record(screen: Mapping[str, Any], verification: Mapping[str, Any] | 
         "tests": rows,
         "gates": gates,
         "reported": screen["reported"],
+        "verifications": [{k: v for k, v in entry.items() if k != "tests"} for entry in tried],
     }
 
 

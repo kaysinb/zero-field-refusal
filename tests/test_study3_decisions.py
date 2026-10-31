@@ -166,8 +166,9 @@ class World:
         rows_by_level = {row.get("level"): row for row in record.get("coverage") or []
                          if isinstance(row, dict)}  # fmt: skip
         level = record.get("level") if record.get("level") in LEVELS else None
-        verification = record.get("verification")
-        verified_ok = isinstance(verification, dict) and verification.get("passed") is True
+        found = record.get("levels_tried")
+        tried = {t["level"]: t for t in found} if isinstance(found, list) else {}
+        gate_level = found[-1]["level"] if tried else 0.975
         rows = []
         for identity in test_identities(COVERAGE):
             stream, _, _, slot, comparison = identity
@@ -178,11 +179,12 @@ class World:
                 if not (type(x) is int and 0 <= x <= M):
                     x = c[kind] - 20
                 rows.append(results_row(identity, float(slot), x, c[kind]))
-            elif level is None or slot != level_slot(level):
+            elif float(slot) not in tried:
                 rows.append(results_row(identity, None, None, None))
-            else:
-                x = c[kind] - 20 if verified_ok else c[kind] + 1
-                rows.append(results_row(identity, level, x, c[kind], floors=(36,)))
+            else:  # the tests of a level whose verification failed: A–F's
+                failed = tried[float(slot)]["verified"] is False and comparison == "A-F"
+                x = c[kind] + 1 if failed else c[kind] - 20
+                rows.append(results_row(identity, float(slot), x, c[kind], floors=(36,)))
         if not_attainable is not None:
             stream, slot = not_attainable
             at = next(i for i, r in enumerate(rows) if r["test"][0] == stream and r["test"][2] == 60
@@ -220,11 +222,11 @@ class World:
                 "safe_pass_rate": {"passed": count(safe), "studies": M, "validation_blocks": 28},
                 "empirical_pass_rate": {"passed": count(value("empirical_pass_rate", 0.6)),
                                         "studies": M, "validation_blocks": 28},
-                **{name: {"level": level if level is not None else 0.975,
+                **{name: {"level": gate_level,
                           "by_scenario": {s: {"correct": count(value(name, default)),
                                               "studies": M, "draws": M} for s in POWERS}}
                    for name, default in (("power_af", 0.86), ("power_pf", 0.85))},
-                POWER_REPORT: {"level": level if level is not None else 0.975,
+                POWER_REPORT: {"level": gate_level,
                                "missing_rate": 0.01,
                                "by_scenario": {s: {"correct": count(value(POWER_REPORT, 0.7)),
                                                    "studies": M, "draws": M} for s in POWERS}},
@@ -232,6 +234,7 @@ class World:
                 "detection_power": detection_power(j, M),
             },
             "reported": {},
+            "verifications": [],
         }  # fmt: skip
         tests = results["tests"]
         first = next(i for i, r in enumerate(tests) if r["test"][0] == "calibration")
@@ -290,12 +293,15 @@ class World:
         ``omit``, ``extra``, ``flip_pass``, ``verification_not_due``, ``short_without_bound``:
         results that depart from the record), ``fixation`` as a word (``uncommitted``,
         ``with_another_file``, ``after_the_results``), ``fail_levels`` (those levels fail),
-        ``not_attainable`` ((stream, level slot): one A–F test short at the 4·M bound) and
-        ``gate_value_off`` (the record's pass rate at the safe alternative off its counts)."""
+        ``fail_verification`` (those levels' verifications fail, A–F's tests: L advances, and with
+        none left the record fails), ``not_attainable`` ((stream, level slot): one A–F test short at
+        the 4·M bound) and ``gate_value_off`` (the record's pass rate at the safe alternative off
+        its counts)."""
         mode = over.pop("results", None)
         modes = ("uncommitted", "with_another_file", "after_the_results")
         how = over.pop("fixation") if over.get("fixation") in modes else None
         failing = set(over.pop("fail_levels", ()))
+        unverified = set(over.pop("fail_verification", ()))
         short = over.pop("not_attainable", None)
         off = over.pop("gate_value_off", None)
         if how in ("uncommitted", "with_another_file"):
@@ -306,7 +312,8 @@ class World:
         if short is not None:
             row = rows[LEVELS.index(float(short[1]))]
             row["counts"] = {**row["counts"], "comparison": M}
-        level = next((r["level"] for r in rows if r["passed"]), None)
+        level = next((r["level"] for r in rows if r["passed"] and r["level"] not in unverified),
+                     None)  # fmt: skip
         record = {
             "kind": "simulation", "state": "passed" if level is not None else "failed",
             "written_at": WHEN, "code": CODE,
@@ -322,6 +329,16 @@ class World:
                 "passed") is True and record["level"] in LEVELS  # fmt: skip
             record["reading"] = {"level": record["level"], "pf_confirmatory": True,
                                  "floors": {"A-F": 36, "P-F": 36}} if passed else None  # fmt: skip
+        if "levels_tried" not in over:
+            record["levels_tried"] = []
+            for row in record["coverage"] if isinstance(record["coverage"], list) else []:
+                if isinstance(row, dict) and row.get("passed") is True:
+                    record["levels_tried"].append(
+                        tried_entry(row["level"], row["level"] not in unverified))  # fmt: skip
+                    if row["level"] not in unverified:
+                        break
+            if mode == "verification_not_due":
+                record["levels_tried"][0].update(verified=None, pf_confirmatory=False, failed=[])
         ran = self.first if how == "after_the_results" else None
         results = self.results(record, mode=mode, ran=ran, not_attainable=short)
         path = self.runs / SIMULATION_RESULTS
@@ -475,6 +492,17 @@ def default_gates() -> dict:
             POWER_REPORT: reported(0.7),
             "detection_power_comparison": reported(detection["comparison"]),
             "detection_power_joint": reported(detection["joint"])}  # fmt: skip
+
+
+def tried_entry(level: float, verified: bool = True) -> dict:
+    """A level tried, as the J check recomputes it: floors 36, and when its verification failed,
+    A–F's tests above their c (the fixture's ``fail_verification``)."""
+    c = coverage_threshold(GRID_J, M, 0.025)
+    failed = [] if verified else [
+        {"test": list(i), "X": c + 1, "reason": None} for i in test_identities(COVERAGE)
+        if i[0] == "verification" and i[3] == level_slot(level) and i[4] == "A-F"]  # fmt: skip
+    return {"level": level, "floors": {"A-F": 36, "P-F": 36}, "verified": verified,
+            "pf_confirmatory": True, "failed": failed}  # fmt: skip
 
 
 def results_row(identity: tuple, level: float | None, x: int | None, c: int | None,
@@ -694,10 +722,45 @@ def test_a_simulation_where_no_level_passed_is_a_failed_record_with_a_null_level
     assert problems == [] and record["state"] == "failed" and record["level"] is None
 
 
-def test_a_failed_verification_is_a_failed_record(world) -> None:
-    verification = verified(passed=False)
-    world.write("simulation", world.simulation(state="failed", verification=verification))
-    assert world.read("simulation")[0]["state"] == "failed"
+def test_a_failed_verification_advances_l_and_keeps_every_result(world) -> None:
+    """Amendment 7, "A failure at L": a level's failed verification moves L to the next level that
+    passed its screen; the record keeps the failed level, and the n record follows the new L."""
+    rows = [coverage_row(0.975), coverage_row(0.98, passed=False), coverage_row(0.985),
+            coverage_row(0.99)]  # fmt: skip
+    world.write("simulation", world.simulation(
+        coverage=rows, fail_verification=(0.975,), level=0.985,
+        verification=verified(0.985)))  # fmt: skip
+    record, problems = world.read("simulation")
+    assert problems == [] and record["level"] == 0.985 and record["state"] == "passed"
+    assert record["reading"]["level"] == 0.985
+    assert [t["level"] for t in record["levels_tried"]] == [0.975, 0.985]  # 0.980 failed its screen
+    assert [t["verified"] for t in record["levels_tried"]] == [False, True]
+    assert len(record["levels_tried"][0]["failed"]) == 17 * 7
+    results = json.loads((world.runs / SIMULATION_RESULTS).read_text())
+    assert results["gates"]["power_af"]["level"] == 0.985
+    due = {r["test"][3] for r in results["tests"] if r["test"][0] == "verification" and r["due"]}
+    assert due == {"0.975", "0.985"}
+
+
+def test_a_level_verified_after_a_failure_is_the_only_l_the_reader_accepts(world) -> None:
+    """L cannot stay at the failed level, skip a level that passed its screen, or stop with a level
+    left."""
+    sim_refused(world, "level", "0.98", fail_verification=(0.975,), level=0.975,
+                verification=verified(0.975))  # fmt: skip
+    sim_refused(world, "level", "0.98", fail_verification=(0.975,), level=0.985,
+                verification=verified(0.985))  # fmt: skip
+    tried = [tried_entry(0.975, False)]
+    sim_refused(world, "level", "0.98", level=None, state="failed", levels_tried=tried,
+                verification=verified(None, False), fail_verification=(0.975,))  # fmt: skip
+
+
+def test_no_level_left_is_a_failed_record_with_every_level_kept(world) -> None:
+    world.write("simulation", world.simulation(fail_verification=LEVELS))
+    record, problems = world.read("simulation")
+    assert problems == [] and record["state"] == "failed" and record["level"] is None
+    assert record["reading"] is None
+    assert [t["verified"] for t in record["levels_tried"]] == [False] * 4
+    assert world.simulation(fail_verification=LEVELS)["verification"]["passed"] is False
 
 
 def test_the_n_record_is_accepted_with_and_without_p(world) -> None:
@@ -736,7 +799,8 @@ def test_a_missing_engineering_field_is_refused(world, field) -> None:
 
 
 @pytest.mark.parametrize("field", ["fixation", "inputs", "gates", "coverage", "level",
-                                   "validation_blocks", "verification", "reading"])  # fmt: skip
+                                   "validation_blocks", "verification", "reading",
+                                   "levels_tried"])  # fmt: skip
 def test_a_missing_simulation_field_is_refused(world, field) -> None:
     record = world.simulation()
     del record[field]
@@ -1211,7 +1275,7 @@ def test_the_simulation_state_follows_the_coverage_screen_and_its_verification_o
                                                validation_blocks=None, verification=verified(
                                                    None, False)))  # fmt: skip
     decision_path(world.runs, "simulation").unlink()
-    world.write("simulation", world.simulation(state="failed", verification=verified(passed=False)))
+    world.write("simulation", world.simulation(fail_verification=LEVELS))
 
 
 def test_the_coverage_threshold_is_the_recomputed_one(world) -> None:
@@ -1785,8 +1849,7 @@ def test_an_n_record_needs_a_valid_passed_simulation_of_its_level(world) -> None
 
 
 def test_an_n_record_after_a_failed_simulation_is_refused(world) -> None:
-    verification = verified(passed=False)
-    world.write("simulation", world.simulation(state="failed", verification=verification))
+    world.write("simulation", world.simulation(fail_verification=LEVELS))
     refused(world, "n-c1", world.n(), "simulation record did not pass")
 
 

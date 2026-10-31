@@ -278,12 +278,13 @@ def verify(args: argparse.Namespace) -> None:
     except sim.SimulationError as exc:
         refuse("verify", str(exc))
     verification = json.loads(path.read_text(encoding="utf-8"))
-    tests = verification["tests"]
     print(f"{path} {sha256(path)}")
-    print(f"level {verification['level']}")
-    print(f"tests {len(tests)} passed {sum(t['passed'] is True for t in tests)}")
-    print(f"verified {str(verification['verified']).lower()}")
-    print(f"pf_confirmatory {str(verification['pf_confirmatory']).lower()}")
+    for entry in verification["levels"]:
+        tests = [t for t in entry["tests"] if t["due"]]
+        print(f"tried {entry['level']} verified {json.dumps(entry['verified'])} pf_confirmatory "
+              f"{json.dumps(entry['pf_confirmatory'])} n_floor {json.dumps(entry['n_floor'])} "
+              f"tests {len(tests)} passed {sum(t['passed'] is True for t in tests)}")  # fmt: skip
+    print("no level left" if verification["level"] is None else f"level {verification['level']}")
 
 
 def commit_time(commit: str) -> str:
@@ -342,6 +343,7 @@ def record(args: argparse.Namespace) -> None:
         "validation_blocks": decided["validation_blocks"],
         "verification": decided["verification"],
         "reading": decided["reading"],
+        "levels_tried": decided["levels_tried"],
     }  # fmt: skip
     try:
         written = write_decision(root, "simulation", entry, repo=REPO)
@@ -351,7 +353,13 @@ def record(args: argparse.Namespace) -> None:
     print(f"{written} {sha256(written)}")
     print(f"state {entry['state']}")
     print(f"level {'null' if entry['level'] is None else entry['level']}")
+    if entry["reading"] is not None:
+        print(f"pf_confirmatory {json.dumps(entry['reading']['pf_confirmatory'])}")
+        for comparison, floor in entry["reading"]["floors"].items():
+            print(f"floor {comparison} {json.dumps(floor)}")
     print(f"validation_blocks {entry['validation_blocks']}")
+    if verification is not None and verification["levels"][-1]["verified"] is None:
+        skipped = verification["levels"][-1]["n_scan"][-1]["n"]
     if skipped is not None:
         print(f"verification not_run {sim.NO_ATTAINABLE_N} n {skipped} cap "
               f"{decisions.cap_of(skipped)}")  # fmt: skip

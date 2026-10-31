@@ -2132,7 +2132,7 @@ def test_the_scan_stops_at_the_first_n_with_the_power(tiny, tmp_path) -> None:
     assert [min(c["correct"] for c in e["by_scenario"].values()) for e in scan][-1] == 6
     assert all(min(c["correct"] for c in e["by_scenario"].values()) < 5 for e in scan[:-1])
     assert decisions._n_min(scan, True, ["P20"]) == (63, [])
-    scanned = tmp_path / "study3" / "simulation" / "parts" / "scan-60" / "P20"
+    scanned = tmp_path / "study3" / "simulation" / "parts" / "scan-0.975-60" / "P20"
     assert all(
         row["report"] is None
         for p in scanned.glob("*.json")

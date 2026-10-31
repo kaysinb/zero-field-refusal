@@ -94,9 +94,13 @@ on is a response or an observation, and this module opens none.
   (``level``, ``passed``, its ``tests``, the ``calibration_stream`` and ``verification_stream``,
   two different integers); ``reading`` (null unless the record passed; else ``level``, L;
   ``pf_confirmatory``; ``floors``: per comparison its confirmatory floor, one of 36, 45, 60, P–F's
-  null when it is withheld), the field the procedure reads (amendment 7, "The simulation's stops").
-  L is the first level whose tests passed (the levels below it tested and failed); a null L means
-  every level was tested and failed.
+  null when it is withheld), the field the procedure reads (amendment 7, "The simulation's stops");
+  ``levels_tried``, each level that passed the screen and was reached, in order: ``level``, its
+  screen's ``floors``, ``verified`` (null: not run, no attainable n), ``pf_confirmatory`` and
+  ``failed``, the tests that failed at or above their floors (test, X, reason). L is the first
+  level whose tests passed and whose verification did not fail (the levels below it tested and
+  failed); a null L means every level was tested and none is left: a failed record, which the
+  procedure reads as a pause (amendment 7).
   **The state follows the coverage screen and its independent verification, and nothing else**:
   ``passed`` exactly when a level passed and its verification passed ("If no level passes, or the
   verification fails, the confirmation cannot start"). A pass rate below its requirement is not a
@@ -402,7 +406,7 @@ COMMON = ("kind", "state", "written_at", "code")
 FIELDS = {
     "engineering": ("checks",),
     "simulation": ("fixation", "inputs", "gates", "coverage", "level", "validation_blocks",
-                   "verification", "reading"),
+                   "verification", "reading", "levels_tried"),
     "n": ("candidate", "rates", "active", "level", "cohort", "spread", "spread_pp", "N", "cap",
           "simulation"),
     "budget": ("candidate", "N", "cap", "decision", "answers"),
@@ -476,7 +480,8 @@ FIXATION_RULES = ("screen_simplifications", "pf_verification", "joint_verificati
                   "level_and_floor", "verification_streams", "draw_bound")  # fmt: skip
 CURVATURE_FIELDS = ("A", "F", "P", "unit", "nominal_bias_af_pp", "source", "note")
 RESULTS_FIELDS = ("kind", "written_at", "fixation", "code", "M", "J", "streams", "resamples",
-                  "validation_blocks", SELECTED_LEVEL, "tests", "gates", "reported")  # fmt: skip
+                  "validation_blocks", SELECTED_LEVEL, "tests", "gates", "reported",
+                  "verifications")  # fmt: skip
 COUNT_FIELDS = ("studies", "draws", "reason", "X", "passed", "rate", "interval")  # one count
 ROW_FIELDS = ("test", "level", "due", "p0", "c", "floor", "below", *COUNT_FIELDS)
 RESULT_GATES = ("safe_pass_rate", "empirical_pass_rate", "power_af", "power_pf", POWER_REPORT,
@@ -1289,7 +1294,7 @@ class _Schema:
                          f"{safe['requirement']}: the validation has {wanted} blocks")  # fmt: skip
         verified = self._verification(r, level)
         if entries is not None:
-            self._ladder(level, entries)
+            self._ladder(level, entries, r["levels_tried"])
             self._tests(entries, r["verification"])
         # The state follows the coverage screen and its verification, and nothing else: a pass rate
         # below its requirement sets the validation size, a power shortfall is recorded (power_af)
@@ -1440,10 +1445,14 @@ class _Schema:
             ok = ok and valid
         return rows if ok else None
 
-    def _ladder(self, level: float | None, entries: list[dict[str, Any]]) -> None:
-        """L is the first level whose tests passed, the ones below it tested; with no passing
-        level, L is null and every level was tested."""
-        first = next((e["level"] for e in entries if e["passed"]), None)
+    def _ladder(self, level: float | None, entries: list[dict[str, Any]], tried: Any) -> None:
+        """L is the first level whose tests passed and whose verification did not fail
+        (``levels_tried``), the ones below it tested; with no such level, L is null and every level
+        was tested."""
+        failed = [t.get("level") for t in tried if isinstance(t, dict)
+                  and t.get("verified") is False] if isinstance(tried, list) else []  # fmt: skip
+        first = next((e["level"] for e in entries if e["passed"] and e["level"] not in failed),
+                     None)  # fmt: skip
         tested = [_level(e["level"]) for e in entries]
         if level is None:
             if first is not None:
@@ -2074,13 +2083,16 @@ def level_rows(rows: Sequence[Mapping[str, Any]], stream: str,
     return [r for r in rows if r["test"][0] == stream and r["test"][3] == slot]
 
 
-def selected_level(rows: Sequence[Mapping[str, Any]], j: int, m: int) -> float | None:
-    """L on the screen (amendment 7, "The level"): the first level whose A–F tests at N ≥ 60 and
-    at the cap all pass, recomputed from X and c; None when no level does. P–F's tests and the
-    joint tests have no part in it: L is at least 0.975 whatever P–F shows."""
+def selected_level(rows: Sequence[Mapping[str, Any]], j: int, m: int,
+                   above: float | None = None) -> float | None:  # fmt: skip
+    """L on the screen (amendment 7, "The level"): the first level, above ``above`` when a
+    verification failed there, whose A–F tests at N ≥ 60 and at the cap all pass, recomputed from X
+    and c; None when no level does. P–F's tests and the joint tests have no part in it: L is at
+    least 0.975 whatever P–F shows."""
     for level in LEVELS:
         mine = level_rows(rows, "calibration", level)
-        if mine and not floor_failures(mine, "A-F", FLOORS[-1], j, m):
+        if (above is None or level > above) and mine and not floor_failures(
+                mine, "A-F", FLOORS[-1], j, m):  # fmt: skip
             return level
     return None
 
@@ -2312,21 +2324,26 @@ def coverage_decisions(
     - per level, the record's ``coverage`` row (all four): ``comparison`` is the largest X over
       A–F's tests at N ≥ 60 and at the cap, which decide the level (a not-attainable test counting
       as X = M), ``joint`` the largest X of the level's joint tests, which do not;
-    - L (``selected_level``) and each comparison's floor at L (``confirmatory_floor``), and so which
-      verification tests are due: L's with an L, P–F's and the joint tests only when P–F has a
-      floor, none without an L, and none when ``n_min``'s cap exceeds the 200 reserved seeds (the
-      scan found no attainable n: the verification is not run and does not pass);
-    - the ``reading`` (amendment 7): L, A–F's floor, and P–F's floor when P–F's tests pass there
-      on the screen and in the verification (``pf_confirmatory``), else P–F withheld, which moves
-      neither L nor A–F's floor; null unless A–F's verification passed;
-    - the ``verification`` (its tests, due and passed, at L), the ``gates`` (from their stored
+    - the levels tried (amendment 7, "A failure at L"): each level whose A–F tests pass on the
+      screen, in ascending order, with each comparison's floor there (``confirmatory_floor``), until
+      one verifies; its verification's tests are due, P–F's and the joint tests only when P–F has a
+      floor, and every other is not. A failure of A–F's tests at or above its floor moves to the
+      next such level, on its own stream, a failure of P–F's alone moves nothing. A level whose
+      tests are not due stops the walk, with ``n_min``'s cap beyond the 200 reserved seeds (the scan
+      at that level found no attainable n: the verification is not run and does not pass);
+    - L, the level that verified (or the one the scan stopped at; null when none is left), and the
+      ``reading``: L, A–F's floor, and P–F's floor when P–F's tests pass there on the screen and in
+      the verification (``pf_confirmatory``), else P–F withheld, which moves neither L nor A–F's
+      floor; null unless a level verified;
+    - the ``verification`` (at L, its tests all those J holds), the ``gates`` at the last level
+      tried, or 0.975 with none (from their stored
       counts: the pass rates, the powers as the smallest correct/M over the power scenarios, a
       scenario short of M counting its missing studies as not detecting, beside ``power_af`` the
       power at the fixation's denser missing rate over the same studies (``POWER_REPORT``,
       reported), ``n_min`` from the
       stored scan, the detection powers at the fixation's J), ``validation_blocks`` (28 when the
       pass rate at the safe alternative reaches 0.95, else 40) and the ``state`` (passed exactly
-      when a level and its verification passed)."""
+      when a level verified)."""
     problems: list[str] = []
     j, m = fixation["J"], COVERAGE_RUNS
     bound = MAX_DRAWS_FACTOR * m
@@ -2373,44 +2390,57 @@ def coverage_decisions(
                          "thresholds": dict(thresholds),
                          "passed": bool(mine) and not floor_failures(mine, "A-F", FLOORS[-1], j,
                                                                      m)})  # fmt: skip
-    selected = next((row["level"] for row in coverage if row["passed"]), None)
-    gates, gate_problems = _gates_recomputed(results.get("gates"), fixation, selected)
-    problems += gate_problems
-    n_min = (gates.get("power_af") or {}).get("n_min")
-    reserved = len(SEEDS["confirmation"][1])
-    unattainable = selected is not None and n_min is not None and cap_of(n_min) > reserved
-    why = ("no level passed" if selected is None else
-           f"n_min {n_min} has the cap {cap_of(n_min)}, beyond the {reserved} reserved seeds "
-           "(no attainable n, the design stop)" if unattainable else None)  # fmt: skip
-    floors = {} if selected is None else {
-        c: confirmatory_floor(screened[selected], c, j, m) for c in FLOOR_TESTS}  # fmt: skip
 
     def owner(identity: tuple) -> str:
         return "A-F" if identity[4] == "A-F" else "P-F"
 
-    due = [] if why is not None else [
-        i for i in verification
-        if i[3] == level_slot(selected) and floors[owner(i)] is not None]  # fmt: skip
-    verified = []
-    for comparison in FLOOR_TESTS:
-        verified += read([i for i in due if owner(i) == comparison], selected,
-                         (floors.get(comparison),))  # fmt: skip
-    for identity in sorted(set(verification) - set(due), key=verification.index):
-        row = rows.get(identity)
-        if row is None:
-            problems.append(f"tests: {list(identity)} has no row")
-        elif not _not_due(row):
-            problems.append(f"tests: {list(identity)}: {why or 'not L, or P-F withheld'}, so the "
-                            "test is not due: every field but its test, p0 and due (false) is "
-                            "null")  # fmt: skip
-    passed = (selected is not None and not unattainable
-              and not floor_failures(verified, "A-F", floors["A-F"], j, m))  # fmt: skip
-    confirmatory = passed and floors["P-F"] is not None and not floor_failures(
-        verified, "P-F", floors["P-F"], j, m)  # fmt: skip
-    reading = None if not passed else {
-        "level": selected, "pf_confirmatory": confirmatory,
-        "floors": {"A-F": floors["A-F"],
-                   "P-F": floors["P-F"] if confirmatory else None}}  # fmt: skip
+    tried, due, selected, reading, stopped, at = [], set(), None, None, None, POWER_LEVEL
+    for level in (row["level"] for row in coverage if row["passed"]):
+        at = level
+        mine = [i for i in verification if i[3] == level_slot(level)]
+        floors = {c: confirmatory_floor(screened[level], c, j, m) for c in FLOOR_TESTS}
+        entry = {"level": level, "floors": floors, "verified": None, "pf_confirmatory": False,
+                 "failed": []}  # fmt: skip
+        tried.append(entry)
+        if all(_not_due(rows.get(i)) for i in mine):
+            selected, stopped = level, level
+            break
+        failed = {"A-F": [], "P-F": []}
+        for comparison, floor in floors.items():
+            if floor is not None:  # a P–F without a floor on the screen is withheld: not due
+                wanted = [i for i in mine if owner(i) == comparison]
+                due.update(wanted)
+                found = read(wanted, level, (floor,))
+                failed[comparison] = floor_failures(found, comparison, floor, j, m)
+        entry.update(verified=not failed["A-F"], failed=failed["A-F"] + failed["P-F"],
+                     pf_confirmatory=floors["P-F"] is not None and not failed["P-F"])  # fmt: skip
+        if entry["verified"]:
+            selected = level
+            pf_floor = floors["P-F"] if entry["pf_confirmatory"] else None
+            reading = {"level": level, "pf_confirmatory": entry["pf_confirmatory"],
+                       "floors": {"A-F": floors["A-F"], "P-F": pf_floor}}  # fmt: skip
+            break
+    gates, gate_problems = _gates_recomputed(results.get("gates"), fixation, at)
+    problems += gate_problems
+    n_min = (gates.get("power_af") or {}).get("n_min")
+    reserved = len(SEEDS["confirmation"][1])
+    unattainable = n_min is not None and cap_of(n_min) > reserved
+    if stopped is not None and not unattainable:
+        problems.append(f"tests: level {stopped} passed the screen: its verification is due")
+    elif stopped is None and tried and unattainable:
+        problems.append(f"tests: n_min {n_min} has the cap {cap_of(n_min)}, beyond the {reserved} "
+                        f"reserved seeds (no attainable n): the verification at {at} is not "
+                        "due")  # fmt: skip
+    for identity in verification:
+        if identity not in due:
+            row = rows.get(identity)
+            if row is None:
+                problems.append(f"tests: {list(identity)} has no row")
+            elif not _not_due(row):
+                problems.append(f"tests: {list(identity)}: its level was not tried, or P–F is "
+                                "withheld there, so the test is not due: every field but its "
+                                "test, p0 and due (false) is null")  # fmt: skip
+    passed = reading is not None
     streams = fixation["streams"]
     decided_verification = {
         "level": selected, "passed": passed, "tests": len(verification),  # all possible, in J
@@ -2426,7 +2456,7 @@ def coverage_decisions(
     state = "passed" if decided_verification["passed"] else "failed"
     decided = {"J": j, "M": m, "coverage": coverage, "level": selected,
                "verification": decided_verification, "gates": gates, "reading": reading,
-               "validation_blocks": blocks, "state": state}  # fmt: skip
+               "levels_tried": tried, "validation_blocks": blocks, "state": state}  # fmt: skip
     return decided, problems
 
 
@@ -2516,8 +2546,9 @@ def _not_due(row: Any) -> bool:
 
 
 def _gates_recomputed(gates: Any, fixation: Mapping[str, Any],
-                      selected: float | None) -> tuple[dict[str, Any], list[str]]:  # fmt: skip
-    """The record's gates from the results' counts (``coverage_decisions``), and the problems."""
+                      level: float) -> tuple[dict[str, Any], list[str]]:  # fmt: skip
+    """The record's gates at ``level`` from the results' counts (``coverage_decisions``), and the
+    problems."""
     if not isinstance(gates, Mapping) or set(gates) != set(RESULT_GATES):
         return {}, [f"results.gates must hold exactly {list(RESULT_GATES)}"]
     m, replicates = COVERAGE_RUNS, fixation["gate_replicates"]
@@ -2538,7 +2569,6 @@ def _gates_recomputed(gates: Any, fixation: Mapping[str, Any],
         required = REQUIRED_GATES.get(name)
         out[name] = {"value": value, "requirement": required,
                      "passed": None if required is None else value >= required}  # fmt: skip
-    level = POWER_LEVEL if selected is None else selected
     powers = {}
     for name in ("power_af", "power_pf"):
         g = gates[name]
@@ -2996,7 +3026,7 @@ def _against_decided(record: Mapping[str, Any], decided: Mapping[str, Any]) -> l
                 else mine[k] == theirs[k] for k in theirs):  # fmt: skip
             problems.append(f"gates.{name} is {mine!r}, recomputed {theirs!r} from the "
                             "results' counts")  # fmt: skip
-    for name in ("validation_blocks", "state", "reading"):
+    for name in ("validation_blocks", "state", "reading", "levels_tried"):
         if name == "validation_blocks" and record[name] is None and record["state"] == "failed":
             continue  # a failed record may leave the size null (the schema's allowance)
         if record[name] != decided[name]:
