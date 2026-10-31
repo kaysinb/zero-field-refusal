@@ -188,8 +188,9 @@ per scenario, units of ``UNIT`` (250) studies in index order, each written once 
 the commit, and one row per study). A scenario's units are issued while the contiguous finished
 prefix holds fewer than M studies for some test (only as many as the shortfall needs), never past
 4·M draws (the gates: exactly M); a test takes the first M studies by index that count for it
-(confirmed at the level; in the verification's P–F test, with P–F active); a test short of M at
-the bound is not attainable. Each study is a pure function of (stream, scenario, index), so the
+(confirmed at the level; in the verification's P–F test, with P–F active; a cap test, with its
+reading confirmatory at its floor, M18); a test short of M at the bound has no X (M26). Each study
+is a pure function of (stream, scenario, index), so the
 results depend neither on the workers, nor on the unit size, nor on the order in which parts
 finish, nor on an interruption: a run that stopped resumes from its parts (each part's header
 must be the unit's, of this fixation and commit), and every summary is computed from the parts
@@ -337,9 +338,12 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   that run's own commit through ``study3_decisions``' ``COVERAGE_RUNS``, ``SCREEN_RESAMPLES``,
   ``VERIFICATION_RESAMPLES`` and ``CALIBRATION_STUDIES`` alone, four adjacent lines (the fixation
   records the last in ``calibration_record``, and its reader checks all four); decided.
-- M26, the bound on draws: each test draws at most 4·M studies; a test short of M confirmed
-  studies at the bound is not attainable and fails; a power rate counts the missing studies as
-  not detecting (a bounded failure route); decided.
+- M26, the bound on draws: each test draws at most 4·M studies; a test short of M eligible
+  studies at the bound shows no undercoverage (amendment 7, "Incomplete, not failed"): A–F's is
+  incomplete, and the run stops by its name, the same indexed stream to be extended under a
+  recorded computational limit, a decision (each part's indices allow it, and the studies already
+  drawn do not change); P–F's or a joint one is not attainable, which withholds P–F; a power rate
+  counts the missing studies as not detecting; decided.
 - M27, the joint test in the verification: over the studies confirmed for A–F, a miss when A–F
   misses or when P–F is active and misses (the registration's joint p₀ 0.05 over the two
   comparisons); decided.
@@ -419,6 +423,7 @@ from .study3_decisions import (
     level_slot,
     sample_size,
     selected_level,
+    short_reason,
     test_identities,
 )
 from .study3_estimates import envelope, three_way_reading
@@ -3098,10 +3103,12 @@ RULES: dict[str, dict[str, str]] = {
         "draws depend on whether another's ran (amendment 7); M28, decided",
     },
     "draw_bound": {
-        "rule": "each test draws at most max_draws_factor times M studies; a test short of M "
-        "confirmed studies at the bound is not attainable and fails; a power rate counts the "
-        "missing studies as not detecting",
-        "source": "a bounded failure route; M26, decided",
+        "rule": "each test draws at most max_draws_factor times M studies; an A-F test short of M "
+        "eligible studies at the bound is incomplete, not failed: the run stops, naming it, and "
+        "the same indexed stream is to be extended under a recorded computational limit; a P-F or "
+        "joint test short at the bound is not attainable, which withholds P-F; a power rate "
+        "counts the missing studies as not detecting",
+        "source": "amendment 7, 'Incomplete, not failed'; M26, decided",
     },
 }
 # M6b: the missing labels' decided rates and their disclosure, as the fixation freezes them
@@ -4006,8 +4013,9 @@ def _test_count(identity: Sequence, level: float, rows: Sequence[StudyOutcome], 
     used = _first(rows, m, lambda o: _counts_for(o, level, tested, floor))
     count = {"studies": len(used), "draws": _drawn(used, rows, m, bound), "reason": None, "X": None,
              "passed": False, "rate": None, "interval": None}  # fmt: skip
-    if len(used) < m:
-        count["reason"] = _decisions.NOT_ATTAINABLE
+    if len(used) < m:  # no X: it shows no undercoverage, and A–F's has passed nothing either
+        reason = short_reason(tested)
+        count.update(reason=reason, passed=None if reason == _decisions.INCOMPLETE else False)
         return count
     key = (point, level, tested)
     if any(o.covered.get(key) is None for o in used):
@@ -4040,6 +4048,29 @@ def _not_due(identity: Sequence) -> dict[str, Any]:
     return {"test": list(identity), "level": None, "due": False, "p0": p0, "studies": None,
             "draws": None, "reason": None, "X": None, "c": None, "passed": None, "rate": None,
             "interval": None, "floor": None, "below": None}  # fmt: skip
+
+
+def _stop_if_incomplete(tests: Sequence[Mapping[str, Any]], bound: int) -> None:
+    """The run stops at an A–F test short of M eligible studies within ``bound`` draws, by name:
+    it is incomplete, not failed (amendment 7), so nothing is read past it."""
+    short = [t for t in tests if t["reason"] == _decisions.INCOMPLETE]
+    if short:
+        named = ", ".join(f"{t['test']} ({t['studies']} studies)" for t in short[:3])
+        raise SimulationError(f"{len(short)} A-F tests are incomplete within {bound} draws: "
+                              f"{named}: incomplete, not failed; the same indexed stream is to be "
+                              "extended under a recorded computational limit, and reaching that "
+                              "limit is a pause for a decision (amendment 7)")  # fmt: skip
+
+
+def _next_level(tests: Sequence[Mapping[str, Any]], j: int, m: int, bound: int,
+                above: float | None = None) -> float | None:  # fmt: skip
+    """``selected_level`` above ``above``, stopped by A–F's incomplete tests at the levels it reads
+    (``_stop_if_incomplete``): those below the level it returns, and that level's."""
+    level = selected_level(tests, j, m, above)
+    _stop_if_incomplete([t for t in tests if t["test"][0] == "calibration"
+                         and (above is None or float(t["test"][3]) > above)
+                         and (level is None or float(t["test"][3]) <= level)], bound)  # fmt: skip
+    return level
 
 
 def _floors_at(tests: Sequence[Mapping[str, Any]], level: float, j: int, m: int) -> dict:
@@ -4171,7 +4202,7 @@ def _screen(runs_root: Path, context: Context, commit: str,
     tests = [_test_row(identity, float(identity[3]), rows[identity[1]], m, bound, j, FLOORS)
              for identity in fixation["tests"]["list"]
              if identity[0] == "calibration"]  # fmt: skip
-    selected = selected_level(tests, j, m)
+    selected = _next_level(tests, j, m, bound)
     floors = {lv: _floors_at(tests, lv, j, m) for lv in LEVELS}
     power = {c: {level_slot(lv): {sc.name: _direction_counts(rows[sc.name], sc, c, lv, m, bound,
                                                              floors[lv][c] or FLOORS[0])
@@ -4397,6 +4428,7 @@ def _verify_level(runs_root: Path, context: Context, commit: str, screen: Mappin
             tests.append(_not_due(identity) if floor is None else
                          _test_row(identity, level, found, m, bound, j, (floor,)))  # fmt: skip
     due = [row for row in tests if row["due"]]
+    _stop_if_incomplete(due, bound)
     entry.update(n_floor=n_floor, tests=tests,
                  verified=not floor_failures(due, "A-F", floors["A-F"], j, m),
                  pf_confirmatory=floors["P-F"] is not None and not floor_failures(
@@ -4421,7 +4453,7 @@ def _verification(runs_root: Path, context: Context, commit: str, screen: Mappin
         levels.append(_verify_level(runs_root, context, commit, screen, level, pool))
         if levels[-1]["verified"] is not False:
             break
-        level = selected_level(screen["tests"], j, m, above=level)
+        level = _next_level(screen["tests"], j, m, d.MAX_DRAWS_FACTOR * m, above=level)
     return {
         "kind": VERIFICATION_KIND,
         "fixation": dict(context.ref),

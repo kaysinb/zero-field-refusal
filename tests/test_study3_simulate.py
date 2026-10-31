@@ -470,6 +470,31 @@ def test_a_failure_of_pf_alone_advances_nothing(world, monkeypatch) -> None:
     assert [t["level"] for t in record["levels_tried"]] == [0.975]
 
 
+def test_a_pf_not_attainable_in_the_verification_is_withheld(world, monkeypatch) -> None:
+    """P–F is never active in the verification: its tests are short of M at the 4·M draws, not
+    attainable, which is no pass: P–F is withheld, A–F keeps L, and the record passes."""
+    repo, runs, simulate = world
+    real = sim.simulate_study
+
+    def staged(scenario, setup, base, index, **kw):
+        o = real(scenario, setup, base, index, **kw)
+        return replace(o, active=["A-F"]) if kw.get("mode") == "procedure" else o
+
+    monkeypatch.setattr(sim, "simulate_study", staged)
+    for command in ("run", "verify"):
+        ran(simulate(command, "--runs-root", runs, "--workers", 1))
+    ran(simulate("record", "--runs-root", runs))
+    record, problems = read_decision(runs, "simulation", repo=repo)
+    assert problems == [] and record["state"] == "passed" and record["level"] == 0.975
+    assert record["reading"]["pf_confirmatory"] is False
+    results = json.loads((runs / SIMULATION_RESULTS).read_text())
+    rows = [r for r in results["tests"] if r["test"][0] == "verification" and r["due"]]
+    short = [r for r in rows if r["test"][4] == "P-F"]
+    assert short and {(r["reason"], r["draws"], r["passed"]) for r in short} == {
+        ("not_attainable", 24, False)}  # fmt: skip
+    assert all(r["reason"] is None for r in rows if r["test"][4] != "P-F")
+
+
 def test_a_pf_failing_its_screen_is_withheld_and_not_verified(world, monkeypatch) -> None:
     """P–F's test at 99 fails on the screen at every level: L stays where A–F's tests put it, P–F
     has no floor there, and its verification tests and the joint ones are not due."""

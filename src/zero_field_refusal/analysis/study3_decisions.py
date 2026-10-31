@@ -249,9 +249,10 @@ them, needs an explicit prospective amendment, which the code never infers: it i
   reduced sizes whichever path reads it; the results hold
   exactly that list (no test twice, none missing, none it does not list), a verification test
   carrying the slot ``selected_calibration_level`` and "not due" exactly when no level passed;
-  and every pass, the levels' counts (a test not attainable, short of M studies at the 4·M
-  bound, counting as X = M), L, the verification, the gates (from their stored counts), the
-  validation size and the state are recomputed from X, c and the counts (``coverage_decisions``)
+  and every pass, the levels' counts (a test short of M studies at the 4·M bound has no X: A–F's,
+  incomplete, stops the run; P–F's or a joint one, not attainable, withholds P–F), L, the floors,
+  the verification, the gates (from their stored counts), the validation size and the state are
+  recomputed from X, c and the counts (``coverage_decisions``)
   and must be the record's (a failed record may leave its size null, as its schema allows). The
   thresholds, the identities and the detection power at J are this module's
   (``coverage_threshold``, ``test_identities``, ``detection_power``), so the writer and the
@@ -465,7 +466,7 @@ P0 = {"A-F": COVERAGE_P0["comparison"], "P-F": COVERAGE_P0["comparison"],
       "joint": COVERAGE_P0["joint"]}  # fmt: skip
 DETECTION_AT = {"comparison": 0.035, "joint": 0.065}  # the registered example's departures
 MAX_DRAWS_FACTOR = 4  # a test draws at most 4·M studies
-NOT_ATTAINABLE = "not_attainable"
+NOT_ATTAINABLE, INCOMPLETE = "not_attainable", "incomplete"  # short of M: P-F's, A-F's
 POWER_REQUIRED, POWER_LEVEL = REQUIRED_GATES["power_af"], LEVELS[0]  # the power without an L
 COVERAGE_ROLES, POWER_ROLES = ("coverage",), ("power",)
 FIXATION_FIELDS = ("kind", "written_at", "code", "machine", "policy", "inputs", "M", "resamples",
@@ -1394,7 +1395,7 @@ class _Schema:
         for i, row in enumerate(rows):
             where = f"coverage[{i}]"
             row = self.object(where, row, ("level", "tests", "J", "M", "counts", "thresholds",
-                                           "passed"))  # fmt: skip
+                                           "passed", "incomplete"))  # fmt: skip
             if row is None:
                 ok = False
                 continue
@@ -1407,7 +1408,8 @@ class _Schema:
                     self.integer(f"{where}.tests", row["tests"], 1),
                     self.integer(f"{where}.J", row["J"], 1),
                     self.integer(f"{where}.M", row["M"]),
-                    self.boolean(f"{where}.passed", row["passed"])]  # fmt: skip
+                    self.boolean(f"{where}.passed", row["passed"]),
+                    self.integer(f"{where}.incomplete", row["incomplete"], 0)]  # fmt: skip
             if good[3] and row["M"] != COVERAGE_RUNS:
                 self.add(f"{where}.M", f"is {row['M']}, not the registered {COVERAGE_RUNS} "
                          "simulated studies per test")  # fmt: skip
@@ -1439,7 +1441,7 @@ class _Schema:
                     valid = False
                 elif name == "comparison":  # the joint count is P-F's reading's, never the level's
                     agree = counts[name] <= expected
-            if valid and row["passed"] is not agree:
+            if valid and row["passed"] is not (agree and row["incomplete"] == 0):
                 self.add(f"{where}.passed", "disagrees with the counts and the thresholds")
                 valid = False
             ok = ok and valid
@@ -2039,6 +2041,13 @@ def detection_power(tests: int, runs: int) -> dict[str, float]:
             for name, p0 in COVERAGE_P0.items()}  # fmt: skip
 
 
+def short_reason(tested: str) -> str:
+    """Why a test short of M eligible studies within 4·M draws has no X (amendment 7, "Incomplete,
+    not failed": it shows no undercoverage): A–F's is incomplete, and stops the run; P–F's and a
+    joint test are not attainable, which withholds P–F."""
+    return INCOMPLETE if tested == "A-F" else NOT_ATTAINABLE
+
+
 def count_at(row: Mapping[str, Any], floor: int) -> Mapping[str, Any] | None:
     """A test's count for a reading at ``floor``: a test at an N point, its row; a cap test, its own
     count at its ``floor`` or a lower floor's in ``below``, None when it holds none."""
@@ -2320,10 +2329,11 @@ def coverage_decisions(
     5), and the problems of the rows:
     - per test, c = ``coverage_threshold(J, M, p₀)``, the pass X ≤ c, the rate X/M and the
       Clopper–Pearson interval, at each floor a cap test counts (``_row``); a row with fewer than
-      M studies must have drawn 4·M (``draws``) and say ``not_attainable``, and then passes never;
+      M studies must have drawn 4·M (``draws``) and say why (``short_reason``), and has no X;
     - per level, the record's ``coverage`` row (all four): ``comparison`` is the largest X over
-      A–F's tests at N ≥ 60 and at the cap, which decide the level (a not-attainable test counting
-      as X = M), ``joint`` the largest X of the level's joint tests, which do not;
+      A–F's tests at N ≥ 60 and at the cap, which decide the level, ``joint`` the largest X of the
+      level's joint tests, which do not, and ``incomplete`` A–F's tests short of M: such a test at
+      a level the walk reads is a problem, since it stops the run (amendment 7);
     - the levels tried (amendment 7, "A failure at L"): each level whose A–F tests pass on the
       screen, in ascending order, with each comparison's floor there (``confirmatory_floor``), until
       one verifies; its verification's tests are due, P–F's and the joint tests only when P–F has a
@@ -2372,10 +2382,9 @@ def coverage_decisions(
         return out
 
     def largest(found: Sequence[Mapping], tested: str, least: int) -> int:
-        """The largest X of ``tested``'s tests at N ≥ ``least`` and at the cap (not attainable:
-        M)."""
-        return max((m if row.get("X") is None else row["X"] for row in found
-                    if row["test"][4] == tested
+        """The largest X of ``tested``'s tests at N ≥ ``least`` and at the cap that have one."""
+        return max((row["X"] for row in found if row["test"][4] == tested
+                    and type(row.get("X")) is int
                     and (row["test"][2] == "cap" or row["test"][2] >= least)),
                    default=0)  # fmt: skip
 
@@ -2388,6 +2397,7 @@ def coverage_decisions(
                   "joint": largest(mine, "joint", FLOORS[0])}  # fmt: skip
         coverage.append({"level": level, "tests": len(mine), "J": j, "M": m, "counts": counts,
                          "thresholds": dict(thresholds),
+                         "incomplete": sum(r.get("reason") == INCOMPLETE for r in mine),
                          "passed": bool(mine) and not floor_failures(mine, "A-F", FLOORS[-1], j,
                                                                      m)})  # fmt: skip
 
@@ -2395,7 +2405,15 @@ def coverage_decisions(
         return "A-F" if identity[4] == "A-F" else "P-F"
 
     tried, due, selected, reading, stopped, at = [], set(), None, None, None, POWER_LEVEL
-    for level in (row["level"] for row in coverage if row["passed"]):
+    for row in coverage:
+        level = row["level"]
+        if row["incomplete"]:
+            problems.append(f"tests: {row['incomplete']} A-F tests at level {level} are "
+                            "incomplete: the run stops, and the same indexed stream is to be "
+                            "extended")  # fmt: skip
+            break
+        if not row["passed"]:
+            continue
         at = level
         mine = [i for i in verification if i[3] == level_slot(level)]
         floors = {c: confirmatory_floor(screened[level], c, j, m) for c in FLOOR_TESTS}
@@ -2412,6 +2430,10 @@ def coverage_decisions(
                 due.update(wanted)
                 found = read(wanted, level, (floor,))
                 failed[comparison] = floor_failures(found, comparison, floor, j, m)
+        if any(f["reason"] == INCOMPLETE for f in failed["A-F"]):
+            problems.append(f"tests: an A-F test of the verification at level {level} is "
+                            "incomplete: the run stops, and the same indexed stream is to be "
+                            "extended")  # fmt: skip
         entry.update(verified=not failed["A-F"], failed=failed["A-F"] + failed["P-F"],
                      pf_confirmatory=floors["P-F"] is not None and not failed["P-F"])  # fmt: skip
         if entry["verified"]:
@@ -2487,11 +2509,11 @@ def _row(row: Mapping[str, Any], identity: tuple, level: float, thresholds: Mapp
                 f"recomputed {list(floors)}"]  # fmt: skip
     else:
         for floor, count in (row["below"] or {}).items():
-            found += _count_problems(count, f"{where} at floor {floor}", c, m, bound)
-    return found + _count_problems(row, where, c, m, bound)
+            found += _count_problems(count, f"{where} at floor {floor}", comparison, c, m, bound)
+    return found + _count_problems(row, where, comparison, c, m, bound)
 
 
-def _count_problems(count: Any, where: str, c: int, m: int, bound: int) -> list[str]:
+def _count_problems(count: Any, where: str, tested: str, c: int, m: int, bound: int) -> list[str]:
     """A test's count (``COUNT_FIELDS``) against its recomputation from X and c."""
     if not (isinstance(count, Mapping) and set(COUNT_FIELDS) <= set(count)):
         return [f"{where}: its count is not {list(COUNT_FIELDS)}"]
@@ -2502,14 +2524,15 @@ def _count_problems(count: Any, where: str, c: int, m: int, bound: int) -> list[
         return [f"{where}: studies {studies!r} and draws {draws!r} are not counts with studies ≤ "
                 f"M = {m} and draws ≤ 4·M = {bound}"]  # fmt: skip
     if studies < m:
-        if draws != bound or count["reason"] != NOT_ATTAINABLE:
+        reason = short_reason(tested)
+        if draws != bound or count["reason"] != reason:
             found.append(f"{where}: {studies} studies, short of M, below the 4·M = {bound} draws "
                          f"bound ({draws} drawn, reason {count['reason']!r}): a short test stops "
-                         f"only at the bound, {NOT_ATTAINABLE!r}")  # fmt: skip
+                         f"only at the bound, {reason!r}")  # fmt: skip
         nulls = {k: count[k] for k in ("X", "rate", "interval") if count[k] is not None}
-        if nulls or count["passed"] is not False:
-            found.append(f"{where}: a test not attainable has no X, rate or interval and does "
-                         f"not pass ({nulls}, passed {count['passed']!r}): recomputed")  # fmt: skip
+        if nulls or count["passed"] is not (None if reason == INCOMPLETE else False):
+            found.append(f"{where}: a test short of M has no X, rate or interval and does not "
+                         f"pass ({nulls}, passed {count['passed']!r}): recomputed")  # fmt: skip
         return found
     if count["reason"] is not None:
         found.append(f"{where}: reason is {count['reason']!r} for a test of M studies")

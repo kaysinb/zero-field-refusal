@@ -266,7 +266,7 @@ def test_each_shape_has_mean_0_and_sd_1(shape) -> None:
 def test_no_quantile_is_taken_in_the_simulation_modules() -> None:
     """No call takes a quantile or a percentile in the simulation's modules (order statistics
     are type-1 ranks: ``study3_inference.tail_ranks``), and the module's rulings list every
-    decided value M1–M27 that it applies."""
+    decided value M1–M29 that it applies."""
     import ast
 
     from zero_field_refusal.paths import REPO_ROOT
@@ -283,7 +283,7 @@ def test_no_quantile_is_taken_in_the_simulation_modules() -> None:
                 assert not any(w in name.lower() for w in ("quantile", "percentile", "median")), (
                     path.name, name)  # fmt: skip
     rulings = sim.__doc__.split("**Rulings**", 1)[1]
-    for n in (*range(1, 9), *range(10, 28)):
+    for n in (*range(1, 9), *range(10, 30)):
         assert f"- M{n}," in rulings, n
 
 
@@ -1966,20 +1966,39 @@ def test_the_screen_reports_the_power_at_1_percent_over_the_powers_studies(tiny,
         assert found["correct"] == detected
 
 
-def test_a_scenario_that_never_confirms_stops_at_4m_and_is_not_attainable(
+def test_an_a_f_test_short_at_4m_stops_the_run_incomplete_not_failed(
     tiny, tmp_path, vectors
 ) -> None:
+    """Amendment 7: a scenario that never confirms draws 4·M and stops the run, naming the test and
+    the extension of the same indexed stream; nothing is written for a reader, no X stands in."""
     never = tiny_never_confirms(tiny, tmp_path / "never", vectors)
-    rows = run_screen(never, tmp_path, workers=2, unit=2)  # A–F gate never passes
-    test = rows_of(rows)[0]
-    assert test["test"][:2] == ["calibration", "NC"]
-    assert (test["draws"], test["studies"], test["reason"], test["passed"]) == \
-        (4 * 6, 0, "not_attainable", False)  # fmt: skip
-    import json
+    with pytest.raises(sim.SimulationError) as stop:
+        run_screen(never, tmp_path, workers=2, unit=2)  # A–F gate never passes
+    message = str(stop.value)
+    assert "['calibration', 'NC', 36, '0.975', 'A-F'] (0 studies)" in message
+    assert "incomplete, not failed" in message and "same indexed stream" in message
+    assert "computational limit" in message
+    folder = tmp_path / "study3" / "simulation"
+    assert not (folder / "screen.json").exists()
+    assert len(list((folder / "parts" / "screen" / "NC").glob("*.json"))) == 12  # 4·M, 2 by 2
 
-    screen = json.loads(rows.read_text())
-    assert screen["level"] is None  # every level fails: X = M counted
-    assert screen["reported"]["NC"]["unconfirmed"] == {"af_gate": 24}
+
+def test_a_short_test_has_its_reason_and_no_x() -> None:
+    """The reason by the comparison: an A–F test incomplete, P–F's and a joint one not attainable.
+    An incomplete test above the level read stops nothing; at or below it, the run stops."""
+    rows = [outcome(i, False) for i in range(24)]
+    cases = (("A-F", "incomplete", None), ("P-F", "not_attainable", False),
+             ("joint", "not_attainable", False))  # fmt: skip
+    for tested, reason, passed in cases:
+        row = sim._test_row(("calibration", "C", 60, "0.975", tested), 0.975, rows, 6, 24, 168,
+                            sim.FLOORS)  # fmt: skip
+        assert (row["reason"], row["passed"], row["X"]) == (reason, passed, None)
+    tests = stops_rows({"0.980": {(60, "A-F")}})
+    next(t for t in tests if t["test"][3] == "0.980" and t["test"][4] == "A-F").update(
+        reason="incomplete", X=None, passed=None, studies=2, draws=24)  # fmt: skip
+    assert sim._next_level(tests, 168, 6, 24) == 0.975
+    with pytest.raises(sim.SimulationError, match="incomplete"):
+        sim._next_level(tests, 168, 6, 24, above=0.975)
 
 
 def stops_rows(failing: dict[str, set] | None = None) -> list[dict]:

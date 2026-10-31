@@ -24,7 +24,6 @@ from zero_field_refusal.analysis.study3_decisions import (
     HOLD_REASONS,
     LEVELS,
     MIN_N,
-    NOT_ATTAINABLE,
     PLANNING_DIFFERENCE_PP,
     PLANNING_POWER,
     POWER_REPORT,
@@ -158,7 +157,7 @@ class World:
         self.fixation_commit = git(self.repo, "rev-parse", "HEAD")
 
     def results(self, record: dict, *, mode: str | None = None, ran: str | None = None,
-                not_attainable: tuple | None = None) -> dict:  # fmt: skip
+                incomplete: tuple | None = None) -> dict:  # fmt: skip
         """``results.json`` consistent with ``record`` (its levels' counts, its verification and
         gates), then changed as ``mode`` says."""
         j = self.J
@@ -185,12 +184,12 @@ class World:
                 failed = tried[float(slot)]["verified"] is False and comparison == "A-F"
                 x = c[kind] + 1 if failed else c[kind] - 20
                 rows.append(results_row(identity, float(slot), x, c[kind], floors=(36,)))
-        if not_attainable is not None:
-            stream, slot = not_attainable
+        if incomplete is not None:
+            stream, slot = incomplete
             at = next(i for i, r in enumerate(rows) if r["test"][0] == stream and r["test"][2] == 60
                       and r["test"][3] == slot and r["test"][4] == "A-F")  # fmt: skip
-            rows[at] = {**rows[at], "studies": M - 7, "draws": 4 * M, "reason": NOT_ATTAINABLE,
-                        "X": None, "passed": False, "rate": None, "interval": None}  # fmt: skip
+            rows[at] = {**rows[at], "studies": M - 7, "draws": 4 * M, "reason": "incomplete",
+                        "X": None, "passed": None, "rate": None, "interval": None}  # fmt: skip
         gates = record.get("gates") if isinstance(record.get("gates"), dict) else {}
 
         def value(name: str, default: float) -> float:
@@ -294,7 +293,7 @@ class World:
         results that depart from the record), ``fixation`` as a word (``uncommitted``,
         ``with_another_file``, ``after_the_results``), ``fail_levels`` (those levels fail),
         ``fail_verification`` (those levels' verifications fail, A–F's tests: L advances, and with
-        none left the record fails), ``not_attainable`` ((stream, level slot): one A–F test short at
+        none left the record fails), ``incomplete`` ((stream, level slot): one A–F test short at
         the 4·M bound) and ``gate_value_off`` (the record's pass rate at the safe alternative off
         its counts)."""
         mode = over.pop("results", None)
@@ -302,7 +301,7 @@ class World:
         how = over.pop("fixation") if over.get("fixation") in modes else None
         failing = set(over.pop("fail_levels", ()))
         unverified = set(over.pop("fail_verification", ()))
-        short = over.pop("not_attainable", None)
+        short = over.pop("incomplete", None)
         off = over.pop("gate_value_off", None)
         if how in ("uncommitted", "with_another_file"):
             self.checkout(how)
@@ -310,8 +309,7 @@ class World:
             failing.add(float(short[1]))
         rows = [coverage_row(lv, passed=lv not in failing) for lv in LEVELS]
         if short is not None:
-            row = rows[LEVELS.index(float(short[1]))]
-            row["counts"] = {**row["counts"], "comparison": M}
+            rows[LEVELS.index(float(short[1]))]["incomplete"] = 1
         level = next((r["level"] for r in rows if r["passed"] and r["level"] not in unverified),
                      None)  # fmt: skip
         record = {
@@ -340,7 +338,7 @@ class World:
             if mode == "verification_not_due":
                 record["levels_tried"][0].update(verified=None, pf_confirmatory=False, failed=[])
         ran = self.first if how == "after_the_results" else None
-        results = self.results(record, mode=mode, ran=ran, not_attainable=short)
+        results = self.results(record, mode=mode, ran=ran, incomplete=short)
         path = self.runs / SIMULATION_RESULTS
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
@@ -540,7 +538,8 @@ def coverage_row(level: float, *, passed: bool = True, J: int = GRID_J, M: int =
     if not passed:
         counts["comparison"] = c + 1
     return {"level": level, "tests": tests, "J": J, "M": M, "counts": counts,
-            "thresholds": {"comparison": c, "joint": j}, "passed": passed}  # fmt: skip
+            "thresholds": {"comparison": c, "joint": j}, "passed": passed,
+            "incomplete": 0}  # fmt: skip
 
 
 @pytest.fixture
@@ -1784,15 +1783,17 @@ def test_the_gates_are_recomputed_from_their_counts(world) -> None:
     refused(world, "simulation", world.simulation(gate_value_off=1e-3), "safe_pass_rate")
 
 
-def test_a_not_attainable_test_fails_its_level(world) -> None:
-    world.write("simulation", world.simulation(not_attainable=("calibration", "0.975")))
+def test_an_incomplete_a_f_test_at_a_level_read_refuses_the_record(world) -> None:
+    """Incomplete, not failed: no X = M stands in, and a level read past it is not read."""
+    refused(world, "simulation", world.simulation(incomplete=("calibration", "0.975")),
+            "incomplete", "same indexed stream")  # fmt: skip
+
+
+def test_an_incomplete_a_f_test_above_l_stops_nothing(world) -> None:
+    world.write("simulation", world.simulation(incomplete=("calibration", "0.990")))
     record, problems = world.read("simulation")
-    assert problems == [] and record["coverage"][0]["passed"] is False
-    assert (
-        record["coverage"][0]["counts"]["comparison"] == 10_000
-        or record["coverage"][0]["counts"]["joint"] == 10_000
-    )
-    assert record["level"] == 0.98 and record["state"] == "passed"
+    assert problems == [] and record["level"] == 0.975 and record["state"] == "passed"
+    assert record["coverage"][3]["incomplete"] == 1 and record["coverage"][3]["passed"] is False
 
 
 def test_a_short_row_below_the_draw_bound_is_refused(world) -> None:
