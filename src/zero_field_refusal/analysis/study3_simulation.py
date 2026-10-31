@@ -27,7 +27,8 @@ directory, no harm label, response or judge output.
 - ``shifted_vectors``: the seed vectors with a calibration's utility shifts applied.
 - ``simulate_study`` (with ``Setup``, ``StudyOutcome``, ``synthetic_endpoint``,
   ``final_direction``, ``outcome_json`` and ``outcome_from_json``): one study through the
-  registered functions.
+  registered functions; ``power_report`` (with ``report_scenario``) a power study again at the
+  denser missing mask of the reported power (M6b).
 - ``calibrate_scenario`` (with ``realized_support``, ``calibrate_failure``, ``calibrate_safe``,
   ``calibrate_spread``, ``calibrate_offsets``, ``calibration_stream``, ``label_variance``):
   everything calibrated per (scenario, candidate), through the selection; ``calibrate_all``
@@ -206,7 +207,9 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   the validation size (28 when it reaches 0.95, else 40);
 - *screen*: the non-gate scenarios at that size, four levels, ``SCREEN_RESAMPLES``,
   ``"screen"`` mode; L the first level whose tests pass (``selected_level``); the powers at
-  every level;
+  every level, and beside them the power at 1 % MCAR (``power_report``, M6b): each power study
+  of the screen again on its own streams with the denser mask, in the same part, its A–F
+  detections counted over the studies the power counts;
 - *scan-<n>*: when ``power_af`` at L (0.975 without an L) is short, the power scenarios again
   from the same streams with N at least n = 60, 61, …, to the first n whose smallest power
   reaches 0.80 or whose cap exceeds the 200 reserved seeds;
@@ -254,9 +257,15 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   the missing labels per run, and the power counts the reading common to the three computations,
   M20); it changes the planning alternative of the power requirement; the registration sets no
   rate, and the required simulation itself stays prospective. The coverage tests keep 1 %, so C16
-  and C17 (Δ = +2 pp) are coverage scenarios and P20, P21 the power's positive Δ. The fixation
-  records the rates and their disclosure (``missing_labels_record``), and its reader checks them
-  and that each of its scenarios is the grid's; decided.
+  and C17 (Δ = +2 pp) are coverage scenarios and P20, P21 the power's positive Δ. The power at
+  1 % MCAR is reported beside the gate, not a gate (``power_report``): each power study of the
+  screen again on its own streams and its scenario's calibration, its labels missing at 1 %
+  through the same uniforms (one per label, missing below the rate: the 1 % mask contains the
+  0.1 % mask), through the registered procedure (its own validation spread, N, cap and
+  confirmation) to the cap's reading common to the three computations; it counts over the
+  studies the power counts, and the n_min scan does not read it. The fixation records the
+  rates, the disclosure and that report's procedure (``missing_labels_record``), and its reader
+  checks them and that each of its scenarios is the grid's; decided.
 - M7, support: the realized probability that a validation block is A–F-supported at the rates
   the procedure selects, failures of bracket and collapse included; f calibrated to it, 0 and
   flagged when the natural failures exceed 1 − s (the registration's "support 0.88, 0.90,
@@ -427,6 +436,7 @@ RHO_ARM, RHO_BLOCK, BASELINE, PROMPTS = 0.7, 0.3, 0.15, 521  # M5
 # M6b: the missing labels' rates, MCAR (C14: MNAR, 5 % of the harmful responses)
 COVERAGE_MISSING_RATE = 0.01  # the coverage scenarios': a stress value
 POWER_MISSING_RATE = 0.001  # the power scenarios': the planning rate of unresolved labels
+REPORT_MISSING_RATE = 0.01  # the power reported beside the gate, not a gate: the coverage rate
 # M8: σ_e of ln K per run (docs/study2-short-b20-inputs.json)
 JITTER_SD = {"A": 0.013, "F": 0.032, "P": 0.027}
 # M3: the shapes' constants (study2_short_sim's HEAVY_SHARE, HEAVY_RATIO, GAMMA_SHAPE, RARE)
@@ -1578,7 +1588,9 @@ class StudyOutcome:
     cap's ``direction`` (a power scenario's registered final direction, ``final_direction``;
     None elsewhere, or with no common direction), the confirmation's ``readings`` and its
     ``utility_claim``; the
-    ``truth`` per comparison (proportions; None when undefined). In memory only, never
+    ``truth`` per comparison (proportions; None when undefined); a power study of the screen's
+    ``report`` (``power_report``: per level slot its ``N``, ``confirmed``, and A–F's ``readings``
+    and ``direction`` at the denser mask; None elsewhere). In memory only, never
     serialized and not compared: ``spread_pp``, ``utility`` (per arm, (vector seed, interpolated
     MMLU loss, interpolated factual loss) of the supported validation blocks), ``point_seeds``,
     ``cohorts`` and ``analysis`` (the seeds behind each test) and ``validation`` (the final
@@ -1602,6 +1614,7 @@ class StudyOutcome:
     readings: Mapping[tuple[float, str], str | None]
     utility_claim: Mapping[tuple[float, str], bool | None]
     truth: Mapping[str, float | None]
+    report: Mapping[str, Mapping[str, Any]] | None = None
     spread_pp: float | None = field(default=None, compare=False, repr=False)
     utility: Mapping[str, tuple[tuple[int, float, float], ...]] = field(
         default_factory=dict, compare=False, repr=False
@@ -1977,6 +1990,7 @@ def simulate_study(
     validation_only: bool = False,
     candidate: int | None = None,
     labels: bool = True,
+    power_reading: bool = False,
 ) -> StudyOutcome:
     """One simulated study, a pure function of (``base``, ``scenario``, ``index``) and the
     setup (module docstring, "The procedure"). ``mode``: ``"screen"`` (the scenario's
@@ -1987,7 +2001,10 @@ def simulate_study(
     and validation of the first candidate alone (the gates and the calibration). ``candidate``:
     the first candidate (the scenario's by default). ``labels`` False skips the labels (no
     spread, no confirmation): the calibration's draws, whose label noise enters through its
-    exact variance. ``base``: an integer, or a calibration's stream (``calibration_stream``)."""
+    exact variance. ``power_reading``: of the confirmation only A–F's cap interval, reading and
+    final direction (``power_report``): no interval at the N points, no truth, no utility claim
+    (the stop, N and every draw unchanged). ``base``: an integer, or a calibration's stream
+    (``calibration_stream``)."""
     if mode not in MODES:
         raise ValueError(f"mode {mode!r} is not one of {MODES}")
     if not (_integer(index) and index >= 0):
@@ -2039,7 +2056,8 @@ def simulate_study(
                             covered={}, direction={}, readings={}, utility_claim={},
                             truth={})  # fmt: skip
     return _confirm(scenario, setup, root, index, mode, resamples, levels, n_floor, validation,
-                    route[[r[0] for r in route].index(c)][1], active, common)  # fmt: skip
+                    route[[r[0] for r in route].index(c)][1], active, common,
+                    power_reading)  # fmt: skip
 
 
 def _confirm(
@@ -2055,9 +2073,11 @@ def _confirm(
     prefix: tuple,
     active: list[str],
     common: dict[str, Any],
+    power_reading: bool = False,
 ) -> StudyOutcome:
     """N per level, the confirmation (``confirmation_state``) and the analysis (module
-    docstring, "The procedure", steps 4–6)."""
+    docstring, "The procedure", steps 4–6); with ``power_reading``, of the analysis A–F's cap
+    interval, reading and final direction alone."""
     c = validation.candidate
     calibration = setup.calibration(scenario, c)
     reserved = SEEDS["confirmation"][c]
@@ -2094,11 +2114,12 @@ def _confirm(
     by_seed = {b.seed: b for b in blocks}
     d = {comparison: {s: _difference(by_seed[s], comparison) for s in seeds}
          for comparison, seeds in supported.items()}  # fmt: skip
-    found = truth(scenario, calibration, setup.vectors, setup.slopes,
-                  {arm: validation.rates[arm] for arm in arms})  # fmt: skip
+    found = {} if power_reading else truth(
+        scenario, calibration, setup.vectors, setup.slopes,
+        {arm: validation.rates[arm] for arm in arms})  # fmt: skip
     true = {k: (None if math.isnan(v) else float(v)) for k, v in found.items()}
     covered = out["covered"]
-    for comparison in active:
+    for comparison in () if power_reading else active:
         seeds = supported[comparison]
         for n in N_POINTS[:-1]:
             reached = len(seeds) >= n
@@ -2125,14 +2146,18 @@ def _confirm(
             seeds = list(state["analysis"][comparison] or ())
             memory["analysis"][(level, comparison)] = tuple(seeds)
             memory["cohorts"][(level, comparison)] = tuple(state["cohorts"][comparison])
+            if power_reading and comparison != "A-F":
+                continue
             seed = stream(base, "bootstrap", scenario.name, index, comparison, "cap")
             interval = _interval([d[comparison][s] for s in seeds], level, resamples, seed)
-            covered[("cap", level, comparison)] = _covers(interval, true.get(comparison))
             out["direction"][(level, comparison)] = (
                 final_direction(interval, [_computations(by_seed[s], comparison) for s in seeds],
                                 level, resamples, seed) if scenario.power else None
             )  # fmt: skip
             out["readings"][(level, comparison)] = state["readings"][comparison]
+            if power_reading:
+                continue
+            covered[("cap", level, comparison)] = _covers(interval, true.get(comparison))
             claim = utility_gate([by_seed[s].state for s in seeds], GATE_OF[comparison],
                                  CONFIRMATION_ALPHA) if seeds else None  # fmt: skip
             out["utility_claim"][(level, comparison)] = None if claim is None else claim["passes"]
@@ -2192,6 +2217,36 @@ def final_direction(primary: Interval | None, differences: Sequence[Mapping[str,
     return combined.direction
 
 
+def report_scenario(scenario: Scenario) -> Scenario:
+    """A power scenario at the reported power's denser mask (M6b): its missing labels MCAR at
+    ``REPORT_MISSING_RATE``, every other parameter and its name (so every stream) its own."""
+    return replace(scenario, missing="MCAR", missing_rate=REPORT_MISSING_RATE)
+
+
+def power_report(scenario: Scenario, setup: Setup, base: int, index: int, *, resamples: int,
+                 levels: Sequence[float]) -> dict[str, dict[str, Any]]:  # fmt: skip
+    """The power study ``index`` of ``scenario`` at the reported power's denser mask (M6b,
+    ``missing_labels_record``'s ``report``): the same study again in ``"screen"`` mode on its own
+    streams and its scenario's calibration, its labels missing at ``REPORT_MISSING_RATE``
+    (``report_scenario``: each label's one uniform, so that its mask contains the scenario's),
+    through the registered procedure (its own validation spread, N, cap and confirmation) to A–F's
+    cap reading and final direction (``simulate_study``'s ``power_reading``). Per level slot:
+    ``N``, ``confirmed``, ``readings`` and ``direction`` (A–F's)."""
+    if not scenario.power:
+        raise ValueError(f"scenario {scenario.name} is not a power scenario")
+    denser = report_scenario(scenario)
+    c = scenario.candidate
+    paired = _with(setup, denser, c, setup.calibration(scenario, c))
+    o = simulate_study(denser, paired, base, index, mode="screen", resamples=resamples,
+                       levels=levels, power_reading=True)  # fmt: skip
+    return {
+        "N": {level_key(lv): o.N[lv] for lv in o.levels},
+        "confirmed": {level_key(lv): bool(o.confirmed[lv]) for lv in o.levels},
+        "readings": {level_key(lv): o.readings.get((lv, "A-F")) for lv in o.levels},
+        "direction": {level_key(lv): o.direction.get((lv, "A-F")) for lv in o.levels},
+    }
+
+
 def _covers(interval: Interval | None, value: float | None) -> bool:
     """lower ≤ truth ≤ upper; an undetermined interval, a missing one (an N point not reached,
     M18) or an undefined truth is a miss."""
@@ -2205,7 +2260,8 @@ def _covers(interval: Interval | None, value: float | None) -> bool:
 
 _ROW_FIELDS = ("index", "mode", "candidate", "active", "levels", "rates", "gates", "m",
                "confirmed", "why", "N", "cap", "blocks", "covered", "direction", "readings",
-               "utility_claim", "truth")  # fmt: skip
+               "utility_claim", "truth", "report")  # fmt: skip
+REPORT_FIELDS = ("N", "confirmed", "readings", "direction")  # a row's ``report``, per level slot
 
 
 level_key = level_slot  # a level as the identities and the results write it ("0.975", …)
@@ -2255,6 +2311,7 @@ def outcome_json(o: StudyOutcome) -> dict[str, Any]:
         "readings": pairs(o.readings),
         "utility_claim": pairs(o.utility_claim),
         "truth": dict(o.truth),
+        "report": None if o.report is None else {k: dict(o.report[k]) for k in REPORT_FIELDS},
     }
 
 
@@ -2276,6 +2333,13 @@ def outcome_from_json(d: Mapping[str, Any]) -> StudyOutcome:
     flags = d["covered"]
     if not isinstance(flags, Mapping) or set(flags) != {"present", "known", "covered"}:
         raise ValueError("covered must be the three bit masks")
+    report = d["report"]
+    if report is not None and not (
+        isinstance(report, Mapping) and set(report) == set(REPORT_FIELDS)
+        and all(isinstance(report[k], Mapping) and set(report[k]) == set(by_key)
+                for k in REPORT_FIELDS)
+    ):  # fmt: skip
+        raise ValueError("report must be null or its fields at every level of the row")
     present, known, value = (int(flags[k], 16) for k in ("present", "known", "covered"))
     covered = {}
     for i, key in enumerate(_covered_keys(levels)):
@@ -2302,6 +2366,7 @@ def outcome_from_json(d: Mapping[str, Any]) -> StudyOutcome:
         readings=pairs("readings"),
         utility_claim=pairs("utility_claim"),
         truth=dict(d["truth"]),
+        report=None if report is None else {k: dict(report[k]) for k in REPORT_FIELDS},
     )
 
 
@@ -3022,6 +3087,28 @@ MISSING_LABELS: dict[str, dict[str, Any]] = {
         "(docs/study3-preregistration.md, 'Simulation before validation'); the registration "
         "sets no rate, and the required simulation itself stays prospective",
     },
+    "report": {
+        "missing": "MCAR",
+        "missing_rate": REPORT_MISSING_RATE,
+        "comparison": "A-F",
+        "role": "reported beside power_af, not a gate: it has no requirement, and the n_min scan "
+        "does not read it",
+        "studies": "each power study of the screen, at every level; at a level, the studies "
+        "power_af counts there (the first M confirmed by index), paired; the results give it at "
+        "power_af's level",
+        "draws": "each study's own streams (the screen's calibration base, the scenario's name "
+        "and the study's index) and its power scenario's frozen calibration: the same search, "
+        "validation, confirmation, label and bootstrap draws",
+        "coupling": "one uniform per label on the study's label stream, the label missing when "
+        "its uniform is below the rate: the 1 % mask contains the 0.1 % mask",
+        "reading": "the registered procedure at the denser mask: its own validation spread, N, "
+        "cap and confirmation, and the cap's final direction common to the three computations "
+        "of 'Judge and audit' (study3_estimates.three_way_reading); a study detects when that "
+        "reading is confirmatory in the direction of delta, and one the denser mask leaves "
+        "unconfirmed does not",
+        "source": "how the power falls if labels go missing ten times as often as planned; M6b, "
+        "decided",
+    },
 }
 CURVATURE_SOURCE = (
     "study 1's fitted curves (study2_short_sim.STUDY1) at K*, baseline 0.15; M4, decided"
@@ -3047,7 +3134,9 @@ def curvature_record() -> dict[str, Any]:
 def missing_labels_record() -> dict[str, Any]:
     """The missing labels' decided rates with their disclosure (M6b), as the fixation records
     them: the coverage scenarios' stress value and the power scenarios' planning rate, each with
-    its source, the planning rate's definition, status and limitation, and the decision."""
+    its source, the planning rate's definition, status and limitation, and the decision; and the
+    procedure of the power reported at 1 % (``report``: its rate, studies, draws, coupling and
+    reading)."""
     return json.loads(json.dumps(MISSING_LABELS))
 
 
@@ -3587,8 +3676,9 @@ def _gate_row(scenario: Scenario, setup: Setup, unit: Unit, index: int) -> dict[
 
 def run_unit(args: tuple[Unit, Path, Mapping[str, str], str]) -> Path:
     """The worker's entry: the ``count`` studies of the unit, each a pure function of (stream,
-    scenario, index), published once as a part with its header. The worker holds the run's
-    context (``Workers``), which must be the unit's fixation's."""
+    scenario, index), published once as a part with its header; in the screen a power study
+    carries its ``power_report`` (M6b). The worker holds the run's context (``Workers``), which
+    must be the unit's fixation's."""
     unit, runs_root, fixation_ref, commit = args
     context = _WORKER.get("context")
     if context is None or dict(context.ref) != dict(fixation_ref):
@@ -3603,6 +3693,10 @@ def run_unit(args: tuple[Unit, Path, Mapping[str, str], str]) -> Path:
         o = simulate_study(scenario, setup, unit.base, index, mode=unit.mode,
                            resamples=unit.resamples, levels=unit.levels,
                            n_floor=unit.n_floor)  # fmt: skip
+        if unit.phase == "screen" and scenario.power:
+            o = replace(o, report=power_report(scenario, setup, unit.base, index,
+                                               resamples=unit.resamples,
+                                               levels=unit.levels))  # fmt: skip
         rows.append(outcome_json(o))
     path = part_path(runs_root, unit.phase, unit.scenario, unit.first)
     _write_once(path, {"header": header(unit, fixation_ref, commit), "rows": rows})
@@ -3871,6 +3965,23 @@ def _direction_counts(rows: Sequence[StudyOutcome], scenario: Scenario, comparis
     return {"correct": correct, "studies": len(used), "draws": _drawn(used, rows, m, bound)}
 
 
+def _report_counts(rows: Sequence[StudyOutcome], scenario: Scenario, level: float, m: int,
+                   bound: int) -> dict[str, int]:  # fmt: skip
+    """The power at the denser mask (M6b, ``power_report``) at ``level``, over the studies
+    ``_direction_counts`` counts there (paired): a study detects when its report's A–F reading is
+    confirmatory and its final direction the sign of Δ; one the denser mask leaves unconfirmed
+    detects nothing, nor do the missing studies of a test short at the bound."""
+    want = "positive" if scenario.delta_af_pp > 0 else "negative"
+    slot = level_slot(level)
+    used = first_confirmed(rows, m, level)
+    if any(o.report is None for o in used):
+        raise SimulationError(f"{scenario.name}: a power study of the screen has no report")
+    correct = sum(o.report["confirmed"][slot] is True
+                  and o.report["readings"][slot] == CONFIRMATORY
+                  and o.report["direction"][slot] == want for o in used)  # fmt: skip
+    return {"correct": correct, "studies": len(used), "draws": _drawn(used, rows, m, bound)}
+
+
 def _gate_counts(context: Context, rows: Mapping[str, list], m: int) -> tuple[dict, int]:
     """The gates' passes over their M studies (``safe_pass_rate``: the safe alternative's;
     ``empirical_pass_rate``: study 2's empirical point; each the A–F gate at 28 blocks) and the
@@ -3928,6 +4039,8 @@ def _screen(runs_root: Path, context: Context, commit: str,
     power = {c: {level_slot(lv): {sc.name: _direction_counts(rows[sc.name], sc, c, lv, m, bound)
                                   for sc in power_scenarios} for lv in LEVELS}
              for c in COMPARISONS}  # fmt: skip
+    report = {level_slot(lv): {sc.name: _report_counts(rows[sc.name], sc, lv, m, bound)
+                               for sc in power_scenarios} for lv in LEVELS}  # fmt: skip
     at = d.POWER_LEVEL if selected is None else selected
     scan = []
     by = power["A-F"][level_slot(at)]
@@ -3965,6 +4078,7 @@ def _screen(runs_root: Path, context: Context, commit: str,
         "gates": {
             **gates,
             "power": power,
+            "power_report": report,
             "n_scan": scan,
             "scan_level": at if scan else None,
         },  # fmt: skip
@@ -4261,7 +4375,8 @@ def results_record(screen: Mapping[str, Any], verification: Mapping[str, Any] | 
     summaries as they are: the rows of the calibration tests, then those of the verification
     (each not due when no level passed, or when no n is attainable, ``unattainable_n``: the
     verification is not run), in the fixation's order; the gates (the powers at L, or
-    0.975 without one; the scan; the detection powers at J) and the reported figures.
+    0.975 without one, the power at the fixation's denser missing rate beside them, M6b; the
+    scan; the detection powers at J) and the reported figures.
     ``written_at`` is given (the code commit's time, so that a resumed run's results are an
     uninterrupted one's, byte for byte). ``SimulationError`` for summaries of another fixation
     or commit, a verification missing at L, or one given when no n is attainable."""
@@ -4291,6 +4406,11 @@ def results_record(screen: Mapping[str, Any], verification: Mapping[str, Any] | 
         "empirical_pass_rate": screen["gates"]["empirical_pass_rate"],
         "power_af": {"level": at, "by_scenario": power["A-F"][level_slot(at)]},
         "power_pf": {"level": at, "by_scenario": power["P-F"][level_slot(at)]},
+        d.POWER_REPORT: {
+            "level": at,
+            "missing_rate": fixation["missing_labels"]["report"]["missing_rate"],
+            "by_scenario": screen["gates"]["power_report"][level_slot(at)],
+        },
         "n_scan": screen["gates"]["n_scan"],
         "detection_power": d.detection_power(j, m),
     }

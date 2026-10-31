@@ -233,6 +233,7 @@ def test_the_route_writes_a_passed_record_that_progress_accepts(world) -> None:
     repo, runs, simulate = world
     out = ran(simulate("run", "--runs-root", runs, "--workers", 2))
     assert "\nlevel 0.9" in out and any(f"validation_blocks {n}" in out for n in (28, 40))
+    assert "\npower_af_1pct_missing " in out
     ran(simulate("verify", "--runs-root", runs, "--workers", 2))
     out = ran(simulate("record", "--runs-root", runs))
     assert "passed" in out and str(decision_path(runs, "simulation")) in out
@@ -498,3 +499,11 @@ def test_the_power_gate_reads_the_results_as_registered(world) -> None:
     by = results["gates"]["power_af"]["by_scenario"]
     assert set(by) == {"P20"} and math.isclose(record["gates"]["power_af"]["value"],
                                                by["P20"]["correct"] / 6)  # fmt: skip
+    report = results["gates"][decisions.POWER_REPORT]  # beside it, the power at 1 %, reported
+    assert report["missing_rate"] == 0.01 and report["level"] == results["gates"]["power_af"][
+        "level"]  # fmt: skip
+    assert (report["by_scenario"]["P20"]["studies"], report["by_scenario"]["P20"]["draws"]) == (
+        by["P20"]["studies"], by["P20"]["draws"])  # fmt: skip
+    assert record["gates"][decisions.POWER_REPORT] == {
+        "value": report["by_scenario"]["P20"]["correct"] / 6, "requirement": None,
+        "passed": None}  # fmt: skip

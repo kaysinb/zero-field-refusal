@@ -27,6 +27,7 @@ from zero_field_refusal.analysis.study3_decisions import (
     NOT_ATTAINABLE,
     PLANNING_DIFFERENCE_PP,
     PLANNING_POWER,
+    POWER_REPORT,
     SELECTED_LEVEL,
     SIMULATION_FIXATION,
     SIMULATION_RESULTS,
@@ -212,6 +213,10 @@ class World:
                           "by_scenario": {POWER: {"correct": count(value(name, default)),
                                                   "studies": M, "draws": M}}}
                    for name, default in (("power_af", 0.86), ("power_pf", 0.85))},
+                POWER_REPORT: {"level": level if level is not None else 0.975,
+                               "missing_rate": 0.01,
+                               "by_scenario": {POWER: {"correct": count(value(POWER_REPORT, 0.7)),
+                                                       "studies": M, "draws": M}}},
                 "n_scan": scan,
                 "detection_power": detection_power(j, M),
             },
@@ -231,6 +236,10 @@ class World:
             for i, row in enumerate(tests):
                 if row["test"][0] == "verification":
                     tests[i] = results_row(tuple(row["test"]), None, None, None)
+        elif mode == "report_rate":
+            results["gates"][POWER_REPORT]["missing_rate"] = 0.001
+        elif mode == "report_unpaired":
+            results["gates"][POWER_REPORT]["by_scenario"][POWER]["studies"] = M - 1
         elif mode == "short_without_bound":
             tests[first] = {**tests[first], "studies": M - 1, "draws": M, "X": None,
                             "passed": False, "rate": None, "interval": None}  # fmt: skip
@@ -437,6 +446,7 @@ def default_gates() -> dict:
     return {"safe_pass_rate": {"value": 0.982, "requirement": 0.95, "passed": True},
             "power_af": power_gate(0.86),
             "empirical_pass_rate": reported(0.6), "power_pf": reported(0.85),
+            POWER_REPORT: reported(0.7),
             "detection_power_comparison": reported(detection["comparison"]),
             "detection_power_joint": reported(detection["joint"])}  # fmt: skip
 
@@ -1266,8 +1276,9 @@ def test_the_reported_gates_are_accepted_and_no_other_gate_is_a_name(world) -> N
     gates = gates_with(power_pf={"value": 0.7, "requirement": None, "passed": None})
     world.write("simulation", world.simulation(gates=gates))
     assert set(world.read("simulation")[0]["gates"]) == {
-        "safe_pass_rate", "power_af", "empirical_pass_rate", "power_pf",
+        "safe_pass_rate", "power_af", "empirical_pass_rate", "power_pf", POWER_REPORT,
         "detection_power_comparison", "detection_power_joint"}  # fmt: skip
+    assert POWER_REPORT == "power_af_1pct_missing"
 
 
 GATE_NAMES = [
@@ -1292,8 +1303,11 @@ def test_a_gate_with_another_name_is_refused(world, name) -> None:
     sim_refused(world, f"gates.{name}", "not a gate", gates=gates_with(**{name: with_requirement}))
 
 
-@pytest.mark.parametrize("name", ["empirical_pass_rate", "power_pf", "detection_power_comparison",
-                                  "detection_power_joint"])  # fmt: skip
+REPORTED = ["empirical_pass_rate", "power_pf", POWER_REPORT, "detection_power_comparison",
+            "detection_power_joint"]  # fmt: skip
+
+
+@pytest.mark.parametrize("name", REPORTED)
 def test_a_reported_gate_has_no_requirement(world, name) -> None:
     sim_refused(
         world,
@@ -1598,6 +1612,27 @@ def test_a_fixation_out_of_the_grids_order_or_without_power_is_refused(world) ->
     refused(world, "simulation", world.simulation(), "fixation", "grid's order")
     world.checkout(change={"scenarios": [first]})
     refused(world, "simulation", world.simulation(), "fixation", "no power scenario")
+
+
+@pytest.mark.parametrize("mode,words", [
+    ("report_rate", (POWER_REPORT, "missing rate 0.01", "missing_labels.report")),
+    ("report_unpaired", (POWER_REPORT, "power_af's studies and draws (paired)")),
+])  # fmt: skip
+def test_the_power_at_1_percent_is_the_fixations_over_the_powers_studies(world, mode, words):
+    """The results' power at 1 % is at the fixation's rate (``missing_labels.report``) and over
+    the studies and draws ``power_af`` counts (paired), or the record is refused."""
+    refused(world, "simulation", world.simulation(results=mode), *words)
+
+
+def test_the_power_at_1_percent_is_recomputed_from_its_counts(world) -> None:
+    record = world.simulation()
+    gate = record["gates"][POWER_REPORT]
+    record["gates"] = {**record["gates"], POWER_REPORT: {**gate, "value": gate["value"] + 1e-3}}
+    refused(world, "simulation", record, f"gates.{POWER_REPORT}", "recomputed")
+    world.write("simulation", world.simulation())
+    assert world.read("simulation")[0]["gates"][POWER_REPORT] == {"value": 0.7,
+                                                                  "requirement": None,
+                                                                  "passed": None}  # fmt: skip
 
 
 def test_the_fixation_must_be_unchanged_since_its_commit(world) -> None:

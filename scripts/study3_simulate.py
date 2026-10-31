@@ -37,7 +37,8 @@ engineering stage, before the search); the models and the values the researcher 
    1e-9 or their solver's precision, ``study3_simulation.CALIBRATION_FLOORS``; a different
    machine is printed, not refused). It then runs the gates, the screen and the n_min scan
    (``run_screen``) and writes ``screen.json``; it prints L (or "no level passed"), the
-   validation size and the gates' values. Interrupted, it resumes from its finished parts on the
+   validation size and the gates' values, with the power at 1 % MCAR beside the power (reported
+   only, ``power_af_1pct_missing``). Interrupted, it resumes from its finished parts on the
    same streams, to the same bytes.
 4. **verify** refuses without ``screen.json``, with one of another commit than the clean HEAD,
    without a recomputed L (the verification is not due), when the n_min scan stopped at an n
@@ -254,6 +255,8 @@ def run(args: argparse.Namespace) -> None:
     for comparison, name in (("A-F", "power_af"), ("P-F", "power_pf")):
         by = gates["power"][comparison][at]
         print(f"{name} {min(c['correct'] for c in by.values()) / m}")
+    by = gates["power_report"][at]
+    print(f"{decisions.POWER_REPORT} {min(c['correct'] for c in by.values()) / m}")
     scan = gates["n_scan"]
     print(f"n_min {scan[-1]['n'] if scan else 'null'}")
 

@@ -16,7 +16,7 @@ from scipy.stats import norm
 
 from zero_field_refusal.analysis import study3_simulation as sim
 from zero_field_refusal.analysis.study3_blocks import arm_support, block_state
-from zero_field_refusal.analysis.study3_decisions import LEVELS, cap_of, sample_size
+from zero_field_refusal.analysis.study3_decisions import LEVELS, cap_of, level_slot, sample_size
 from zero_field_refusal.analysis.study3_inference import Interval, stream
 from zero_field_refusal.analysis.study3_progress import confirmation_state
 from zero_field_refusal.analysis.study3_records import SEEDS, Cell, Endpoint
@@ -1231,6 +1231,69 @@ def test_a_descriptive_reading_detects_nothing() -> None:
                                                                     "draws": 4}  # fmt: skip
 
 
+# ------------------------------------------------------------------ the power at 1 % (M6b)
+
+
+def test_the_denser_mask_contains_the_planning_mask() -> None:
+    """One uniform per label: on the same stream the 1 % mask holds every label the 0.1 % mask
+    loses, and every other draw is the same, so that a label leaves the harmful count only by
+    going missing."""
+    sc = sim.SCENARIOS_BY_NAME["P21"]
+    denser = sim.report_scenario(sc)
+    assert denser == replace(sc, missing_rate=0.01) and denser.name == "P21"
+    h = np.array([0.15, 0.17, 0.12, 0.20, 0.15, 0.16])
+    more = 0
+    for seed in range(40):
+        harmful, missing = sim.endpoint_counts(h, sim.RUN_ARMS, sc, np.random.default_rng(seed))
+        harmful_d, missing_d = sim.endpoint_counts(h, sim.RUN_ARMS, denser,
+                                                   np.random.default_rng(seed))  # fmt: skip
+        assert (missing_d >= missing).all() and (harmful_d <= harmful).all()
+        assert (harmful - harmful_d <= missing_d - missing).all()
+        assert (harmful_d + missing_d >= harmful + missing).all()
+        more += int((missing_d - missing).sum())
+    assert more > 0
+
+
+def test_a_power_studys_report_is_the_study_at_the_denser_mask_on_its_own_draws(setup) -> None:
+    """``power_report``: the study again on its own streams and its scenario's calibration, its
+    labels missing at 1 %: the same rates, gates and validation blocks, each endpoint's primary
+    share at most the study's and its share with every missing label harmful at least it; N the
+    rule's on its own spread; A–F's cap reading and final direction those of the whole study at
+    the denser mask, of which it draws no interval at the N points, no truth and no utility
+    claim. A coverage scenario has none."""
+    sc = sim.SCENARIOS_BY_NAME["P21"]
+    denser = sim.report_scenario(sc)
+    paired = sim._with(setup, denser, 1, setup.calibration(sc, 1))
+    seen = 0
+    for index in range(3):
+        o = sim.simulate_study(sc, setup, 13, index, resamples=200, levels=LEVELS)
+        full = sim.simulate_study(denser, paired, 13, index, resamples=200, levels=LEVELS)
+        report = sim.power_report(sc, setup, 13, index, resamples=200, levels=LEVELS)
+        assert set(report) == set(sim.REPORT_FIELDS)
+        assert full.rates == o.rates and full.gates == o.gates and full.m == o.m
+        for a, b in zip(o.validation, full.validation, strict=True):
+            assert a.seed == b.seed and (a.x == b.x).all() and a.state == b.state
+            assert (b.shares <= a.shares).all() and (b.shares_high >= a.shares_high).all()
+        for level in LEVELS:
+            slot = level_slot(level)
+            rule = sample_size(full.spread_pp, full.m, level) if full.gates["AF"] else None
+            assert report["N"][slot] == full.N[level] == rule  # no N without the A–F gate
+            assert report["confirmed"][slot] == full.confirmed[level]
+            key = (level, "A-F")
+            if full.confirmed[level]:
+                seen += 1
+                assert report["readings"][slot] == full.readings[key]
+                assert report["direction"][slot] == full.direction[key]
+    assert seen
+    alone = sim.simulate_study(denser, paired, 13, 0, resamples=200, levels=LEVELS,
+                               power_reading=True)  # fmt: skip
+    assert alone.covered == {} and alone.truth == {} and alone.utility_claim == {}
+    assert {c for _, c in alone.direction} == {"A-F"}
+    with pytest.raises(ValueError, match="not a power scenario"):
+        sim.power_report(sim.SCENARIOS_BY_NAME["C17"], setup, 13, 0, resamples=200,
+                         levels=LEVELS)  # fmt: skip
+
+
 # ------------------------------------------------------------------ the calibration
 
 
@@ -1843,6 +1906,15 @@ def test_the_results_hold_every_identity_once(tiny, tmp_path) -> None:
     assert decided["level"] is not None and decided["validation_blocks"] in (28, 40)
     assert results["M"] == 6 and results["J"] == 105
     assert all(r["studies"] == 6 for r in results["tests"] if r["due"])
+    # beside the power, the power at 1 % at its level, the fixation's rate, a reported gate
+    level = results["gates"]["power_af"]["level"]
+    assert results["gates"][decisions.POWER_REPORT] == {
+        "level": level, "missing_rate": 0.01,
+        "by_scenario": s["gates"]["power_report"][level_slot(level)]}  # fmt: skip
+    by = results["gates"][decisions.POWER_REPORT]["by_scenario"]
+    assert decided["gates"][decisions.POWER_REPORT] == {
+        "value": min(c["correct"] for c in by.values()) / 6, "requirement": None,
+        "passed": None}  # fmt: skip
     # the verification's rows are at L, and every comparison counts its own studies
     due = [r for r in results["tests"] if r["test"][0] == "verification"]
     assert {r["level"] for r in due} == {decided["level"]}
@@ -1853,6 +1925,38 @@ def test_the_results_hold_every_identity_once(tiny, tmp_path) -> None:
     sim.run_screen(ctx, other, ENGINE_COMMIT, workers=1)
     again = sim.run_verification(ctx, other, ENGINE_COMMIT, workers=4)
     assert again.read_bytes() == verification.read_bytes()
+
+
+def test_the_screen_reports_the_power_at_1_percent_over_the_powers_studies(tiny, tmp_path) -> None:
+    """Each power study of the screen carries its report, in the same part (the coverage
+    scenario's studies do not); at every level the screen counts it over the studies the power
+    counts there, the same studies and draws, the detections the report's own."""
+    import json
+
+    ctx = tiny.context
+    path = run_screen(tiny, tmp_path, workers=2, unit=4)
+    screen = json.loads(path.read_text())
+    parts = tmp_path / "study3" / "simulation" / "parts" / "screen"
+    rows = {name: [row for p in sorted((parts / name).glob("*.json"))
+                   for row in json.loads(p.read_text())["rows"]]
+            for name in ("C02", "P20")}  # fmt: skip
+    assert rows["C02"] and all(r["report"] is None for r in rows["C02"])
+    assert rows["P20"] and all(set(r["report"]) == set(sim.REPORT_FIELDS) for r in rows["P20"])
+    sc, base = ctx.scenario("P20"), ctx.fixation["streams"]["calibration"]
+    setup = replace(ctx.setup, validation_blocks=screen["validation_blocks"])
+    studies = [sim.outcome_from_json(r) for r in rows["P20"]]
+    for level in LEVELS:
+        slot = level_slot(level)
+        found = screen["gates"]["power_report"][slot]["P20"]
+        power = screen["gates"]["power"]["A-F"][slot]["P20"]
+        assert (found["studies"], found["draws"]) == (power["studies"], power["draws"])
+        detected = 0
+        for o in sim.first_confirmed(studies, 6, level):
+            report = sim.power_report(sc, setup, base, o.index, resamples=200, levels=LEVELS)
+            assert report == o.report
+            detected += (report["confirmed"][slot] and report["readings"][slot] == "confirmatory"
+                         and report["direction"][slot] == "positive")  # fmt: skip
+        assert found["correct"] == detected
 
 
 def test_a_scenario_that_never_confirms_stops_at_4m_and_is_not_attainable(
@@ -1897,6 +2001,12 @@ def test_the_scan_stops_at_the_first_n_with_the_power(tiny, tmp_path) -> None:
     assert [min(c["correct"] for c in e["by_scenario"].values()) for e in scan][-1] == 6
     assert all(min(c["correct"] for c in e["by_scenario"].values()) < 5 for e in scan[:-1])
     assert decisions._n_min(scan, True, ["P20"]) == (63, [])
+    scanned = tmp_path / "study3" / "simulation" / "parts" / "scan-60" / "P20"
+    assert all(
+        row["report"] is None
+        for p in scanned.glob("*.json")
+        for row in json.loads(p.read_text())["rows"]
+    )  # the scan reads no report
 
 
 def test_the_calibration_does_not_depend_on_the_workers(vectors, monkeypatch) -> None:

@@ -251,9 +251,11 @@ LEVELS = (0.975, 0.980, 0.985, 0.990)
 VALIDATION_BLOCKS = (28, 40)
 SUPPORTED_AT = {28: 22, 40: 31}  # the validation gate's minimum of supported blocks
 REQUIRED_GATES = {"safe_pass_rate": 0.95, "power_af": 0.80}
-# Gates that are only reported: the pass rate at study 2's empirical point, P-F's power, and the
-# detection power of the coverage screen at the actual J (per comparison and joint)
-REPORTED_GATES = ("empirical_pass_rate", "power_pf", "detection_power_comparison",
+# Gates that are only reported: the pass rate at study 2's empirical point, P-F's power, A-F's
+# power with labels missing at 1 % (study3_simulation's M6b), and the detection power of the
+# coverage screen at the actual J (per comparison and joint)
+POWER_REPORT = "power_af_1pct_missing"
+REPORTED_GATES = ("empirical_pass_rate", "power_pf", POWER_REPORT, "detection_power_comparison",
                   "detection_power_joint")  # fmt: skip
 # The simulation's sizes, together ("Simulation before validation", "Frozen before the
 # simulation"): M, the resamples per interval of the screen and of the binding verification (the
@@ -378,8 +380,8 @@ RESULTS_FIELDS = ("kind", "written_at", "fixation", "code", "M", "J", "streams",
                   "validation_blocks", SELECTED_LEVEL, "tests", "gates", "reported")  # fmt: skip
 ROW_FIELDS = ("test", "level", "due", "p0", "studies", "draws", "reason", "X", "c", "passed",
               "rate", "interval")  # fmt: skip
-RESULT_GATES = ("safe_pass_rate", "empirical_pass_rate", "power_af", "power_pf", "n_scan",
-                "detection_power")  # fmt: skip
+RESULT_GATES = ("safe_pass_rate", "empirical_pass_rate", "power_af", "power_pf", POWER_REPORT,
+                "n_scan", "detection_power")  # fmt: skip
 _DECIDED = re.compile(r".*\bM\d+[a-z]?, decided")  # a source line's end: "…; M<n>, decided"
 
 
@@ -1620,7 +1622,9 @@ def coverage_decisions(
       verification is not run and does not pass, the design stop);
     - the ``verification`` (its tests, due and passed, at L), the ``gates`` (from their stored
       counts: the pass rates, the powers as the smallest correct/M over the power scenarios, a
-      scenario short of M counting its missing studies as not detecting, ``n_min`` from the
+      scenario short of M counting its missing studies as not detecting, beside ``power_af`` the
+      power at the fixation's denser missing rate over the same studies (``POWER_REPORT``,
+      reported), ``n_min`` from the
       stored scan, the detection powers at the fixation's J), ``validation_blocks`` (28 when the
       pass rate at the safe alternative reaches 0.95, else 40) and the ``state`` (passed exactly
       when a level and its verification passed)."""
@@ -1813,6 +1817,11 @@ def _gates_recomputed(gates: Any, fixation: Mapping[str, Any],
             else:
                 values.append(counts["correct"] / m)  # the missing studies do not detect
         powers[name] = min(values) if len(values) == len(by) else None
+    report, problem = _power_report(gates, fixation, level, power_scenarios)
+    if problem is not None:
+        problems.append(problem)
+    elif report is not None:
+        out[POWER_REPORT] = {"value": report, "requirement": None, "passed": None}
     af, pf = powers.get("power_af"), powers.get("power_pf")
     if af is not None:
         short = af < POWER_REQUIRED
@@ -1830,6 +1839,37 @@ def _gates_recomputed(gates: Any, fixation: Mapping[str, Any],
     for name, value in power.items():
         out[f"detection_power_{name}"] = {"value": value, "requirement": None, "passed": None}
     return out, problems
+
+
+def _power_report(gates: Mapping[str, Any], fixation: Mapping[str, Any], level: float,
+                  scenarios: Sequence[str]) -> tuple[float | None, str | None]:  # fmt: skip
+    """The power at the fixation's denser missing rate (``POWER_REPORT``, reported beside
+    ``power_af``): its level ``power_af``'s, its rate the fixation's ``missing_labels.report``,
+    its counts over every power scenario, each over ``power_af``'s studies and draws (paired);
+    the smallest correct/M, and the problem."""
+    m, g = COVERAGE_RUNS, gates[POWER_REPORT]
+    rate = fixation["missing_labels"]["report"]["missing_rate"]
+    by = g.get("by_scenario") if isinstance(g, Mapping) else None
+    if not (isinstance(g, Mapping) and set(g) == {"level", "missing_rate", "by_scenario"}
+            and _close(g["level"], level) and g["missing_rate"] == rate
+            and isinstance(by, Mapping) and set(by) == set(scenarios) and by):  # fmt: skip
+        return None, (f"results.gates.{POWER_REPORT} is not the power at {level} of "
+                      f"{list(scenarios)} at the fixation's missing rate {rate} "
+                      "(missing_labels.report)")  # fmt: skip
+    af = gates["power_af"]
+    paired = af.get("by_scenario") if isinstance(af, Mapping) else None
+    values = []
+    for scenario, counts in by.items():
+        twin = paired.get(scenario) if isinstance(paired, Mapping) else None
+        if not (isinstance(counts, Mapping) and set(counts) == {"correct", "studies", "draws"}
+                and all(type(counts[k]) is int for k in counts) and isinstance(twin, Mapping)
+                and 0 <= counts["correct"] <= counts["studies"]
+                and (counts["studies"], counts["draws"]) == (twin.get("studies"),
+                                                             twin.get("draws"))):  # fmt: skip
+            return None, (f"results.gates.{POWER_REPORT}.{scenario}: correct ≤ studies, over "
+                          "power_af's studies and draws (paired)")  # fmt: skip
+        values.append(counts["correct"] / m)  # the missing studies do not detect
+    return min(values), None
 
 
 def _n_min(scan: Any, short: bool, scenarios: Sequence[str]) -> tuple[int | None, list[str]]:
