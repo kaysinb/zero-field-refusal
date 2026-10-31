@@ -2170,6 +2170,8 @@ def _confirm(
         if not confirmed[level]:
             continue
         stop = _stop(blocks, active, N[level], cap[level])
+        # at the registered floors, as the screen comes before any floor: the stop and the analysis
+        # sets do not read them, and each count reads ``analyzed`` at the comparison's floor
         state = confirmation_state([e for b in blocks[:stop] for e in b.endpoints], c, N[level],
                                    active)  # fmt: skip
         if not state["stop"]["stopped"] or state["problems"] or len(state["started"]) != stop:
@@ -2268,8 +2270,8 @@ def power_report(scenario: Scenario, setup: Setup, base: int, index: int, *, res
     cap reading and final direction (``simulate_study``'s ``power_reading``). It uses the N the
     rule chose, before any n_min increase: it is not the power of the final increased design.
     Under MCAR, Δ scales by 0.99 / 0.999 (±2 pp becomes about ±1.982 pp), and the SD need not
-    shrink by exactly 1 %. Per level slot: ``N``, ``confirmed``, ``readings`` and ``direction``
-    (A–F's)."""
+    shrink by exactly 1 %. Per level slot: ``N``, ``confirmed``, and A–F's ``readings``,
+    ``direction`` and ``analyzed``, which reads the cap at A–F's floor (``_report_counts``)."""
     if not scenario.power:
         raise ValueError(f"scenario {scenario.name} is not a power scenario")
     denser = report_scenario(scenario)
@@ -2282,6 +2284,7 @@ def power_report(scenario: Scenario, setup: Setup, base: int, index: int, *, res
         "confirmed": {level_key(lv): bool(o.confirmed[lv]) for lv in o.levels},
         "readings": {level_key(lv): o.readings.get((lv, "A-F")) for lv in o.levels},
         "direction": {level_key(lv): o.direction.get((lv, "A-F")) for lv in o.levels},
+        "analyzed": {level_key(lv): o.analyzed.get((lv, "A-F")) for lv in o.levels},
     }
 
 
@@ -2299,7 +2302,8 @@ def _covers(interval: Interval | None, value: float | None) -> bool:
 _ROW_FIELDS = ("index", "mode", "candidate", "active", "levels", "rates", "gates", "m",
                "confirmed", "why", "N", "cap", "blocks", "covered", "direction", "readings",
                "utility_claim", "truth", "report", "analyzed")  # fmt: skip
-REPORT_FIELDS = ("N", "confirmed", "readings", "direction")  # a row's ``report``, per level slot
+# a row's ``report``, per level slot
+REPORT_FIELDS = ("N", "confirmed", "readings", "direction", "analyzed")
 
 
 level_key = level_slot  # a level as the identities and the results write it ("0.975", …)
@@ -4099,11 +4103,11 @@ def _direction_counts(rows: Sequence[StudyOutcome], scenario: Scenario, comparis
 
 
 def _report_counts(rows: Sequence[StudyOutcome], scenario: Scenario, level: float, m: int,
-                   bound: int) -> dict[str, int]:  # fmt: skip
+                   bound: int, floor: int = FLOORS[0]) -> dict[str, int]:  # fmt: skip
     """The power at the denser mask (M6b, ``power_report``) at ``level``, over the studies
     ``_direction_counts`` counts there (paired): a study detects when its report's A–F reading is
-    confirmatory and its final direction the sign of Δ; one the denser mask leaves unconfirmed
-    detects nothing, nor do the missing studies of a test short at the bound."""
+    confirmatory at A–F's ``floor`` and its final direction the sign of Δ; one the denser mask
+    leaves unconfirmed detects nothing, nor do the missing studies of a test short at the bound."""
     want = "positive" if scenario.delta_af_pp > 0 else "negative"
     slot = level_slot(level)
     used = first_confirmed(rows, m, level)
@@ -4111,6 +4115,7 @@ def _report_counts(rows: Sequence[StudyOutcome], scenario: Scenario, level: floa
         raise SimulationError(f"{scenario.name}: a power study of the screen has no report")
     correct = sum(o.report["confirmed"][slot] is True
                   and o.report["readings"][slot] == CONFIRMATORY
+                  and (o.report["analyzed"][slot] or 0) >= floor
                   and o.report["direction"][slot] == want for o in used)  # fmt: skip
     return {"correct": correct, "studies": len(used), "draws": _drawn(used, rows, m, bound)}
 
@@ -4210,7 +4215,8 @@ def _screen(runs_root: Path, context: Context, commit: str,
                                                              floors[lv][c] or FLOORS[0])
                                   for sc in power_scenarios} for lv in LEVELS}
              for c in COMPARISONS}  # fmt: skip
-    report = {level_slot(lv): {sc.name: _report_counts(rows[sc.name], sc, lv, m, bound)
+    report = {level_slot(lv): {sc.name: _report_counts(rows[sc.name], sc, lv, m, bound,
+                                                       floors[lv]["A-F"] or FLOORS[0])
                                for sc in power_scenarios} for lv in LEVELS}  # fmt: skip
     at = d.POWER_LEVEL if selected is None else selected
     scan = _power_scan(pool, runs_root, context, commit, at, floors[at]["A-F"] or FLOORS[0], blocks,

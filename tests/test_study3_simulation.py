@@ -2124,6 +2124,14 @@ def test_a_cap_test_at_a_floor_counts_only_the_readings_confirmatory_there(tmp_p
                          direction={(level, "A-F"): "positive"}) for o in studies]  # fmt: skip
     assert sim._direction_counts(detecting, sc, "A-F", level, 6, 24)["correct"] == 6
     assert sim._direction_counts(detecting, sc, "A-F", level, 6, 24, 60)["correct"] == 3
+    # and so does the power reported at the denser mask, on its own analysis sets
+    slot = level_slot(level)
+    reported = [replace(o, report={"confirmed": {slot: True}, "readings": {slot: "confirmatory"},
+                                   "direction": {slot: "positive"},
+                                   "analyzed": {slot: o.analyzed[(level, "A-F")]}})
+                for o in studies]  # fmt: skip
+    assert sim._report_counts(reported, sc, level, 6, 24)["correct"] == 6
+    assert sim._report_counts(reported, sc, level, 6, 24, 60)["correct"] == 3
 
 
 def test_the_scan_stops_at_the_first_n_with_the_power(tiny, tmp_path) -> None:
