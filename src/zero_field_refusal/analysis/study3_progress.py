@@ -357,25 +357,25 @@ start whose campaign header does not name the engineering record by its path and
 that shows the record existed before the search started), an n or budget record the route has not
 reached, and a closure record that names no mark of its route are problems too.
 
-**Code agreement** (the chain of engineering cycles, ``code_chain``). A GPU code is admissible
-when it lies on the chain: it starts at the engineering record's ``code.gpu_code_sha256``, and
-each supersession record (``qualification/c<N>/supersede-<n>.json`` as
+**Code agreement** (the chain of engineering cycles, ``code_chain``). A GPU code is admissible when
+it lies on the chain: it starts at the engineering record's ``code.gpu_code_sha256``, and each
+supersession record (``qualification/c<N>/supersede-<n>.json`` as
 ``qualification_records.supersessions`` lists it, read alone: it does not depend on the expected
 code; candidate 1's before candidate 2's) moves it from its old code to its fix's. A supersession
-whose old code is not the chain's is a break, and so is a second record for a candidate (one
-cycle per candidate; ``qualification_records`` voids nothing by either, nor by a record that is not
-the candidate's or does not cite its technical record), and ``expected_code`` must be the chain's
-end: each is a problem. The reader builds the chain first, then reads each candidate's
-qualification under the code in force for its runs, or, where the candidate's valid cycle record
-outside the qualification claims the qualification ``reuse``, under that cycle's old code: the
-qualification's runs keep counting under the code they ran (``qualification_code``). Per
+whose old code is not the chain's is a break, and so is a second record for a candidate (one cycle
+per candidate; an engineering-stage cycle whose fix is the start, the candidate's only record, is
+already applied and moves nothing; ``qualification_records`` voids nothing by either, nor by a
+record that is not the candidate's or does not cite its technical record), and ``expected_code``
+must be the chain's end: each is a problem. The reader builds the chain first, then reads each
+candidate's qualification under the code in force for its runs, or, where the candidate's valid
+cycle record outside the qualification claims the qualification ``reuse``, under that cycle's old
+code: the qualification's runs keep counting under the code they ran (``qualification_code``). Per
 record: the engineering record is the chain's start (it stays valid across cycles: a cycle's
-re-qualification certifies its fix); the
-simulation record and the closure records may carry any code on the chain (the simulation runs
-no GPU code; a closure is a record about a run, bound to its line's and its cycle's hashes, so
-one written before its candidate's cycle stays valid); ``n-c<N>`` and ``budget-c<N>`` carry the
-code in force for candidate N's runs. A record of another code is invalid. The records' commits
-may differ (a change of analysis code moves no run).
+re-qualification certifies its fix); the simulation record and the closure records may carry any
+code on the chain (the simulation runs no GPU code; a closure is a record about a run, bound to its
+line's and its cycle's hashes, so one written before its candidate's cycle stays valid); ``n-c<N>``
+and ``budget-c<N>`` carry the code in force for candidate N's runs. A record of another code is
+invalid. The records' commits may differ (a change of analysis code moves no run).
 
 **The cells** (``prescribed``). ``read_endpoints`` binds every run to a cell the route issued, so
 the reader first derives the cells: it reads the runs under every cell they bind, runs the core
@@ -844,6 +844,8 @@ def code_chain(
     runs (the chain's after its own cycle, or before it), and the breaks: a record whose old
     code is not the chain's, and more than one record for a candidate (one engineering cycle per
     candidate: ``qualify.py supersede`` writes ``c<N>/supersede-1.json`` and refuses a second).
+    An engineering-stage cycle whose fix is ``start``, the candidate's only record, is already
+    applied and moves no code: the engineering record is written after it, under the fix.
     Without a start there is no chain: no code, and none in force."""
     if start is None:
         return [], {}, []
@@ -858,6 +860,10 @@ def code_chain(
             )
         for cycle in found:
             old, fix = cycle.get("old_gpu_code"), cycle.get("fix_gpu_code")
+            cited = cycle.get("old_record")
+            stage = cited.get("stage") if isinstance(cited, Mapping) else None
+            if len(found) == 1 and stage == "engineering" and fix == start:
+                continue
             if old != current:
                 breaks.append(
                     f"{cycle.get('path')}: its old GPU code {old} is not the chain's "

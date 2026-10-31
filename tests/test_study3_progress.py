@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,7 @@ from test_study3_records import SENTINEL, header, seal
 from test_study3_records import World as RunWorld
 
 from zero_field_refusal import code_identity, launch
-from zero_field_refusal.analysis import study3_progress
+from zero_field_refusal.analysis import qualification_records, study3_progress
 from zero_field_refusal.analysis.study3_cycle import STAGE_STEPS, Claim
 from zero_field_refusal.analysis.study3_decisions import START_REASON, cap_of, end_reason
 from zero_field_refusal.analysis.study3_progress import (
@@ -2193,6 +2194,53 @@ def test_a_second_cycle_record_for_a_candidate_is_a_break_in_the_chain() -> None
                and "chain" in p for p in result["problems"]), result["problems"]  # fmt: skip
     _, _, breaks = study3_progress.code_chain(EXPECTED, study.cycles)
     assert len(breaks) == 1
+
+
+def engineering_cycle(old="e" * 64, fix="f" * 64, stage="engineering") -> dict:
+    """A supersession record as ``qualification_records.supersessions`` lists it."""
+    return {"path": "/runs/qualification/c1/supersede-1.json", "sha256": "9" * 64,
+            "old_record": {"stage": stage}, "old_gpu_code": old, "fix_gpu_code": fix}  # fmt: skip
+
+
+def test_an_engineering_stage_cycle_whose_fix_starts_the_chain_is_already_applied() -> None:
+    """The engineering record is written after the stage's cycle, under the fix: the cycle moves
+    no code. Another fix, a later stage's cycle whose old code is not the chain's, and a second
+    record stay breaks."""
+    assert study3_progress.code_chain("f" * 64, {1: [engineering_cycle()]}) == (
+        ["f" * 64], {1: "f" * 64, 2: "f" * 64}, [])  # fmt: skip
+    for cycle in (engineering_cycle(fix="8" * 64), engineering_cycle(stage="numerical")):
+        assert len(study3_progress.code_chain("f" * 64, {1: [cycle]})[2]) == 1
+    second = {**engineering_cycle(old="f" * 64, fix="8" * 64), "path": "supersede-2.json"}
+    assert study3_progress.code_chain("f" * 64, {1: [engineering_cycle(), second]})[2]
+
+
+def test_the_search_is_admitted_after_the_engineering_cycle_and_its_record_under_the_fix(
+    worlds, qualify, monkeypatch, tmp_path
+) -> None:
+    """The real order: the engineering stage's technical failure, ``qualify.py supersede
+    --engineering``, the engineering and simulation records under the fix: the chain starts at
+    the fix, nothing breaks it, and the search's first campaign is the step."""
+    from test_qualification_records import ENGINEERING, ENGINEERING_HEADER, FIX, beyond, codes
+    from test_qualification_records import World as QualificationWorld
+
+    records, runs = worlds
+    case = replace(ENGINEERING, lr=START["A"]["l"])  # a cell the route prescribes
+    world = QualificationWorld(tmp_path, ((("adamw", case.lr), (10000,)),),
+                               name="study3-c1-engineering", header=ENGINEERING_HEADER,
+                               role="engineering")  # fmt: skip
+    world.qualified(case, world.launch(case), change=beyond("baseline", "launcher~baseline"))
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    world.command(qualify, "supersede", "--engineering", "--case", case.name, "--record",
+                  str(world.folder(case) / "baseline-attempt-1.json"),
+                  "--diagnosis", "d", "--fix", "f")  # fmt: skip
+    (cycle,) = qualification_records.supersessions(runs.root, 1)
+    assert cycle["old_record"]["stage"] == "engineering"
+    code = {"commit": "a" * 40, "gpu_code_sha256": FIX["sha256"]}
+    records.write("engineering", records.engineering(code=code))
+    records.write("simulation", records.simulation(code=code))
+    result = read(records, runs, expected_code=FIX["sha256"])
+    assert result["problems"] == [], result["problems"]
+    assert (result["stage"], result["step"]["campaign"]) == ("search", "search-round0")
 
 
 def test_an_expected_code_that_is_not_the_chains_end_is_a_problem() -> None:
