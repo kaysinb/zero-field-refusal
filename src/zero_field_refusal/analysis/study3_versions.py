@@ -91,10 +91,9 @@ last link of an unbroken chain; a successor is accepted only after a stale recor
 predecessor among the records it makes stale; the successor carries the cycle's fix). A
 validation fixation's successor keeps the candidate and the rates of the one before it: A's and
 F's as they were, and P's while P–F is open. P alone is left out once the route closed it after
-the cycle ("Failure routes": in P alone, P is closed and only P–F ends): a valid closure record
-of P, or P's re-qualification of a rate the record before it fixed technical (unresolved after
-the cycle) or, before the confirmation has started, failing (after it, a scientific failure
-closes no arm: ``confirmation_fixed``). The record before it stays as it was, P's rates and
+the cycle: P's re-qualification of a rate the record before it fixed failing, before the
+confirmation has started (after it, a scientific failure closes no arm: ``confirmation_fixed``; a
+technical mark closes nothing, amendment 7). The record before it stays as it was, P's rates and
 states in it as their evidence (``dropped_rates``). A supplement's successor names the
 validation fixation and the n record in force; once the confirmation has started
 (``study3_decisions.confirmation_started``), its N, cap, bootstrap and audit seeds are its
@@ -209,9 +208,8 @@ is read.
   study 2 reads a run's commit (``uncounted_runs``): the pinned commit or a record-only
   descendant of it, from a clean checkout. A run under any other commit, a dirty checkout, a
   commit this checkout does not hold or no recorded commit does not count; it is kept and listed,
-  and ``study3_progress`` blocks on it as a technical mark outside the qualification of its arm,
-  until its way out: a recovery round where the launcher would open one, or its closure record
-  (its uncounted reason). The check of the record before each launch
+  and ``study3_progress`` blocks on it as a technical mark of its arm, until its way out: a
+  recovery round where the launcher would open one. The check of the record before each launch
   (``scripts/study3_summary.py check``, and the confirmation's guard) prevents such a run; it
   does not stand for the comparison, which also covers a resumption or a recovery round launched
   from another checkout.
@@ -240,7 +238,6 @@ from ..judge import IDENTITY_FIELDS, judge_identity
 from ..paths import REPO_ROOT
 from ..tracking import git_state, tracked, worktree_changes
 from .study3_decisions import (
-    CAP_FLOOR,
     DIRECTORY,
     MIN_N,
     SIMULATION_RECORD,
@@ -253,7 +250,6 @@ from .study3_decisions import (
     _under_sealed,
     budget_reason,
     cap_of,
-    closures,
     confirmation_started,
     decision_path,
     decisions,
@@ -798,9 +794,9 @@ class _Check(_Schema):
         if self.integer("N", top["N"], MIN_N):
             cap = cap_of(top["N"])
             if top["cap"] != cap or type(top["cap"]) is not int:
-                self.add("cap", f"is {top['cap']!r}, not N + max({CAP_FLOOR}, ⌈0.12·N⌉) = {cap}")
+                self.add("cap", f"is {top['cap']!r}, not C(N) = {cap}")
         else:
-            self.integer("cap", top["cap"], MIN_N + CAP_FLOOR)
+            self.integer("cap", top["cap"], cap_of(MIN_N))
         if top["budget"] is not None:
             self.link_ref("budget", top["budget"], "budget")
         bootstrap = self.object("bootstrap", top["bootstrap"], ("seed", "resamples"))
@@ -1019,36 +1015,30 @@ def _kept_rates(record: Mapping[str, Any], predecessor: Mapping[str, Any], befor
     if "P" in other and "P" not in rates and not _closed_p(candidate, other["P"], root, repo,
                                                             reading):  # fmt: skip
         return [f"rates: P is left out, and P is not closed: {before} fixes P, and a successor "
-                "leaves P out only once the route closed it after the cycle (a valid closure "
-                "record of P, or P's re-qualification of a fixed rate technical, or failing "
-                "before the confirmation has started)"]  # fmt: skip
+                "leaves P out only once the route closed it after the cycle (P's "
+                "re-qualification of a fixed rate failing before the confirmation has "
+                "started)"]  # fmt: skip
     return []
 
 
 def _closed_p(candidate: int, rates: Mapping[str, Any], root: Path, repo: Path,
               reading: Mapping[str, Any] | None) -> bool:  # fmt: skip
-    """Whether the route closes P at the candidate's re-qualification after its cycle ("Failure
-    routes": in P alone, P is closed and only P–F ends; "Validation, confirmation and stopping":
-    once the confirmation has started, a scientific failure closes no arm the confirmation
-    holds): a valid closure record of P, or a rate the record before it fixed for P (``rates``)
-    whose re-qualification under the code it counts under (``reading``) is technical (unresolved
-    after the cycle) or, before the confirmation has started, failing; a rate still waiting
-    closes nothing."""
+    """Whether the route closes P at the candidate's re-qualification after its cycle: before the
+    confirmation has started ("Validation, confirmation and stopping": after it, a scientific
+    failure closes no arm the confirmation holds), a rate the record before it fixed for P
+    (``rates``) failing under the code it counts under (``reading``). A technical mark or a rate
+    still waiting closes nothing (amendment 7, "Technical causes")."""
     from . import qualification_records  # it loads torch (qualification_verdicts): here only
     from .study3_progress import _condition
 
-    closure = closures(root, candidate, repo=repo).get(f"closure-c{candidate}-P") or {}
-    if closure.get("state") == "failed":  # a valid closure record: a terminal outcome
-        return True
-    if reading is None:
+    if reading is None or confirmation_started(root, candidate):
         return False
-    closing = {"technical"} if confirmation_started(root, candidate) else {"technical", "failing"}
     for label in LABELS:
         try:
             rate = qualification_records.rate_of(reading, "P", float(rates[label]))
         except (KeyError, TypeError, ValueError):
             return False
-        if rate is not None and _condition(rate, reading)[0] in closing:
+        if rate is not None and _condition(rate, reading)[0] == "failing":
             return True
     return False
 

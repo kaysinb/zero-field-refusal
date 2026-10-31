@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -20,11 +21,14 @@ import pytest
 from zero_field_refusal import launch
 from zero_field_refusal.analysis import study3_simulation as sim
 from zero_field_refusal.analysis.study3_decisions import (
+    CAP_ATTAINMENT,
+    CAP_SUPPORT,
     COVERAGE_RUNS,
     HOLD_REASONS,
     LEVELS,
     MIN_N,
     NOT_ATTAINABLE,
+    OPTIONAL,
     PLANNING_DIFFERENCE_PP,
     PLANNING_POWER,
     POWER_REPORT,
@@ -37,6 +41,7 @@ from zero_field_refusal.analysis.study3_decisions import (
     DecisionRefused,
     budget_needed,
     budget_reason,
+    cap_attainment,
     cap_of,
     chain,
     clopper_pearson,
@@ -103,6 +108,16 @@ def fixed_calibration(candidate: int) -> sim.Calibration:
                            sigma_pf=0.03, offset_a=0.02, offset_p=0.02, attained_af_pp=3.5,
                            attained_pf_pp=3.5, attained_delta_pp={"A-F": (2.0, 0.01),
                                                                   "P-F": (2.0, 0.01)})  # fmt: skip
+
+
+def reading_at(level: float) -> dict:
+    """The simulation record's ``reading`` at ``level``: both comparisons, the registered floors."""
+    return {"level": level, "pf_confirmatory": True, "floors": {"A-F": 36, "P-F": 36}}
+
+
+# The simulation record's closed schema takes ``reading`` once its writer and reader carry it; here
+# the fixtures that read it, until then
+OPTIONAL.setdefault("simulation", ("reading",))
 
 
 class World:
@@ -315,6 +330,7 @@ class World:
             "inputs": {"seed_vectors": self.seed_vectors(), "design": self.ref("design.json")},
             "gates": default_gates(), "coverage": rows, "level": level, "validation_blocks": 28,
             "verification": verified(level, level is not None),
+            **({} if level is None else {"reading": reading_at(level)}),
         }  # fmt: skip
         record.update(over)
         ran = self.first if how == "after_the_results" else None
@@ -432,9 +448,9 @@ class World:
         return digest
 
 
-# the cap N + max(10, ⌈0.12·N⌉) by hand
-CAPS = {60: 70, 75: 85, 83: 93, 84: 95, 90: 101, 99: 111, 100: 112, 120: 135, 178: 200,
-        179: 201}  # fmt: skip
+# the cap C(N), the registration's amendment 7 (60, 88, 93, 107) and an exact binomial
+CAPS = {60: 74, 75: 91, 83: 101, 84: 102, 88: 106, 90: 109, 93: 112, 99: 119, 100: 120, 107: 129,
+        120: 144, 168: 200, 169: 201}  # fmt: skip
 
 
 def power_gate(value: float, n_min: int | None = None) -> dict:
@@ -537,13 +553,14 @@ def test_the_kinds_and_their_files(world) -> None:
     assert decision_path(world.runs, "n-c2") == world.runs / "study3" / "decisions" / "n-c2.json"
 
 
-def test_the_cap_is_n_plus_the_larger_of_ten_and_twelve_percent_rounded_up() -> None:
+def test_the_cap_is_the_smallest_with_attainment_at_the_named_support() -> None:
+    assert (Fraction(88, 100), Fraction(95, 100)) == (CAP_SUPPORT, CAP_ATTAINMENT)
     for n, cap in CAPS.items():
-        assert cap_of(n) == cap
-    assert cap_of(83) == 83 + 10  # 0.12 * 83 = 9.96 -> 10
-    assert cap_of(84) == 84 + 11  # 10.08 -> 11
-    assert cap_of(75) == 75 + 10  # 9.0 exactly is not rounded up to 10: max(10, 9) = 10
-    assert cap_of(100) == 100 + 12 and cap_of(125) == 125 + 15  # 15.0 exactly, not 16
+        assert cap_of(n) == cap and type(cap_of(n)) is int
+        assert cap_attainment(cap - 1, n) < CAP_ATTAINMENT <= cap_attainment(cap, n)
+    # against an independent sum, in floats
+    total = sum(math.comb(74, k) * 0.88**k * 0.12 ** (74 - k) for k in range(60, 75))
+    assert float(cap_attainment(74, 60)) == pytest.approx(total)
 
 
 def test_a_budget_decision_is_needed_above_ninety() -> None:
@@ -571,7 +588,8 @@ def test_the_n_rule_gives_the_registered_examples(sd, m, level, n) -> None:
 
 
 def test_the_examples_caps() -> None:
-    assert [cap_of(n) for n in (60, 88, 92, 93)] == [70, 99, 104, 105]
+    assert [cap_of(n) for n in (60, 88, 93, 107)] == [74, 106, 112, 129]
+    assert cap_of(168) <= 200 < cap_of(169)
 
 
 def test_the_upper_sd_and_the_floor() -> None:
@@ -685,7 +703,7 @@ def test_the_n_record_is_accepted_with_and_without_p(world) -> None:
     world.write("simulation", world.simulation())
     world.write("n-c1", world.n(1, 75))
     record, problems = world.read("n-c1")
-    assert problems == [] and record["N"] == 75 and record["cap"] == 85
+    assert problems == [] and record["N"] == 75 and record["cap"] == 91
     only = world.n(2, 60, active=["A-F"])
     del only["rates"]["P"]
     world.write("n-c2", only)
@@ -696,7 +714,7 @@ def test_the_n_record_is_accepted_with_and_without_p(world) -> None:
 def test_the_budget_record_is_accepted_for_a_larger_n(world) -> None:
     world.chain(N=99, through="budget")
     record, problems = world.read("budget-c1")
-    assert problems == [] and record["decision"] == "proceed" and record["cap"] == 111
+    assert problems == [] and record["decision"] == "proceed" and record["cap"] == 119
 
 
 def test_a_stop_is_a_failed_budget_record(world) -> None:
@@ -857,8 +875,8 @@ def test_a_spread_rounded_to_half_a_point_is_accepted(world, spread) -> None:
 
 @pytest.mark.parametrize(
     ("n", "cap"),
-    # the cap N + max(10, ⌈0.12·N⌉) of each, where it is a number: only N is wrong
-    [(59, 69), (0, 10), (-60, -50), (60.0, 70), (61.5, 70), (True, 11), ("75", 85), (None, 70)],
+    # a cap the schema takes as a number: only N is wrong
+    [(59, 74), (0, 74), (-60, 74), (60.0, 74), (61.5, 74), (True, 74), ("75", 91), (None, 74)],
 )
 def test_an_n_below_sixty_or_not_an_integer_is_refused(world, n, cap) -> None:
     world.chain(through="simulation")
@@ -868,7 +886,7 @@ def test_an_n_below_sixty_or_not_an_integer_is_refused(world, n, cap) -> None:
 def test_n_of_sixty_is_the_smallest(world) -> None:
     world.chain(through="simulation")
     world.write("n-c1", world.n(N=60))
-    assert world.read("n-c1")[0]["cap"] == 70
+    assert world.read("n-c1")[0]["cap"] == 74
 
 
 @pytest.mark.parametrize(
@@ -890,7 +908,7 @@ def test_a_cap_that_is_not_n_plus_the_larger_of_ten_and_twelve_percent_is_refuse
     world, n, cap
 ) -> None:
     world.chain(through="simulation")
-    record = world.n(N=60, cap=70)
+    record = world.n(N=60, cap=74)
     record["N"], record["cap"] = n, cap
     refused(world, "n-c1", record, "cap")
 
@@ -904,27 +922,44 @@ def test_the_registered_caps_are_accepted(world, n) -> None:
 
 def test_a_cap_within_the_reserved_confirmation_seeds_is_a_passed_record(world) -> None:
     world.chain(through="simulation")
-    # N = 178 -> cap 200: the last reserved seed is 10599, 200 seeds from 10400
-    world.write("n-c1", world.n(N=178))
+    # N = 168 -> cap 200: the last reserved seed is 10599, 200 seeds from 10400
+    world.write("n-c1", world.n(N=168))
     record, problems = world.read("n-c1")
     assert problems == [] and record["cap"] == 200 and record["state"] == "passed"
-    decision_path(world.runs, "n-c1").unlink()
-    refused(world, "n-c1", world.n(N=178, state="failed"), "state", "fits", "200")
 
 
 def test_a_cap_beyond_the_reserved_seeds_is_recorded_as_a_failed_record(world) -> None:
     world.chain(through="simulation")
-    # N = 179 -> cap 201: the confirmation cannot start within 10400-10599, and N is not cut
-    refused(world, "n-c1", world.n(N=179), "state", "exceeds", "201", "N is not cut")
-    world.write("n-c1", world.n(N=179, state="failed"))
+    # N = 169 -> cap 201: the confirmation cannot start within 10400-10599, and N is not cut
+    refused(world, "n-c1", world.n(N=169), "state", "exceeds", "201", "N is not cut")
+    world.write("n-c1", world.n(N=169, state="failed"))
     record, problems = world.read("n-c1")
-    assert problems == [] and record["N"] == 179 and record["cap"] == 201
+    assert problems == [] and record["N"] == 169 and record["cap"] == 201
     assert record["state"] == "failed"
+
+
+def test_a_failed_n_record_reads_as_passed_once_an_amendment_extends_the_seeds(
+    world, monkeypatch
+) -> None:
+    """Amendment 7, "The reserve": no new record; the file stays as it is, and the constant the
+    refusal reads decides. N is unchanged, and the budget decision is then needed."""
+    world.chain(through="simulation")
+    path = world.write("n-c1", world.n(N=169, state="failed"))
+    kept = path.read_bytes()
+    monkeypatch.setitem(SEEDS["confirmation"], 1, range(10400, 10700))
+    record, problems = world.read("n-c1")
+    assert problems == [] and (record["state"], record["N"], record["cap"]) == ("passed", 169, 201)
+    assert path.read_bytes() == kept
+    world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert found["n-c1"]["state"] == "passed" and "budget-c1" in found
+    world.write("budget-c1", world.budget(1, 169))
+    assert world.read("budget-c1")[0]["cap"] == 201
 
 
 def test_a_failed_n_record_needs_no_budget_entry(world) -> None:
     world.chain(through="simulation")
-    world.write("n-c1", world.n(N=179, state="failed"))
+    world.write("n-c1", world.n(N=169, state="failed"))
     world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
     found = decisions(world.runs, 1, repo=world.repo)
     assert found["n-c1"]["state"] == "failed" and found["n-c1"]["problems"] == []
@@ -1129,10 +1164,10 @@ def test_a_power_shortfall_is_recorded_and_the_record_still_passes(world) -> Non
 
 
 def test_a_power_short_beyond_the_reserved_seeds_skips_the_verification(world) -> None:
-    """n_min 179, its cap 201 beyond the 200 reserved seeds: no N is attainable, so the
+    """n_min 169, its cap 201 beyond the 200 reserved seeds: no N is attainable, so the
     verification is not run (its tests not due) and does not pass, and the record fails (the
-    design stop); due verification rows, or a passed verification, are refused."""
-    gates = gates_with(power_af=power_gate(0.74, 179))
+    pause for a decision); due verification rows, or a passed verification, are refused."""
+    gates = gates_with(power_af=power_gate(0.74, 169))
     sim_refused(world, "no attainable n", "not due", gates=gates, state="failed",
                 verification=verified(0.975, False))  # fmt: skip
     sim_refused(world, "verification.passed", gates=gates, results="verification_not_due")
@@ -1141,7 +1176,7 @@ def test_a_power_short_beyond_the_reserved_seeds_skips_the_verification(world) -
                                                results="verification_not_due"))  # fmt: skip
     record, problems = world.read("simulation")
     assert problems == [] and record["state"] == "failed" and record["level"] == 0.975
-    assert record["gates"]["power_af"]["n_min"] == 179
+    assert record["gates"]["power_af"]["n_min"] == 169
 
 
 @pytest.mark.parametrize(
@@ -1795,7 +1830,7 @@ def test_a_budget_record_answers_the_n_and_cap_of_its_n_record(world) -> None:
         refused(world, "budget-c1", world.budget(**over), *words)
 
     budget_refused("N 100", "99", N=100)  # another N
-    budget_refused("cap 112", "111", N=99, cap=112)
+    budget_refused("cap 120", "119", N=99, cap=120)
     budget_refused("cap", N=99, cap=110)
     budget_refused("N", N=59, cap=69)
     budget_refused("candidate", candidate=2)
@@ -1825,7 +1860,7 @@ SHORT = gates_with(power_af=power_gate(0.74, 84))  # the power is short; N of 84
 def test_an_n_record_below_n_min_is_refused_and_one_at_or_above_it_is_accepted(world) -> None:
     world.write("simulation", world.simulation(gates=SHORT))
     refused(world, "n-c1", world.n(N=75), "N is 75", "n_min 84")
-    refused(world, "n-c1", world.n(N=83, cap=93), "N is 83", "n_min 84")
+    refused(world, "n-c1", world.n(N=83, cap=101), "N is 83", "n_min 84")
     refused(world, "n-c1", world.n(N=60), "n_min 84")
     world.write("n-c1", world.n(N=84, cap=cap_of(84)))
     decision_path(world.runs, "n-c1").unlink()
@@ -3492,7 +3527,7 @@ def test_after_the_confirmation_started_an_n_successor_changes_only_its_code(wor
                    supersedes=supersedes(world, "n-c1"))  # fmt: skip
     cohort = same["cohort"]
     reordered = {**cohort, "run_ids": list(reversed(cohort["run_ids"]))}
-    for change in ({"N": 83, "cap": 93}, {"spread_pp": 5.0}, {"cohort": reordered}):
+    for change in ({"N": 83, "cap": 101}, {"spread_pp": 5.0}, {"cohort": reordered}):
         with pytest.raises(DecisionRefused, match="prospective amendment"):
             world.write("n-c1-2", {**same, **change})
     assert world.write("n-c1-2", same).name == "n-c1-2.json"

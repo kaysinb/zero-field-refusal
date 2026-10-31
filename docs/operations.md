@@ -2011,8 +2011,13 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
 so it holds no spread. It holds:
 - the stage and its step: a campaign with its cells; a decision record to write, with its path
   and the fields the route fixes; a step that waits, or is blocked with its reasons and ways out;
-  a terminal outcome;
-- the active arms and comparisons, the rates, the route, the closures and the problems;
+  a terminal outcome, scientific or the budget's (a technical mark is a pause and ends nothing);
+- the active arms and comparisons, the rates, the route, the closures and the problems. On the
+  route, `withhold_pf`: the simulation's reading withholds P–F, so P runs up to the validation, the
+  n record names A–F alone and the blocks hold four runs; and `reopen_pf`: candidate 2, reached by
+  A–F's rule, tests again a P closed scientifically at candidate 1 ([amendment
+  7](study3-preregistration.md#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run)).
+  At the cap each comparison reads against its floor, from the simulation record's `reading`;
 - the validation and confirmation runs that do not count for the commit they ran (`not_counted`,
   below);
 - the launch journal's resolved torn lines (`resolved_torn_lines`): each line's log, line number
@@ -2082,10 +2087,14 @@ before each command below.
     `scripts/study3_simulate.py record` and checked against its fixation and results (the J
     check, [below](#study-3-simulation)).
   - `n-c<N>`: the precommitted spread script's output, with the fields the `choice` step gives
-    (candidate, rates, comparisons, cohort), L, the spread rounded to 0.5 pp, N and the cap.
+    (candidate, rates, comparisons, cohort), L, the spread rounded to 0.5 pp, N and the cap C(N),
+    the smallest C with P[Bin(C, 0.88) ≥ N] ≥ 0.95 (the registration's amendment 7). A cap beyond
+    the reserved seeds gives a failed record: a pause for a decision (`cap_beyond_reserved_seeds`).
+    N is never cut; once an amendment extends the reserved seeds past the cap, the same record
+    reads as passed.
   - `budget-c<N>`: the researcher's decision on the extra blocks and their price, `proceed` or
     `stop`, when N is above 90 or raised for power (the step names it then).
-  - `closure-c<N>-<arm>`: written from the step (below).
+  - `closure-c<N>-<arm>`: no step names one (below, "Holds and closures").
 
   The others are written from a JSON file kept under `$RUNS_DIR` outside `study3/decisions/`; a
   refusal prints its reasons, and a second record of a kind is refused:
@@ -2143,14 +2152,8 @@ before each command below.
   excluded from every count and listed; it is a technical mark outside the qualification of its
   arm, and the step is blocked and technical, naming the run, its reason and its commit. A run
   with no published outcome is rerun by a recovery round of its own (at `--max-attempts 1`, with
-  its incident), after `check` passes. Otherwise the
-  researcher's decision is its closure record, written from the step (below, "Holds and
-  closures"): it cites the run's last end line, or its start line when the launcher never ended
-  it, with the run's reason. In A or F it ends the study with the technical feasibility report;
-  in P alone, P–F closes and A–F goes on. A published result is never rerun. For a run the
-  launcher has not ended, write the start-line closure only once the launcher has stopped for
-  that run: a closure is written once, and if the launcher later ends the run, the closure cites
-  a line that is no longer the run's last and becomes invalid.
+  its incident), after `check` passes. Otherwise the work pauses: a reissue waits for its writer
+  (below, "Holds and closures"), and a published result is never rerun.
 - **After the validation fixation.** The validation fixation pins the qualification's input
   records and, whole and by sha256, every launch log that holds a line of the candidate's
   qualification: a start of its numerical or repair campaigns, or a line naming one of their
@@ -2175,7 +2178,7 @@ before each command below.
 
   ```bash
   project-run "$SRC" python scripts/study3_campaigns.py confirmation --runs-root "$R" \
-    --candidate 1 --out "$C/c1-confirmation-1" --blocks 10400 10469
+    --candidate 1 --out "$C/c1-confirmation-1" --blocks 10400 10473
   project-run "$SRC" bash "$C/c1-confirmation-1/run.sh"   # detached
   ```
 
@@ -2186,7 +2189,7 @@ before each command below.
   guard exits 0 only when:
   - the step is candidate N's confirmation and names cells on S. A block not yet started must be
     the next one: never after the stop (every active counter at N, or the cap
-    N + max(10, ⌈0.12·N⌉) of blocks started), while a technical mark in a started block waits
+    C(N) of blocks started), while a technical mark in a started block waits
     for its way out, while a run of a started block has not ended (below), out of seed order, or
     before a started block's missing cells. A started block completes its missing cells even
     after the stop;
@@ -2297,8 +2300,8 @@ before each command below.
      and the stages started, each of which needs a claim (`--stage STAGE=reuse|rerun[:ARMS]`,
      the marks' stage a rerun of every marked arm, the qualification's all or nothing, the search
      never rerun once a validation fixation exists) with its justification (`--justification
-     STAGE=TEXT`, one line). No closure is written before the cycle; one written anyway is a
-     problem that decides nothing.
+     STAGE=TEXT`, one line). No closure is written; one written anyway is a problem that decides
+     nothing.
   2. **The fix, committed first.** The cycle needs a clean checkout of the fix whose GPU code
      differs from the code in force; a fix that leaves the GPU code unchanged is no cycle (below).
      The right to a cycle is judged on the existing chain of engineering cycles, the code in force,
@@ -2362,12 +2365,10 @@ before each command below.
      then not earlier than the cycle's `written_at`); never change the cycle's `written_at` or
      the round's `--incident-time` to get past the refusal.
   8. **After the cycle.** The cycle is spent once the candidate has a supersession record,
-     whichever path wrote it. A technical mark outside the qualification after that is unresolved
-     after the cycle: the step is blocked and technical, with the reason `unresolved_after_cycle`,
-     and offers the mark's closure record (its last `end` line, or its start line; the reason
-     `unresolved_after_cycle`; its `cycle` the candidate's supersession record by its path and
-     sha256), beside its recovery round where the launcher opens one ("Holds and closures",
-     below).
+     whichever path wrote it. A technical mark after that is a pause: the step is blocked and
+     technical, with the reason `unresolved_after_cycle`, and offers only its recovery round where
+     the launcher opens one. The writers refuse a second cycle until a writer for it exists: an
+     implementation pause, not a closure.
 - **A cycle after the validation fixation: its successor records.** A cycle moves the
   candidate's GPU code, so every write-once record of the old code goes stale: the validation
   fixation, the confirmation
@@ -2383,9 +2384,8 @@ before each command below.
   changes only when a file is tampered with (the cycle then reads invalid). The search is never
   rerun after the fixation (`search=reuse`), and the fixed rates stand: a repair the re-qualified
   runs would call for is listed (`repair_not_applied`) and never issued. P alone may leave the
-  fixed rates: once the re-qualification closes P (its technical failure unresolved after the
-  cycle, a closure record, or before the confirmation a scientific failure), the validation
-  fixation's successor leaves P out and keeps A's and F's rates; the record before it keeps P's
+  fixed rates: once the re-qualification closes P (before the confirmation, a scientific
+  failure; a technical mark closes nothing), the validation fixation's successor leaves P out and keeps A's and F's rates; the record before it keeps P's
   rates and states, and P's records stay. With the successor in force, the state reads P's
   closure again from the rates the record before it fixed (a repaired rate included), so A–F
   goes on; a successor that leaves out a P whose rates are qualified or still waiting is refused
@@ -2411,11 +2411,7 @@ before each command below.
   `confirmation_fixed` instead of moving the candidate or closing an arm; the n, budget and
   supplement successors differ from their predecessors only in their code, time, `supersedes`
   and the references to the records in force (N, the cap, the cohort and the seeds stand). A
-  technical failure of P alone (its re-qualification unresolved after the cycle, or a closure
-  record) closes P, and only P–F ends: the n record and its successor keep the frozen design,
-  P's rates and P–F as N was decided included; a validation fixation's successor written once
-  the re-qualification closed P leaves P out; and the confirmation goes on with A and F alone
-  (four runs per block).
+  technical mark, P's too, pauses the blocks and closes nothing.
   Before the confirmation has started, the registered routes apply unchanged: a fixed rate's
   re-qualification failing scientifically moves A or F to candidate 2 (at candidate 2, the
   scientific feasibility report) and closes P–F for P; a rerun validation failing its gate takes
@@ -2434,30 +2430,17 @@ before each command below.
   its runs, the former not for an arm the cycle reruns at the search. A run of another code, or
   of a dirty or unknown commit (its code cannot be told), is a technical mark with the reason
   `other_gpu_code`, before any cycle too; the scientific failures a cycle keeps are exempt. It
-  is no cycle case: its ways out are its recovery round where the launcher opens one and its
-  closure record. A code that cannot be told is most often a commit this checkout cannot place:
-  fetch that commit and read the state again before any closure is written, since a closure of
-  A or F is terminal.
-- **Holds and closures.** Four kinds of run are closed by a closure record: a run a candidate's
-  engineering cycle held (an outcome nobody could resolve, [above](#study-3-numerical-qualification)),
-  a run under another commit (above, "A run's own commit"; its uncounted reason), a search run
-  under another GPU code (the reason `other_gpu_code`, no cycle), and a technical mark outside the
-  qualification left unresolved after the candidate's engineering cycle (the reason
-  `unresolved_after_cycle`, its `cycle` the candidate's supersession record). The step names
-  each: for a held run, the closure record to write; for the others, their ways out (a recovery
-  round, where the launcher would open one, and the closure record). The researcher decides which
-  way out is taken. A closure record states the terminal technical outcome. A closure of A or F
-  ends the study with the technical feasibility report, and candidate 2 is not taken; a closure of
-  P closes P–F, and A–F goes on. It is written from the step, with exactly the fields the step
-  names; `--run-id` chooses the run when the step names closures of two runs of the arm:
-
-  ```bash
-  project-run "$SRC" python scripts/study3_summary.py closure --runs-root "$R" --candidate 1 \
-    --arm F
-  ```
-
-  The hold and the failure's evidence stay as they are, and a closed or held label is never
-  issued again.
+  is no cycle case: it pauses, its way out its recovery round where the launcher opens one. A
+  code that cannot be told is most often a commit this checkout cannot place: fetch that commit
+  and read the state again.
+- **Holds and closures** ([amendment 7](study3-preregistration.md#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run)).
+  A technical mark closes nothing. A failed engineering record (`engineering_failed`), a held run
+  (`held_run`), a run under another commit (its uncounted reason), a search run under another GPU
+  code (`other_gpu_code`) and a mark after the cycle (`unresolved_after_cycle`) each pause the
+  stage: the step is blocked and technical, names the mark and its reason, and issues no cell,
+  A's and F's included while the mark is P's. No step names a closure, so `study3_summary.py
+  closure` refuses. A closure, or a resolved hold or reissue, needs a recorded decision or its
+  repair, and its writer is written then. A closed or held label is never issued again.
 
 ## Study 3: simulation
 
@@ -2544,15 +2527,16 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
      resamples, the realized route) and writes `verification.json`. It refuses without the
      screen, with a screen of another commit than the clean HEAD, without an L (the
      verification is not due), when the n_min scan stopped at an n whose cap exceeds the 200
-     reserved seeds (no attainable n: the verification is not run, the design stop) and once
+     reserved seeds (no attainable n: the verification is not run, a pause for a decision) and once
      `verification.json` exists: it is never rerolled.
   5. `record` writes `results.json` and then the simulation record, which binds the results
      and the seed vectors by sha256. Both are refused when the results fail the J check (an
      identity listed twice, missing or not in the fixation, a pass, L, a gate or a size that
      does not recompute), and a second record is refused, as `study3_summary.py record` refuses
      it. No level passing, a verification that fails, or no attainable n (the verification not
-     run; `record` prints `verification not_run no_attainable_n`) gives a failed record: the
-     design stop (`progress`: `design_stop`, `simulation_failed`).
+     run; `record` prints `verification not_run no_attainable_n`) gives a failed record: a pause
+     for a decision (`progress`: blocked, `simulation_failed`; coverage is not waived, N is never
+     cut).
 - **The files.** Under `$RUNS_DIR/study3/simulation/` (reserved, no run directory): the parts
   (`parts/<phase>/<scenario>/<first>.json`, 250 studies each, the phase `gates`, `screen`,
   `scan-<n>` or `verification`), `screen.json`, `verification.json` and `results.json`. Every

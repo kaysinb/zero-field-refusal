@@ -1,12 +1,11 @@
 """Study 3's engineering cycle for a technical mark outside the numerical qualification.
 
-docs/study3-preregistration.md: "Failure routes" (one engineering cycle per candidate: diagnosis,
-a fix, re-qualification of the affected cases and reruns of the affected runs; a mark still
-unresolved after it routes to the technical feasibility report for A or F, and closes P–F for P)
-and "Voiding and supersession" (a superseded record stays, listed with its reason; a scientific
-failure keeps counting). A search, validation or confirmation run that the readers count as a
-technical mark opens the cycle; analysis code records it, and ``scripts/qualify.py``'s own
-journal repair and re-qualification carry it out, unchanged.
+docs/study3-preregistration.md: "Failure routes" (one engineering cycle per candidate: diagnosis, a
+fix, re-qualification of the affected cases and reruns of the affected runs; a mark after it is a
+pause, amendment 7) and "Voiding and supersession" (a superseded record stays, listed with its
+reason; a scientific failure keeps counting). A search, validation or confirmation run that the
+readers count as a technical mark opens the cycle; analysis code records it, and
+``scripts/qualify.py``'s own journal repair and re-qualification carry it out, unchanged.
 
 - ``STAGES``, ``STAGE_STEPS`` and ``ACTIONS``: the stages a cycle claims (the qualification's
   steps are its numerical runs and its repair), and the two claims a stage takes.

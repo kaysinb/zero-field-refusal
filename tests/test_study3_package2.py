@@ -1043,7 +1043,7 @@ class Route(CampaignWorld):
         """Candidate 1 from its engineering campaign to its confirmation's fourth block: every
         campaign kind, every summary command; the search's two rounds, a repair, the staged
         fixation and two versions records, N = 99 with its budget record, a P run under another
-        commit (a dirty checkout) that P's closure record closes."""
+        commit (a dirty checkout) that pauses the confirmation."""
         self.build_to("done")
 
     BUILD = ("fixation", "validation", "choice", "supplement", "confirming", "done")
@@ -1145,8 +1145,8 @@ class Route(CampaignWorld):
         self.launch(self.blocks[10400])
 
     def finish(self) -> None:
-        """The second and third blocks, a P run of the third under a dirty checkout closed by
-        P's closure record, the fourth block with A and F alone, and the prep script."""
+        """The second and third blocks, a P run of the third under a dirty checkout: a pause, no
+        closure and no block of A and F alone; and the prep script."""
         root = self.root
         assert self.guarded(10401, self.blocks[10401]).code == 0
         self.launch(self.blocks[10401])
@@ -1157,20 +1157,12 @@ class Route(CampaignWorld):
         assert self.guarded(10402, self.blocks[10402]).code != 0  # the mark holds it
         self.refused("campaigns", "confirmation", "--runs-root", root, "--candidate", 1, "--out",
                      self.out / "blocked")  # fmt: skip
-        self.refused("summary", "closure", "--runs-root", root, "--candidate", 1, "--arm", "A")
-        self.ok("summary", "closure", "--runs-root", root, "--candidate", 1, "--arm", "P")
-        # P closed: the next block holds A and F
-        out = self.campaign("confirmation")
-        (block,) = out.glob("*.yaml")
-        assert campaign_of(block)["cells"][0]["seeds"] == [10403]
-        assert len(campaign_of(block)["cells"]) == 4
-        self.blocks[10403] = block
-        assert self.guarded(10403, block).code == 0
-        self.launch(block)
+        for arm in ("A", "P"):
+            self.refused("summary", "closure", "--runs-root", root, "--candidate", 1, "--arm", arm)
         assert self.ok("summary", "progress", "--runs-root", root).out
         state = self.state()
-        assert state["problems"] == [] and state["confirmation"]["started"] == [10400, 10401, 10402,
-                                                                              10403]  # fmt: skip
+        assert state["problems"] == [] and len(state["not_counted"]) == 1
+        assert state["active"]["comparisons"] == ["A-F", "P-F"]
         self.ok("campaigns", "prep", "--seeds", 10100, 10300, "--commit", self.code["commit"],
                 "--out", self.out / "prep.sh")  # fmt: skip
 
@@ -1232,9 +1224,8 @@ def test_the_route_runs_every_campaign_kind_and_summary_command_on_files(route) 
     assert {kind for script, kind in done if script == "summary"} == {
         "progress", "guard", "check", "versions", "fixation validation",
         "fixation confirmation", "record engineering", "record simulation", "record n-c1",
-        "record budget-c1", "closure"}  # fmt: skip
-    assert route.guards == [(10400, 0), (10401, 1), (10401, 0), (10402, 0), (10402, 1),
-                            (10403, 0)]  # fmt: skip
+        "record budget-c1"}  # fmt: skip
+    assert route.guards == [(10400, 0), (10401, 1), (10401, 0), (10402, 0), (10402, 1)]
     # the guard's state and versions check were the real ones, on the checkout's GPU code
     assert {code for _, code in route.readings} == {route.code["gpu_code_sha256"]}
     # the sentinel is in every sealed file and every judge output of the world
@@ -1327,9 +1318,9 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
         restart = f"{added['case-restart record']}: a case-restart record that {SEALED_WHY}"
         cycle = f"qualification/c1/supersede-1.json: a supersession record that {SEALED_WHY}"
         assert restart in state["problems"] and cycle in state["problems"]
-        assert route.guarded(10403, route.blocks[10403]).code != 0
+        assert route.guarded(10402, route.blocks[10402]).code != 0
         check = route.refused("summary", "check", "--runs-root", root, "--campaign",
-                              route.blocks[10403])  # fmt: skip
+                              route.blocks[10402])  # fmt: skip
         assert f"launch/linked.jsonl: a launch log that {SEALED_WHY}" in check.err
         for kind in KINDS:
             error = route.refused("campaigns", kind, "--runs-root", root, "--candidate", 1,

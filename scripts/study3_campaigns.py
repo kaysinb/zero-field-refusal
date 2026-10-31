@@ -108,7 +108,7 @@ an engineering cycle reissues (above) runs that label's recovery round after its
 of the label's plain launch, and then the block's launch. It never runs two
 blocks at once. Its blocks: the step's (the next block, or the cells a started block
 still lacks: those are completed first, alone); with --blocks FIRST LAST (seeds) or --seeds, the
-step's next block and those after it in seed order up to the cap N + max(10, ⌈0.12·N⌉), each
+step's next block and those after it in seed order up to the cap C(N), each
 whole, every one started only when its guard allows it. The driver sources the Pod's
 environment (``/etc/rp_environment``, ``/root/zfr-env.sh``) where those files exist, as the other
 Pod drivers do, pins ``RUNS_DIR`` to the runs directory the guard reads, so that the launcher

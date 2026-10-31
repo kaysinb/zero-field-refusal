@@ -21,8 +21,8 @@ records; the state machine consumes only what this module accepts.
   has started (a start of one of its blocks in the launch journal).
 - ``immutable``: a record whose sha256 differs from the one a started campaign's header named.
 - ``write_decision``: validates and writes a record atomically, once; a second version is refused.
-- ``cap_of``, ``budget_reason`` and ``budget_needed``: the cap N + max(10, ⌈0.12·N⌉), and why (if
-  at all) N asks for a budget decision.
+- ``cap_of``, ``cap_attainment``, ``budget_reason`` and ``budget_needed``: the cap C(N) (amendment
+  7, "The cap"), its attainment, and why (if at all) N asks for a budget decision.
 - ``sample_size`` (with ``upper_sd`` and ``planning_power``): the N rule of "Sample size from
   validation", the smallest N ≥ 60 with Φ(2·√N/SD_up − z_L) ≥ 0.85. It is the single
   implementation of the rule: the spread script and the simulation both call it, and neither
@@ -101,7 +101,7 @@ on is a response or an observation, and this module opens none.
   is recorded (``power_short``, ``n_min``) and N and the cap are raised, with a decision on the
   money (see ``n-c<N>`` and ``budget-c<N>``), unless no N is attainable: when ``n_min``'s cap
   exceeds the 200 reserved confirmation seeds (the scan stopped there), the verification is not
-  run, its tests are not due and it does not pass, so the record fails (the design stop). A
+  run, its tests are not due and it does not pass, so the record fails (a pause for a decision). A
   failed record may have a null L or a null size.
 - ``n-c<N>``: ``candidate`` (N of the kind), ``rates`` (per arm A, F and, when P–F is active, P:
   ``lr_l`` and ``lr_u``), ``active`` (``["A-F"]`` or ``["A-F", "P-F"]``), ``level`` (the
@@ -111,10 +111,10 @@ on is a response or an observation, and this module opens none.
   rounded to 0.5 pp, and nothing else about it), ``simulation`` (the evidence of the simulation
   record itself, at ``study3/decisions/simulation.json`` under the runs directory, so the n
   record rests on the exact simulation it follows), ``N`` (an integer, at least 60, and at least
-  the simulation record's ``n_min`` when its power is short) and ``cap`` (N + max(10,
-  ⌈0.12·N⌉)). N is never cut: a cap beyond the 200 reserved confirmation seeds (10400–10599) is
-  recorded, with state ``failed`` (the confirmation cannot start within the registered seeds); the
-  state is ``passed`` otherwise.
+  the simulation record's ``n_min`` when its power is short) and ``cap`` (``cap_of``). N is never
+  cut: a cap beyond the 200 reserved confirmation seeds (10400–10599) is recorded, with state
+  ``failed`` (the confirmation cannot start within the registered seeds, a pause for a decision);
+  the state is ``passed`` otherwise.
 - ``budget-c<N>``: ``candidate``, ``N`` and ``cap`` it answers (those of the ``n-c<N>`` record),
   ``decision`` (``proceed``, with state ``passed``, or ``stop``, with state ``failed``) and
   ``answers``, the evidence of the n record itself, a link of the candidate's n chain
@@ -137,9 +137,9 @@ on is a response or an observation, and this module opens none.
   ``launch/<log>.jsonl`` under the runs directory, ``line``, its number from 1, and
   ``line_sha256``, the sha256 of the line's UTF-8 text: the line's own bytes, which stay when the
   launcher appends to the log, as the log's sha256 does not), ``cycle``, ``reason`` and
-  ``decision``: ``technical_feasibility_report`` for A or F (the study ends with the technical
-  feasibility report, and candidate 2 is not taken), ``close_pf`` for P (P–F closes, and A–F goes
-  on); any other pairing is refused. The state is ``failed``: a terminal technical outcome.
+  ``decision``: ``technical_feasibility_report`` for A or F, ``close_pf`` for P; any other pairing
+  is refused. The state is ``failed``. The state machine reads no closure and no step names one
+  (amendment 7, "Technical causes"): this schema stays for the record a decision will need.
   - ``kind: "held"``: a ``held`` line of the launch journal naming the run, whose reasons state
     ``reason`` (an id of ``HOLD_REASONS``: never the evidence's free text); ``cycle`` is the
     evidence of the candidate's supersession record (``qualification/c<N>/supersede-<n>.json``
@@ -287,6 +287,8 @@ import re
 import subprocess
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
+from fractions import Fraction
+from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
@@ -342,7 +344,9 @@ PLANNING_POWER = 0.85  # power(N) ≥ 0.85
 PLANNING_DIFFERENCE_PP = 2.0  # |Δ| = 2 pp
 SPREAD_PERCENTILE = 0.20  # χ²₀.₂₀,ₘ₋₁: the upper 80 % bound of the SD
 BUDGET_ABOVE = 90  # N above this needs the researcher's budget decision
-CAP_FLOOR, CAP_SHARE_PERCENT = 10, 12
+# Amendment 7, "The cap": C(N) is the smallest C with P[Bin(C, CAP_SUPPORT) ≥ N] ≥ CAP_ATTAINMENT
+CAP_SUPPORT = Fraction(88, 100)
+CAP_ATTAINMENT = Fraction(95, 100)
 ACTIVE = (["A-F"], ["A-F", "P-F"])
 SPREAD_STEP_PP = 0.5
 CHECKS = ("dry_run", "bridge", "theta0_utility", "stage0")
@@ -654,9 +658,22 @@ def serialized(record: Mapping[str, Any]) -> bytes:
     return (json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
 
 
+@cache
+def cap_attainment(cap: int, n: int) -> Fraction:
+    """P[Bin(cap, CAP_SUPPORT) ≥ n], exactly: per comparison at that support, no guarantee under
+    an unknown support."""
+    return sum((math.comb(cap, k) * CAP_SUPPORT**k * (1 - CAP_SUPPORT) ** (cap - k)
+                for k in range(n, cap + 1)), Fraction(0))  # fmt: skip
+
+
+@cache
 def cap_of(n: int) -> int:
-    """N + max(10, ⌈0.12·N⌉), in whole numbers."""
-    return n + max(CAP_FLOOR, -(-CAP_SHARE_PERCENT * n // 100))
+    """C(N), the smallest C with P[Bin(C, CAP_SUPPORT) ≥ N] ≥ CAP_ATTAINMENT (amendment 7, "The
+    cap"), in blocks."""
+    cap = int(n)
+    while cap_attainment(cap, n) < CAP_ATTAINMENT:
+        cap += 1
+    return cap
 
 
 def upper_sd(sd_pp: float, m: int) -> float:
@@ -759,6 +776,8 @@ def read_decision(
     """The record ``kind`` if it is present and valid, and its problems. Absent (no file, and no
     link in its place): (None, []); a link that cannot be resolved (a link loop) is refused
     unopened, a problem. With any problem the record is None: nothing downstream may consume it.
+    An n record that failed on the reserve reads as passed once its cap fits the reserved seeds
+    (amendment 7, "The reserve": an amendment extends ``SEEDS``, and the file stays as it is).
     ``repo``: the checkout that evidence with ``"root": "repo"`` is relative to."""
     path = decision_path(runs_root, kind)
     if not (path.exists() or path.is_symlink()):  # a link that leads nowhere is no absence
@@ -770,7 +789,13 @@ def read_decision(
     except (OSError, ValueError) as exc:
         return None, [f"{path}: unreadable ({type(exc).__name__})"]
     problems = _problems(Path(runs_root), kind, record, Path(repo))
-    return (None, [f"{path}: {p}" for p in problems]) if problems else (record, [])
+    if problems:
+        return None, [f"{path}: {p}" for p in problems]
+    family, candidate = kind_of(kind)
+    if (family == "n" and record["state"] == "failed"
+            and record["cap"] <= len(SEEDS["confirmation"][candidate])):  # fmt: skip
+        record = {**record, "state": "passed"}  # an amendment added seeds since (``_cap_state``)
+    return record, []
 
 
 def decisions(
@@ -1492,11 +1517,11 @@ class _Schema:
         if self.integer("N", r["N"], MIN_N):
             cap = cap_of(r["N"])
             if r["cap"] != cap or type(r["cap"]) is not int:
-                self.add("cap", f"is {r['cap']!r}, not N + max({CAP_FLOOR}, ⌈0.12·N⌉) = {cap}")
+                self.add("cap", f"is {r['cap']!r}, not C(N) = {cap}")
             else:
                 self._cap_state(r["state"], cap)
         else:
-            self.integer("cap", r["cap"], MIN_N + CAP_FLOOR)
+            self.integer("cap", r["cap"], cap_of(MIN_N))
         self._supersedes(r)
 
     def _supersedes(self, r: dict[str, Any]) -> None:
@@ -1528,17 +1553,14 @@ class _Schema:
                         "/".join((*DIRECTORY, f"cycle-c{self.candidate}.json")))  # fmt: skip
 
     def _cap_state(self, state: Any, cap: int) -> None:
-        """The state is ``passed`` when the cap fits the reserved confirmation seeds and
-        ``failed`` when it does not: the confirmation cannot start within them, and N is never
-        cut."""
+        """A cap beyond the reserved confirmation seeds cannot pass: the confirmation cannot start
+        within them, and N is never cut. A failed record whose cap fits them was written before an
+        amendment extended them (``read_decision``)."""
         reserved = len(SEEDS["confirmation"][self.candidate])
-        expected = "passed" if cap <= reserved else "failed"
-        if state in STATES and state != expected:
-            self.add("state", f"is {state!r}, but the cap {cap} "
-                     f"{'fits' if cap <= reserved else 'exceeds'} the {reserved} confirmation "
-                     f"seeds reserved, so it is {expected!r}"
-                     + ("" if cap <= reserved else ": the confirmation cannot start within the "
-                        "registered seeds, and N is not cut"))  # fmt: skip
+        if state == "passed" and cap > reserved:
+            self.add("state", f"is 'passed', but the cap {cap} exceeds the {reserved} confirmation "
+                     "seeds reserved, so it is 'failed': the confirmation cannot start within the "
+                     "registered seeds, and N is not cut")  # fmt: skip
 
     def _exact_ref(self, where: str, value: Any, path: str) -> None:
         """Evidence of the record at ``path`` under the runs directory, and no other file."""
@@ -1597,7 +1619,7 @@ class _Schema:
         if r["candidate"] != self.candidate or type(r["candidate"]) is not int:
             self.add("candidate", f"is {r['candidate']!r}, not {self.candidate}")
         self.integer("N", r["N"], MIN_N)
-        self.integer("cap", r["cap"], MIN_N + CAP_FLOOR)
+        self.integer("cap", r["cap"], cap_of(MIN_N))
         decision = r["decision"]
         if decision not in DECISIONS:
             self.add("decision", f"is {decision!r}, not one of {list(DECISIONS)}")
@@ -2255,7 +2277,7 @@ def coverage_decisions(
     - L, the first level whose tests passed, and so which verification tests are due: all of
       them with an L, none without (``selected_calibration_level`` stands for L), and none when
       ``n_min``'s cap exceeds the 200 reserved seeds (the scan found no attainable n: the
-      verification is not run and does not pass, the design stop);
+      verification is not run and does not pass, a pause for a decision);
     - the ``verification`` (its tests, due and passed, at L), the ``gates`` (from their stored
       counts: the pass rates, the powers as the smallest correct/M over the power scenarios, a
       scenario short of M counting its missing studies as not detecting, beside ``power_af`` the
@@ -2309,7 +2331,7 @@ def coverage_decisions(
     unattainable = selected is not None and n_min is not None and cap_of(n_min) > reserved
     why = ("no level passed" if selected is None else
            f"n_min {n_min} has the cap {cap_of(n_min)}, beyond the {reserved} reserved seeds "
-           "(no attainable n, the design stop)" if unattainable else None)  # fmt: skip
+           "(no attainable n, a pause for a decision)" if unattainable else None)  # fmt: skip
     passed = selected is not None and not unattainable
     for identity in verification:
         if why is not None:
