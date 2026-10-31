@@ -2000,11 +2000,11 @@ def simulate_study(
     candidate alone, N from the rule, P–F computed as if active: M14, M16) or ``"procedure"``
     (the realized route: candidate 1, then 2, then the scientific feasibility report; N raised
     to ``setup.n_min``; P–F only where the final candidate's gate passed: amendment 7, "P's
-    closure"). ``n_floor``: N is at least this (the n_min scan). ``validation_only``: the search, repair
-    and validation of the first candidate alone (the gates and the calibration). ``candidate``:
-    the first candidate (the scenario's by default). ``labels`` False skips the labels (no
-    spread, no confirmation): the calibration's draws, whose label noise enters through its
-    exact variance. ``power_reading``: of the confirmation only A–F's cap interval, reading and
+    closure"). ``n_floor``: N is at least this (the n_min scan). ``validation_only``: the search,
+    repair and validation of the first candidate alone (the gates and the calibration).
+    ``candidate``: the first candidate (the scenario's by default). ``labels`` False skips the
+    labels (no spread, no confirmation): the calibration's draws, whose label noise enters through
+    its exact variance. ``power_reading``: of the confirmation only A–F's cap interval, reading and
     final direction (``power_report``): no interval at the N points, no truth, no utility claim
     (the stop, N and every draw unchanged). ``base``: an integer, or a calibration's stream
     (``calibration_stream``)."""

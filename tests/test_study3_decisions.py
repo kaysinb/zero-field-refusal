@@ -350,7 +350,7 @@ class World:
                        "run_ids": [f"run-{s}-{k}" for s in seeds for k in range(4)]},
             "spread": {"script": self.ref("study3_spread.py", root="repo"),
                        "output": self.ref("spread-output.json")},
-            "spread_pp": 4.5, "N": N, "cap": CAPS.get(N),
+            "spread_pp": 4.5, "N": N, "cap": cap_of(N),
             "simulation": {"path": "study3/decisions/simulation.json",
                            "sha256": self.digest("simulation"), "root": "runs"},
         }  # fmt: skip
@@ -359,7 +359,7 @@ class World:
     def budget(self, candidate: int = 1, N: int = 99, **over) -> dict:
         record = {
             "kind": f"budget-c{candidate}", "state": "passed", "written_at": WHEN, "code": CODE,
-            "candidate": candidate, "N": N, "cap": CAPS.get(N), "decision": "proceed",
+            "candidate": candidate, "N": N, "cap": cap_of(N), "decision": "proceed",
             "answers": {"path": f"study3/decisions/n-c{candidate}.json",
                         "sha256": self.digest(f"n-c{candidate}")},
         }  # fmt: skip
@@ -435,6 +435,9 @@ class World:
 # the cap N + max(10, ⌈0.12·N⌉) by hand
 CAPS = {60: 70, 75: 85, 83: 93, 84: 95, 90: 101, 99: 111, 100: 112, 120: 135, 178: 200,
         179: 201}  # fmt: skip
+RESERVED = len(SEEDS["confirmation"][1])
+WITHIN = max(n for n in range(MIN_N, 2 * RESERVED) if cap_of(n) <= RESERVED)  # the last N within
+BEYOND = WITHIN + 1  # the first N whose cap exceeds the reserved confirmation seeds
 
 
 def power_gate(value: float, n_min: int | None = None) -> dict:
@@ -685,7 +688,7 @@ def test_the_n_record_is_accepted_with_and_without_p(world) -> None:
     world.write("simulation", world.simulation())
     world.write("n-c1", world.n(1, 75))
     record, problems = world.read("n-c1")
-    assert problems == [] and record["N"] == 75 and record["cap"] == 85
+    assert problems == [] and record["N"] == 75 and record["cap"] == cap_of(75)
     only = world.n(2, 60, active=["A-F"])
     del only["rates"]["P"]
     world.write("n-c2", only)
@@ -696,7 +699,7 @@ def test_the_n_record_is_accepted_with_and_without_p(world) -> None:
 def test_the_budget_record_is_accepted_for_a_larger_n(world) -> None:
     world.chain(N=99, through="budget")
     record, problems = world.read("budget-c1")
-    assert problems == [] and record["decision"] == "proceed" and record["cap"] == 111
+    assert problems == [] and record["decision"] == "proceed" and record["cap"] == cap_of(99)
 
 
 def test_a_stop_is_a_failed_budget_record(world) -> None:
@@ -899,32 +902,33 @@ def test_a_cap_that_is_not_n_plus_the_larger_of_ten_and_twelve_percent_is_refuse
 def test_the_registered_caps_are_accepted(world, n) -> None:
     world.chain(through="simulation")
     world.write("n-c1", world.n(N=n))
-    assert world.read("n-c1")[0]["cap"] == CAPS[n]
+    assert world.read("n-c1")[0]["cap"] == cap_of(n)
 
 
 def test_a_cap_within_the_reserved_confirmation_seeds_is_a_passed_record(world) -> None:
     world.chain(through="simulation")
-    # N = 178 -> cap 200: the last reserved seed is 10599, 200 seeds from 10400
-    world.write("n-c1", world.n(N=178))
+    # the last N within: the last reserved seed is 10599, 200 seeds from 10400
+    world.write("n-c1", world.n(N=WITHIN))
     record, problems = world.read("n-c1")
-    assert problems == [] and record["cap"] == 200 and record["state"] == "passed"
+    assert problems == [] and record["cap"] == cap_of(WITHIN) <= 200 and record["state"] == "passed"
     decision_path(world.runs, "n-c1").unlink()
-    refused(world, "n-c1", world.n(N=178, state="failed"), "state", "fits", "200")
+    refused(world, "n-c1", world.n(N=WITHIN, state="failed"), "state", "fits", "200")
 
 
 def test_a_cap_beyond_the_reserved_seeds_is_recorded_as_a_failed_record(world) -> None:
     world.chain(through="simulation")
-    # N = 179 -> cap 201: the confirmation cannot start within 10400-10599, and N is not cut
-    refused(world, "n-c1", world.n(N=179), "state", "exceeds", "201", "N is not cut")
-    world.write("n-c1", world.n(N=179, state="failed"))
+    # the first N beyond: the confirmation cannot start within 10400-10599, and N is not cut
+    refused(world, "n-c1", world.n(N=BEYOND), "state", "exceeds", str(cap_of(BEYOND)),
+            "N is not cut")  # fmt: skip
+    world.write("n-c1", world.n(N=BEYOND, state="failed"))
     record, problems = world.read("n-c1")
-    assert problems == [] and record["N"] == 179 and record["cap"] == 201
+    assert problems == [] and record["N"] == BEYOND and record["cap"] == cap_of(BEYOND)
     assert record["state"] == "failed"
 
 
 def test_a_failed_n_record_needs_no_budget_entry(world) -> None:
     world.chain(through="simulation")
-    world.write("n-c1", world.n(N=179, state="failed"))
+    world.write("n-c1", world.n(N=BEYOND, state="failed"))
     world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
     found = decisions(world.runs, 1, repo=world.repo)
     assert found["n-c1"]["state"] == "failed" and found["n-c1"]["problems"] == []
@@ -1129,10 +1133,10 @@ def test_a_power_shortfall_is_recorded_and_the_record_still_passes(world) -> Non
 
 
 def test_a_power_short_beyond_the_reserved_seeds_skips_the_verification(world) -> None:
-    """n_min 179, its cap 201 beyond the 200 reserved seeds: no N is attainable, so the
-    verification is not run (its tests not due) and does not pass, and the record fails (the
-    design stop); due verification rows, or a passed verification, are refused."""
-    gates = gates_with(power_af=power_gate(0.74, 179))
+    """n_min with its cap beyond the 200 reserved seeds: no N is attainable, so the verification
+    is not run (its tests not due) and does not pass, and the record fails; due verification rows,
+    or a passed verification, are refused."""
+    gates = gates_with(power_af=power_gate(0.74, BEYOND))
     sim_refused(world, "no attainable n", "not due", gates=gates, state="failed",
                 verification=verified(0.975, False))  # fmt: skip
     sim_refused(world, "verification.passed", gates=gates, results="verification_not_due")
@@ -1141,7 +1145,7 @@ def test_a_power_short_beyond_the_reserved_seeds_skips_the_verification(world) -
                                                results="verification_not_due"))  # fmt: skip
     record, problems = world.read("simulation")
     assert problems == [] and record["state"] == "failed" and record["level"] == 0.975
-    assert record["gates"]["power_af"]["n_min"] == 179
+    assert record["gates"]["power_af"]["n_min"] == BEYOND
 
 
 @pytest.mark.parametrize(
