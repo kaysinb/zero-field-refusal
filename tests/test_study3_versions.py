@@ -687,6 +687,16 @@ def test_an_n_or_cap_other_than_the_n_records_is_refused(study) -> None:
         study.put(CONFIRMATION_C1, record, commit=False)
 
 
+def test_the_supplement_takes_an_n_record_of_a_f_alone_while_the_fixation_fixes_p(study) -> None:
+    """A P–F the simulation's reading withholds (amendment 7): P ran up to the validation, so the
+    fixation fixes it; the n record names A–F alone, and the supplement stands on it."""
+    study.validated()
+    rates = {arm: RATES[arm] for arm in ("A", "F")}
+    n = study.records.n(1, 75, code=study.code, active=["A-F"], rates=rates)
+    study.records.write("n-c1", n)
+    assert study.supplement()["N"] == 75
+
+
 def test_an_n_record_that_did_not_pass_refuses_the_supplement(study) -> None:
     """A cap beyond the 200 reserved confirmation seeds: the n record failed, and the
     confirmation cannot start."""
