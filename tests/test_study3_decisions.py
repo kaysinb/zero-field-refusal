@@ -1888,8 +1888,8 @@ def test_a_budget_record_answers_the_n_and_cap_of_its_n_record(world) -> None:
         refused(world, "budget-c1", world.budget(**over), *words)
 
     budget_refused("N 100", "99", N=100)  # another N
-    budget_refused("cap 112", "111", N=99, cap=112)
-    budget_refused("cap", N=99, cap=110)
+    budget_refused(f"cap {cap_of(99) + 1}", str(cap_of(99)), N=99, cap=cap_of(99) + 1)
+    budget_refused("cap", N=99, cap=cap_of(99) - 1)
     budget_refused("N", N=59, cap=69)
     budget_refused("candidate", candidate=2)
     budget_refused("decision", decision="maybe")
@@ -1918,7 +1918,7 @@ SHORT = gates_with(power_af=power_gate(0.74, 84))  # the power is short; N of 84
 def test_an_n_record_below_n_min_is_refused_and_one_at_or_above_it_is_accepted(world) -> None:
     world.write("simulation", world.simulation(gates=SHORT))
     refused(world, "n-c1", world.n(N=75), "N is 75", "n_min 84")
-    refused(world, "n-c1", world.n(N=83, cap=93), "N is 83", "n_min 84")
+    refused(world, "n-c1", world.n(N=83), "N is 83", "n_min 84")
     refused(world, "n-c1", world.n(N=60), "n_min 84")
     world.write("n-c1", world.n(N=84, cap=cap_of(84)))
     decision_path(world.runs, "n-c1").unlink()
@@ -3585,7 +3585,7 @@ def test_after_the_confirmation_started_an_n_successor_changes_only_its_code(wor
                    supersedes=supersedes(world, "n-c1"))  # fmt: skip
     cohort = same["cohort"]
     reordered = {**cohort, "run_ids": list(reversed(cohort["run_ids"]))}
-    for change in ({"N": 83, "cap": 93}, {"spread_pp": 5.0}, {"cohort": reordered}):
+    for change in ({"N": 83, "cap": cap_of(83)}, {"spread_pp": 5.0}, {"cohort": reordered}):
         with pytest.raises(DecisionRefused, match="prospective amendment"):
             world.write("n-c1-2", {**same, **change})
     assert world.write("n-c1-2", same).name == "n-c1-2.json"
