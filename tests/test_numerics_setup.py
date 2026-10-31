@@ -1,6 +1,7 @@
 """The one numerics setup of every entry point (docs/study3-preregistration.md, "Numerical
 qualification" → "The bridge's conditions") and the stage-0 record's fingerprint of it."""
 
+import json
 import runpy
 import types
 from pathlib import Path
@@ -53,9 +54,17 @@ def test_configure_numerics_returns_what_it_set() -> None:
     assert out == {"tf32_matmul": False, "tf32_cudnn": False, "matmul_precision": "highest",
                    "deterministic": False, "cublas_workspace_config": None,
                    "memory_limit_gb": None, "memory_fraction": None,
-                   "device_index": None}  # fmt: skip
+                   "device_index": None, "v0_sdpa_backends": ["MATH"]}  # fmt: skip
     assert torch.get_float32_matmul_precision() == "highest"
     assert not torch.are_deterministic_algorithms_enabled()
+
+
+def test_the_numerics_record_carries_the_v0_backends() -> None:
+    """As a list: the bridge compares this process's record with the one a launcher run's
+    ``meta.json`` reads back."""
+    out = configure_numerics(config(), "cpu")
+    assert out["v0_sdpa_backends"] == ["MATH"]
+    assert json.loads(json.dumps(out)) == out
 
 
 def test_determinism_sets_the_cublas_workspace_and_is_read_as_given(monkeypatch) -> None:
