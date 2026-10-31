@@ -28,6 +28,7 @@ from zero_field_refusal.analysis.study3_decisions import (
     LEVELS,
     MIN_N,
     NOT_ATTAINABLE,
+    OPTIONAL,
     PLANNING_DIFFERENCE_PP,
     PLANNING_POWER,
     POWER_REPORT,
@@ -107,6 +108,16 @@ def fixed_calibration(candidate: int) -> sim.Calibration:
                            sigma_pf=0.03, offset_a=0.02, offset_p=0.02, attained_af_pp=3.5,
                            attained_pf_pp=3.5, attained_delta_pp={"A-F": (2.0, 0.01),
                                                                   "P-F": (2.0, 0.01)})  # fmt: skip
+
+
+def reading_at(level: float) -> dict:
+    """The simulation record's ``reading`` at ``level``: both comparisons, the registered floors."""
+    return {"level": level, "pf_confirmatory": True, "floors": {"A-F": 36, "P-F": 36}}
+
+
+# The simulation record's closed schema takes ``reading`` once its writer and reader carry it; here
+# the fixtures that read it, until then
+OPTIONAL.setdefault("simulation", ("reading",))
 
 
 class World:
@@ -319,6 +330,7 @@ class World:
             "inputs": {"seed_vectors": self.seed_vectors(), "design": self.ref("design.json")},
             "gates": default_gates(), "coverage": rows, "level": level, "validation_blocks": 28,
             "verification": verified(level, level is not None),
+            **({} if level is None else {"reading": reading_at(level)}),
         }  # fmt: skip
         record.update(over)
         ran = self.first if how == "after_the_results" else None

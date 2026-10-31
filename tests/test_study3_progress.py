@@ -140,12 +140,16 @@ class Study:
             self.digests["engineering"] = ENGINEERING_SHA
         return record
 
-    def simulation(self, blocks=28, *, state="passed", power_short=False, n_min=None) -> None:
+    def simulation(self, blocks=28, *, state="passed", power_short=False, n_min=None,
+                   pf_confirmatory=True, floors=None) -> None:  # fmt: skip
         power = {"value": 0.7 if power_short else 0.86, "requirement": 0.80,
                  "passed": not power_short, "power_short": power_short,
                  "n_min": n_min if power_short else None}  # fmt: skip
+        floors = floors or {"A-F": 36, "P-F": 36 if pf_confirmatory else None}
         self.record("simulation", state, level=0.975, validation_blocks=blocks,
-                    gates={"power_af": power})  # fmt: skip
+                    gates={"power_af": power},
+                    reading={"level": 0.975, "pf_confirmatory": pf_confirmatory,
+                             "floors": floors})  # fmt: skip
 
     def ready(self, blocks=28, **simulation) -> None:
         """Engineering and the simulation passed."""
@@ -776,6 +780,78 @@ def test_p_failing_at_the_search_closes_p_for_the_rest_of_the_study() -> None:
     assert (result["stage"], result["candidate"]) == ("search", 2)
     assert {c[0] for c in result["step"]["cells"]} == {"A", "F"}
     assert result["active"]["comparisons"] == ["A-F"]
+
+
+# ------------------------------------------------------------------ the simulation's reading
+
+
+def withheld(**kw) -> Study:
+    """Engineering and a simulation record whose reading withholds P–F."""
+    study = Study()
+    study.record("engineering")
+    study.simulation(pf_confirmatory=False, **kw)
+    return study
+
+
+def test_a_withheld_p_runs_before_the_confirmation_and_not_in_it() -> None:
+    """Amendment 7: the stages before the confirmation keep P as registered; the n record names
+    A–F alone, each block holds four runs, and P's counter does not hold the stop. No closure."""
+    study = withheld()
+    assert {c[0] for c in study.advance()["step"]["cells"]} == set(ARMS)  # the search keeps P
+    study.search()
+    assert {c[0] for c in study.advance()["step"]["cells"]} == set(ARMS)  # the numerical
+    study.numerical()
+    result = study.advance()
+    assert (result["stage"], len(result["step"]["cells"])) == ("validation", 6 * 28)
+    study.validation()
+    result = study.advance()
+    assert result["stage"] == "choice"
+    assert (result["step"]["fields"]["active"], set(result["step"]["fields"]["rates"])) == (
+        ["A-F"], {"A", "F"})  # fmt: skip
+    assert set(result["validation"]["gates"]) == {"AF", "PF"}  # P–F's gate read as registered
+    assert [e["event"] for e in result["route"]].count("close_pf") == 0
+    assert [e["event"] for e in result["route"]].count("withhold_pf") == 1
+    study.n(N=60, arms=("A", "F"))
+    result = study.advance()
+    assert cells(result["step"]) == {(arm, START[arm][label], 10400) for arm in ("A", "F")
+                                     for label in LABELS}  # fmt: skip
+    assert result["confirmation"]["active"] == ["A-F"]
+    study.confirmation(arms=("A", "F"), count=60)
+    result = study.advance()
+    assert (result["stage"], result["reason"]) == ("done", "n_reached")
+    assert result["readings"] == {"A-F": "confirmatory"}
+
+
+def test_a_withheld_p_fails_its_gates_as_registered_before_the_confirmation() -> None:
+    """A scientific failure of P still closes P before the confirmation: withheld is no pass."""
+    study = withheld()
+    study.search(special={("P", "u", 10102): {"state": "scientific"}})
+    result = study.advance()
+    assert result["active"]["arms"] == ["A", "F"]
+    assert [e["event"] for e in result["route"]] == ["close_pf"]
+
+
+@pytest.mark.parametrize("given", [
+    None,
+    {"level": 0.975},
+    {"level": 0.975, "pf_confirmatory": 1, "floors": {"A-F": 36, "P-F": 36}},
+    {"level": "0.975", "pf_confirmatory": True, "floors": {"A-F": 36, "P-F": 36}},
+    {"level": 0.975, "pf_confirmatory": True, "floors": {"A-F": 36}},
+    {"level": 0.975, "pf_confirmatory": True, "floors": {"A-F": 36, "P-F": None}},
+    {"level": 0.975, "pf_confirmatory": False, "floors": {"A-F": 36.0, "P-F": None}},
+    {"level": 0.975, "pf_confirmatory": True, "floors": {"A-F": 36, "P-F": 36}, "more": 1},
+])  # fmt: skip
+def test_a_simulation_reading_of_another_form_blocks_at_the_simulation(given) -> None:
+    study = Study()
+    study.ready()
+    record = study.entries["simulation"]["record"]
+    if given is None:
+        del record["reading"]
+    else:
+        record["reading"] = given
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("simulation", "blocked")
+    assert any("its reading" in p for p in result["problems"])
 
 
 # ------------------------------------------------------------------ technical routes

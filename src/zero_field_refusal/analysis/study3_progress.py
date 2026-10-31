@@ -137,6 +137,11 @@ froze is checked by the simulation record's reader (``study3_decisions``, the J 
 record against its committed fixation and the results' tests), so a record read here has passed
 it; it is not checked again here.
 
+**The simulation's reading** (amendment 7, "The simulation's stops"; ``simulation_reading``). A
+withheld P–F keeps P through the validation; then P leaves the arms (``withhold_pf`` on the route,
+no closure): the n record names A–F alone, the blocks hold four runs and P's counter does not hold
+the stop.
+
 **The confirmation** ("Confirmation"). One block per campaign, in seed order from 10400, up to the
 cap C(N) (``cap_of``; the cells of every seed up to the cap are prescribed, no further). The
 next block is issued while ``confirmation_state`` allows it; a started block with a never-issued
@@ -759,6 +764,23 @@ def recovery_command(label: Any, campaign: str = "<campaign file>") -> str:
             'external cause, one line>" --evidence <a path or a reference>')  # fmt: skip
 
 
+def simulation_reading(record: Mapping[str, Any]) -> dict[str, Any]:
+    """The passed simulation record's ``reading`` (the registration's amendment 7, "The
+    simulation's stops"): its ``level``, whether P–F is confirmatory (``pf_confirmatory``) and each
+    comparison's confirmatory floor (``floors``, P–F's null only while it is withheld).
+    ``ValueError`` for anything else."""
+    reading = record.get("reading")
+    floors = reading.get("floors") if isinstance(reading, Mapping) else None
+    if not (isinstance(floors, Mapping) and set(reading) == {"level", "pf_confirmatory", "floors"}
+            and set(floors) == set(COMPARISONS) and type(reading["level"]) is float
+            and type(reading["pf_confirmatory"]) is bool and type(floors["A-F"]) is int
+            and (type(floors["P-F"]) is int
+                 or (floors["P-F"] is None and not reading["pf_confirmatory"]))):  # fmt: skip
+        raise ValueError(f"simulation: its reading is {reading!r}, not its level, pf_confirmatory "
+                         "and each comparison's floor")  # fmt: skip
+    return dict(reading)
+
+
 def _engineering_code(entry: Mapping[str, Any]) -> str | None:
     """The GPU code of a valid engineering record: the chain's start."""
     record = entry.get("record") if entry.get("state") in ("passed", "failed") else None
@@ -897,6 +919,7 @@ class _Walk:
         self.extra: dict[str, Any] = {}
         self.consumed: set[str] = set()
         self.blocks = 0
+        self.reading: Mapping[str, Any] = {}  # the simulation record's (``simulation_reading``)
         self.codes: list[str] = []  # the chain of GPU codes, from the engineering record's
         self.in_force: dict[int, str] = {}  # candidate -> the code its runs are under
         self.chain_problems: list[str] = []
@@ -936,6 +959,10 @@ class _Walk:
         self._gate("simulation", simulation, "the simulation's level L and validation size, "
                    "before the search")  # fmt: skip
         self.blocks = simulation["record"]["validation_blocks"]
+        try:
+            self.reading = simulation_reading(simulation["record"])
+        except ValueError as exc:
+            raise _Stop(self._blocked("simulation", [str(exc)])) from None
         self._search_after_engineering()
         for candidate in (1, 2):
             self.candidate = candidate
@@ -949,6 +976,15 @@ class _Walk:
                         f"candidate 1 and candidate 2 failed: candidate 2 at its "
                         f"{move.event['stage']}: {move.event['why']}"])) from None  # fmt: skip
 
+    def _withhold_p(self) -> None:
+        """A P–F the simulation's reading withholds (amendment 7, "Each comparison's checks"): P
+        leaves the arms for the choice and the confirmation, where it does not run and its counter
+        does not hold the stop; the stages before them keep P as registered. No closure."""
+        if "P" in self.arms and not self.reading["pf_confirmatory"]:
+            self.arms.remove("P")
+            why = "the simulation's reading withholds P–F from the confirmation"
+            self.route.append(self._event("choice", "withhold_pf", ["P"], why))
+
     def _candidate(self, candidate: int) -> None:
         # an invalid cycle record blocks the candidate's walk from its search on, as an invalid
         # decision record blocks the stage that rests on it
@@ -960,6 +996,7 @@ class _Walk:
         self._numerical(candidate, selected)
         final = self._repair(candidate, selected)
         validated = self._validation(candidate, final)
+        self._withhold_p()
         n = self._choice(candidate, final, validated)
         self._confirmation(candidate, final, n)
 
