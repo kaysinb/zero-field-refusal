@@ -14,7 +14,11 @@ records; the state machine consumes only what this module accepts.
   is not returned.
 - ``decisions``: the records a candidate's route needs (engineering, simulation, ``n-c<N>`` and,
   when N asks for one, ``budget-c<N>``), each with its state and problems, the immutability check
-  of ``immutable`` included; a record is invalid when one it rests on is.
+  of ``immutable`` included; a record is invalid when one it rests on is. An n or budget record is
+  the link in force of its chain of successors (below, "Successors").
+- ``chain``, ``successor_kind``, ``next_successor`` and ``link_of``: an n or budget record's
+  chain of numbered successors; ``confirmation_started``: whether the candidate's confirmation
+  has started (a start of one of its blocks in the launch journal).
 - ``immutable``: a record whose sha256 differs from the one a started campaign's header named.
 - ``write_decision``: validates and writes a record atomically, once; a second version is refused.
 - ``cap_of``, ``budget_reason`` and ``budget_needed``: the cap N + max(10, ⌈0.12·N⌉), and why (if
@@ -32,12 +36,17 @@ records; the state machine consumes only what this module accepts.
   ``decisions`` lists the others; ``hold_reasons``: the ids of the reasons a hold line states;
   ``end_lines`` and ``start_lines``: each run's last ``end`` line and its start line in the
   launch journal, as a closure cites them; ``end_reason``: the id an end's outcome would give a
-  closure's reason (``launcher_<outcome>``), which a closure may not carry (it would close a
-  technical mark outside the qualification: ``NOT_ACCEPTED``); ``invalidate``: an entry made
-  invalid, with why.
+  closure's reason (``launcher_<outcome>``), which a closure may not carry (``NOT_ACCEPTED``);
+  ``invalidate``: an entry made invalid, with why.
+- ``cycle_path`` and ``bridge_name``: a candidate's cycle record and its bridge (the supersession
+  record ``scripts/qualify.py`` reads); ``serialized``: a record's bytes as written;
+  ``one_line``: the rule of a cycle's free text; ``pinned_end``: where a launch log's pinned
+  prefix ends.
 
-**Kinds**: ``engineering``, ``simulation``, ``n-c<N>`` (one per candidate), ``budget-c<N>`` and
-``closure-c<N>-<arm>`` (one per candidate and arm A, F or P).
+**Kinds**: ``engineering``, ``simulation``, ``n-c<N>`` (one per candidate), ``budget-c<N>``,
+their numbered successors ``n-c<N>-<k>`` and ``budget-c<N>-<k>`` (k = 2, 3, …; below,
+"Successors"), ``cycle-c<N>`` (one per candidate: "Failure routes") and ``closure-c<N>-<arm>``
+(one per candidate and arm A, F or P).
 Every record carries ``kind`` (equal to its file's), ``state`` (``passed`` or ``failed``),
 ``written_at`` (ISO 8601 with a UTC offset) and ``code``: ``commit`` (40 hexadecimal digits) and
 ``gpu_code_sha256`` (the sha256 of ``code_identity.gpu_code_identity`` at that commit). The
@@ -108,8 +117,10 @@ on is a response or an observation, and this module opens none.
   state is ``passed`` otherwise.
 - ``budget-c<N>``: ``candidate``, ``N`` and ``cap`` it answers (those of the ``n-c<N>`` record),
   ``decision`` (``proceed``, with state ``passed``, or ``stop``, with state ``failed``) and
-  ``answers``, the evidence of the ``n-c<N>`` record itself, at ``study3/decisions/n-c<N>.json``
-  under the runs directory and no other file (so its sha256 is the recorded one).
+  ``answers``, the evidence of the n record itself, a link of the candidate's n chain
+  (``study3/decisions/n-c<N>.json``, or a successor ``n-c<N>-<k>.json``) under the runs directory
+  and no other file (so its sha256 is the recorded one); a budget successor answers an n
+  successor.
   It is needed when a passed ``n`` record has N above 90 and when N is raised for power (the
   simulation record's ``power_short``), even if N is 90 or less: the extra blocks are the
   researcher's decision; ``decisions`` lists the record as ``missing``, with that as its problem,
@@ -117,9 +128,10 @@ on is a response or an observation, and this module opens none.
   and read as written.
 - ``closure-c<N>-<arm>``: an unresolved technical failure of the arm closed as the terminal
   technical outcome it is ("Failure routes", "After a technical mark"): a launcher run that the
-  candidate's engineering cycle held (an outcome nobody could resolve, never attempted again), or a
-  validation or confirmation run under another commit that the readers count as a technical mark
-  and that no recovery round reran. ``candidate`` and ``arm`` (the kind's), ``rate``,
+  candidate's engineering cycle held (an outcome nobody could resolve, never attempted again), a
+  run under another code that the readers count as a technical mark and that no recovery round
+  reran, or a technical mark outside the qualification still unresolved after the candidate's
+  engineering cycle. ``candidate`` and ``arm`` (the kind's), ``rate``,
   ``seed`` (a registered seed of the candidate, the one the cited line's label names),
   ``run_id``, ``line`` (the launch-journal line that shows the failure: ``kind``, ``path``,
   ``launch/<log>.jsonl`` under the runs directory, ``line``, its number from 1, and
@@ -133,29 +145,79 @@ on is a response or an observation, and this module opens none.
     evidence of the candidate's supersession record (``qualification/c<N>/supersede-<n>.json``
     under the runs directory), whose ``held`` names the run.
   - ``kind: "end"``: the run's last ``end`` line in the journal (by its time stamp, in any log),
-    whatever its outcome; ``cycle`` is null.
-  - ``kind: "start"``: the run's start line, when the journal holds no end line of the run;
-    ``cycle`` is null.
-  - An end or start line closes a validation or confirmation run under a commit other than the
-    pinned one (``study3_versions.uncounted_runs``) alone: its ``reason`` is the run's uncounted
-    reason id (``UNCOUNTED_REASONS``), whatever the end's outcome; that the run is one, with that
-    reason, is the state machine's to check. A closure with an end's or a start line's own reason
-    (``launcher_<outcome>``: ``end_reason``; ``no_end_line``: ``START_REASON``) would close a
-    technical mark outside the qualification, whose route is its engineering cycle: it is refused
-    (``NOT_ACCEPTED``).
+    whatever its outcome.
+  - ``kind: "start"``: the run's start line, when the journal holds no end line of the run.
+  - An end or start line closes one of two runs, by its ``reason``: a run under a code other
+    than the one it counts under, with its uncounted reason id (``UNCOUNTED_REASONS``: a
+    validation or confirmation run under a commit other than the pinned one,
+    ``study3_versions.uncounted_runs``; a counting run of a stage a cycle reruns under a GPU code
+    other than the fix's, ``other_gpu_code``), whatever the end's outcome, and ``cycle`` null;
+    or a technical mark outside the qualification left unresolved after the candidate's one
+    engineering cycle ("Failure routes"), with ``UNRESOLVED_AFTER_CYCLE`` and ``cycle`` the
+    evidence of the candidate's supersession record (``qualification/c<N>/supersede-<n>.json``
+    under the runs directory, the candidate's). That the run is one, with that reason, is the
+    state machine's to check. A closure with an end's or a start line's own reason
+    (``launcher_<outcome>``: ``end_reason``; ``no_end_line``: ``START_REASON``) carries the
+    launcher's outcome, never its route's reason: it is refused (``NOT_ACCEPTED``).
   An end or start closure is refused for a run that a later attempt of its label, a recovery
   round of its label at or after the cited line, a ``superseded`` line or a ``held`` line
   followed: the readers would not count it as a technical mark. That the run lies outside the
   qualification and that the readers count it as a technical mark is the state machine's to
-  check: it accepts an end or start closure only for a run under another commit, and one of any
-  other technical mark outside the qualification is a problem there until that mark's
-  engineering route exists (``study3_progress``). The record is checked against the files as
+  check (``study3_progress``). The record is checked against the files as
   they are now, through ``journal_lines`` (the one reading of a cited journal line, each log
   split at ``\n`` alone as the launcher reads it, so a line's number counts every line before it,
   a resolved torn line included; a launch log that cannot be read, or an unresolved torn line
   before the last of a log, fails the check closed): the line's bytes, the supersession record's
   bytes, and the run id both name. The failure's evidence stays as it is; a closure removes
   nothing.
+- ``cycle-c<N>``: the candidate's engineering cycle for a technical mark outside the
+  qualification (its fields, what they list and the bridge it names: ``study3_cycle``'s
+  docstring). Checked here: the form, the state ``passed``, ``stage`` one of ``MARKED_STAGES``,
+  ``old_code`` a sha256 that is not the fix's (``code.gpu_code_sha256``: a fix that keeps the
+  GPU code is no cycle), ``diagnosis`` and ``fix`` of one line each (``one_line``: not blank, at
+  most ``TEXT_MAX`` characters), the marks (run, its label, a step of the stage, arm, rate,
+  registered seed, its cited end or start line), the claims (``stages``: every stage up to the
+  marks' claimed, each ``reuse`` with no arm or ``rerun`` with its arms in the order A, F, P,
+  the qualification's all three, each with a justification of one line; the marks' stage a
+  rerun of every marked arm), ``fixation`` null or evidence in the checkout, ``journal`` (each
+  log's pinned prefix), the affected runs (their files as evidence or absence markers, their
+  start and end lines), the qualification's records and launcher runs, ``kept`` (``KEPT_WHY``)
+  and ``bridge`` (``bridge_name``); every list in canonical order (by run id, then path) and
+  naming nothing twice. Then, as the files are now: every evidence file of its sha256, every
+  absence marker's file still absent, every pinned prefix of its sha256 (a rewritten journal is
+  a problem) and every cited line of its bytes, the event and run it names. What the record
+  lists against the records it rests on is ``study3_cycle``'s to check.
+
+**Successors** ("Voiding and supersession": a superseded record stays, listed with its reason;
+"Validation, confirmation and stopping", "Sample size from validation"). A candidate's
+engineering cycle moves its GPU code, so a write-once record of the old code goes stale: its
+successor is a new file, ``n-c<N>-<k>`` or ``budget-c<N>-<k>`` (k = 2, 3, …), and the record it
+succeeds stays as it was. A successor carries ``supersedes``: ``{"path", "sha256", "reason",
+"cycle"}``, the record before it (``n-c<N>.json`` for k = 2, else ``n-c<N>-<k-1>.json``, under
+the runs directory) by its path and its sha256 now, the reason ``cycle_c<N>`` and the evidence
+of the candidate's cycle record (``study3/decisions/cycle-c<N>.json``); the first record carries
+none. A successor is accepted only after a stale record: the cycle is one ``study3_cycle.
+read_cycle`` accepts, its old code is the predecessor's ``code.gpu_code_sha256``, it lists the
+predecessor among the records it makes stale (``affected.records``, by path and sha256: the cycle
+was written after it), and the successor carries the cycle's fix as its code. The record in force
+is the last link of an unbroken chain from the first: a fork (a link that names another than the
+one before it), a gap (a missing number), a link changed since its successor named it, or a
+successor of a record that is not stale is a problem of the chain. Only the link in force is
+checked in full; the earlier links for their integrity (there, of the sha256 their successor
+names, unchanged under the campaigns that named them: ``immutable``). A budget successor
+answers the n record's successor. Once a candidate has a cycle record, ``write_decision``
+writes its n and budget records only under the cycle's fix, the code in force for its runs, and
+no record under the old code of any candidate's cycle (``after_cycle_code``): the records a cycle
+lists as stale then change after it only when a file is tampered with.
+
+*The confirmation boundary* ("Validation, confirmation and stopping", "Confirmation": the
+confirmation never triggers a new candidate). Once the candidate's confirmation has started (a
+study-3 start of the candidate in the launch journal whose header names the step
+``confirmation``: the guard lets a block start only under its supplement), the candidate, the
+rates, the started seeds and the cohort's order never change: an n or budget successor differs
+from its predecessor only in ``kind``, ``code``, ``written_at``, ``supersedes`` and, for a budget
+record, ``answers`` (the n record in force). Any other change, of N, the cap or the cohort among
+them, needs an explicit prospective amendment, which the code never infers: it is refused.
 
 **Rulings** where the registration leaves a detail open:
 - *Cross-record checks*: an ``n-c<N>`` record is valid only with a valid ``simulation`` record
@@ -195,17 +257,19 @@ on is a response or an observation, and this module opens none.
   machine's root is found, and a path among the items of a list is named without a sha256. A
   record named with a sha256 other than its own now, or named without a readable one, or no
   longer there, is a problem; a missing journal, or one with a torn line before the last line of
-  its log that is not resolved (``study3_records``' rule), fails closed. A
+  its log that is not resolved (``study3_records``' rule), fails closed. A successor's name
+  (``n-c<N>-<k>.json``) is matched the same way. A
   record that resolves (a link, say) under a ``responses/`` or ``observations/`` folder is a
   problem and is never opened. The journal is read as ``study3_records`` reads it: through its
   private ``_read_journal``, which this module keeps importing (one journal reader, no copy).
 - *Nothing is computed from the evidence*: its content is the writer's; this module binds the
-  record to the file's bytes and does not read the evidence's meaning. Two exceptions: the
-  closure (the launch journal and the supersession record are read for the run ids, labels,
-  attempts, outcomes and time stamps they name and the reasons a held line states, as ids, and
-  nothing else: no free text is copied), and the simulation's fixation and results, read for
-  the J check (the tests' identities, counts and the gates' counts; the results' ``reported``
-  part is not read).
+  record to the file's bytes and does not read the evidence's meaning. A cycle record binds the
+  journal lines it cites and its pinned prefix by their bytes (each cited line's event and run
+  id included). Two exceptions: the closure (the launch journal and the supersession record are
+  read for the run ids, labels, attempts, outcomes and time stamps they name and the reasons a
+  held line states, as ids, and nothing else: no free text is copied), and the simulation's
+  fixation and results, read for the J check (the tests' identities, counts and the gates'
+  counts; the results' ``reported`` part is not read).
 - *The reasons of a hold* are those ``scripts/qualify.py`` gives an unresolved launcher run
   (``resolve_launcher_run``), joined with "; " in the hold line: each has an id here, by the text
   it starts with (``HOLD_REASONS``); a test reads the script's source so that the two stay one
@@ -236,6 +300,7 @@ from .study3_records import (
     _read_journal,
     _time,
     journal_lines,
+    log_lines,
     round_follows,
     sealed_why,
     unresolvable,
@@ -304,14 +369,29 @@ HOLD_REASONS = {
 LINE_KINDS = ("held", "end", "start")
 # A start line's own reason (the launcher never ended the run): a closure may not carry it
 START_REASON = "no_end_line"
-# A closure of a technical mark outside the qualification (its reason an end's outcome or the
-# start line's): its registered route is its engineering cycle, not implemented yet
-NOT_ACCEPTED = ("a closure of a technical mark outside the qualification is not accepted until "
-                "its engineering route exists")  # fmt: skip
-# Why a validation or confirmation run does not count for the commit it ran
-# (``study3_versions.uncounted_runs``): the reason of its closure, an end or a start line
+# A technical mark outside the qualification left unresolved after its candidate's one
+# engineering cycle ("Failure routes"): the reason of its closure, which cites that cycle
+UNRESOLVED_AFTER_CYCLE = "unresolved_after_cycle"
+# A closure whose reason is an end's outcome or the start line's: refused
+NOT_ACCEPTED = ("a closure carries its route's reason (an uncounted reason, or "
+                "unresolved_after_cycle), never the launcher's outcome")  # fmt: skip
+# Why a run does not count for the code it ran: a validation or confirmation run under a commit
+# other than the pinned one (``study3_versions.uncounted_runs``), or a counting run of a stage a
+# cycle reruns under a GPU code other than the fix's (``other_gpu_code``); the reason of its
+# closure, an end or a start line
 UNCOUNTED_REASONS = ("no_commit", "dirty_checkout", "dirty_unrecorded", "unknown_commit",
-                     "no_versions_record", "other_commit")  # fmt: skip
+                     "no_versions_record", "other_commit", "other_gpu_code")  # fmt: skip
+# The engineering cycle ("Failure routes"): the stages a cycle claims and their steps (the
+# qualification's are its numerical runs and its repair), the stages a mark opens one from, the
+# claims, the arms, why a run keeps counting, and the bound on its free text
+CYCLE_STAGES = ("search", "qualification", "validation", "confirmation")
+CYCLE_STEPS = {"search": ("search",), "qualification": ("numerical", "repair"),
+               "validation": ("validation",), "confirmation": ("confirmation",)}  # fmt: skip
+MARKED_STAGES = ("search", "validation", "confirmation")
+CLAIMS = ("reuse", "rerun")
+CLAIM_ARMS = ("A", "F", "P")
+KEPT_WHY = ("scientific_failure", "held", "closed_arm", "reused_stage")
+TEXT_MAX = 1000  # characters of a diagnosis, a fix or a claim's justification
 _OUTCOME = re.compile(r"[a-z][a-z_]{0,40}")
 COMMON = ("kind", "state", "written_at", "code")
 FIELDS = {
@@ -323,10 +403,20 @@ FIELDS = {
     "budget": ("candidate", "N", "cap", "decision", "answers"),
     "closure": ("candidate", "arm", "rate", "seed", "run_id", "line", "cycle", "reason",
                 "decision"),
+    "cycle": ("candidate", "stage", "old_code", "marks", "diagnosis", "fix", "stages",
+              "fixation", "journal", "affected", "kept", "bridge"),
 }  # fmt: skip
 
-_KIND = re.compile(r"(engineering|simulation|(?:n|budget)-c([12])|closure-c([12])-([AFP]))")
+_KIND = re.compile(
+    r"(engineering|simulation|(?:n|budget)-c([12])(?:-([2-9]|[1-9][0-9]+))?"
+    r"|cycle-c([12])|closure-c([12])-([AFP]))"
+)
+# A successor may differ from its predecessor in these fields alone once the confirmation has
+# started (module docstring, "The confirmation boundary")
+SUCCESSOR_FREE = ("kind", "code", "written_at", "supersedes", "answers")
+OPTIONAL = {"n": ("supersedes",), "budget": ("supersedes",)}  # a successor's field
 _REASON_ID = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_N_LINK = re.compile(r"study3/decisions/n-c([12])(?:-(?:[2-9]|[1-9][0-9]+))?\.json")
 _CYCLE = re.compile(r"qualification/c([12])/supersede-\d+\.json")
 _INPUT_NAME = re.compile(r"[a-z](?:[a-z_]{0,38}[a-z])?")  # letters and underscores, no digits
 _COMMIT, _SHA256 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
@@ -389,15 +479,103 @@ _DECIDED = re.compile(r".*\bM\d+[a-z]?, decided")  # a source line's end: "…; 
 
 
 def kind_of(kind: str) -> tuple[str, int | None]:
-    """(``engineering``, ``simulation``, ``n``, ``budget`` or ``closure``, the candidate) of a
-    kind; ``ValueError`` for another name."""
+    """(``engineering``, ``simulation``, ``n``, ``budget``, ``cycle`` or ``closure``, the
+    candidate) of a kind (a successor's too: ``n-c1-2`` is ``n`` of candidate 1);
+    ``ValueError`` for another name."""
     found = _KIND.fullmatch(kind) if isinstance(kind, str) else None
     if found is None:
         raise ValueError(f"{kind!r} is not a decision kind (engineering, simulation, n-c<N>, "
-                         "budget-c<N>, closure-c<N>-<arm>, N = 1 or 2, arm A, F or P)")  # fmt: skip
-    if found.group(3):
-        return "closure", int(found.group(3))
+                         "budget-c<N> and their successors n-c<N>-<k> and budget-c<N>-<k>, "
+                         "cycle-c<N>, closure-c<N>-<arm>, N = 1 or 2, k = 2, 3, ..., arm A, F or "
+                         "P)")  # fmt: skip
+    if found.group(5):
+        return "closure", int(found.group(5))
+    if found.group(4):
+        return "cycle", int(found.group(4))
     return (kind.split("-")[0], int(found.group(2))) if found.group(2) else (kind, None)
+
+
+def link_of(kind: str) -> tuple[str, int]:
+    """(the first record's kind, k) of an n or budget record's kind (module docstring,
+    "Successors"): ``("n-c1", 1)`` for ``n-c1``, ``("n-c1", 2)`` for ``n-c1-2``; ``ValueError``
+    for another kind."""
+    found = _KIND.fullmatch(kind) if isinstance(kind, str) else None
+    if found is None or not found.group(2):
+        raise ValueError(f"{kind!r} is not an n or budget record's kind")
+    return (kind.rsplit("-", 1)[0], int(found.group(3))) if found.group(3) else (kind, 1)
+
+
+def successor_kind(kind: str, k: int) -> str:
+    """The kind of the k-th link (k ≥ 2) of the chain of ``kind``, an n or budget record's first
+    kind: ``successor_kind("n-c1", 2) == "n-c1-2"``."""
+    if link_of(kind)[1] != 1 or type(k) is not int or k < 2:
+        raise ValueError(f"no successor {k!r} of {kind!r}: a successor numbers k = 2, 3, ... of "
+                         "an n-c<N> or budget-c<N> record")  # fmt: skip
+    return f"{kind}-{k}"
+
+
+def chain(
+    runs_root: str | Path, kind: str, *, repo: str | Path = REPO_ROOT
+) -> list[dict[str, Any]]:
+    """The chain of an n or budget record (module docstring, "Successors"): every link there, the
+    first record and its successors, in the order of their numbers, each ``{"kind", "path",
+    "sha256"}`` (the sha256 None for a link that resolves under a sealed folder, never opened, or
+    that cannot be read). A gap shows as a missing number. ``kind``: the first record's kind;
+    ``repo`` is the checkout the records' evidence is read in (unused here: the chain is read
+    from RUNS_DIR alone)."""
+    base, own = link_of(kind)
+    if own != 1:
+        raise ValueError(f"{kind!r} is a successor: a chain is named by its first record's kind")
+    root = Path(runs_root)
+    folder = root.joinpath(*DIRECTORY)
+    found = []
+    for path in sorted(folder.glob(f"{base}*.json")) if folder.is_dir() else []:
+        try:
+            first, number = link_of(path.name[: -len(".json")])
+        except ValueError:
+            continue
+        if first == base:
+            found.append((number, path))
+    out = []
+    for _, path in sorted(found):
+        sha = None
+        if not _under_sealed(path, root) and path.is_file():
+            try:
+                sha = _digest(path)
+            except OSError:
+                sha = None
+        out.append({"kind": path.name[: -len(".json")], "path": str(path), "sha256": sha})
+    return out
+
+
+def next_successor(runs_root: str | Path, kind: str) -> str:
+    """The kind the next successor of ``kind`` (an n or budget record's first kind) takes: one
+    above the highest link there. ``ValueError`` when there is no record to succeed."""
+    links = chain(runs_root, kind)
+    if not links:
+        raise ValueError(f"{kind}: no record is there to succeed")
+    return successor_kind(kind, max(link_of(link["kind"])[1] for link in links) + 1)
+
+
+def confirmation_started(runs_root: str | Path, candidate: int) -> bool:
+    """Whether candidate N's confirmation has started (module docstring, "The confirmation
+    boundary"): a study-3 start of the candidate in the launch journal whose campaign header
+    names the step ``confirmation``. A journal that holds logs and cannot be read fails closed
+    (True): that the confirmation has not started cannot be shown."""
+    root = Path(runs_root)
+    if not any((root / "launch").glob("*.jsonl")):
+        return False
+    try:
+        journal = _read_journal(root, {})
+    except (OSError, ValueError):
+        return True
+    for _, start in journal.starts:
+        header = start.get("header") if isinstance(start, Mapping) else None
+        if (isinstance(header, Mapping) and header.get("study") == 3
+                and type(header.get("candidate")) is int and header["candidate"] == candidate
+                and header.get("step") == "confirmation"):  # fmt: skip
+            return True
+    return False
 
 
 def end_reason(outcome: Any) -> str | None:
@@ -435,6 +613,44 @@ def decision_path(runs_root: str | Path, kind: str) -> Path:
     """``RUNS_DIR/study3/decisions/<kind>.json``."""
     kind_of(kind)
     return Path(runs_root).joinpath(*DIRECTORY, f"{kind}.json")
+
+
+def cycle_path(runs_root: str | Path, candidate: int) -> Path:
+    """The candidate's cycle record, ``RUNS_DIR/study3/decisions/cycle-c<N>.json``."""
+    return decision_path(runs_root, f"cycle-c{candidate}")
+
+
+def bridge_name(candidate: int) -> str:
+    """The cycle's bridge under RUNS_DIR, ``qualification/c<N>/supersede-1.json``: the
+    supersession record ``scripts/qualify.py`` reads."""
+    return f"qualification/c{candidate}/supersede-1.json"
+
+
+def one_line(value: Any) -> str | None:
+    """Why ``value`` is no diagnosis, fix or justification (one line, not blank, at most
+    ``TEXT_MAX`` characters), or None."""
+    if not isinstance(value, str):
+        return f"is {value!r}, not a line of text"
+    if not value.strip():
+        return "is blank"
+    if "\n" in value or "\r" in value:
+        return "is more than one line"
+    if len(value) > TEXT_MAX:
+        return f"is longer than {TEXT_MAX} characters"
+    return None
+
+
+def pinned_end(lines: Sequence[tuple[int, bytes, Any]], count: Any) -> int | None:
+    """The end of a launch log's first ``count`` whole lines (``log_lines``' lines: each ended by
+    its newline, which the prefix includes), or None when the log holds fewer whole lines."""
+    if type(count) is not int or count < 0 or count > len(lines):
+        return None
+    return lines[count - 1][0] + len(lines[count - 1][1]) + 1 if count else 0
+
+
+def serialized(record: Mapping[str, Any]) -> bytes:
+    """A decision record's bytes as ``write_decision`` writes them: their sha256 is the file's."""
+    return (json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
 
 
 def cap_of(n: int) -> int:
@@ -565,6 +781,10 @@ def decisions(
     ``missing`` for none, ``invalid`` for one with a problem (its record None), the immutability
     check against the launch journal included.
 
+    The n and budget entries are their chains' links in force (module docstring,
+    "Successors"), each with ``chain``, the path of every link: the entry's kind, path and record
+    the link's, its problems those of the chain too.
+
     A record rests on the ones before it: the ``n`` entry is ``invalid`` when the simulation entry
     is, and the budget entry when the ``n`` entry is (a budget decision that the ``n`` record
     would have asked for cannot then be told, so it is listed, invalid, rather than dropped). The
@@ -577,15 +797,16 @@ def decisions(
     starts, corrupt, sealed = _starts(root)
     kind_n, budget = f"n-c{candidate}", f"budget-c{candidate}"
     out = {kind: _entry(root, kind, starts, corrupt, sealed, repo)
-           for kind in ("engineering", "simulation", kind_n)}  # fmt: skip
+           for kind in ("engineering", "simulation")}  # fmt: skip
+    out[kind_n] = _linked(root, kind_n, starts, corrupt, sealed, repo)
     simulation, n = out["simulation"], out[kind_n]
     if simulation["state"] == "invalid" and n["state"] in STATES:
         invalidate(n, f"the simulation record it rests on is invalid ({simulation['path']})")
     reason = None
     if n["record"] is not None and n["record"]["state"] == "passed":
         reason = budget_reason(n["record"]["N"], simulation["record"])
-    if reason is not None or n["state"] == "invalid" or decision_path(root, budget).exists():
-        out[budget] = _entry(root, budget, starts, corrupt, sealed, repo)
+    if reason is not None or n["state"] == "invalid" or chain(root, budget):
+        out[budget] = _linked(root, budget, starts, corrupt, sealed, repo)
         if n["state"] == "invalid":
             invalidate(out[budget], f"the n-c{candidate} record it answers is invalid "
                                      f"({n['path']})")  # fmt: skip
@@ -626,6 +847,42 @@ def _entry(root: Path, kind: str, starts: Starts | None, corrupt: Sequence[str],
     state = "invalid" if problems else "missing" if record is None else record["state"]
     return {"kind": kind, "path": str(path), "state": state,
             "record": None if problems else record, "problems": problems}  # fmt: skip
+
+
+def _linked(root: Path, kind: str, starts: Starts | None, corrupt: Sequence[str],
+            sealed: Sequence[str], repo: Path) -> dict[str, Any]:  # fmt: skip
+    """The entry of an n or budget record's chain (module docstring, "Successors"): its link in
+    force checked in full (``_entry``), every earlier link for its integrity (there, of the
+    sha256 the link after it names, ``immutable``), a gap a problem; ``chain``: every link's
+    path."""
+    links = chain(root, kind)
+    if len(links) <= 1:
+        return {**_entry(root, kind, starts, corrupt, sealed, repo),
+                "chain": [link["path"] for link in links]}  # fmt: skip
+    problems: list[str] = []
+    numbers = [link_of(link["kind"])[1] for link in links]
+    if numbers != list(range(1, len(links) + 1)):
+        problems.append(f"{decision_path(root, kind)}: its chain {[x['kind'] for x in links]} "
+                        "has a gap: each successor follows the record before it")  # fmt: skip
+    for before, after in zip(links, links[1:], strict=False):
+        problems += [p for p in immutable(before["path"], starts, corrupt=corrupt, sealed=sealed)
+                     if p not in problems]  # fmt: skip
+        cited = None
+        if not _under_sealed(Path(after["path"]), root):
+            try:
+                data = json.loads(Path(after["path"]).read_text(encoding="utf-8"))
+                cited = (data.get("supersedes") or {}).get("sha256")
+            except (OSError, ValueError, AttributeError):
+                cited = None
+        if before["sha256"] is None or cited != before["sha256"]:
+            problems.append(f"{after['path']}: it names {before['kind']} with sha256 {cited!r}, "
+                            f"not its sha256 now {before['sha256']!r}: a link is unchanged once "
+                            "its successor names it")  # fmt: skip
+    entry = _entry(root, links[-1]["kind"], starts, corrupt, sealed, repo)
+    problems += [p for p in entry["problems"] if p not in problems]
+    return {**entry, "state": "invalid" if problems else entry["state"],
+            "record": None if problems else entry["record"], "problems": problems,
+            "chain": [link["path"] for link in links]}  # fmt: skip
 
 
 def _starts(root: Path) -> tuple[Starts | None, list[str], list[str]]:
@@ -741,13 +998,55 @@ def write_decision(
     except (TypeError, ValueError) as exc:
         raise DecisionRefused(f"{kind}: not a JSON record ({exc})") from exc
     problems = _problems(Path(runs_root), kind, record, Path(repo))
+    family, candidate = kind_of(kind) if _KIND.fullmatch(str(kind)) else (None, None)
+    if family in ("n", "budget"):  # a record a cycle lists as stale: under the code in force
+        code = record.get("code") if isinstance(record, dict) else None
+        sha = code.get("gpu_code_sha256") if isinstance(code, dict) else None
+        problems += after_cycle_code(runs_root, sha, candidate=candidate, repo=repo)
     if problems:
         raise DecisionRefused(f"{kind}: not written, {len(problems)} problem(s): "
                               + "; ".join(problems))  # fmt: skip
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = (json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
-    _publish(path, data)
+    _publish(path, serialized(record))
     return path
+
+
+def after_cycle_code(
+    runs_root: str | Path,
+    code: Any,
+    *,
+    candidate: int | None = None,
+    repo: str | Path = REPO_ROOT,
+) -> list[str]:
+    """Why a write-once record under GPU code ``code`` is not written now (module docstring,
+    "Successors"): once ``candidate`` has a cycle record outside the qualification, its record
+    carries the cycle's fix, the code in force for its runs (a cycle record that is there and not
+    valid refuses it until it is valid); and no record is written under the old code of any
+    candidate's valid cycle record. The records a cycle lists as stale (``affected.records``:
+    the fixations, the n and budget records and the versions record of its old code there when it
+    was written) then change after it only when a file is tampered with. No problem before any
+    cycle."""
+    out: list[str] = []
+    for c in (1, 2):
+        path = cycle_path(runs_root, c)
+        if not (path.exists() or path.is_symlink()):
+            continue
+        record, problems = read_decision(runs_root, f"cycle-c{c}", repo=repo)
+        if record is None:
+            if c == candidate:
+                out.append(f"candidate {c}'s cycle record {path} is not valid ("
+                           + "; ".join(problems[:3]) + f"): no record of candidate {c} is "
+                           "written until it is")  # fmt: skip
+            continue
+        fix, old = record["code"]["gpu_code_sha256"], record["old_code"]
+        if c == candidate and code != fix:
+            out.append(f"its GPU code {code} is not candidate {c}'s code in force, {fix} (the fix "
+                       f"of its cycle): after the cycle a record of candidate {c} carries the "
+                       "fix")  # fmt: skip
+        elif code == old:
+            out.append(f"its GPU code {code} is the old code of candidate {c}'s cycle: no record "
+                       "is written under it after the cycle")  # fmt: skip
+    return out
 
 
 def _publish(path: Path, data: bytes) -> None:
@@ -801,8 +1100,13 @@ def _problems(root: Path, kind: str, record: Any, repo: Path) -> list[str]:
         problems += _against_simulation(root, record, candidate, repo)
     elif family == "budget":
         problems += _against_n(root, kind, record, candidate, repo)
+    if family in ("n", "budget") and link_of(kind)[1] > 1:
+        problems += _against_predecessor(root, kind, record, candidate, repo)
     elif family == "closure":
         problems += _against_line(root, record, candidate)
+    elif family == "cycle":
+        problems += _still_absent(check.absent, root, repo)
+        problems += _against_journal(root, record)
     return problems
 
 
@@ -813,6 +1117,7 @@ class _Schema:
         self.kind, self.family, self.candidate = kind, family, candidate
         self.problems: list[str] = []
         self.refs: list[_Ref] = []
+        self.absent: list[_Ref] = []  # the absence markers: files that must not be there
 
     # -- the building blocks
 
@@ -904,7 +1209,8 @@ class _Schema:
     # -- the common fields
 
     def record(self, record: Any) -> None:
-        top = self.object("", record, (*COMMON, *FIELDS[self.family]))
+        top = self.object("", record, (*COMMON, *FIELDS[self.family]),
+                          OPTIONAL.get(self.family, ()))  # fmt: skip
         if top is None:
             return
         if top["kind"] != self.kind:
@@ -1190,6 +1496,35 @@ class _Schema:
                 self._cap_state(r["state"], cap)
         else:
             self.integer("cap", r["cap"], MIN_N + CAP_FLOOR)
+        self._supersedes(r)
+
+    def _supersedes(self, r: dict[str, Any]) -> None:
+        """A successor's ``supersedes`` (module docstring, "Successors"): the record before it,
+        by its path under the runs directory and its sha256 now, the reason ``cycle_c<N>`` and
+        the candidate's cycle record as evidence; the first record carries none."""
+        base, k = link_of(self.kind)
+        if k == 1:
+            if "supersedes" in r:
+                self.add("supersedes", f"is a successor's field ({base}-<k>): the first record "
+                         "supersedes none")  # fmt: skip
+            return
+        if "supersedes" not in r:
+            self.add("", f"has no field `supersedes`: a successor ({self.kind}) names the record "
+                     "before it and the candidate's cycle")  # fmt: skip
+            return
+        entry = self.ref("supersedes", r["supersedes"], ("reason", "cycle"))
+        if entry is None:
+            return
+        named = "/".join((*DIRECTORY, f"{base if k == 2 else f'{base}-{k - 1}'}.json"))
+        if entry["path"] != named or entry.get("root", "runs") != "runs":
+            self.add("supersedes.path", f"is {entry['path']!r}, not {named!r} under the runs "
+                     "directory, the record before it: a successor names its predecessor (no "
+                     "fork, no gap)")  # fmt: skip
+        if entry["reason"] != f"cycle_c{self.candidate}":
+            self.add("supersedes.reason", f"is {entry['reason']!r}, not 'cycle_c{self.candidate}':"
+                     " a successor follows the candidate's cycle")  # fmt: skip
+        self._exact_ref("supersedes.cycle", entry["cycle"],
+                        "/".join((*DIRECTORY, f"cycle-c{self.candidate}.json")))  # fmt: skip
 
     def _cap_state(self, state: Any, cap: int) -> None:
         """The state is ``passed`` when the cap fits the reserved confirmation seeds and
@@ -1268,9 +1603,15 @@ class _Schema:
         elif (decision == "proceed") != (r["state"] == "passed"):
             self.add("state", f"is {r['state']!r} for the decision {decision!r} (proceed is "
                      "passed, stop is failed)")  # fmt: skip
-        self._exact_ref(
-            "answers", r["answers"], "/".join((*DIRECTORY, f"n-c{self.candidate}.json"))
-        )
+        entry = self.ref("answers", r["answers"])
+        named = None if entry is None else entry["path"]
+        if entry is not None and (entry.get("root", "runs") != "runs" or not (
+                isinstance(named, str) and _N_LINK.fullmatch(named)
+                and int(_N_LINK.fullmatch(named).group(1)) == self.candidate)):  # fmt: skip
+            self.add("answers", f"is {named!r} under {entry.get('root', 'runs')!r}, not the "
+                     f"record study3/decisions/n-c{self.candidate}.json (or a successor "
+                     f"n-c{self.candidate}-<k>.json) under the runs directory")  # fmt: skip
+        self._supersedes(r)
 
     # -- closure
 
@@ -1293,13 +1634,18 @@ class _Schema:
                 and PurePosixPath(run_id).name == run_id and "\\" not in run_id):  # fmt: skip
             self.add("run_id", f"is {run_id!r}, not a run id")
         kind = self._line(r["line"])
-        if kind in ("end", "start") and r["cycle"] is not None:
-            self.add("cycle", f"is {r['cycle']!r}: the closure of a run's {kind} line cites no "
-                     "cycle (null)")  # fmt: skip
-        if kind == "held" and r["cycle"] is None:
-            self.add("cycle", "is null: the closure of a held line cites the candidate's "
+        reason = r["reason"]
+        # a held line, or an end or start line of a mark left unresolved after the cycle, cites
+        # the candidate's supersession record; the closure of a run under another code, none
+        cited = kind == "held" or (kind in ("end", "start") and reason == UNRESOLVED_AFTER_CYCLE)
+        if kind in ("end", "start") and not cited and r["cycle"] is not None:
+            self.add("cycle", f"is {r['cycle']!r}: the closure of a run's {kind} line under "
+                     "another code cites no cycle (null)")  # fmt: skip
+        if cited and r["cycle"] is None:
+            self.add("cycle", "is null: the closure of a held line, or of a mark left unresolved "
+                     "after the candidate's engineering cycle, cites the candidate's "
                      "supersession record")  # fmt: skip
-        cycle = self.ref("cycle", r["cycle"]) if kind == "held" and r["cycle"] is not None else None
+        cycle = self.ref("cycle", r["cycle"]) if cited and r["cycle"] is not None else None
         if cycle is not None and (cycle.get("root", "runs") != "runs" or not (
                 isinstance(cycle["path"], str) and _CYCLE.fullmatch(cycle["path"])
                 and _CYCLE.fullmatch(cycle["path"]).group(1) == str(self.candidate))):  # fmt: skip
@@ -1307,15 +1653,16 @@ class _Schema:
                      f"candidate {self.candidate}'s supersession record "
                      f"qualification/c{self.candidate}/supersede-<n>.json under the runs "
                      "directory")  # fmt: skip
-        reason = r["reason"]
         if kind == "held" and not (isinstance(reason, str) and reason in HOLD_REASONS):
             self.add("reason", f"is {reason!r}, not the id of a reason a hold states "
                      f"({sorted(HOLD_REASONS)})")  # fmt: skip
         elif kind in ("end", "start") and (_end_reason_id(reason) or reason == START_REASON):
             self.add("reason", f"is {reason!r}: {NOT_ACCEPTED}")
-        elif kind in ("end", "start") and reason not in UNCOUNTED_REASONS:
-            self.add("reason", f"is {reason!r}, not the id of a run under another commit "
-                     f"{UNCOUNTED_REASONS}: an end or start line closes such a run "
+        elif kind in ("end", "start") and reason not in (*UNCOUNTED_REASONS,
+                                                         UNRESOLVED_AFTER_CYCLE):  # fmt: skip
+            self.add("reason", f"is {reason!r}, not the id of a run under another code "
+                     f"{UNCOUNTED_REASONS} nor {UNRESOLVED_AFTER_CYCLE}: an end or start line "
+                     "closes such a run, or a mark left unresolved after the cycle, "
                      "alone")  # fmt: skip
         elif kind is None and not (isinstance(reason, str) and _REASON_ID.fullmatch(reason)):
             self.add("reason", f"is {reason!r}, not an id")
@@ -1343,6 +1690,287 @@ class _Schema:
         if not (isinstance(line["line_sha256"], str) and _SHA256.fullmatch(line["line_sha256"])):
             self.add("line.line_sha256", f"is {line['line_sha256']!r}, not a sha256")
         return kind
+
+    # -- cycle
+
+    def _cycle(self, r: dict[str, Any]) -> None:
+        """The cycle record's form (``study3_cycle`` checks what it lists against the records it
+        rests on)."""
+        candidate = self.candidate
+        if r["candidate"] != candidate or type(r["candidate"]) is not int:
+            self.add("candidate", f"is {r['candidate']!r}, not {candidate}")
+        if r["state"] != "passed":
+            self.add("state", f"is {r['state']!r}: a cycle record is passed (the "
+                     "re-qualification is read from the qualification's records)")  # fmt: skip
+        stage = r["stage"] if r["stage"] in MARKED_STAGES else None
+        if stage is None:
+            self.add("stage", f"is {r['stage']!r}, not one of {list(MARKED_STAGES)}: the stage "
+                     "of the marks outside the qualification")  # fmt: skip
+        old = r["old_code"]
+        if not (isinstance(old, str) and _SHA256.fullmatch(old)):
+            self.add("old_code", f"is {old!r}, not a sha256")
+        elif isinstance(r["code"], dict) and r["code"].get("gpu_code_sha256") == old:
+            self.add("old_code", "is the fix's GPU code (code.gpu_code_sha256): a fix that keeps "
+                     "the GPU code is no engineering cycle")  # fmt: skip
+        for name in ("diagnosis", "fix"):
+            why = one_line(r[name])
+            if why is not None:
+                self.add(name, why)
+        marked = self._marks(r["marks"], stage)
+        self._claims(r["stages"], stage, marked)
+        if r["fixation"] is not None:
+            entry = self.ref("fixation", r["fixation"])
+            if entry is not None and entry.get("root") != "repo":
+                self.add("fixation", "is not evidence in the checkout (root: repo): the "
+                         "validation fixation is a committed record")  # fmt: skip
+        self._journal(r["journal"])
+        self._affected(r["affected"])
+        self._kept(r["kept"])
+        if r["bridge"] != bridge_name(candidate):
+            self.add("bridge", f"is {r['bridge']!r}, not {bridge_name(candidate)!r}")
+
+    def _marks(self, value: Any, stage: str | None) -> set[str]:
+        """The marks of the stage: each run's id, label, step (the stage's), arm, rate, seed and
+        its cited end or start line. Returns the arms marked."""
+        if not isinstance(value, list) or not value:
+            self.add("marks", "is not a non-empty list of the marks of the stage")
+            return set()
+        arms, keys = set(), []
+        for number, item in enumerate(value):
+            where = f"marks[{number}]"
+            entry = self.object(where, item, ("run_id", "label", "step", "arm", "rate", "seed",
+                                              "line"))  # fmt: skip
+            if entry is None:
+                continue
+            self._run(where, entry, CYCLE_STEPS[stage] if stage is not None else None)
+            self._cited(f"{where}.line", entry["line"], ("end", "start"))
+            arms.add(entry["arm"])
+            keys.append(str(entry["run_id"]))
+        self._canonical("marks", keys)
+        return arms
+
+    def _run(self, where: str, entry: Mapping[str, Any], steps: Sequence[str] | None) -> None:
+        """A run as a cycle names it: its id (a plain name), label, step (one of ``steps``),
+        arm, rate and seed (a registered seed of the candidate)."""
+        run_id = entry["run_id"]
+        if not (isinstance(run_id, str) and run_id not in ("", ".", "..")
+                and PurePosixPath(run_id).name == run_id and "\\" not in run_id):  # fmt: skip
+            self.add(f"{where}.run_id", f"is {run_id!r}, not a run id")
+        if not (isinstance(entry["label"], str) and entry["label"]):
+            self.add(f"{where}.label", f"is {entry['label']!r}, not a label")
+        if steps is not None and entry["step"] not in steps:
+            self.add(f"{where}.step", f"is {entry['step']!r}, not one of {list(steps)}")
+        if entry["arm"] not in CLAIM_ARMS:
+            self.add(f"{where}.arm", f"is {entry['arm']!r}, not one of {list(CLAIM_ARMS)}")
+        self.real(f"{where}.rate", entry["rate"], positive=True)
+        seeds = {s for role in SEEDS.values() for s in role.get(self.candidate, ())}
+        if type(entry["seed"]) is not int or entry["seed"] not in seeds:
+            self.add(f"{where}.seed", f"is {entry['seed']!r}, not a registered seed of candidate "
+                     f"{self.candidate}")  # fmt: skip
+
+    def _cited(self, where: str, value: Any, kinds: Sequence[str] | None = None) -> None:
+        """A cited launch-journal line: ``launch/<log>.jsonl`` under the runs directory, its
+        number from 1 and its own sha256, and its ``kind`` (one of ``kinds``) when it has
+        one."""
+        fields = ("kind", "path", "line", "line_sha256") if kinds else ("path", "line",
+                                                                        "line_sha256")  # fmt: skip
+        line = self.object(where, value, fields)
+        if line is None:
+            return
+        if kinds and line["kind"] not in kinds:
+            self.add(f"{where}.kind", f"is {line['kind']!r}, not one of {list(kinds)}")
+        self._log(f"{where}.path", line["path"])
+        self.integer(f"{where}.line", line["line"], 1)
+        if not (isinstance(line["line_sha256"], str) and _SHA256.fullmatch(line["line_sha256"])):
+            self.add(f"{where}.line_sha256", f"is {line['line_sha256']!r}, not a sha256")
+
+    def _log(self, where: str, path: Any) -> None:
+        parts = PurePosixPath(path).parts if isinstance(path, str) else ()
+        if not (len(parts) == 2 and parts[0] == "launch" and parts[1].endswith(".jsonl")
+                and "\\" not in path and parts[1] not in (".", "..")):  # fmt: skip
+            self.add(where, f"is {path!r}, not a launch log launch/<log>.jsonl under the runs "
+                     "directory")  # fmt: skip
+
+    def _claims(self, value: Any, stage: str | None, marked: set[str]) -> None:
+        """A claim per stage: ``reuse`` (no arm) or ``rerun`` with its arms (all three for the
+        qualification: all or nothing for the candidate), and a justification of one line;
+        every stage up to the marks' claimed, the marks' a rerun of every marked arm."""
+        if not isinstance(value, dict):
+            self.add("stages", "is not an object of a claim per stage")
+            return
+        for name, claim in value.items():
+            where = f"stages.{name}"
+            if name not in CYCLE_STAGES:
+                self.add(where, f"is no stage a cycle claims ({list(CYCLE_STAGES)})")
+                continue
+            entry = self.object(where, claim, ("action", "arms", "justification"))
+            if entry is None:
+                continue
+            why = one_line(entry["justification"])
+            if why is not None:
+                self.add(f"{where}.justification", why)
+            action, arms = entry["action"], entry["arms"]
+            if action not in CLAIMS:
+                self.add(f"{where}.action", f"is {action!r}, not one of {list(CLAIMS)}")
+            elif not (isinstance(arms, list) and all(a in CLAIM_ARMS for a in arms)
+                      and arms == [a for a in CLAIM_ARMS if a in arms]):  # fmt: skip
+                self.add(f"{where}.arms", f"is {arms!r}, not distinct arms in the order "
+                         f"{list(CLAIM_ARMS)}")  # fmt: skip
+            elif action == "reuse" and arms:
+                self.add(f"{where}.arms", f"is {arms!r}: a reuse reruns no arm")
+            elif action == "rerun" and not arms:
+                self.add(f"{where}.arms", "is empty: a rerun names the arms it reruns")
+            elif name == "qualification" and action == "rerun" and arms != list(CLAIM_ARMS):
+                self.add(f"{where}.arms", f"is {arms!r}: the qualification's claim is all or "
+                         "nothing for the candidate (a rerun reruns A, F and P)")  # fmt: skip
+        if stage is None:
+            return
+        for name in CYCLE_STAGES[: CYCLE_STAGES.index(stage) + 1]:
+            if name not in value:
+                self.add("stages", f"has no claim for the {name}, a stage started at or before "
+                         f"the marks' {stage}")  # fmt: skip
+        claim = value.get(stage) if isinstance(value.get(stage), dict) else {}
+        arms = claim.get("arms") if isinstance(claim.get("arms"), list) else []
+        left = sorted(marked - set(arms)) if claim.get("action") == "rerun" else sorted(marked)
+        if stage in value and left:
+            self.add(f"stages.{stage}", f"does not rerun every marked arm ({left} left): the "
+                     "stage of the marks is a rerun of every marked arm")  # fmt: skip
+
+    def _journal(self, value: Any) -> None:
+        """The pinned prefix of each launch log: its path, its whole lines and their sha256."""
+        if not isinstance(value, list) or not value:
+            self.add("journal", "is not a non-empty list of the launch logs' pinned prefixes")
+            return
+        keys = []
+        for number, item in enumerate(value):
+            where = f"journal[{number}]"
+            entry = self.object(where, item, ("path", "lines", "sha256"))
+            if entry is None:
+                continue
+            self._log(f"{where}.path", entry["path"])
+            self.integer(f"{where}.lines", entry["lines"], 0)
+            if not (isinstance(entry["sha256"], str) and _SHA256.fullmatch(entry["sha256"])):
+                self.add(f"{where}.sha256", f"is {entry['sha256']!r}, not a sha256")
+            keys.append(str(entry["path"]))
+        self._canonical("journal", keys)
+
+    def _affected(self, value: Any) -> None:
+        """The affected runs (each with its records and its start and end lines), the
+        qualification's part records, launcher runs and the case restart records counted before
+        the cycle, and the stale write-once records."""
+        entry = self.object("affected", value, ("runs", "qualification", "records"))
+        if entry is None:
+            return
+        runs = entry["runs"]
+        if not isinstance(runs, list):
+            self.add("affected.runs", "is not a list")
+        else:
+            keys = []
+            for number, item in enumerate(runs):
+                where = f"affected.runs[{number}]"
+                run = self.object(where, item, ("run_id", "label", "step", "arm", "rate", "seed",
+                                                "gpu_code", "records", "start", "end"))  # fmt: skip
+                if run is None:
+                    continue
+                self._run(where, run, MARKED_STAGES)
+                gpu = run["gpu_code"]
+                if gpu is not None and not (isinstance(gpu, str) and _SHA256.fullmatch(gpu)):
+                    self.add(f"{where}.gpu_code", f"is {gpu!r}, not a sha256 or null")
+                self._files(f"{where}.records", run["records"], absent=True, empty=False)
+                self._cited(f"{where}.start", run["start"])
+                if run["end"] is not None:
+                    self._cited(f"{where}.end", run["end"])
+                keys.append(str(run["run_id"]))
+            self._canonical("affected.runs", keys)
+        qualification = self.object("affected.qualification", entry["qualification"],
+                                    ("records", "launchers", "restarts"))  # fmt: skip
+        if qualification is not None:
+            self._files("affected.qualification.records", qualification["records"])
+            self._files("affected.qualification.restarts", qualification["restarts"])
+            launchers = qualification["launchers"]
+            if not isinstance(launchers, list):
+                self.add("affected.qualification.launchers", "is not a list")
+            else:
+                keys = []
+                for number, item in enumerate(launchers):
+                    where = f"affected.qualification.launchers[{number}]"
+                    launcher = self.object(where, item, ("run_id", "meta"))
+                    if launcher is None:
+                        continue
+                    if not (isinstance(launcher["run_id"], str) and launcher["run_id"]):
+                        self.add(f"{where}.run_id", f"is {launcher['run_id']!r}, not a run id")
+                    self._file(f"{where}.meta", launcher["meta"], absent=True)
+                    keys.append(str(launcher["run_id"]))
+                self._canonical("affected.qualification.launchers", keys)
+        self._files("affected.records", entry["records"])
+
+    def _kept(self, value: Any) -> None:
+        """What keeps counting: runs with their evidence and why, and per reused stage the
+        number of its counting runs."""
+        if not isinstance(value, list):
+            self.add("kept", "is not a list")
+            return
+        keys = []
+        for number, item in enumerate(value):
+            where = f"kept[{number}]"
+            if isinstance(item, dict) and item.get("why") == "reused_stage":
+                entry = self.object(where, item, ("why", "stage", "runs"))
+                if entry is None:
+                    continue
+                if entry["stage"] not in CYCLE_STAGES:
+                    self.add(f"{where}.stage", f"is {entry['stage']!r}, not a stage")
+                self.integer(f"{where}.runs", entry["runs"], 1)
+                keys.append(("", "", str(entry["stage"])))
+                continue
+            entry = self.object(where, item, ("run_id", "why", "evidence"))
+            if entry is None:
+                continue
+            if entry["why"] not in KEPT_WHY:
+                self.add(f"{where}.why", f"is {entry['why']!r}, not one of {list(KEPT_WHY)}")
+            if not (isinstance(entry["run_id"], str) and entry["run_id"]):
+                self.add(f"{where}.run_id", f"is {entry['run_id']!r}, not a run id")
+            evidence = self._file(f"{where}.evidence", entry["evidence"], absent=True)
+            keys.append((str(entry["run_id"]), str((evidence or {}).get("path")), ""))
+        self._canonical("kept", keys)
+
+    def _files(self, where: str, value: Any, *, absent: bool = False,
+               empty: bool = True) -> None:  # fmt: skip
+        """A list of evidence (or, with ``absent``, absence markers), by path."""
+        if not isinstance(value, list) or (not empty and not value):
+            self.add(where, "is not a " + ("" if empty else "non-empty ") + "list of evidence")
+            return
+        keys = []
+        for number, item in enumerate(value):
+            entry = self._file(f"{where}[{number}]", item, absent=absent)
+            keys.append(str((entry or {}).get("path")))
+        self._canonical(where, keys)
+
+    def _file(self, where: str, value: Any, *, absent: bool = False) -> dict[str, Any] | None:
+        """Evidence ``{path, sha256}`` of a file that is there or, with ``absent``, an absence
+        marker ``{path, absent: true}`` of one that is not: checked to be still absent."""
+        if not (absent and isinstance(value, dict) and "absent" in value):
+            return self.ref(where, value)
+        entry = self.object(where, value, ("path", "absent"), ("root",))
+        if entry is None:
+            return None
+        ok = self.text(f"{where}.path", entry["path"])
+        if entry["absent"] is not True:
+            self.add(f"{where}.absent", f"is {entry['absent']!r}, not true")
+        root = entry.get("root", "runs")
+        if root not in ("runs", "repo"):
+            self.add(f"{where}.root", f"is {root!r}, not runs or repo")
+            ok = False
+        if ok:
+            self.absent.append(_Ref(where, entry["path"], "", root))
+        return entry
+
+    def _canonical(self, where: str, keys: list[Any]) -> None:
+        """A list in canonical order (by run id, then path) that names nothing twice."""
+        twice = [key for number, key in enumerate(keys) if key in keys[:number]]
+        if twice:
+            self.add(where, f"names {twice[0]!r} twice: a cycle's list names nothing twice")
+        elif keys != sorted(keys):
+            self.add(where, "is not in canonical order (by run id, then path)")
 
 
 def coverage_threshold(tests: int, runs: int, p0: float) -> int:
@@ -1955,6 +2583,72 @@ def _evidence(refs: Sequence[_Ref], root: Path, repo: Path) -> list[str]:
     return problems
 
 
+def _still_absent(refs: Sequence[_Ref], root: Path, repo: Path) -> list[str]:
+    """The problems of absence markers as the files are now: a file that has appeared since, or
+    a marker under a sealed folder (never opened)."""
+    problems = []
+    for ref in refs:
+        named = Path(ref.path)
+        base = repo if ref.root == "repo" else root
+        path = named if named.is_absolute() else base / named
+        if _under_sealed(path, base, named):
+            why = sealed_why(path, base, "is under a responses or observations folder")
+            problems.append(f"{ref.where}: {path} {why}: never evidence, never opened")
+        elif path.exists() or path.is_symlink():
+            problems.append(f"{ref.where}: {path} is there now, and the record marks it absent")
+    return problems
+
+
+def _against_journal(root: Path, record: Mapping[str, Any]) -> list[str]:
+    """A cycle record against the launch journal as it is now: each pinned prefix (its whole
+    lines' sha256: a rewritten journal is a problem), and each cited line (a mark's, an affected
+    run's start and end) by its bytes, of the event and run it names. A log that cannot be read,
+    or that resolves under a sealed folder (never opened), fails closed."""
+    logs, unreadable = journal_lines(root)
+    problems = [f"journal: {problem}" for problem in unreadable]
+    by_path = {log.path: log for log in logs}
+    for number, entry in enumerate(record["journal"]):
+        where, path = f"journal[{number}]", root / entry["path"]
+        if entry["path"] not in by_path:
+            problems.append(f"{where}: the launch log {path} whose prefix the cycle pinned is gone "
+                            "or cannot be read")  # fmt: skip
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            problems.append(f"{where}: the launch log {path} cannot be read ({type(exc).__name__})")
+            continue
+        end = pinned_end(log_lines(data), entry["lines"])
+        now = None if end is None else hashlib.sha256(data[:end]).hexdigest()
+        if now != entry["sha256"]:
+            problems.append(f"{where}: the pinned prefix of {entry['lines']} lines of {path} has "
+                            f"sha256 {now} now, not {entry['sha256']}: the journal was "
+                            "rewritten")  # fmt: skip
+    cited = [(f"marks[{n}].line", m["line"], m["line"]["kind"], m["run_id"])
+             for n, m in enumerate(record["marks"])]  # fmt: skip
+    for n, run in enumerate(record["affected"]["runs"]):
+        cited.append((f"affected.runs[{n}].start", run["start"], "start", run["run_id"]))
+        if run["end"] is not None:
+            cited.append((f"affected.runs[{n}].end", run["end"], "end", run["run_id"]))
+    for where, line, event, run_id in cited:
+        path = root / line["path"]
+        log = by_path.get(line["path"])
+        if log is None:
+            problems.append(f"{where}: the launch log {path} cannot be read")
+        elif line["line"] > len(log.lines):
+            problems.append(f"{where}: the launch log {path} has no line {line['line']}")
+        elif log.lines[line["line"] - 1].line_sha256 != line["line_sha256"]:
+            problems.append(f"{where}: line {line['line']} of {path} has line_sha256 "
+                            f"{log.lines[line['line'] - 1].line_sha256} now, not the recorded "
+                            f"{line['line_sha256']}")  # fmt: skip
+        else:
+            found = log.lines[line["line"] - 1].record or {}
+            if found.get("event") != event or found.get("run_id") != run_id:
+                problems.append(f"{where}: line {line['line']} of {path} is not the {event} line "
+                                f"of {run_id}")  # fmt: skip
+    return problems
+
+
 def _against_simulation(root: Path, record: Mapping[str, Any], candidate: int,
                         repo: Path) -> list[str]:  # fmt: skip
     """An ``n-c<N>`` record against the simulation record it follows."""
@@ -2205,8 +2899,9 @@ def _against_line(root: Path, record: Mapping[str, Any], candidate: int) -> list
     the one reading of a cited line): the cited line's bytes and what it is (a held line, the
     run's last end, or its start when it has no end; of the record's run and seed, stating the
     record's reason), nothing in the journal after it that the readers would read as the run's
-    next attempt, and, for a held line, the supersession record (its ``held`` naming the run).
-    A launch log that cannot be read, or an unresolved torn line before the last of a log, fails
+    next attempt, and the supersession record it cites: for a held line, its ``held`` naming
+    the run; for a mark left unresolved after the cycle, the candidate's. A launch log that
+    cannot be read, or an unresolved torn line before the last of a log, fails
     closed: what it holds cannot be shown. The cycle's sha256 is checked with the other
     evidence."""
     run_id, cited = record["run_id"], record["line"]
@@ -2233,7 +2928,7 @@ def _against_line(root: Path, record: Mapping[str, Any], candidate: int) -> list
         else:
             check = {"held": _held_line, "end": _end_line, "start": _start_line}[cited["kind"]]
             found += check(root, line.record or {}, record, where, logs)
-    if cited["kind"] != "held":
+    if record["cycle"] is None:
         return found
     cycle = root / record["cycle"]["path"]
     if not _under_sealed(cycle, root) and cycle.is_file():
@@ -2242,8 +2937,9 @@ def _against_line(root: Path, record: Mapping[str, Any], candidate: int) -> list
         except (OSError, ValueError):
             data = None
         entries = data.get("held") if isinstance(data, dict) else None
-        if not isinstance(entries, list) or not any(
-                isinstance(e, Mapping) and e.get("run_id") == run_id for e in entries):  # fmt: skip
+        if cited["kind"] == "held" and (not isinstance(entries, list) or not any(
+                isinstance(e, Mapping) and e.get("run_id") == run_id
+                for e in entries)):  # fmt: skip
             found.append(f"run_id: the cycle record {cycle} holds no run {run_id}")
         elif isinstance(data, dict) and data.get("candidate", candidate) != candidate:
             found.append(f"cycle: the record {cycle} is candidate {data.get('candidate')!r}'s, "
@@ -2392,14 +3088,63 @@ def start_lines(runs_root: str | Path, logs: Sequence[Any] | None = None) -> dic
 
 def _against_n(root: Path, kind: str, record: Mapping[str, Any], candidate: int,
                repo: Path) -> list[str]:  # fmt: skip
-    """A ``budget-c<N>`` record against the ``n-c<N>`` record it answers."""
-    n, problems = read_decision(root, f"n-c{candidate}", repo=repo)
+    """A ``budget-c<N>`` record (or a successor) against the n record it answers: its N and its
+    cap; a successor answers an n successor (module docstring, "Successors")."""
+    named = PurePosixPath(record["answers"]["path"]).name[: -len(".json")]
+    n, problems = read_decision(root, named, repo=repo)
     if n is None:
-        return [f"the n-c{candidate} record it answers is "
+        return [f"the {named} record it answers is "
                 + ("missing" if not problems else f"not valid ({problems[0]})")]  # fmt: skip
-    found = [f"{name} {record[name]} is not the n-c{candidate} record's {n[name]}"
+    found = [f"{name} {record[name]} is not the {named} record's {n[name]}"
              for name in ("N", "cap") if record[name] != n[name]]  # fmt: skip
+    if link_of(kind)[1] > 1 and link_of(named)[1] == 1:
+        found.append(f"answers: {named} is the first n record: a budget successor answers the n "
+                     "record's successor")  # fmt: skip
     return found
+
+
+def _against_predecessor(root: Path, kind: str, record: Mapping[str, Any], candidate: int,
+                         repo: Path) -> list[str]:  # fmt: skip
+    """A successor against the record before it and the candidate's cycle (module docstring,
+    "Successors", "The confirmation boundary")."""
+    from .study3_cycle import read_cycle  # it reads this module's records: here only
+
+    base, k = link_of(kind)
+    before = base if k == 2 else f"{base}-{k - 1}"
+    predecessor, problems = read_decision(root, before, repo=repo)
+    if predecessor is None:
+        return [f"supersedes: the record before it, {before}, is "
+                + ("missing" if not problems else f"not valid ({problems[0]})")]  # fmt: skip
+    found = read_cycle(root, candidate, repo=repo)
+    if found["state"] != "valid" or found["record"] is None:
+        why = "; ".join(found["problems"][:2]) or "none is there"
+        return [f"supersedes.cycle: candidate {candidate}'s cycle is not accepted ({why}): a "
+                "successor follows a stale record through an accepted cycle"]  # fmt: skip
+    cycle, out = found["record"], []
+    old, fix = cycle["old_code"], cycle["code"]["gpu_code_sha256"]
+    own = predecessor["code"]["gpu_code_sha256"]
+    where = "/".join((*DIRECTORY, f"{before}.json"))
+    listed = {(entry.get("path"), entry.get("sha256")) for entry in cycle["affected"]["records"]}
+    pinned = (where, _digest(decision_path(root, before))) in listed
+    if own != old or not pinned:
+        out.append(f"supersedes: {before} is not stale through candidate {candidate}'s cycle (its "
+                   f"code {own}, the cycle's old code {old}; listed among the records the cycle "
+                   f"makes stale: {pinned}): a successor follows a stale record alone")  # fmt: skip
+    if record["code"]["gpu_code_sha256"] != fix:
+        out.append(f"code: its GPU code {record['code']['gpu_code_sha256']} is not the cycle's "
+                   f"fix {fix}: a successor carries the fix")  # fmt: skip
+    if confirmation_started(root, candidate):
+        changed = sorted(key for key in {*record, *predecessor} if key not in SUCCESSOR_FREE
+                         and record.get(key, _ABSENT) != predecessor.get(key, _ABSENT))  # fmt: skip
+        if changed:
+            out.append(f"{', '.join(changed)}: after the confirmation has started, N, the cap and "
+                       "the cohort never change without an explicit prospective amendment (a "
+                       "successor differs from its predecessor only in its code, written_at, "
+                       "supersedes and the reference to the n record in force)")  # fmt: skip
+    return out
+
+
+_ABSENT = object()
 
 
 # ------------------------------------------------------------------ small helpers

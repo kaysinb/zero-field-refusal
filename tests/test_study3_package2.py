@@ -96,6 +96,7 @@ RECORD_FILES = ("config.yaml", "meta.json", "terminal.json", "summary.json", "ev
 ANALYSIS = REPO_ROOT / "src" / "zero_field_refusal" / "analysis"
 PACKAGE = (
     ANALYSIS / "study3_blocks.py",
+    ANALYSIS / "study3_cycle.py",
     ANALYSIS / "study3_decisions.py",
     ANALYSIS / "study3_estimates.py",
     ANALYSIS / "study3_freeze.py",
@@ -766,7 +767,7 @@ def test_the_package_imports_no_gpu_module_and_loads_no_script() -> None:
     - ``campaign_prep``'s lazy import of ``analysis.study2_short`` (study 2's ``prep`` only) loads
       torch and ``zero_field_refusal.runtime``.
     The scripts run no training: none calls a GPU path."""
-    assert len(PACKAGE) == 13 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
+    assert len(PACKAGE) == 14 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
     for path in PACKAGE:
         assert gpu_uses(path, "zero_field_refusal.analysis") == set(), path.name
     for path in SCRIPTS:
@@ -847,6 +848,15 @@ def numerical(arm, rate, seed, candidate) -> dict:
     return target(arm, rate, seed, candidate)
 
 
+def rates_of(path: Path) -> set[tuple[str, float]]:
+    """The arm and the rate of each cell of a campaign file."""
+    out = set()
+    for cell in campaign_of(path)["cells"]:
+        pairs = dict(o.split("=", 1) for o in cell["overrides"])
+        out.add((ARM_OF[pairs["optimizer"]], float(pairs["optimizer.lr"])))
+    return out
+
+
 class Route(CampaignWorld):
     """The campaign writer's world (``test_study3_campaigns.World``) in a Git checkout, every
     campaign kind and every summary command run in process on its files, from the engineering
@@ -902,9 +912,9 @@ class Route(CampaignWorld):
         git(self.repo, "add", *(paths or ("-A",)))
         git(self.repo, "commit", "-qm", message)
 
-    def qualification(self, runs_root, candidate, *, expected_code, settings) -> dict:
+    def qualification(self, runs_root, candidate, *, expected_code, settings, **view) -> dict:
         """The qualification's reading: the rates in ``qualified``, each with its case's input
-        record (written by ``qualify``)."""
+        record (written by ``qualify``); ``view``, the view before a cycle, is the same here."""
         self.readings.append((candidate, expected_code))
         out = {"rates": {}, "states": {}, "cases": [], "voided": {}, "supersessions": [],
                "held": [], "problems": [], "inputs": []}  # fmt: skip
@@ -1034,23 +1044,50 @@ class Route(CampaignWorld):
         campaign kind, every summary command; the search's two rounds, a repair, the staged
         fixation and two versions records, N = 99 with its budget record, a P run under another
         commit (a dirty checkout) that P's closure record closes."""
+        self.build_to("done")
+
+    BUILD = ("fixation", "validation", "choice", "supplement", "confirming", "done")
+    # the K of the search's round 0 and of the numerical runs
+    ROUND0 = staticmethod(round0)
+    NUMERICAL = staticmethod(numerical)
+
+    def build_to(self, stage: str) -> None:
+        """``build``, step by step up to ``stage`` (``BUILD``): ``fixation``, through the
+        validation fixation and the first versions record, each committed alone; ``validation``,
+        the validation launched (every run at its target); ``choice``, the n and budget records;
+        ``supplement``, the confirmation supplement and the second versions record; ``confirming``,
+        the confirmation's first block; ``done``, the rest of the route."""
+        steps = {"fixation": self.to_fixation, "validation": self.validated,
+                 "choice": self.choose, "supplement": self.supplement,
+                 "confirming": self.first_block, "done": self.finish}  # fmt: skip
+        assert stage in steps
+        for name, step in steps.items():
+            step()
+            if name == stage:
+                return
+
+    def to_fixation(self) -> None:
+        """From the engineering campaign through the repair, then the validation fixation and the
+        first versions record, each committed alone."""
         root, theta0 = self.root, self.runs.theta0
         assert self.step()["record"] == "engineering"
-        self.launch(self.campaign("engineering"))
+        self.engineering = self.campaign("engineering")
+        self.launch(self.engineering)
         self.record("engineering", self.records.engineering(code=self.code))
         self.record("simulation", self.records.simulation(code=self.code))
         assert self.step()["campaign"] == "search-round0"
-        self.launch(self.campaign("search-round0"), round0)
+        self.launch(self.campaign("search-round0"), self.ROUND0)
         assert self.step()["campaign"] == "search-round1"
         self.launch(self.campaign("search-round1"))
         assert self.step()["campaign"] == "numerical"
-        self.numerical_runs = self.launch(self.campaign("numerical"), numerical)
+        self.numerical_runs = self.launch(self.campaign("numerical"), self.NUMERICAL)
         adjusted = adjusted_rate(START["F"]["u"], math.log(7.5) + 0.2, 7.5, 1.30)
         self.qualify({(arm, START[arm][label]) for arm in OPT for label in LABELS
                       if (arm, label) != ("F", "u")} | {("F", adjusted)})  # fmt: skip
         assert self.step()["campaign"] == "repair"
-        self.launch(self.campaign("repair"))
-        self.qualify({("A", adjusted_rate(START["A"]["l"], math.log(4.8) + 0.3, 4.8, 1.25))})
+        repair = self.campaign("repair")
+        self.launch(repair)
+        self.qualify(rates_of(repair))  # the repaired rates (A's lower one)
         assert self.step()["campaign"] == "validation"
         # the validation fixation and the first versions record, each committed alone
         self.ok("summary", "progress", "--runs-root", root, "--theta0", theta0)
@@ -1060,18 +1097,33 @@ class Route(CampaignWorld):
         self.ok("summary", "versions", "--out", FIRST, "--reason", "validation_c1", "--fixation",
                 VALIDATION_C1, "--runs-root", root)  # fmt: skip
         self.commit("the versions record", FIRST)
+
+    def validate(self, values=target, technical=()) -> list[str]:
+        """The validation campaign written, checked and launched (``launch``'s ``values`` and
+        ``technical``); its run ids."""
         validation = self.campaign("validation")
-        self.ok("summary", "check", "--runs-root", root, "--campaign", validation)
-        self.launch(validation)
+        self.ok("summary", "check", "--runs-root", self.root, "--campaign", validation)
+        self.validation = validation
+        return self.launch(validation, values, technical)
+
+    def validated(self) -> None:
+        """The validation launched, every run at its target: the state's step is the n record."""
+        self.validate()
         state = self.state()
         assert (state["stage"], state["step"]["record"], state["problems"]) == (
             "choice", "n-c1", [])  # fmt: skip
-        fields = state["step"]["fields"]
+
+    def choose(self) -> None:
+        """The n record with the step's fields (N = 99) and its budget record."""
+        fields = self.state()["step"]["fields"]
         self.record("n-c1", self.records.n(1, N, rates=fields["rates"], active=fields["active"],
                                           cohort=fields["cohort"], code=self.code))  # fmt: skip
         self.record("budget-c1", self.records.budget(1, N, code=self.code))
         assert self.step()["campaign"] == "confirmation"
-        # the confirmation supplement and the versions record that supersedes the first
+
+    def supplement(self) -> None:
+        """The confirmation supplement and the versions record that supersedes the first."""
+        root = self.root
         self.ok("summary", "fixation", "confirmation", "--runs-root", root, "--candidate", 1,
                 *SUPPLEMENT_SEEDS)  # fmt: skip
         self.commit("the confirmation supplement", CONFIRMATION_C1)
@@ -1079,7 +1131,10 @@ class Route(CampaignWorld):
                 "--fixation", CONFIRMATION_C1, "--runs-root", root, "--supersedes", FIRST,
                 "--supersedes-reason", "confirmation_c1")  # fmt: skip
         self.commit("the second versions record", SECOND)
-        # three blocks, each started only when the real guard lets it
+
+    def first_block(self) -> None:
+        """Three blocks written, the first started only when the real guard lets it."""
+        root = self.root
         out = self.campaign("confirmation", "--blocks", 10400, 10402)
         self.blocks = {campaign_of(p)["cells"][0]["seeds"][0]: p for p in out.glob("*.yaml")}
         assert sorted(self.blocks) == [10400, 10401, 10402]
@@ -1088,6 +1143,11 @@ class Route(CampaignWorld):
         assert self.guarded(10400, self.blocks[10400]).code == 0
         assert self.guarded(10401, self.blocks[10401]).code != 0  # out of seed order
         self.launch(self.blocks[10400])
+
+    def finish(self) -> None:
+        """The second and third blocks, a P run of the third under a dirty checkout closed by
+        P's closure record, the fourth block with A and F alone, and the prep script."""
+        root = self.root
         assert self.guarded(10401, self.blocks[10401]).code == 0
         self.launch(self.blocks[10401])
         assert self.guarded(10402, self.blocks[10402]).code == 0

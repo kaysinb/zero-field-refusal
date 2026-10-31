@@ -1870,7 +1870,12 @@ docstring holds the rules, and "A case restart" below has the complete list of t
     route ("A technical case's checkpoints", above).
 - **A technical failure and its engineering cycle.** A completed technical failure (the
   repeat beyond 0.01·K\*, a failed bridge, a launcher comparison alone, an exception) is never
-  rerun as it stands. Each candidate has one engineering cycle. After its diagnosis and fix,
+  rerun as it stands. Each candidate has one engineering cycle. It may also open outside the
+  qualification, from a technical mark of a search, validation or confirmation run ("Study 3:
+  campaigns", "A technical mark outside the qualification: its engineering cycle"); its
+  supersession record is then the bridge `study3_summary.py cycle` writes, in this same format,
+  `supersede` writes its journal lines, and the re-qualification below runs unchanged. After its
+  diagnosis and fix,
   committed, `supersede` records it: `c<N>/supersede-1.json` names the technical record that
   started it (path and sha256), the diagnosis, the fix, the fix's GPU code (which must differ
   from the record's: the same path is not simply rerun), every record of the candidate made
@@ -2279,19 +2284,168 @@ before each command below.
   launcher with exit 12: if the launcher reads the journal after the record is published and
   before its lines are appended, it finds them missing. Run the launcher again once the command
   has ended.
-- **A technical mark outside the qualification.** A technical mark of a search, validation or
-  confirmation run, in any arm, stops the route: the step is blocked and technical, with the
-  reason `engineering_route_pending`, naming each run (its id, label, arm and step). Its
-  registered route, one engineering cycle, is not implemented for these runs yet; the full route
-  comes in a later change, before the search starts. The researcher decides; beside that, only
-  the recovery round where the launcher opens one is offered (after `check`): the run's own at
-  `--max-attempts 1`, with a reason no earlier round of its label gave and its incident. No closure
-  is written for such a mark, and one written anyway is a problem that decides nothing.
-- **Holds and closures.** Two kinds of run are closed by a closure record: a run a candidate's
+- **A technical mark outside the qualification: its engineering cycle.** A technical mark of a
+  search, validation or confirmation run, in any arm, stops the route. Its registered route is the
+  candidate's one engineering cycle ([the registration](study3-preregistration.md#failure-routes):
+  diagnosis, a fix, re-qualification of the affected cases and reruns of the affected runs; one
+  cycle for every mark of the stage). In order:
+  1. **The step.** It is blocked and technical, with the reason `engineering_cycle`, naming each
+     run (its id, label, arm and step). Its ways out are each mark's recovery round where the
+     launcher opens one (after `check` for a validation or confirmation run: the run's own at
+     `--max-attempts 1`, with a reason no earlier round of its label gave and its incident), and
+     the cycle: the record `cycle-c<N>`, its fields (the candidate, the marks' stage, every mark)
+     and the stages started, each of which needs a claim (`--stage STAGE=reuse|rerun[:ARMS]`,
+     the marks' stage a rerun of every marked arm, the qualification's all or nothing, the search
+     never rerun once a validation fixation exists) with its justification (`--justification
+     STAGE=TEXT`, one line). No closure is written before the cycle; one written anyway is a
+     problem that decides nothing.
+  2. **The fix, committed first.** The cycle needs a clean checkout of the fix whose GPU code
+     differs from the code in force; a fix that leaves the GPU code unchanged is no cycle (below).
+     The right to a cycle is judged on the existing chain of engineering cycles, the code in force,
+     never on the fix's code. From the fix's checkout, until the cycle is written, `progress`,
+     `check`, the guard and the campaign writer report the chain problem ("not the end of the
+     chain of engineering cycles") and launch nothing: that is expected, and nothing is launched
+     meanwhile.
+  3. **The records it lists.** The cycle record lists every affected run by its files' paths and
+     sha256 (`config.yaml`, `meta.json`, `terminal.json`) and its journal lines; a file that is not
+     there is listed as absent (`{path, absent: true}`), never refused. What keeps counting is
+     listed as kept: the scientific failures, held runs, the runs of a closed arm and the stages
+     reused. A byte-identical copy from the archive, or a re-download, keeps every listed sha256;
+     new or changed evidence makes the cycle invalid and stops the route: restore the verified
+     original snapshot, or authorize the new evidence's provenance explicitly, and never delete
+     new evidence to get an absence marker back.
+  4. **The call.** On the machine holding `$RUNS_DIR`, from the clean checkout of the fix, first
+     with `--dry-run` (it prints the record and the bridge and writes nothing), then without:
+
+     ```bash
+     project-run "$SRC" python scripts/study3_summary.py cycle --runs-root "$R" --candidate 1 \
+       --diagnosis "<one line>" --fix "<one line, at commit SHA>" \
+       --stage search=reuse --stage qualification=rerun --stage validation=rerun:F \
+       --justification search="<why>" --justification qualification="<why>" \
+       --justification validation="<why>" --dry-run
+     ```
+
+     It writes the cycle record (`$RUNS_DIR/study3/decisions/cycle-c<N>.json`), then its bridge
+     (`$RUNS_DIR/qualification/c<N>/supersede-1.json`, `qualify.py`'s format), and prints both
+     paths and the journal repair. Run again with the same arguments over a record whose bridge
+     is missing, it writes only the bridge. It refuses while a run of the candidate is still in
+     flight, in any stage and arm (its start in the journal, no end line, nothing settling it),
+     and names each: the record pins the files of the runs it lists, and a run that ends later
+     would change them. Wait for the launcher to end those runs, then call it again.
+  5. **The repair.** Run the printed command where `$RUNS_DIR` is, with the same `--record` path
+     (the bridge names the cycle record by its absolute path on the machine that wrote it):
+     `qualify.py supersede --campaign <engineering campaign> --candidate N --engineering --case
+     <its first case> --record <the cycle record> --diagnosis D --fix F`. It writes the bridge's
+     `superseded` lines. Until it has run, the launcher and every `qualify.py` command exit 12
+     ("A missing journal line of a published record", above).
+  6. **The re-qualification.** Under `qualification=rerun`, as for a cycle of the qualification
+     ("Study 3: numerical qualification", "A technical failure and its engineering cycle"): every
+     voided case re-qualifies under the fix, its launcher run through its own recovery round, its
+     parts with `--engineering-cycle`; the cases holding a scientific failure are kept whole. Under
+     `qualification=reuse` there is none: the qualification is read under the old code.
+  7. **The reissue.** The campaign writer issues the superseded runs' cells again in the
+     route's order: a rerun search first, before the re-qualification; the validation's and the
+     confirmation's cells once the qualification passes (at once under `qualification=reuse`).
+     For each label whose latest attempt the cycle affected and whose attempt is used up, it
+     prints its own recovery round, after `check` and before the file's launch (`--only` the
+     label at `--max-attempts 1`, the reason `engineering cycle c<N>`, the cycle's time as the
+     incident's, the fix as its cause and the bridge as its evidence); a confirmation block's
+     `run.sh` runs it after the block's guard. A label under a new config hash is a new run and
+     takes the plain launch. A validation or confirmation reissue under the fix needs a new
+     versions record first: `check` refuses a descendant of the pinned commit that changes more
+     than the record (below, "A cycle after the validation fixation"). The round's
+     `--incident-time` is the cycle record's `written_at`, the time by the clock of the machine
+     that wrote the cycle. The launcher refuses an incident time later than its own clock's now
+     ("incident_time is later than now"): when the machine that launches runs behind the one
+     that wrote the cycle, the round is refused and nothing runs (it fails closed). Fix the
+     launching machine's clock and run the same printed command again, unchanged (its now is
+     then not earlier than the cycle's `written_at`); never change the cycle's `written_at` or
+     the round's `--incident-time` to get past the refusal.
+  8. **After the cycle.** The cycle is spent once the candidate has a supersession record,
+     whichever path wrote it. A technical mark outside the qualification after that is unresolved
+     after the cycle: the step is blocked and technical, with the reason `unresolved_after_cycle`,
+     and offers the mark's closure record (its last `end` line, or its start line; the reason
+     `unresolved_after_cycle`; its `cycle` the candidate's supersession record by its path and
+     sha256), beside its recovery round where the launcher opens one ("Holds and closures",
+     below).
+- **A cycle after the validation fixation: its successor records.** A cycle moves the
+  candidate's GPU code, so every write-once record of the old code goes stale: the validation
+  fixation, the confirmation
+  supplement, the n and budget records and the standing versions record (the cycle record lists
+  each by its path and sha256). Each stale record stays as it was; its successor is a new file
+  that names it and the cycle (`supersedes`: its path, its sha256, the reason `cycle_c<N>` and the
+  cycle record), and carries the fix: `docs/study3-fixation-validation-c<N>-2.json`,
+  `docs/study3-fixation-confirmation-c<N>-2.json`, `study3/decisions/n-c<N>-2.json` (the
+  `n-c<N>-2` record) and `budget-c<N>-2.json`. Once the candidate has a cycle record, its n and
+  budget records, its fixations and a versions record naming its fixation are written only under
+  the cycle's fix (the code in force for its runs), and nothing is written under the old code of
+  any cycle: `record`, `fixation` and `versions` refuse it, so what the cycle lists as stale
+  changes only when a file is tampered with (the cycle then reads invalid). The search is never
+  rerun after the fixation (`search=reuse`), and the fixed rates stand: a repair the re-qualified
+  runs would call for is listed (`repair_not_applied`) and never issued. P alone may leave the
+  fixed rates: once the re-qualification closes P (its technical failure unresolved after the
+  cycle, a closure record, or before the confirmation a scientific failure), the validation
+  fixation's successor leaves P out and keeps A's and F's rates; the record before it keeps P's
+  rates and states, and P's records stay. With the successor in force, the state reads P's
+  closure again from the rates the record before it fixed (a repaired rate included), so A–F
+  goes on; a successor that leaves out a P whose rates are qualified or still waiting is refused
+  by its reader, and the state blocks at the repair. The successors come in this order, each
+  written when the state's step names it and committed alone (one written out of turn is refused
+  with the step the state names):
+  1. the validation fixation's successor (`study3_summary.py fixation validation`, once the
+     re-qualification has passed) and its versions record (`versions --supersedes ...
+     --supersedes-reason cycle_c<N>`, its `--fixation` the successor);
+  2. the validation rerun, issued under them (the claim `validation=rerun`; none under `reuse`);
+  3. the spread, N and budget decisions, as the step names them (`record n-c<N>`, then `record
+     budget-c<N>` when N asks for one: the next successor when the record in force is stale, its
+     file carrying `supersedes`), on the validation that counts; a stale budget record that the
+     new N no longer asks for (N at most 90 and not raised for power) needs no successor;
+  4. the confirmation supplement's successor (`fixation confirmation`, the same seeds) and its
+     versions record.
+
+  **The confirmation boundary.** Once a block of the candidate's confirmation has started, the
+  candidate, the rates, the started seeds and the cohort's order never change: there is no
+  candidate 2, no new N and no reopening of the validation without an explicit prospective
+  amendment, which the code never infers. `cycle` refuses `validation=rerun` and `search=rerun`;
+  a re-qualification failing scientifically blocks the route with the reason
+  `confirmation_fixed` instead of moving the candidate or closing an arm; the n, budget and
+  supplement successors differ from their predecessors only in their code, time, `supersedes`
+  and the references to the records in force (N, the cap, the cohort and the seeds stand). A
+  technical failure of P alone (its re-qualification unresolved after the cycle, or a closure
+  record) closes P, and only P–F ends: the n record and its successor keep the frozen design,
+  P's rates and P–F as N was decided included; a validation fixation's successor written once
+  the re-qualification closed P leaves P out; and the confirmation goes on with A and F alone
+  (four runs per block).
+  Before the confirmation has started, the registered routes apply unchanged: a fixed rate's
+  re-qualification failing scientifically moves A or F to candidate 2 (at candidate 2, the
+  scientific feasibility report) and closes P–F for P; a rerun validation failing its gate takes
+  its route.
+- **A fix that leaves the GPU code unchanged.** An analysis fix (a reader's rule) is no cycle
+  and gets no record of its own: `cycle` refuses it. Commit the fix and read the state again:
+  every reader recomputes from the raw records, and the mark resolves only if the recomputed
+  reading no longer gives it. Replay the affected branches on CPU ([amendment
+  6](study3-preregistration.md#amendment-6-replaying-orchestration-changes-on-cpu)) and record
+  the replay's evidence (the tests, the commit, their results) in the stage's report; the final
+  report lists it. Write a new versions record before any validation or confirmation launch
+  (`check` needs the pinned commit or a record-only child of it), and rerun `qualify.py verdict`
+  on CPU so that its cache agrees.
+- **A search run under another GPU code.** A counting search run must be under a GPU code the
+  search counts under: the code in force before the candidate's cycle or the code in force for
+  its runs, the former not for an arm the cycle reruns at the search. A run of another code, or
+  of a dirty or unknown commit (its code cannot be told), is a technical mark with the reason
+  `other_gpu_code`, before any cycle too; the scientific failures a cycle keeps are exempt. It
+  is no cycle case: its ways out are its recovery round where the launcher opens one and its
+  closure record. A code that cannot be told is most often a commit this checkout cannot place:
+  fetch that commit and read the state again before any closure is written, since a closure of
+  A or F is terminal.
+- **Holds and closures.** Four kinds of run are closed by a closure record: a run a candidate's
   engineering cycle held (an outcome nobody could resolve, [above](#study-3-numerical-qualification)),
-  and a run under another commit (above, "A run's own commit"). The step names each: for a held
-  run, the closure record to write; for a run under another commit, its ways out (a recovery
-  round, where the launcher would open one, and its closure record). The researcher decides which
+  a run under another commit (above, "A run's own commit"; its uncounted reason), a search run
+  under another GPU code (the reason `other_gpu_code`, no cycle), and a technical mark outside the
+  qualification left unresolved after the candidate's engineering cycle (the reason
+  `unresolved_after_cycle`, its `cycle` the candidate's supersession record). The step names
+  each: for a held run, the closure record to write; for the others, their ways out (a recovery
+  round, where the launcher would open one, and the closure record). The researcher decides which
   way out is taken. A closure record states the terminal technical outcome. A closure of A or F
   ends the study with the technical feasibility report, and candidate 2 is not taken; a closure of
   P closes P–F, and A–F goes on. It is written from the step, with exactly the fields the step
