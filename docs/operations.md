@@ -2468,7 +2468,7 @@ the run's files and the simulation record; `analysis.study3_simulation` holds th
 procedure and the engine, `analysis.study3_seed_vectors` the inputs, `analysis.study3_decisions`
 the record's checks. Their docstrings hold every rule. The modeling values (the harm and label
 models, the support, the safe alternative, the spread and Δ through the selection, the grid, the
-streams, the draw bound and the rest, M1–M27) are the researcher's: each is listed with its
+streams, the draw bound and the rest, M1–M29) are the researcher's: each is listed with its
 source in the module's rulings and frozen, with a source line ending "M<n>, decided", in the
 fixation.
 
@@ -2506,6 +2506,21 @@ fixation.
     extra, one out of order or one whose values differ), as it refuses the identities; the J
     check refuses results whose power at 1 % is at another rate or over other studies.
 
+- **The stops ([amendment 7](study3-preregistration.md#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run)).**
+  - **L** is the first level whose A–F tests at N ≥ 60 and at the cap pass. Each comparison's floor
+    is the smallest of 36, 45 and 60 at which its tests at and above that size pass at L, the cap
+    test counting only the studies whose reading is confirmatory at that floor.
+  - **P–F** is read at L or withheld: its tests are its marginal and joint ones, on the screen and
+    in the verification. A failure of P–F alone advances nothing, and there are no mixed levels.
+  - **A failure at L** is a failure of A–F's tests in the verification at or above its floor. It
+    advances to the next level that passes its screen, with the power and any scan computed again
+    at that level, on that level's own stream, every failed result kept. With no level left, the
+    record fails.
+  - **Short of M eligible studies within 4·M draws,** an A–F test is incomplete, not failed: the
+    run stops by its name, and extending the same indexed stream under a recorded computational
+    limit is a decision (it is not implemented). A P–F or joint test is not attainable, which
+    withholds P–F.
+
 ```bash
 R="$RUNS_DIR"
 project-run "$SRC" python scripts/study3_simulate.py inputs          # then commit it
@@ -2526,7 +2541,7 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
   2. `fixation` needs a clean checkout with the inputs record tracked. It calibrates every
      scenario at every candidate it can run (f, the safe shifts, σ at the Δ = 0 offsets and the
      offsets, through the selection, over `--workers` processes), enumerates the coverage tests
-     (J = 1 785) and writes `docs/study3-simulation-fixation.json`, with the machine it ran on.
+     (J = 2 856) and writes `docs/study3-simulation-fixation.json`, with the machine it ran on.
      Commit it alone, before the first draw.
   3. `run` checks, before any draw, that the fixation is tracked, committed once and alone in
      HEAD or an ancestor and unchanged, that its inputs and tests are the pinned ones, that its
@@ -2538,24 +2553,28 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
      relative 10⁻⁹ or within their solver's precision, 10⁻⁹ pp for a pp field and 10⁻¹¹ for a
      proportion, so that a value near 0 compares by its precision; a different machine is
      printed, not refused). It then runs the gates, the screen and, when the power is short,
-     the n_min scan, and writes `screen.json`. It prints L (or "no level passed"), the
-     validation size and the gates' values, with the power at 1 % beside them.
-  4. `verify` runs the binding verification at L on the verification stream (100 000
-     resamples, the realized route) and writes `verification.json`. It refuses without the
-     screen, with a screen of another commit than the clean HEAD, without an L (the
-     verification is not due), when the n_min scan stopped at an n whose cap exceeds the 200
-     reserved seeds (no attainable n: the verification is not run, the design stop) and once
+     the n_min scan, and writes `screen.json`. It prints L (or "no level passed"), each
+     comparison's floor, the validation size and the gates' values, with the power at 1 % beside
+     them.
+  4. `verify` runs the binding verification from L, each level on its own stream (100 000
+     resamples, the realized route), and writes `verification.json`, with every level tried. It
+     refuses without the screen, with a screen of another commit than the clean HEAD, without an
+     L (the verification is not due), when the n_min scan at L stopped at an n whose cap exceeds
+     the 200 reserved seeds (no attainable n: the verification is not run) and once
      `verification.json` exists: it is never rerolled.
   5. `record` writes `results.json` and then the simulation record, which binds the results
-     and the seed vectors by sha256. Both are refused when the results fail the J check (an
-     identity listed twice, missing or not in the fixation, a pass, L, a gate or a size that
-     does not recompute), and a second record is refused, as `study3_summary.py record` refuses
-     it. No level passing, a verification that fails, or no attainable n (the verification not
-     run; `record` prints `verification not_run no_attainable_n`) gives a failed record: the
-     design stop (`progress`: `design_stop`, `simulation_failed`).
+     and the seed vectors by sha256 and carries `reading` (L, `pf_confirmatory` and each
+     comparison's floor, the field the procedure reads) and `levels_tried`. Both are refused when
+     the results fail the J check (an identity listed twice, missing or not in the fixation, a
+     pass, L, a floor, a gate or a size that does not recompute), and a second record is refused,
+     as `study3_summary.py record` refuses it. No level passing, no level left, or no attainable n
+     (the verification not run; `record` prints `verification not_run no_attainable_n`) gives a
+     failed record (`progress`: `design_stop`, `simulation_failed`, read as a pause for a decision
+     under amendment 7).
 - **The files.** Under `$RUNS_DIR/study3/simulation/` (reserved, no run directory): the parts
   (`parts/<phase>/<scenario>/<first>.json`, 250 studies each, the phase `gates`, `screen`,
-  `scan-<n>` or `verification`), `screen.json`, `verification.json` and `results.json`. Every
+  `scan-<level>-<n>` or `verification-<level>`), `screen.json`, `verification.json` and
+  `results.json`. Every
   file is JSON, written whole and once. The simulation record lies under
   `$RUNS_DIR/study3/decisions/simulation.json`.
 - **Resuming.** Every study is a pure function of its stream, its scenario and its index, and a
@@ -2592,8 +2611,14 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
     none: the verification does about 3 % less than with C16 and C17 as power scenarios (C17
     0.61 instead of 0.77 CPU-seconds per study, one process);
   - the calibration has two more pairs (P20 and P21 at candidate 1), off the critical path;
-  - in all about 9.5 h on an idle machine. The parts take about 1.9 kB per study (about 0.85
-    GB).
+  - the screen's cap tests at the three floors draw on until the joint test at floor 60 holds M
+    studies: at most about a tenth more of a low-support scenario's studies where N is near 60
+    (an estimate, not measured);
+  - in all about 10 h on an idle machine with one verification. The parts take about 1.9 kB per
+    study (about 0.85 GB);
+  - each further level after a failed verification adds a verification of the same size, about
+    5–6 h (an estimate from the figures above), and its n_min scan when that level's power is
+    short, a few minutes per n: at most three more, so about 28 h in the worst case.
   At the sizes of the dry run's Part II (M = 200, 200 and 1 000 resamples, 1 000 calibration
   selections per scenario and candidate, `study3_simulation`'s M25) the screen takes about 1.5
   minutes and the verification under 5; the calibration draws 1 000 selections per pair

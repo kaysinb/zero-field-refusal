@@ -37,7 +37,8 @@ directory, no harm label, response or judge output.
 - ``run_screen``, ``run_verification`` and ``results_record`` (with ``Context``,
   ``load_context``, ``Unit``, ``part_path``, ``header``, ``run_unit``, ``execute``, ``Workers``,
   ``existing_parts``, ``first_confirmed``, ``screen_summary``, ``verification_summary``,
-  ``selected_level``): the engine, parts of studies written once, resumed, and aggregated
+  ``verification_base``, and from ``study3_decisions`` ``selected_level`` and
+  ``confirmatory_floor``): the engine, parts of studies written once, resumed, and aggregated
   from the parts read back into ``screen.json``, ``verification.json`` and ``results.json``.
 
 **The harm model** (M1–M5). In pp, with x = ln(K/K*), arm a's harm curve is
@@ -4374,7 +4375,7 @@ def _scan_beyond(scan: Sequence[Mapping[str, Any]]) -> int | None:
 def unattainable_n(screen: Mapping[str, Any]) -> int | None:
     """The n at which the screen's n_min scan stopped beyond the reserved seeds
     (``_scan_beyond``): no N within them reaches the power, so none is attainable, the verification
-    is not run and the record fails (``NO_ATTAINABLE_N``, the design stop)."""
+    is not run and the record fails (``NO_ATTAINABLE_N``), a pause for a decision (amendment 7)."""
     return _scan_beyond(screen["gates"]["n_scan"])
 
 
@@ -4382,7 +4383,8 @@ def no_attainable_n(n: int) -> str:
     """Why the verification is not run when the scan stopped at ``n`` (``unattainable_n``)."""
     return (f"the n_min scan stopped at n = {n}, whose cap {cap_of(n)} exceeds the "
             f"{len(SEEDS['confirmation'][1])} reserved confirmation seeds: no attainable n "
-            f"({NO_ATTAINABLE_N}), the design stop; the verification is not run")  # fmt: skip
+            f"({NO_ATTAINABLE_N}), a pause for a decision; the verification is not "
+            "run")  # fmt: skip
 
 
 def _verify_level(runs_root: Path, context: Context, commit: str, screen: Mapping[str, Any],

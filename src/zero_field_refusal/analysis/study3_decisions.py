@@ -102,15 +102,16 @@ on is a response or an observation, and this module opens none.
   failed); a null L means every level was tested and none is left: a failed record, which the
   procedure reads as a pause (amendment 7).
   **The state follows the coverage screen and its independent verification, and nothing else**:
-  ``passed`` exactly when a level passed and its verification passed ("If no level passes, or the
-  verification fails, the confirmation cannot start"). A pass rate below its requirement is not a
+  ``passed`` exactly when a level verified (amendment 7, "A failure at L"; with no level left the
+  confirmation cannot start, and the failed record is read as a pause). A pass rate below its
+  requirement is not a
   failure but the 40-block validation, chosen once: ``validation_blocks`` is 40 when
   ``safe_pass_rate`` is below 0.95 and 28 otherwise. A power shortfall is not a failure either: it
   is recorded (``power_short``, ``n_min``) and N and the cap are raised, with a decision on the
   money (see ``n-c<N>`` and ``budget-c<N>``), unless no N is attainable: when ``n_min``'s cap
   exceeds the 200 reserved confirmation seeds (the scan stopped there), the verification is not
-  run, its tests are not due and it does not pass, so the record fails (the design stop). A
-  failed record may have a null L or a null size.
+  run, its tests are not due and it does not pass, so the record fails, a pause for a decision
+  (amendment 7). A failed record may have a null L or a null size.
 - ``n-c<N>``: ``candidate`` (N of the kind), ``rates`` (per arm A, F and, when P–F is active, P:
   ``lr_l`` and ``lr_u``), ``active`` (``["A-F"]`` or ``["A-F", "P-F"]``), ``level`` (the
   simulation record's), ``cohort`` (the validation block ``seeds`` and the ``run_ids`` used, at
@@ -248,7 +249,7 @@ them, needs an explicit prospective amendment, which the code never infers: it i
   ``CALIBRATION_STUDIES`` and the solvers' tolerances), so that no record rests on a fixation of
   reduced sizes whichever path reads it; the results hold
   exactly that list (no test twice, none missing, none it does not list), a verification test
-  carrying the slot ``selected_calibration_level`` and "not due" exactly when no level passed;
+  "not due" at every level the walk did not try (``coverage_decisions``);
   and every pass, the levels' counts (a test short of M studies at the 4·M bound has no X: A–F's,
   incomplete, stops the run; P–F's or a joint one, not attainable, withholds P–F), L, the floors,
   the verification, the gates (from their stored counts), the validation size and the state are
@@ -2459,7 +2460,7 @@ def coverage_decisions(
             if row is None:
                 problems.append(f"tests: {list(identity)} has no row")
             elif not _not_due(row):
-                problems.append(f"tests: {list(identity)}: its level was not tried, or P–F is "
+                problems.append(f"tests: {list(identity)}: its level was not tried, or P-F is "
                                 "withheld there, so the test is not due: every field but its "
                                 "test, p0 and due (false) is null")  # fmt: skip
     passed = reading is not None

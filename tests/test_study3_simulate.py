@@ -523,8 +523,8 @@ def test_a_pf_failing_its_screen_is_withheld_and_not_verified(world, monkeypatch
 
 def test_no_attainable_n_skips_the_verification_and_fails_the_record(world) -> None:
     """The power short at every n of the scan up to the first whose cap exceeds the 200 reserved
-    seeds: no N is attainable, so the verification is not run (the design stop, named), its
-    tests are not due, and the record fails."""
+    seeds: no N is attainable, so the verification is not run (a pause for a decision, named),
+    its tests are not due, and the record fails."""
     repo, runs, simulate = world
     beyond = next(n for n in range(60, 400) if decisions.cap_of(n) > 200)
     ran(simulate("run", "--runs-root", runs, "--workers", 1))
@@ -541,7 +541,7 @@ def test_no_attainable_n_skips_the_verification_and_fails_the_record(world) -> N
 
     edit(screen, short)
     refused(simulate("verify", "--runs-root", runs, "--workers", 1), "no attainable n",
-            "design stop", str(decisions.cap_of(beyond)))  # fmt: skip
+            "a pause for a decision", str(decisions.cap_of(beyond)))  # fmt: skip
     assert not (runs / "study3" / "simulation" / "verification.json").exists()
     out = ran(simulate("record", "--runs-root", runs))
     assert (
