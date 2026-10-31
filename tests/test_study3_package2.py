@@ -1066,17 +1066,26 @@ class Route(CampaignWorld):
             if name == stage:
                 return
 
-    def to_fixation(self) -> None:
-        """From the engineering campaign through the repair, then the validation fixation and the
-        first versions record, each committed alone."""
-        root, theta0 = self.root, self.runs.theta0
+    def to_search(self) -> None:
+        """The engineering campaign, then the engineering and simulation records."""
         assert self.step()["record"] == "engineering"
         self.engineering = self.campaign("engineering")
         self.launch(self.engineering)
         self.record("engineering", self.records.engineering(code=self.code))
         self.record("simulation", self.records.simulation(code=self.code))
+
+    def to_fixation(self) -> None:
+        """From the engineering campaign (``to_search``) through the search's round 0, then
+        ``after_round0``."""
+        self.to_search()
         assert self.step()["campaign"] == "search-round0"
         self.launch(self.campaign("search-round0"), self.ROUND0)
+        self.after_round0()
+
+    def after_round0(self) -> None:
+        """From the search's round 1 through the repair, the validation fixation and the first
+        versions record, each committed alone."""
+        root, theta0 = self.root, self.runs.theta0
         assert self.step()["campaign"] == "search-round1"
         self.launch(self.campaign("search-round1"))
         assert self.step()["campaign"] == "numerical"

@@ -2044,7 +2044,13 @@ before each command below.
   1. **Engineering.** `engineering` writes the starting rates on 10000-10003, run by the printed
      `qualify.py driver ... --engineering` ([above](#study-3-numerical-qualification)). The
      engineering record then names the records of its four checks: the dry run, the bridge,
-     θ₀'s utility (`scripts/check_theta0_utility.py`) and the stage-0 check.
+     θ₀'s utility (`scripts/check_theta0_utility.py`) and the stage-0 check. The dry run's check
+     references Part I's report and the integration replay's ([amendment
+     7](study3-preregistration.md#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run)),
+     so `project-run "$SRC" python -m pytest tests/test_study3_replay.py` passes in the Pod image
+     first. On synthetic runs it drives the campaign writer, the summary script, `qualify.py
+     supersede`, the readers, the simulation record's J check and the analysis freeze on files; the
+     launcher's files and the numerical stage's qualification reading are given there.
   2. **The simulation record**, before the search: written by `scripts/study3_simulate.py record`
      ([below](#study-3-simulation)).
   3. **The search.** `search-round0`, then `search-round1` where a median missed.
