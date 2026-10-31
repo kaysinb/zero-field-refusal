@@ -33,7 +33,8 @@ outcome (``TERMINAL``, below). ``candidate``.
 - ``pending``: what the step waits for (runs that have not ended, rates whose qualification has
   no record yet; at the confirmation, the blocks of those runs and each run's way out);
 - ``blocked``: the reasons; ``technical`` for a technical mark's pause, with its ``reason`` id, its
-  ``why`` and ``ways_out`` (below, "Technical marks");
+  ``why`` and ``ways_out`` (below, "Technical marks"); a pause for a recorded decision carries its
+  ``reason`` (``simulation_failed``, ``cap_beyond_reserved_seeds``) and ``why``, and is no mark;
 - ``report`` or ``done``: the outcome and its reason.
 ``outcome`` (a terminal stage), each with its ``reason`` id and the ``reasons`` that name why:
 - ``scientific_feasibility_report``: A or F failed scientifically at candidate 2
@@ -44,23 +45,22 @@ outcome (``TERMINAL``, below). ``candidate``.
   ``cap_reached``).
 A chain of engineering cycles that is broken is a problem, never an outcome.
 ``active``: the arms and comparisons still open. ``rates``: the candidate's selected (or repaired)
-rates. ``route``: the decisions taken on the way (a candidate left, P–F closed, the candidate
-chosen). ``closures``: the closure records written. ``validation`` and ``confirmation``: the
-stage's summary once reached. ``problems``: every problem found. ``not_counted``: every validation
-or confirmation run that does not count for the commit it ran (below), wherever the walk stops.
-``resolved_torn_lines``: every torn line of the launch journal that the launcher's resolution
-names (``study3_records``, "Attempts": listed, no problem), each by its ``log`` (its path under
-RUNS_DIR), its ``line`` number and its ``kind``; nothing else of the line. ``cycle``: per
-candidate with a cycle record outside the qualification (valid or not; ``qualify.py``'s own
-cycle has none), wherever the walk stops: the ``candidate``, its ``record`` and ``bridge``
-paths, its ``state``, the marks' ``stage``, its ``claims`` (each stage's ``reuse`` or
-``rerun``), its ``affected`` runs (each ``run_id``, ``step`` and ``gpu_code``), what it
-``kept``, the ``repair_record`` (the exact ``--record`` of the journal repair), its
-``written_at`` and ``code`` (the fix: the incident of the recovery rounds that reissue the
-affected runs, ``study3_campaigns``) and the ``successors`` of the write-once records it makes
-stale (each stale record's path, and its successor's once written, or None). Superseded runs
-need no rule of their own: a
-cell whose attempts are all superseded is issued again (the search's missing seeds, a block's
+rates. ``route``: the decisions taken on the way (a candidate left, P–F closed, reopened or
+withheld, the candidate chosen). ``closures``: the closure records written. ``validation`` and
+``confirmation``: the stage's summary once reached. ``problems``: every problem found.
+``not_counted``: every validation or confirmation run that does not count for the commit it ran
+(below), wherever the walk stops. ``resolved_torn_lines``: every torn line of the launch journal
+that the launcher's resolution names (``study3_records``, "Attempts": listed, no problem), each by
+its ``log`` (its path under RUNS_DIR), its ``line`` number and its ``kind``; nothing else of the
+line. ``cycle``: per candidate with a cycle record outside the qualification (valid or not;
+``qualify.py``'s own cycle has none), wherever the walk stops: the ``candidate``, its ``record`` and
+``bridge`` paths, its ``state``, the marks' ``stage``, its ``claims`` (each stage's ``reuse`` or
+``rerun``), its ``affected`` runs (each ``run_id``, ``step`` and ``gpu_code``), what it ``kept``,
+the ``repair_record`` (the exact ``--record`` of the journal repair), its ``written_at`` and
+``code`` (the fix: the incident of the recovery rounds that reissue the affected runs,
+``study3_campaigns``) and the ``successors`` of the write-once records it makes stale (each stale
+record's path, and its successor's once written, or None). Superseded runs need no rule of their
+own: a cell whose attempts are all superseded is issued again (the search's missing seeds, a block's
 missing cells), and a superseded qualification launcher run waits for its next attempt.
 
 **Order** ("Seeds and order"). The engineering record passed (the cells of the engineering stage,
@@ -314,8 +314,9 @@ never issued is then refused by name, and blocks.
 **Rulings** where the registration leaves a detail open, fixed here before any study-3 record:
 - *A failed simulation record* is a pause for a decision (``simulation_failed``, amendment 7): no
   level passed, its verification failed or no N was attainable, and nothing after it is run.
-- *P closed* is closed for the rest of the study: P–F ends ("only P–F ends"), and candidate 2
-  issues no P cell.
+- *P closed* is closed for its candidate. Candidate 2, reached by A–F's rule, tests P again under
+  unchanged criteria (amendment 7, ``reopen_pf`` on the route): no technical mark closes P, and a
+  P–F the simulation withholds does not reopen.
 - *Waiting before routing*: a stage's route decision waits for its runs to end and for its
   technical marks' diagnoses, in every active arm (rules 1 and 2 above), so that a decision once
   shown cannot be reversed by a record of that stage written later.
@@ -964,6 +965,8 @@ class _Walk:
         for candidate in (1, 2):
             self.candidate = candidate
             self.rates, self.extra = {}, {}
+            if candidate == 2:
+                self._reopen_p()
             try:
                 self._candidate(candidate)
             except _Move as move:
@@ -972,6 +975,16 @@ class _Walk:
                     raise _Stop(self._report(SCIENTIFIC_REPORT, "scientific_failure", [
                         f"candidate 1 and candidate 2 failed: candidate 2 at its "
                         f"{move.event['stage']}: {move.event['why']}"])) from None  # fmt: skip
+
+    def _reopen_p(self) -> None:
+        """Candidate 2, reached by A–F's rule: a P closed at candidate 1, every such closure a
+        scientific one, is tested again on candidate 2's seeds under unchanged criteria, its
+        failures staying on the route (amendment 7, "Candidate 2 and P"). A P–F the simulation
+        withholds does not reopen."""
+        if "P" not in self.arms and self.reading["pf_confirmatory"]:
+            self.arms = list(ARM_ORDER)
+            self.route.append(self._event("search", "reopen_pf", ["P"], "candidate 2 is reached "
+                                          "by A–F's rule: P is tested on its seeds"))  # fmt: skip
 
     def _withhold_p(self) -> None:
         """A P–F the simulation's reading withholds (amendment 7, "Each comparison's checks"): P
@@ -1591,8 +1604,8 @@ class _Walk:
 
     def _frozen_p(self, record: Mapping[str, Any],
                   fields: Mapping[str, Any]) -> dict[str, float] | None:  # fmt: skip
-        """P's rates as a frozen n record keeps them (module docstring, "The confirmation
-        boundary"): once the candidate's confirmation has started, P closed in the route since
+        """P's rates as a frozen n record keeps them: once the candidate's confirmation has
+        started (no route closes P after that now, amendment 7), P closed in the route since
         the record was written (P–F active in it, P inactive now), and the record's P rates
         those the validation fixation chain fixed for P (its link in force, or the earlier link
         a successor that left P out names: ``dropped``). None otherwise: the record is read

@@ -633,11 +633,10 @@ def fail_at(study: Study, stage: str, arm: str = "F", candidate: int = 1) -> Non
     study.validation(candidate, special={(s, arm, "u"): {"K": below} for s in seeds[:7]})
 
 
-@pytest.mark.parametrize("stage, arms", [("search", ARMS), ("numerical", ARMS),
-                                         ("validation", ("A", "F"))])  # fmt: skip
-def test_f_failing_scientifically_at_candidate_1_moves_to_candidate_2(stage, arms) -> None:
-    """P carries on to candidate 2, unless its own gate failed: F's support is P–F's too, so F
-    failing at validation fails the P–F gate as well, which closes P ("Failure routes")."""
+@pytest.mark.parametrize("stage", ["search", "numerical", "validation"])
+def test_f_failing_scientifically_at_candidate_1_moves_to_candidate_2(stage) -> None:
+    """P carries on to candidate 2. F's support is P–F's too, so F failing at validation fails the
+    P–F gate as well, which closes P at candidate 1; candidate 2 tests it again (amendment 7)."""
     study = Study()
     study.ready()
     fail_at(study, stage, "F")
@@ -645,11 +644,12 @@ def test_f_failing_scientifically_at_candidate_1_moves_to_candidate_2(stage, arm
     assert (result["stage"], result["candidate"], result["outcome"]) == ("search", 2, None)
     assert result["step"]["campaign"] == "search-round0"
     assert cells(result["step"]) == {(arm, CANDIDATES[2]["start"][arm][label], seed)
-                                     for arm in arms for label in LABELS
+                                     for arm in ARMS for label in LABELS
                                      for seed in SEEDS["search"][2]}  # fmt: skip
     (move,) = [e for e in result["route"] if e["event"] == "candidate"]
     assert (move["candidate"], move["stage"], move["arms"]) == (1, stage, ["F"])
-    assert result["active"]["arms"] == list(arms)
+    assert result["active"]["arms"] == list(ARMS)
+    assert ("close_pf" in [e["event"] for e in result["route"]]) is (stage == "validation")
     assert "c2/search/r0" in result["prescribed"]
 
 
@@ -767,19 +767,68 @@ def test_p_failing_at_validation_closes_p_and_a_f_goes_on() -> None:
                                      for label in LABELS}  # four runs per block  # fmt: skip
 
 
-def test_p_failing_at_the_search_closes_p_for_the_rest_of_the_study() -> None:
+def test_p_closed_scientifically_is_tested_again_at_candidate_2() -> None:
+    """Amendment 7: P closed at candidate 1 leaves candidate 1's cells, and candidate 2, reached by
+    A–F's rule, tests P on its own seeds; candidate 1's failure stays on the route."""
     study = Study()
     study.ready()
     study.search(special={("P", "u", 10102): {"state": "scientific"}})
     result = study.advance()
     assert (result["stage"], result["active"]["arms"]) == ("numerical", ["A", "F"])
     assert len(result["step"]["cells"]) == 12
-    # A then fails at candidate 1: candidate 2 issues no P cell
+    study.numerical(arms=("A", "F"), states={"A": "failing"})
+    result = study.advance()
+    assert (result["stage"], result["candidate"]) == ("search", 2)
+    assert {c[0] for c in result["step"]["cells"]} == set(ARMS)
+    assert {c[2] for c in result["step"]["cells"]} == set(SEEDS["search"][2])
+    assert result["active"]["comparisons"] == ["A-F", "P-F"]
+    assert [e["event"] for e in result["route"]] == ["close_pf", "candidate", "reopen_pf"]
+    assert (result["route"][0]["candidate"], result["route"][2]["candidate"]) == (1, 2)
+
+
+def test_p_failing_again_at_candidate_2_closes_it_there() -> None:
+    study = Study()
+    study.ready()
+    study.search(special={("P", "u", 10102): {"state": "scientific"}})
+    study.numerical(arms=("A", "F"), states={"A": "failing"})
+    study.search(2, special={("P", "u", 10112): {"state": "scientific"}})
+    result = study.advance()
+    assert (result["stage"], result["candidate"]) == ("numerical", 2)
+    assert result["active"]["arms"] == ["A", "F"]
+    events = [(e["candidate"], e["event"]) for e in result["route"]]
+    assert events == [(1, "close_pf"), (1, "candidate"), (2, "reopen_pf"), (2, "close_pf")]
+
+
+def test_p_does_not_reopen_for_a_withheld_p_f() -> None:
+    """The simulation's withholding holds at either candidate: P closed at candidate 1 stays closed
+    at candidate 2 and P–F stays withheld; a P that never closed keeps running before the
+    confirmation."""
+    study = Study()
+    study.record("engineering")
+    study.simulation(pf_confirmatory=False)
+    study.search(special={("P", "u", 10102): {"state": "scientific"}})
     study.numerical(arms=("A", "F"), states={"A": "failing"})
     result = study.advance()
     assert (result["stage"], result["candidate"]) == ("search", 2)
     assert {c[0] for c in result["step"]["cells"]} == {"A", "F"}
-    assert result["active"]["comparisons"] == ["A-F"]
+    assert "reopen_pf" not in [e["event"] for e in result["route"]]
+    study = Study()
+    study.record("engineering")
+    study.simulation(pf_confirmatory=False)
+    study.search()
+    study.numerical(states={"A": "failing"})
+    result = study.advance()
+    assert (result["candidate"], {c[0] for c in result["step"]["cells"]}) == (2, set(ARMS))
+
+
+def test_a_technical_mark_of_p_at_candidate_1_is_no_closure_to_reopen() -> None:
+    """A mark of P pauses candidate 1: candidate 2 is not reached, and nothing reopens."""
+    study = Study()
+    study.ready()
+    study.search(special={("P", "u", 10102): {"state": "technical"}})
+    result = study.advance()
+    assert (result["candidate"], result["step"]["technical"]) == (1, True)
+    assert not [e for e in result["route"] if e["event"] in ("close_pf", "reopen_pf")]
 
 
 # ------------------------------------------------------------------ the simulation's reading

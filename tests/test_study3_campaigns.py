@@ -747,6 +747,22 @@ def test_a_blocked_step_and_a_terminal_stage_are_refused(world) -> None:
     assert "scientific_feasibility_report" in error and "terminal" in error
 
 
+def test_the_writer_issues_ps_cells_at_candidate_2_after_a_scientific_closure(world) -> None:
+    """Amendment 7: P closed scientifically at candidate 1, candidate 2 reached by A–F's rule: its
+    search campaign holds P's cells on candidate 2's own seeds."""
+    study = Study()
+    study.ready()
+    study.search(special={("P", "u", 10102): {"state": "scientific"}})
+    study.numerical(arms=("A", "F"), states={"A": "failing"})
+    world.ready()
+    world.core(study)
+    _, runs = load_campaign(world.write("search-round0", candidate=2))
+    spec = CANDIDATES[2]["start"]
+    assert sorted(cells_of(runs)) == sorted(
+        (arm, spec[arm][label], seed)
+        for arm in OPT for label in LABELS for seed in SEEDS["search"][2])  # fmt: skip
+
+
 def test_no_block_is_written_while_a_technical_mark_outside_the_qualification_stands(world):
     """A technical confirmation run's route is its engineering cycle: the writer refuses a new
     block, naming the stop."""
