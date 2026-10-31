@@ -320,18 +320,6 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   and 2 gate scenarios (``SCENARIOS``); decided.
 - M23, the stream integers: calibration 20261101, verification 20261102 (``STREAMS``; any two
   distinct integers); decided.
-- M28, the verification's streams: one preassigned per level, ``verification_base``, from the
-  verification stream and the level's slot alone (amendment 7: no level's draws depend on whether
-  another's ran); decided.
-- M29, the level and the floors (amendment 7, "The simulation's stops"): L from A–F's tests alone,
-  at the cap at floor 60, the largest floor, so that a floor exists at L; A–F's tests are A–F's own
-  and P–F's its marginal and the joint ones; a joint cap test at a floor counts the studies in which
-  each active comparison's reading is confirmatory at that floor. A failure of P–F alone advances
-  nothing: **there are no mixed levels**, the identities carry one level, so P–F is read at A–F's L
-  or not at all. Only a failure of A–F's tests advances L, or a joint check that A–F's reading
-  depended on, and none does: A–F's reading rests on its own counter and the cap. A–F's analysis
-  set does not depend on P's activity (M16), so a verification with P–F active verifies a
-  confirmation with P withheld; decided.
 - M24, the coverage test's interval: the primary computation's only (the registration's coverage
   concerns "the interval"); decided.
 - M25, the sizes of the dry run's Part II (amendment 4): M = 200, 200 screen and 1 000
@@ -348,6 +336,18 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
 - M27, the joint test in the verification: over the studies confirmed for A–F, a miss when A–F
   misses or when P–F is active and misses (the registration's joint p₀ 0.05 over the two
   comparisons); decided.
+- M28, the verification's streams: one preassigned per level, ``verification_base``, from the
+  verification stream and the level's slot alone (amendment 7: no level's draws depend on whether
+  another's ran); decided.
+- M29, the level and the floors (amendment 7, "The simulation's stops"): L from A–F's tests alone,
+  at the cap at floor 60, the largest floor, so that a floor exists at L; A–F's tests are A–F's own
+  and P–F's its marginal and the joint ones; a joint cap test at a floor counts the studies in which
+  each active comparison's reading is confirmatory at that floor. A failure of P–F alone advances
+  nothing: **there are no mixed levels**, the identities carry one level, so P–F is read at A–F's L
+  or not at all. Only a failure of A–F's tests advances L, or a joint check that A–F's reading
+  depended on, and none does: A–F's reading rests on its own counter and the cap. A–F's analysis
+  set does not depend on P's activity (M16), so a verification with P–F active verifies a
+  confirmation with P withheld; decided.
 - The constants taken from study 2's simulation (``STUDY1``'s logistic slopes and curvatures,
   the shapes' constants, ρ_a, ρ_b and ``THREAD_VARIABLES``) are written out here so that this
   module loads no GPU path through study 2's analysis; a test compares them with
