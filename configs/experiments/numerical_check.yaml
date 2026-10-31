@@ -29,7 +29,7 @@ numerical:
   eval_at: [1, 5, 10, 15, 20, 25]   # D_twin and the control's K_scoring are read at these steps
   k_star_factor: 5                  # K*(U) = √(5U), the geometric mean of the lower target 5 and U
   bound_fraction: 0.01              # the bound: 0.01·K*(U), the same for every pair and control
-  # Review fa21: twin A against its archived regular run. The loss, gradient norm and NLL per
+  # Twin A against its archived regular run. The loss, gradient norm and NLL per
   # token of every training row and the monitor's K at every reading must agree within
   # |x − y| ≤ abs + rel·max(|x|, |y|), both finite (a non-finite value is a mismatch); the rows'
   # steps, tokens and denominator, the monitor's steps, the stop and the streams read are exact.

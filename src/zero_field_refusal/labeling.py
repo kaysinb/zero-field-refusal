@@ -4,7 +4,7 @@
 a blinded file (opaque item ids, prompt and response only) and a key (everything else, including
 the hidden condition). The labeling session reads only the blinded file and never the key.
 ``import_reference_labels`` brings in reference labels made outside the project (an ensemble of
-model labelers checked by the user) in the session's format, with their provenance.
+model labelers checked by a person) in the session's format, with their provenance.
 """
 
 from __future__ import annotations

@@ -2907,7 +2907,7 @@ def test_void_refuses_another_us_check_and_records_a_missing_one(world, monkeypa
         refused = void_at(world, monkeypatch, upper)
         assert refused not in (0, None), upper
         assert (f"the check directories ['{other}'] of another U at B 20 exist" in str(refused)
-                and "this case goes to the coordinator" in str(refused))  # fmt: skip
+                and "this case goes to the researcher" in str(refused))  # fmt: skip
     assert snapshot(world) == before and not (world / "void").exists()
     shutil.rmtree(world / "numerical")
     assert void_at(world, monkeypatch, 8) == 0
@@ -2967,7 +2967,7 @@ def test_void_refuses_once_s3_has_started(world, monkeypatch, capsys, role) -> N
         assert refused not in (0, None) and "S3 has started" in str(refused)
         assert (f"1 run(s) of the role validation, confirmation or timecourse at B 20 "
                 f"(study2_short/{started.name})") in str(refused)  # fmt: skip
-        assert "goes to the coordinator" in str(refused) and "budget decision" in str(refused)
+        assert "goes to the researcher" in str(refused) and "budget decision" in str(refused)
     assert snapshot(world) == before and not (world / "void").exists()
     capsys.readouterr()
 

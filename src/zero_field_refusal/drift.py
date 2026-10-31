@@ -181,7 +181,7 @@ def optimizer_settings(name: str) -> DictConfig:
 def check_run_config(scope: DriftScope, cfg: DictConfig) -> None:
     """The config computes what the definitions say: the drift seed, an appendable training
     stream, and v₀ from ``v0_batches`` batches at the run's B; and the settings' ε and β₂ are the
-    optimizers' (review M5): ε that of the run config's optimizer and of the tracked AdamW and
+    optimizers': ε that of the run config's optimizer and of the tracked AdamW and
     pre-warmed AdamW configs, β₂ the second of the latter two's ``betas``."""
     problems = []
     if int(cfg.seed) != scope.seed:

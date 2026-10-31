@@ -47,7 +47,7 @@ never a harm label: the selection uses numerics, K, reachability, utility and me
   a cell (arm, batch, rate) where another seed ran stably. Such a stop is only possibly false,
   since breakdowns near the edge vary by seed and a stopped run cannot show what it would have
   done. The factor is raised only if the margin exceeds 7 or a possible false alarm occurred,
-  to max(10, 1.5 × the margin), fixed before validation; it is never lowered (coordinator,
+  to max(10, 1.5 × the margin), fixed before validation; it is never lowered (decided
   2026-10-14).
 """
 

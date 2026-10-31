@@ -41,7 +41,7 @@ diagnostic:
     batches: 4                      # the control's first 4 batches, cycled over the run's steps
     rates: [1.0e-05, 1.21e-05, 1.46e-05]
     lanczos:
-      steps: 60                     # as the Stage-A curvature measurement (review r9)
+      steps: 60                     # as the Stage-A curvature measurement
       tolerance: 0.01
     fisher_at: [1, 5, 10, 15, 20, 25]  # where δᵀFδ is read (Revision 2, 7: F is the 4 batches'
                                        # soft Hessian)

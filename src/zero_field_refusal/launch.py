@@ -93,7 +93,7 @@ carries on from there. The launch log ``RUNS_DIR/launch/<campaign name>.jsonl`` 
 per attempt start and end, per recovery round and per stop; each attempt's output goes to
 ``RUNS_DIR/launch/<campaign name>/``. A start record carries the campaign's ``header`` when it
 has one (study 2's campaigns record the w_max they were written under, which the replay reads
-back: the final review of gate B, I4). An end the launcher writes after the fact, for a start it
+back). An end the launcher writes after the fact, for a start it
 finds without one, carries ``"settled": true`` (``run_campaign``, "A start found without its end").
 Ends, ``superseded`` and ``held`` records are matched to their starts by run id, and a label's
 attempts are ordered by their attempt number, then the start's time (``label_starts``), never by

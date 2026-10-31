@@ -1,5 +1,5 @@
 # Study 2, amendment 4: the regular runs of the numerical seeds (2200-2202), the twin A of each
-# numerical case, with a K-only evaluation (review fa12): the scoring panel's K (K_benign), the
+# numerical case, with a K-only evaluation: the scoring panel's K (K_benign), the
 # monitor and utility, and no response to a harmful prompt (no harmful prompt set is read, and
 # no K on the harmful K prompts). Training is that of experiments/study2_short, whose experiment
 # name they keep, so that their records stay with the stage's other runs;

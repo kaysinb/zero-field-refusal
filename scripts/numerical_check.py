@@ -68,11 +68,11 @@ working directory included, which ``load_config`` would read first) unless they 
   the DATA_DIR streams, unless ``--no-stream-check``, and exits 1 when a run or a stream is
   missing, or a run departs from the prescribed one. A run that an instability rule stopped
   (and that conforms otherwise) is found, with a note: the parts record its rate as failing
-  and its FA control rejected. A missing run of a case named given up (``given_up``, the final
-  review of gate B, I1) is no problem either, with a note: the parts record that case
+  and its FA control rejected. A missing run of a case named given up (``given_up``)
+  is no problem either, with a note: the parts record that case
   incomplete, and not qualified after its rerun (and, for an FA run, its same-path control and
   every case of its seed when it was the seed's only FA run, which sets v₀ and p1, p2 up).
-- **A case given up** (review fa14, 2): ``control`` and ``twins`` record a case (or same-path
+- **A case given up**: ``control`` and ``twins`` record a case (or same-path
   control) named given up whose regular run is not located without a GPU, before any model or
   device is touched (``given_up_twins``, ``given_up_controls``): incomplete, with the reason
   "given up by the launcher" and, as its evidence, the check request's path and sha256
@@ -83,20 +83,20 @@ working directory included, which ``load_config`` would read first) unless they 
   to compare: they are skipped with a note (``NONE_LOCATED``), recorded in the verdict's
   ``code_check`` and in the records (``provenance.checks_skipped``), and the verdict's policy
   records the check's own GPU code.
-- **GPU code** (review fa13): every part compares the GPU-code identity
+- **GPU code**: every part compares the GPU-code identity
   (``code_identity.gpu_code_identity``) of the commit each regular run recorded with this
   checkout's (``code_check``). On a mismatch ``plan`` exits 1, ``control`` and ``twins`` run
   nothing and exit 7, and the verdict counts no record. The verdict's policy records that
   identity (``gpu_code``) and the commits that wrote the records (``tool_commit``).
-- **The run environment** (the final review of gate B, I3): ``plan``, ``control`` and ``twins``
+- **The run environment**: ``plan``, ``control`` and ``twins``
   compare each regular run's recorded environment (meta.json: the GPU names, the driver,
   ``torch_cuda``, the Python version, the package versions, and the container image when one is
   recorded) with this process's (``environment_check``). On a mismatch, as for the GPU code,
   ``plan`` exits 1 and ``control`` and ``twins`` record nothing and exit 7, naming each field.
   Twin A can be expected to reproduce its run (numerically consistent with it, within the
-  policy's ``twin_a_consistency``: review fa21) only in the environment that made it: the check
+  policy's ``twin_a_consistency``) only in the environment that made it: the check
   runs on the Pod (or the image, GPU and driver) of the numerical runs.
-- **Host memory** (the final review of gate B, M7): every control and twin record holds the
+- **Host memory**: every control and twin record holds the
   process's peak resident memory and the free host memory when it was written
   (``provenance.host_memory``); the driver starts only with ``HOST_MEMORY_GB`` free.
 - ``driver`` writes the bash driver of all parts for a Pod, from the source checkout of SHA. It
@@ -106,7 +106,7 @@ working directory included, which ``load_config`` would read first) unless they 
   incomplete rate or control; 6 a part failed (recorded); 0 complete. With cases given up, it
   passes the check request's resolved path to every part (``--request``), and is written only
   with one (``--selection FILE``, or ``--request FILE``).
-- ``void`` (the final review of gate B, I2) moves, never deletes, what a GPU-path change after
+- ``void`` moves, never deletes, what a GPU-path change after
   the check left unusable: every numerical run at B (role numerical) whose recorded commit's GPU
   code is not HEAD's, ``RUNS_DIR/numerical/b{B}-u{U}/``, and the launcher's record of the
   campaigns that made those runs (``launch/<campaign>.jsonl``, ``launch/<campaign>/`` and the
@@ -115,9 +115,9 @@ working directory included, which ``load_config`` would read first) unless they 
   moved (path, size, sha256) and a record (``void_plan``, ``void_numerical``). It refuses on a
   checkout that is not clean; when a run of the role validation, confirmation or timecourse
   exists at B (S3 has started: a GPU-path change after that is outside this procedure and goes
-  to the coordinator, since voiding those runs means spending on S3 again); when a check
+  to the researcher, since voiding those runs means spending on S3 again); when a check
   directory of another U exists at B (the numerical runs at B serve it too, and its verdicts
-  would go unread: to the coordinator); when no run's GPU code differs; when it would move a run
+  would go unread: to the researcher); when no run's GPU code differs; when it would move a run
   of another role (or one whose GPU code cannot be read); and when a launcher log to move also
   names a run it leaves in place. Without ``numerical/b{B}-u{U}/`` (a GPU-path change between
   the K-only runs and their check) it moves the rest and records "no check directory". The selection
@@ -196,12 +196,12 @@ SCRIPT = 'project-run "$SRC" python scripts/numerical_check.py'
 NOT_DUE = 3  # ``verdict --retry-needed``: no rerun is due
 INCOMPLETE = 5  # the driver: the verdict holds an incomplete rate
 PART_FAILED = 6  # a case or control failed (recorded); the driver: a part did
-# Review fa13 and the final review of gate B, I3: the regular runs' GPU code or recorded run
+# The regular runs' GPU code or recorded run
 # environment is not the check's; nothing runs
 CODE_MISMATCH = 7
 GPU_USED_MIB = 1000  # the driver starts only below this much GPU memory in use
 DISK_GB = 40  # the free space a case needs: its checkpoints (31.4 GB at 1.5B) and a margin
-# The free host memory the driver needs (the final review of gate B, M7; GB of 1e9 bytes): θ₀,
+# The free host memory the driver needs (GB of 1e9 bytes): θ₀,
 # v₀, the second model and the p1 direction on the host (≈ 25-30 GB at 1.5B) and a checkpoint
 # save's transient (≈ 5 GB), × 1.5
 HOST_MEMORY_GB = 1.5 * (30 + 5)
@@ -220,9 +220,9 @@ HAS_INCOMPLETE = ("import json, sys; v = json.load(open(sys.argv[1])); "
 HOST_FREE = ("import sys; from zero_field_refusal.drift import host_memory; m = host_memory(); "
              "print('free host memory (GB):', m); "
              "sys.exit(0 if (m['available_gb'] or 0) >= float(sys.argv[1]) else 1)")  # fmt: skip
-# A plan's note on a case whose regular run the launcher gave up on (the final review, I1)
+# A plan's note on a case whose regular run the launcher gave up on
 GIVEN_UP = "given up by the launcher: the parts will record it not qualified"
-# Review fa14, 2: why the code and environment checks compare nothing, when they do not
+# Why the code and environment checks compare nothing, when they do not
 NONE_LOCATED = ("no regular run is located: the check request names every case given up by the "
                 "launcher, so there is nothing to compare; skipped")  # fmt: skip
 
@@ -259,7 +259,7 @@ def given_up_names(names: object, where: str) -> list[str]:
 
 def read_selection(path: Path, batch: int, upper: float) -> tuple[dict[str, list[float]], list]:
     """The rates of a selection record, ``rates`` (required), and the cases it names given up
-    by the launcher, ``given_up`` (optional; the final review of gate B, I1); ``batch`` and
+    by the launcher, ``given_up`` (optional); ``batch`` and
     ``U`` must equal B and U when present. Any other key, or a malformed one, is refused."""
     try:
         data = path.read_bytes()
@@ -319,7 +319,7 @@ def check_given_up(given_up: list[str], cases) -> None:
 
 
 def request_of(args: argparse.Namespace, scope: NumericalScope, rates: dict, given_up: list):
-    """Review fa14, 2: the check request that names the cases given up, which their records
+    """The check request that names the cases given up, which their records
     state as evidence: its resolved path and the sha256 of its bytes, as read now. With
     ``--selection FILE``, that file; with ``--rates`` and ``--given-up``, ``--request FILE``
     (the driver passes it), which must name the same rates and the same cases given up; without
@@ -343,7 +343,7 @@ def request_of(args: argparse.Namespace, scope: NumericalScope, rates: dict, giv
 
 
 def given_up_unlocated(part: str, items, given_up, located, scope, batch: int, upper: float):
-    """Review fa14, 2: the items of ``part`` (cases for ``twins``, FA rates for ``control``)
+    """The items of ``part`` (cases for ``twins``, FA rates for ``control``)
     whose case the request names given up and whose regular run is not located (``located``,
     by case name): recorded without a GPU (``given_up_twins``, ``given_up_controls``)."""
 
@@ -353,7 +353,7 @@ def given_up_unlocated(part: str, items, given_up, located, scope, batch: int, u
     return [item for item in items if name(item) in given_up and name(item) not in located]
 
 
-TWINS_PER_CASE = 6.5  # twin A, p1-p4, and the float64 reference ≈ 1.5 twins (review M1)
+TWINS_PER_CASE = 6.5  # twin A, p1-p4, and the float64 reference ≈ 1.5 twins
 FALLBACK_ARMS = ("adamw", "adamw_prewarmed")  # their full-float64 reference meets the cap
 
 
@@ -387,9 +387,9 @@ def find_runs(
 ) -> tuple[dict, dict, dict]:  # fmt: skip
     """The regular run of each case found; why a case has none, or one that cannot be twin A
     (it departs from the prescribed run); and the notes of runs that an instability rule
-    stopped (review N1). Such a run is found and no problem: the parts record its rate as
-    failing. A run that departs otherwise is a problem even when it stopped by instability
-    (review N4). A case named in ``given_up`` without a run (the final review of gate B, I1) is
+    stopped. Such a run is found and no problem: the parts record its rate as
+    failing. A run that departs otherwise is a problem even when it stopped by instability. A
+    case named in ``given_up`` without a run is
     no problem either, with a note: the parts record it incomplete, not qualified after its
     rerun; so is every found case of a seed whose control-arm runs are all given up, which the
     parts record incomplete too (that run sets the seed's v₀ and p1, p2 up)."""
@@ -509,7 +509,7 @@ def environment_config(root: Path, scope: NumericalScope, cases):
 
 def due_items(part, out: Path, cases, control_rates, *, retry: bool, reader: RecordReader,
               batch: int, upper: float) -> tuple[list, list[str]]:  # fmt: skip
-    """What is due, read only (review of Task 1, I2): the cases (``twins``) or control rates
+    """What is due, read only: the cases (``twins``) or control rates
     (``control``) whose attempt is due, and the record files a real run moves aside first.
     Without ``retry``: those without a first attempt that counts (``RecordReader``), with their
     first attempt's file and any rerun's; with it: those whose counted first attempt is
@@ -556,7 +556,7 @@ def move_aside(out: Path, relatives: list[str]) -> None:
 
 def code_summary(code: dict) -> str:
     """The code check (``code_check``) in one line."""
-    if code["consistent"] and code.get("note"):  # review fa14, 2: nothing to compare
+    if code["consistent"] and code.get("note"):  # nothing to compare
         identity = code["gpu_code"] or {}
         return (f"GPU code: {code['note']}; the check's own is recorded "
                 f"({identity.get('files')} files, sha256 {identity.get('sha256')}, at "
@@ -570,7 +570,7 @@ def code_summary(code: dict) -> str:
 
 def environment_summary(check: dict) -> str:
     """The environment check (``environment_check``) in one line."""
-    if check["consistent"] and check.get("note"):  # review fa14, 2: nothing to compare
+    if check["consistent"] and check.get("note"):  # nothing to compare
         return f"run environment: {check['note']}"
     if check["consistent"]:
         here = check["here"]
@@ -613,7 +613,7 @@ def config_path(config: str) -> Path:
 def tracked_config(config: str) -> bool:
     """Whether ``--config`` resolves to the tracked settings (configs/experiments/
     numerical_check.yaml, unmodified when the checkout is clean), whatever the working
-    directory: a file of that name there shadows the name, and is not them (review N2)."""
+    directory: a file of that name there shadows the name, and is not them."""
     return config_path(config) == (CONFIG_ROOT / f"{CONFIG}.yaml").resolve()
 
 
@@ -627,8 +627,7 @@ def driver_script(
     request: str | None = None,
 ) -> str:  # fmt: skip
     """The bash driver of the check on a Pod (module docstring). ``request``: the check
-    request's path, passed to every part (``--request``) when cases are given up (review
-    fa14, 2)."""
+    request's path, passed to every part (``--request``) when cases are given up."""
     stamp = "$(date -u +%FT%TZ)"
     run = SCRIPT
     selection = " ".join([*(f"--rates {arm}={','.join(repr(r) for r in values)}"
@@ -803,7 +802,7 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
         cases = numerical_cases(settings, rates, args.upper, batch=args.batch)
         check_given_up(given_up, cases)
         default_out = numerical_root(args.batch, args.upper, args.runs_root)
-        # Review fa14, 2: the evidence of the cases given up, for the parts that record them
+        # The evidence of the cases given up, for the parts that record them
         request = None if args.part == "verdict" else request_of(args, scope, rates, given_up)
     except NumericalError as exc:
         sys.exit(str(exc))
@@ -838,14 +837,14 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
         args.dry_run or args.retry_needed
     )
 
-    def refuse_untracked() -> None:  # review of Task 1, I1: no record under other settings
+    def refuse_untracked() -> None:  # no record under other settings
         if writes and not tracked_config(args.config) and not untracked_config_for_tests:
             sys.exit(f"{args.part} writes records only under the tracked settings ({CONFIG}), "
                      f"not {config_path(args.config)}; --dry-run only prints")  # fmt: skip
 
-    # Review fa13: the regular runs' GPU code against the check's; the final review of gate B,
-    # I3: for the parts that run the check, their recorded run environment against this one.
-    # Review fa14, 2: with no run located because every case is given up, both are skipped
+    # The regular runs' GPU code against the check's; for the parts that run the check, their
+    # recorded run environment against this one.
+    # With no run located because every case is given up, both are skipped
     # with a note, and the check's own GPU code is recorded.
     located = find_runs(root, scope, cases, given_up)[0]
     found_runs = list(located.values())
@@ -897,7 +896,7 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
                            reader=reader, batch=args.batch, upper=args.upper)  # fmt: skip
     names = [f"{lr:g}" for lr in due] if args.part == "control" else [c.name for c in due]
     print(json.dumps({"part": args.part, "attempt": attempt, "due": names, "set_aside": aside}))
-    # Review fa14, 2: what is due for a case given up whose run is not located is recorded
+    # What is due for a case given up whose run is not located is recorded
     # without a GPU, with the check request as its evidence; the rest runs as before
     gone = given_up_unlocated(args.part, due, given_up, located, scope, args.batch, args.upper)
     rest = [item for item in due if item not in gone]
@@ -918,10 +917,10 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
         return
     require_clean()
     refuse_untracked()
-    if not code["consistent"]:  # review fa13: nothing runs against other GPU code
+    if not code["consistent"]:  # nothing runs against other GPU code
         print(code_summary(code), file=sys.stderr)
         sys.exit(CODE_MISMATCH)
-    if not machine["consistent"]:  # the final review of gate B, I3: nor in another environment
+    if not machine["consistent"]:  # nor in another environment
         print(environment_summary(machine), file=sys.stderr)
         sys.exit(CODE_MISMATCH)
     if gone and request is None:

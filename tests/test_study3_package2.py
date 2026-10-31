@@ -149,7 +149,7 @@ LABEL_MODULES = ("zero_field_refusal.analysis.study2_labels", "zero_field_refusa
 # The GPU code study 3 qualifies: its last commit that changed a GPU path, on the fix of case 17 of
 # the engineering stage (v₀ estimated under the math attention backend, recorded in the numerics
 # setup) and with scripts/diagnostics/ outside the identity (amendment 7)
-QUALIFIED_GPU_CODE = "2bb9c45"
+QUALIFIED_GPU_CODE = "ced3117"
 REAL_IDENTITY = code_identity.gpu_code_identity
 REAL_READING = qualification_records.read_qualification  # the route replaces it
 # The route: A's lower rate kept by the search on these offsets in ln K, then repaired; N = 99
