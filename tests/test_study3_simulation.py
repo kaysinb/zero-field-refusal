@@ -1522,6 +1522,7 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path, monkeypatch) ->
                        "offset": 1e-12},
     }  # fmt: skip
     assert [s["name"] for s in fixation["scenarios"]] == ["C01", "C15", "P18", "G1"]
+    assert fixation["missing_labels"] == sim.missing_labels_record()  # M6b, with its disclosure
     assert set(fixation["scenarios"][1]["calibration"]) == {"2"}  # C15 starts at candidate 2
     path = repo / decisions.SIMULATION_FIXATION
     text = json.dumps(fixation, indent=2, sort_keys=True, allow_nan=False) + "\n"
@@ -1585,19 +1586,22 @@ def test_the_fixations_schema_is_closed(tmp_path) -> None:
     from zero_field_refusal.analysis import study3_decisions as decisions
 
     repo = checkout_with_registration(tmp_path)
-    scenarios = [sim.SCENARIOS_BY_NAME["C02"]]
+    scenarios = [sim.SCENARIOS_BY_NAME["C02"], sim.SCENARIOS_BY_NAME["P18"]]
     inputs = repo / "docs" / "study3-simulation-inputs.json"
     code = {"commit": "a" * 40, "gpu_code_sha256": "b" * 64}
+    power = {(scenarios[1], 1): a_calibration(1)}
     with pytest.raises(ValueError, match="candidate 2"):  # the verification's fallback
-        sim.build_fixation(inputs, scenarios, {(scenarios[0], 1): a_calibration(1)}, code=code,
-                           streams=sim.STREAMS, repo=repo)  # fmt: skip
+        sim.build_fixation(inputs, scenarios, {(scenarios[0], 1): a_calibration(1), **power},
+                           code=code, streams=sim.STREAMS, repo=repo)  # fmt: skip
     fixation = sim.build_fixation(inputs, scenarios,
-                                  {(scenarios[0], c): a_calibration(c) for c in (1, 2)},
-                                  code=code, streams=sim.STREAMS, repo=repo)  # fmt: skip
+                                  {**{(scenarios[0], c): a_calibration(c) for c in (1, 2)},
+                                   **power}, code=code, streams=sim.STREAMS, repo=repo)  # fmt: skip
     assert fixation["machine"] == sim.machine_record()
     assert set(fixation["machine"]) == {"platform", "cpu", "numpy"}
     only_first = {**fixation["scenarios"][0], "calibration": {
         "1": fixation["scenarios"][0]["calibration"]["1"]}}  # fmt: skip
+    labels = sim.missing_labels_record()
+    labels["power"]["missing_rate"] = 0.01
     for change, word in (
         ({"extra": 1}, "fields"),
         ({"scenarios": [only_first]}, "candidate 2"),
@@ -1620,6 +1624,9 @@ def test_the_fixations_schema_is_closed(tmp_path) -> None:
         ({"tests": {**fixation["tests"], "list": fixation["tests"]["list"][:-1]}}, "tests.list"),
         ({"rules": {**fixation["rules"], "draw_bound": {"rule": "x", "source": "y"}}},
          "draw_bound"),
+        ({"missing_labels": labels}, "missing_labels"),
+        ({"scenarios": fixation["scenarios"][:1]}, "no power scenario"),
+        ({"scenarios": fixation["scenarios"][::-1]}, "grid's order"),
     ):  # fmt: skip
         problems = decisions._fixation_schema({**fixation, **change})
         assert problems and any(word in p for p in problems), (change, problems)

@@ -254,7 +254,9 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   the missing labels per run, and the power counts the reading common to the three computations,
   M20); it changes the planning alternative of the power requirement; the registration sets no
   rate, and the required simulation itself stays prospective. The coverage tests keep 1 %, so C16
-  and C17 (Δ = +2 pp) are coverage scenarios and P20, P21 the power's positive Δ; decided.
+  and C17 (Δ = +2 pp) are coverage scenarios and P20, P21 the power's positive Δ. The fixation
+  records the rates and their disclosure (``missing_labels_record``), and its reader checks them
+  and that each of its scenarios is the grid's; decided.
 - M7, support: the realized probability that a validation block is A–F-supported at the rates
   the procedure selects, failures of bracket and collapse included; f calibrated to it, 0 and
   flagged when the natural failures exceed 1 − s (the registration's "support 0.88, 0.90,
@@ -510,7 +512,8 @@ SOURCES: dict[str, str] = {
     ),
     "missing": (
         "MCAR in every scenario but C14, MNAR among harmful responses there; clustered or MNAR "
-        "label failures are covered only by the stress scenarios; M6b, decided"
+        "label failures are covered only by the stress scenarios (the fixation's missing_labels); "
+        "M6b, decided"
     ),
     "missing_rate": (
         "1 % MCAR in the coverage scenarios and 5 % MNAR among harmful in C14, as stress values "
@@ -518,7 +521,7 @@ SOURCES: dict[str, str] = {
         "power scenarios, the planning rate of labels unresolved after the labeling rounds, from "
         "study 1 with the same judge (0 unparseable outputs in 39 900 labels of its "
         "non-collapsed runs, docs/reports/stage-1.md), a conservative planning assumption, not "
-        "a proven bound; M6b, decided"
+        "a proven bound (the fixation's missing_labels); M6b, decided"
     ),
     "utility": (
         "the registration's safe alternative at its boundary (interpolated MMLU loss mean 3 pp, "
@@ -2987,6 +2990,39 @@ RULES: dict[str, dict[str, str]] = {
         "source": "a bounded failure route; M26, decided",
     },
 }
+# M6b: the missing labels' decided rates and their disclosure, as the fixation freezes them
+# (``missing_labels_record``) and its reader checks them against this code
+MISSING_LABELS: dict[str, dict[str, Any]] = {
+    "coverage": {
+        "missing": "MCAR",
+        "missing_rate": COVERAGE_MISSING_RATE,
+        "scenarios": "every coverage scenario but C14, whose 5 % are MNAR among harmful responses",
+        "use": "stress values: the coverage test reads the primary interval alone (M24)",
+        "source": "no record holds study 3's rate (study 2's labels were never made); M6b, decided",
+    },
+    "power": {
+        "missing": "MCAR",
+        "missing_rate": POWER_MISSING_RATE,
+        "scenarios": "every power scenario: the power gate reads them (M20)",
+        "definition": "the share of labels still unresolved after the labeling rounds the "
+        "registration allows (docs/study3-preregistration.md, 'Judge and audit': up to three "
+        "rounds per run)",
+        "status": "a conservative planning assumption for supported runs, not a proven upper "
+        "bound: the bound from 0 in 39 900 assumes independent labels and is computed on a "
+        "selected subset, the non-collapsed runs",
+        "source": "study 1 with the same judge, WildGuard: 0 unparseable outputs in 39 900 labels "
+        "of its non-collapsed runs (docs/reports/stage-1.md, 'Judge labeling'); study 1's rate "
+        "over all its runs includes its collapsed runs, which are not representative, and is "
+        "not used; M6b, decided",
+        "limitation": "missing completely at random: label failures clustered in a run or an "
+        "arm, or missing not at random, are covered only by the stress scenarios (1 % MCAR in "
+        "the coverage scenarios, 5 % MNAR among harmful responses in C14)",
+        "decision": "the researcher's, after preliminary calculations showed the power gate "
+        "failing at 1 % MCAR; it changes the planning alternative of the power requirement "
+        "(docs/study3-preregistration.md, 'Simulation before validation'); the registration "
+        "sets no rate, and the required simulation itself stays prospective",
+    },
+}
 CURVATURE_SOURCE = (
     "study 1's fitted curves (study2_short_sim.STUDY1) at K*, baseline 0.15; M4, decided"
 )
@@ -3006,6 +3042,13 @@ def curvature_record() -> dict[str, Any]:
         "source": CURVATURE_SOURCE,
         "note": CURVATURE_NOTE,
     }
+
+
+def missing_labels_record() -> dict[str, Any]:
+    """The missing labels' decided rates with their disclosure (M6b), as the fixation records
+    them: the coverage scenarios' stress value and the power scenarios' planning rate, each with
+    its source, the planning rate's definition, status and limitation, and the decision."""
+    return json.loads(json.dumps(MISSING_LABELS))
 
 
 def calibration_record() -> dict[str, Any]:
@@ -3122,7 +3165,8 @@ def build_fixation(
     HEAD of ``repo``, unless given); the inputs record (``vectors_path``, in the checkout) by its
     sha256; M, the resamples, the calibration's size and tolerances (``calibration_record``),
     the ``streams``, the levels, N points and p₀, the gate replicates (M) and the draw bound;
-    the procedure's ``rules`` and the base ``curvature``; every scenario with its calibrations
+    the procedure's ``rules``, the base ``curvature`` and the missing labels' decided rates
+    with their disclosure (``missing_labels_record``); every scenario with its calibrations
     per candidate (a coverage scenario of candidate 1 also at candidate 2, the verification's
     fallback); the coverage tests' explicit identities, their count and sha256, J, the
     thresholds and the detection powers."""
@@ -3180,6 +3224,7 @@ def build_fixation(
         "max_draws_factor": MAX_DRAWS_FACTOR,
         "rules": {name: dict(rule) for name, rule in RULES.items()},
         "curvature": curvature_record(),
+        "missing_labels": missing_labels_record(),
         "scenarios": entries,
         "tests": {
             "list": [list(i) for i in tests],
@@ -3197,8 +3242,10 @@ def read_fixation(path: str | Path, repo: str | Path) -> dict[str, Any]:
     as the J check reads it (``study3_decisions.fixation_problems``): committed once, alone and
     unchanged at HEAD (so in HEAD's history: HEAD or an ancestor of it holds it), its schema
     closed, its sizes the registered ones (the resamples and the calibration's size and
-    tolerances, ``calibration_record``, included) and its tests exactly its coverage scenarios'
-    identities. Returns ``fixation``,
+    tolerances, ``calibration_record``, included), its scenarios the grid's (``SCENARIOS``, by
+    name, in its order, the power scenarios at the planning rate), its missing labels the decided
+    ones (``missing_labels_record``) and its tests exactly its coverage scenarios' identities.
+    Returns ``fixation``,
     ``commit``, ``sha256``, the ``scenarios`` (``Scenario``) and ``calibrations`` ((scenario,
     candidate) → ``Calibration``). ``ValueError`` naming every problem."""
     repo = Path(repo)

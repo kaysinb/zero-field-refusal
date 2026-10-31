@@ -365,8 +365,8 @@ POWER_REQUIRED, POWER_LEVEL = REQUIRED_GATES["power_af"], LEVELS[0]  # the power
 COVERAGE_ROLES, POWER_ROLES = ("coverage",), ("power",)
 FIXATION_FIELDS = ("kind", "written_at", "code", "machine", "policy", "inputs", "M", "resamples",
                    "calibration", "streams", "levels", "n_points", "p0", "gate_replicates",
-                   "max_draws_factor", "rules", "curvature", "scenarios", "tests", "J",
-                   "thresholds", "detection_power")  # fmt: skip
+                   "max_draws_factor", "rules", "curvature", "missing_labels", "scenarios",
+                   "tests", "J", "thresholds", "detection_power")  # fmt: skip
 # the calibration's size and tolerances (``study3_simulation.calibration_record``)
 CALIBRATION_FIELDS = ("studies", "blocks", "rounds", "tolerances")
 CALIBRATION_TOLERANCES = ("support", "sigma", "sigma_relative", "offset")
@@ -1413,9 +1413,13 @@ def fixation_problems(
     HEAD's blob and its commit's blob are the same bytes), and its schema is closed: its sizes
     are the registered ones (M ``COVERAGE_RUNS``, the resamples ``SCREEN_RESAMPLES`` and
     ``VERIFICATION_RESAMPLES``, the calibration ``study3_simulation.calibration_record``), its
-    ``tests`` are exactly ``test_identities`` of its coverage scenarios, with their count and
-    sha256, J their count, and the thresholds and detection powers recomputed. Nothing is read
-    from a fixation with a problem."""
+    scenarios are the grid's (each the ``study3_simulation.SCENARIOS`` scenario of its name,
+    every parameter and source line, in the grid's order; a power scenario's missing labels at
+    the planning rate, ``missing_labels.power``), its missing labels the decided ones
+    (``study3_simulation.missing_labels_record``), its ``tests`` are exactly
+    ``test_identities`` of its coverage scenarios, with their count and sha256, J their count,
+    and the thresholds and detection powers recomputed. Nothing is read from a fixation with a
+    problem."""
     from . import study3_versions as versions  # lazy: it loads the configs
 
     repo = Path(repo)
@@ -1514,7 +1518,14 @@ def _fixation_schema(f: Any) -> list[str]:
         if f["curvature"] != simulation.curvature_record():
             check.add("curvature", "is not study 1's base curvature with its disclosure "
                       "(study3_simulation.curvature_record)")  # fmt: skip
-    coverage = []
+    labels = simulation.missing_labels_record()
+    if f["missing_labels"] != labels:
+        check.add("missing_labels", "are not the decided missing labels with their disclosure "
+                  "(study3_simulation.missing_labels_record)")  # fmt: skip
+    planned = (labels["power"]["missing"], labels["power"]["missing_rate"])
+    grid = {sc.name: sc for sc in simulation.SCENARIOS}  # read at call time: the code's grid
+    order = list(grid)
+    coverage, power = [], []
     scenarios = f["scenarios"]
     if not (isinstance(scenarios, list) and scenarios):
         check.add("scenarios", "is not a non-empty list")
@@ -1543,8 +1554,27 @@ def _fixation_schema(f: Any) -> list[str]:
         names.append(scenario.name)
         if scenario.role in COVERAGE_ROLES:
             coverage.append(scenario.name)
+        if scenario.role in POWER_ROLES:
+            power.append(scenario.name)
+            if (scenario.missing, scenario.missing_rate) != planned:
+                check.add(where, f"{scenario.name}'s missing labels are {scenario.missing} at "
+                          f"{scenario.missing_rate}, not the power scenarios' {planned[0]} at "
+                          f"{planned[1]} (missing_labels.power)")  # fmt: skip
+        frozen = grid.get(scenario.name)
+        if frozen is None:
+            check.add(where, f"{scenario.name} is not a scenario of the grid "
+                      "(study3_simulation.SCENARIOS)")  # fmt: skip
+        elif scenario != frozen:
+            differ = [p for p in ("role", *scenario.parameters(), "sources")
+                      if getattr(scenario, p) != getattr(frozen, p)]  # fmt: skip
+            check.add(where, f"{scenario.name} is not the grid's scenario of that name: it "
+                      f"departs in {', '.join(differ)} (study3_simulation.SCENARIOS)")  # fmt: skip
     if len(set(names)) != len(names):
         check.add("scenarios", "lists a scenario twice")
+    elif names != sorted(names, key=lambda n: order.index(n) if n in order else len(order)):
+        check.add("scenarios", "are not in the grid's order (study3_simulation.SCENARIOS)")
+    if scenarios and not power:
+        check.add("scenarios", "hold no power scenario: the power gate reads them (M20)")
     tests = check.object("tests", f["tests"], ("list", "count", "sha256"))
     if tests is not None:
         want = test_identities(coverage)

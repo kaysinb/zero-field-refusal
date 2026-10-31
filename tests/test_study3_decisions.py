@@ -1384,6 +1384,10 @@ def test_the_proposed_grid_has_j_1785() -> None:
         315,
         590,
     )
+    # the coverage tests' identities as before the power's own scenarios (M6b): J, their order
+    assert identities_sha256(ids) == (
+        "934ff6355d03122e67e831a72168e71afacb3e6f04201eacbd4724170473671b"
+    )
 
 
 def test_the_identities_are_in_enumeration_order_with_their_sha256() -> None:
@@ -1516,6 +1520,84 @@ def test_a_fixation_of_reduced_sizes_is_refused_under_the_registered_ones(
         assert world.read("simulation") == (record, [])
     found, problems = world.read("simulation")  # the registered sizes again
     assert found is None and any(word in p for p in problems)
+
+
+def test_the_fixation_records_the_missing_labels_with_their_disclosure(world) -> None:
+    """M6b: the coverage scenarios at 1 % MCAR (stress values), the power scenarios at the
+    planning rate 0.1 % MCAR, with its definition, its status (not a proven bound), its source,
+    its limitation and the decision; the fixture's power scenario at that rate."""
+    labels = world.fixation["missing_labels"]
+    assert labels == sim.missing_labels_record()
+    assert (labels["coverage"]["missing"], labels["coverage"]["missing_rate"]) == ("MCAR", 0.01)
+    assert (labels["power"]["missing"], labels["power"]["missing_rate"]) == ("MCAR", 0.001)
+    power = labels["power"]
+    for name, words in (
+        ("definition", ("unresolved after the labeling rounds", "up to three rounds per run")),
+        ("status", ("conservative planning assumption", "not a proven upper bound",
+                    "independent labels", "selected subset", "non-collapsed runs")),
+        ("source", ("WildGuard", "0 unparseable outputs in 39 900 labels", "non-collapsed",
+                    "docs/reports/stage-1.md", "not representative", "not used")),
+        ("limitation", ("clustered", "missing not at random", "only by the stress scenarios")),
+        ("decision", ("the researcher's", "preliminary calculations", "power gate failing at 1 %",
+                      "planning alternative", "sets no rate", "stays prospective")),
+    ):  # fmt: skip
+        assert all(w in power[name] for w in words), (name, power[name])
+    text = json.dumps(labels).lower()
+    assert not any(w in text for w in ("unseen", "nobody", "no one", "not seen", "blind"))
+    assert all(s["missing_rate"] == 0.001 for s in world.fixation["scenarios"]
+               if s["role"] == "power")  # fmt: skip
+
+
+LABELS_DEPART = {
+    "power_rate": ("power", "missing_rate", 0.01),
+    "coverage_rate": ("coverage", "missing_rate", 0.001),
+    "status": ("power", "status", "an upper bound"),
+}
+
+
+@pytest.mark.parametrize("name", list(LABELS_DEPART))
+def test_a_fixation_whose_missing_labels_depart_is_refused(world, name) -> None:
+    part, field, value = LABELS_DEPART[name]
+    labels = sim.missing_labels_record()
+    labels[part][field] = value
+    world.checkout(change={"missing_labels": labels})
+    refused(world, "simulation", world.simulation(), "fixation", "missing_labels",
+            "missing_labels_record")  # fmt: skip
+
+
+def scenarios_with(world, which: str, change: dict) -> list[dict]:
+    return [({**e, **change} if e["name"] == which else e) for e in world.fixation["scenarios"]]
+
+
+SCENARIOS_DEPART = {
+    "power_at_1_percent": (POWER, {"missing_rate": 0.01},
+                           ("P20's missing labels are MCAR at 0.01", "missing_labels.power",
+                            "departs in missing_rate")),
+    "another_delta": (POWER, {"delta_af_pp": 1.0},
+                      ("P20 is not the grid's", "departs in delta_af_pp")),
+    "another_name": (POWER, {"name": "P99"}, ("P99 is not a scenario of the grid",)),
+    "power_role": (FIXED, {"role": "power"}, ("C16 is not the grid's", "departs in role",
+                                               "missing labels are MCAR at 0.01")),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("name", list(SCENARIOS_DEPART))
+def test_a_fixation_whose_scenarios_depart_from_the_grid_is_refused(world, name) -> None:
+    """Each of the fixation's scenarios is the grid's of its name (every parameter and source
+    line), a power scenario's missing labels at the planning rate: a power scenario at 1 %, a
+    changed Δ, a scenario the grid does not hold or C16 as a power scenario is refused, on
+    writing and on reading."""
+    which, change, words = SCENARIOS_DEPART[name]
+    world.checkout(change={"scenarios": scenarios_with(world, which, change)})
+    refused(world, "simulation", world.simulation(), "fixation", *words)
+
+
+def test_a_fixation_out_of_the_grids_order_or_without_power_is_refused(world) -> None:
+    first, second = world.fixation["scenarios"]
+    world.checkout(change={"scenarios": [second, first]})
+    refused(world, "simulation", world.simulation(), "fixation", "grid's order")
+    world.checkout(change={"scenarios": [first]})
+    refused(world, "simulation", world.simulation(), "fixation", "no power scenario")
 
 
 def test_the_fixation_must_be_unchanged_since_its_commit(world) -> None:
