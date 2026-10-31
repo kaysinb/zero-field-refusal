@@ -1223,7 +1223,8 @@ def test_a_descriptive_reading_detects_nothing() -> None:
                                 confirmed={0.975: True}, why={0.975: None}, N={0.975: 70},
                                 cap={0.975: 80}, blocks={0.975: 80}, covered={},
                                 direction={key: direction}, readings={key: reading},
-                                utility_claim={}, truth={})  # fmt: skip
+                                utility_claim={}, truth={},
+                                analyzed={key: 36})  # fmt: skip
 
     rows = [study(0, "descriptive", "positive"), study(1, "confirmatory", "positive"),
             study(2, "confirmatory", "negative"), study(3, "confirmatory", None)]  # fmt: skip

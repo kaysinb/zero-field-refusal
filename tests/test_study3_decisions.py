@@ -1830,6 +1830,11 @@ def test_every_decision_is_recomputed_from_the_results(world) -> None:
     detection = dict(base["gates"]["detection_power_joint"], value=0.5)
     refused(world, "simulation", {**base, "gates": {**base["gates"],
             "detection_power_joint": detection}}, "detection_power_joint")  # fmt: skip
+    withheld = {"level": 0.975, "pf_confirmatory": False, "floors": {"A-F": 36, "P-F": None}}
+    refused(world, "simulation", {**world.simulation(), "reading": withheld}, "reading")
+    raised = {"level": 0.975, "pf_confirmatory": True, "floors": {"A-F": 60, "P-F": 36}}
+    refused(world, "simulation", {**world.simulation(), "reading": raised}, "reading")
+    refused(world, "simulation", {**world.simulation(), "levels_tried": []}, "levels_tried")
     short = gates_with(power_af=power_gate(0.74, 83))  # the scan reached 0.80 at 84
     world.simulation(gates=gates_with(power_af=power_gate(0.74, 84)))  # results: n_min 84
     refused(world, "simulation", {**world.simulation(gates=gates_with(
