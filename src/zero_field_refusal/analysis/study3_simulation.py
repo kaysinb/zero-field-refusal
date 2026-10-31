@@ -218,7 +218,7 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   ``VERIFICATION_RESAMPLES``, N at least ``n_min`` when the power was short. When the scan
   stopped at an n whose cap exceeds the 200 reserved seeds, no n is attainable
   (``unattainable_n``): the verification is not run, its tests are not due and the record fails
-  (the design stop, ``NO_ATTAINABLE_N``).
+  (a pause for a decision, ``NO_ATTAINABLE_N``).
 
 **Rulings** (the study's frozen settings, each with its one-line source):
 - M1, the harm model of block differences: additive on the probability scale, σ calibrated so
@@ -4226,7 +4226,7 @@ def unattainable_n(screen: Mapping[str, Any]) -> int | None:
     """The n at which the screen's n_min scan stopped with its cap beyond the reserved
     confirmation seeds (``cap_of(n)`` > 200): no N within them reaches the power, so none is
     attainable, the verification is not run and the record fails (``NO_ATTAINABLE_N``, the
-    design stop). None when the scan is empty or stopped at a power reached within them."""
+    pause for a decision). None when the scan is empty or stopped at a power reached within them."""
     scan = screen["gates"]["n_scan"]
     if scan and cap_of(scan[-1]["n"]) > len(SEEDS["confirmation"][1]):
         return scan[-1]["n"]
@@ -4237,7 +4237,8 @@ def no_attainable_n(n: int) -> str:
     """Why the verification is not run when the scan stopped at ``n`` (``unattainable_n``)."""
     return (f"the n_min scan stopped at n = {n}, whose cap {cap_of(n)} exceeds the "
             f"{len(SEEDS['confirmation'][1])} reserved confirmation seeds: no attainable n "
-            f"({NO_ATTAINABLE_N}), the design stop; the verification is not run")  # fmt: skip
+            f"({NO_ATTAINABLE_N}), a pause for a decision; the verification is not "
+            "run")  # fmt: skip
 
 
 def _verification_floor(screen: Mapping[str, Any]) -> int:

@@ -101,7 +101,7 @@ on is a response or an observation, and this module opens none.
   is recorded (``power_short``, ``n_min``) and N and the cap are raised, with a decision on the
   money (see ``n-c<N>`` and ``budget-c<N>``), unless no N is attainable: when ``n_min``'s cap
   exceeds the 200 reserved confirmation seeds (the scan stopped there), the verification is not
-  run, its tests are not due and it does not pass, so the record fails (the design stop). A
+  run, its tests are not due and it does not pass, so the record fails (a pause for a decision). A
   failed record may have a null L or a null size.
 - ``n-c<N>``: ``candidate`` (N of the kind), ``rates`` (per arm A, F and, when P–F is active, P:
   ``lr_l`` and ``lr_u``), ``active`` (``["A-F"]`` or ``["A-F", "P-F"]``), ``level`` (the
@@ -113,8 +113,8 @@ on is a response or an observation, and this module opens none.
   record rests on the exact simulation it follows), ``N`` (an integer, at least 60, and at least
   the simulation record's ``n_min`` when its power is short) and ``cap`` (``cap_of``). N is never
   cut: a cap beyond the 200 reserved confirmation seeds (10400–10599) is recorded, with state
-  ``failed`` (the confirmation cannot start within the registered seeds); the state is ``passed``
-  otherwise.
+  ``failed`` (the confirmation cannot start within the registered seeds, a pause for a decision);
+  the state is ``passed`` otherwise.
 - ``budget-c<N>``: ``candidate``, ``N`` and ``cap`` it answers (those of the ``n-c<N>`` record),
   ``decision`` (``proceed``, with state ``passed``, or ``stop``, with state ``failed``) and
   ``answers``, the evidence of the n record itself, a link of the candidate's n chain
@@ -776,6 +776,8 @@ def read_decision(
     """The record ``kind`` if it is present and valid, and its problems. Absent (no file, and no
     link in its place): (None, []); a link that cannot be resolved (a link loop) is refused
     unopened, a problem. With any problem the record is None: nothing downstream may consume it.
+    An n record that failed on the reserve reads as passed once its cap fits the reserved seeds
+    (amendment 7, "The reserve": an amendment extends ``SEEDS``, and the file stays as it is).
     ``repo``: the checkout that evidence with ``"root": "repo"`` is relative to."""
     path = decision_path(runs_root, kind)
     if not (path.exists() or path.is_symlink()):  # a link that leads nowhere is no absence
@@ -787,7 +789,13 @@ def read_decision(
     except (OSError, ValueError) as exc:
         return None, [f"{path}: unreadable ({type(exc).__name__})"]
     problems = _problems(Path(runs_root), kind, record, Path(repo))
-    return (None, [f"{path}: {p}" for p in problems]) if problems else (record, [])
+    if problems:
+        return None, [f"{path}: {p}" for p in problems]
+    family, candidate = kind_of(kind)
+    if (family == "n" and record["state"] == "failed"
+            and record["cap"] <= len(SEEDS["confirmation"][candidate])):  # fmt: skip
+        record = {**record, "state": "passed"}  # an amendment added seeds since (``_cap_state``)
+    return record, []
 
 
 def decisions(
@@ -1545,17 +1553,14 @@ class _Schema:
                         "/".join((*DIRECTORY, f"cycle-c{self.candidate}.json")))  # fmt: skip
 
     def _cap_state(self, state: Any, cap: int) -> None:
-        """The state is ``passed`` when the cap fits the reserved confirmation seeds and
-        ``failed`` when it does not: the confirmation cannot start within them, and N is never
-        cut."""
+        """A cap beyond the reserved confirmation seeds cannot pass: the confirmation cannot start
+        within them, and N is never cut. A failed record whose cap fits them was written before an
+        amendment extended them (``read_decision``)."""
         reserved = len(SEEDS["confirmation"][self.candidate])
-        expected = "passed" if cap <= reserved else "failed"
-        if state in STATES and state != expected:
-            self.add("state", f"is {state!r}, but the cap {cap} "
-                     f"{'fits' if cap <= reserved else 'exceeds'} the {reserved} confirmation "
-                     f"seeds reserved, so it is {expected!r}"
-                     + ("" if cap <= reserved else ": the confirmation cannot start within the "
-                        "registered seeds, and N is not cut"))  # fmt: skip
+        if state == "passed" and cap > reserved:
+            self.add("state", f"is 'passed', but the cap {cap} exceeds the {reserved} confirmation "
+                     "seeds reserved, so it is 'failed': the confirmation cannot start within the "
+                     "registered seeds, and N is not cut")  # fmt: skip
 
     def _exact_ref(self, where: str, value: Any, path: str) -> None:
         """Evidence of the record at ``path`` under the runs directory, and no other file."""
@@ -2272,7 +2277,7 @@ def coverage_decisions(
     - L, the first level whose tests passed, and so which verification tests are due: all of
       them with an L, none without (``selected_calibration_level`` stands for L), and none when
       ``n_min``'s cap exceeds the 200 reserved seeds (the scan found no attainable n: the
-      verification is not run and does not pass, the design stop);
+      verification is not run and does not pass, a pause for a decision);
     - the ``verification`` (its tests, due and passed, at L), the ``gates`` (from their stored
       counts: the pass rates, the powers as the smallest correct/M over the power scenarios, a
       scenario short of M counting its missing studies as not detecting, beside ``power_af`` the
@@ -2326,7 +2331,7 @@ def coverage_decisions(
     unattainable = selected is not None and n_min is not None and cap_of(n_min) > reserved
     why = ("no level passed" if selected is None else
            f"n_min {n_min} has the cap {cap_of(n_min)}, beyond the {reserved} reserved seeds "
-           "(no attainable n, the design stop)" if unattainable else None)  # fmt: skip
+           "(no attainable n, a pause for a decision)" if unattainable else None)  # fmt: skip
     passed = selected is not None and not unattainable
     for identity in verification:
         if why is not None:

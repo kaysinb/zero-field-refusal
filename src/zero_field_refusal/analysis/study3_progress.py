@@ -38,10 +38,6 @@ outcome (``TERMINAL``, below). ``candidate``.
 ``outcome`` (a terminal stage), each with its ``reason`` id and the ``reasons`` that name why:
 - ``scientific_feasibility_report``: A or F failed scientifically at candidate 2
   (``scientific_failure``);
-- ``design_stop``: the confirmation cannot start as designed: the simulation record failed (no
-  level passed, its verification failed, or no N within the reserved seeds was attainable for
-  the power: ``simulation_failed``), or the n record failed, its cap beyond the reserved
-  confirmation seeds (``cap_beyond_reserved_seeds``);
 - ``budget_stop``: the budget record's decision is stop (``budget_stop``);
 - at ``done``, ``confirmed`` (A–F's reading is confirmatory) or ``descriptive``, with the
   readings of every active comparison (``readings``), its reason the stop's (``n_reached``,
@@ -129,8 +125,10 @@ active ones, its cohort's seeds the validation blocks supported for A and F, and
 ids exactly the A and F endpoints of those blocks (A and F at ``lr_l`` and ``lr_u``: four per
 block), the counting runs the route itself read for their support: as a set, none missing, none
 extra (a P run, a run of another block or of another candidate), none twice; a problem names the
-counts, never every id. A failed n record (its cap beyond the 200 reserved confirmation seeds)
-means the confirmation cannot start: the design stop, with the reason; N is never cut. A power
+counts, never every id. A failed n record (its cap beyond the reserved confirmation seeds) is a
+pause for a decision (``cap_beyond_reserved_seeds``, amendment 7, "The reserve"): N is never cut, no
+seed is added here, and a record whose cap fits seeds an amendment added reads as passed
+(``read_decision``). A power
 shortfall needs the budget record (``budget_reason``); a budget decision to stop ends the study
 before the confirmation (the budget stop). Whether the simulation's J is the one its fixation
 froze is checked by the simulation record's reader (``study3_decisions``, the J check: the
@@ -314,9 +312,8 @@ issued them, and a re-qualification that waits does not take them back. A run of
 never issued is then refused by name, and blocks.
 
 **Rulings** where the registration leaves a detail open, fixed here before any study-3 record:
-- *A failed simulation record* is final (a record is written once): the design stop. The
-  confirmation cannot start ("If no level passes, or the verification fails"), so nothing after it
-  is run.
+- *A failed simulation record* is a pause for a decision (``simulation_failed``, amendment 7): no
+  level passed, its verification failed or no N was attainable, and nothing after it is run.
 - *P closed* is closed for the rest of the study: P–F ends ("only P–F ends"), and candidate 2
   issues no P cell.
 - *Waiting before routing*: a stage's route decision waits for its runs to end and for its
@@ -385,9 +382,8 @@ THETA0_RUN = Path("study2_stage_a") / "20261014T192927Z-theta0-s2000-abb703a1-a1
 STAGES = ("engineering", "simulation", "search", "numerical", "repair", "validation", "choice",
           "n", "budget", "confirmation", "done")  # fmt: skip
 SCIENTIFIC_REPORT = "scientific_feasibility_report"  # no K* where A and F hold, at candidate 2
-DESIGN_STOP = "design_stop"  # the confirmation cannot start: simulation failed, cap beyond seeds
 BUDGET_STOP = "budget_stop"  # the researcher's budget decision is stop
-TERMINAL = (SCIENTIFIC_REPORT, DESIGN_STOP, BUDGET_STOP)
+TERMINAL = (SCIENTIFIC_REPORT, BUDGET_STOP)
 CONFIRMED, DESCRIPTIVE = "confirmed", "descriptive"  # the outcome at done: A–F's reading
 CONFIRMATORY = "confirmatory"
 # "Confirmation": at the cap, confirmatory with at least 36 supported blocks, or the raised floor
@@ -1004,17 +1000,20 @@ class _Walk:
     # -- engineering and the simulation
 
     def _gate(self, kind: str, entry: Mapping[str, Any], why: str) -> None:
-        """A record that gates the route: invalid blocks, missing is the step; a failed
-        engineering record pauses (amendment 7), a failed simulation record is final."""
+        """A record that gates the route: invalid blocks, missing is the step, failed pauses
+        (amendment 7): the simulation's for a decision, the engineering's for its repair."""
         if entry["state"] == "invalid":
             raise _Stop(self._blocked(kind, entry["problems"]))
         if entry["state"] == "missing":
             raise _Stop(self._result(kind, self._decision(kind, why)))
         if entry["state"] == "failed" and kind == "simulation":
-            raise _Stop(self._report(DESIGN_STOP, "simulation_failed", [
-                "simulation: the record failed: no level passed the coverage screen, its "
-                "verification failed, or no N within the reserved seeds was attainable for the "
-                "power (the verification not run): the confirmation cannot start"]))  # fmt: skip
+            raise _Stop(self._result(kind, {
+                "kind": "blocked", "technical": False, "reason": "simulation_failed",
+                "why": "a pause for a recorded decision, which can be a redesign or a descriptive "
+                       "continuation; coverage is not waived, and N is never cut",
+                "reasons": ["simulation: the record failed: no level passed the coverage screen, "
+                            "its verification failed, or no N within the reserved seeds was "
+                            "attainable for the power (the verification not run)"]}))  # fmt: skip
         if entry["state"] == "failed":
             raise _Stop(self._result(kind, {
                 "kind": "blocked", "technical": True, "reason": ENGINEERING_FAILED,
@@ -1500,10 +1499,15 @@ class _Walk:
         record = entry["record"]
         self._block_on("n", self._against_n(kind, record, fields))
         if record["state"] == "failed":
-            raise _Stop(self._report(DESIGN_STOP, "cap_beyond_reserved_seeds", [
-                f"{kind}: N = {record['N']} needs the cap {record['cap']}, beyond the "
-                f"{len(SEEDS['confirmation'][candidate])} confirmation seeds reserved: the "
-                "confirmation cannot start, and N is never cut"]))  # fmt: skip
+            raise _Stop(self._result("n", {
+                "kind": "blocked", "technical": False, "reason": "cap_beyond_reserved_seeds",
+                "why": "a pause for a recorded decision: N is never cut, and further seeds need "
+                       "their own amendment, on disjoint seeds, before any confirmation run; "
+                       "once it extends study3_records.SEEDS['confirmation'] past the cap, this "
+                       "record reads as passed and the route goes on",
+                "reasons": [f"{kind}: N = {record['N']} needs the cap {record['cap']}, beyond the "
+                            f"{len(SEEDS['confirmation'][candidate])} confirmation seeds "
+                            "reserved"]}))  # fmt: skip
         reason = budget_reason(record["N"], self.entry("simulation")["record"])
         budget = self.entry(budget_kind)
         if reason is None and (budget["state"] == "missing" or budget.get("stale")):

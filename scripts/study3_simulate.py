@@ -42,10 +42,10 @@ engineering stage, before the search); the models and the values the researcher 
    power of the final increased design). Interrupted, it resumes from its finished parts on the
    same streams, to the same bytes.
 4. **verify** refuses without ``screen.json``, with one of another commit than the clean HEAD,
-   without a recomputed L (the verification is not due), when the n_min scan stopped at an n
-   whose cap exceeds the 200 reserved seeds (no attainable n, the design stop: the verification
-   is not run, ``study3_simulation.unattainable_n``), or with ``verification.json`` present (it
-   is never rerolled); it runs the binding verification at L (``run_verification``) and writes
+   without a recomputed L (the verification is not due), when the n_min scan stopped at an n whose
+   cap exceeds the 200 reserved seeds (no attainable n, a pause for a decision: the verification is
+   not run, ``study3_simulation.unattainable_n``), or with ``verification.json`` present (it is
+   never rerolled); it runs the binding verification at L (``run_verification``) and writes
    ``verification.json``.
 5. **record** needs ``screen.json`` (and ``verification.json`` when L exists and an n is
    attainable) of the clean HEAD; it writes ``results.json`` (``results_record``: its time is

@@ -926,8 +926,6 @@ def test_a_cap_within_the_reserved_confirmation_seeds_is_a_passed_record(world) 
     world.write("n-c1", world.n(N=168))
     record, problems = world.read("n-c1")
     assert problems == [] and record["cap"] == 200 and record["state"] == "passed"
-    decision_path(world.runs, "n-c1").unlink()
-    refused(world, "n-c1", world.n(N=168, state="failed"), "state", "fits", "200")
 
 
 def test_a_cap_beyond_the_reserved_seeds_is_recorded_as_a_failed_record(world) -> None:
@@ -938,6 +936,25 @@ def test_a_cap_beyond_the_reserved_seeds_is_recorded_as_a_failed_record(world) -
     record, problems = world.read("n-c1")
     assert problems == [] and record["N"] == 169 and record["cap"] == 201
     assert record["state"] == "failed"
+
+
+def test_a_failed_n_record_reads_as_passed_once_an_amendment_extends_the_seeds(
+    world, monkeypatch
+) -> None:
+    """Amendment 7, "The reserve": no new record; the file stays as it is, and the constant the
+    refusal reads decides. N is unchanged, and the budget decision is then needed."""
+    world.chain(through="simulation")
+    path = world.write("n-c1", world.n(N=169, state="failed"))
+    kept = path.read_bytes()
+    monkeypatch.setitem(SEEDS["confirmation"], 1, range(10400, 10700))
+    record, problems = world.read("n-c1")
+    assert problems == [] and (record["state"], record["N"], record["cap"]) == ("passed", 169, 201)
+    assert path.read_bytes() == kept
+    world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert found["n-c1"]["state"] == "passed" and "budget-c1" in found
+    world.write("budget-c1", world.budget(1, 169))
+    assert world.read("budget-c1")[0]["cap"] == 201
 
 
 def test_a_failed_n_record_needs_no_budget_entry(world) -> None:
@@ -1149,7 +1166,7 @@ def test_a_power_shortfall_is_recorded_and_the_record_still_passes(world) -> Non
 def test_a_power_short_beyond_the_reserved_seeds_skips_the_verification(world) -> None:
     """n_min 169, its cap 201 beyond the 200 reserved seeds: no N is attainable, so the
     verification is not run (its tests not due) and does not pass, and the record fails (the
-    design stop); due verification rows, or a passed verification, are refused."""
+    pause for a decision); due verification rows, or a passed verification, are refused."""
     gates = gates_with(power_af=power_gate(0.74, 169))
     sim_refused(world, "no attainable n", "not due", gates=gates, state="failed",
                 verification=verified(0.975, False))  # fmt: skip

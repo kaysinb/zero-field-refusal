@@ -1034,6 +1034,30 @@ def test_the_headers_name_their_records_as_immutable_reads_them(world) -> None:
         assert any(campaign_of(path)["name"] in p and "sha256" in p for p in entry["problems"])
 
 
+def test_a_failed_n_record_is_issued_once_an_amendment_extends_the_seeds(world, monkeypatch):
+    """N = 169: the writer refuses at the pause. A later commit extends ``SEEDS`` (here patched),
+    no new record: the same file, the budget record, and the first block names them."""
+    world.records.write("engineering", world.records.engineering())
+    world.records.write("simulation", world.records.simulation())
+    world.records.write("n-c1", world.records.n(1, 169, state="failed"))
+    study = Study()
+    study.through_validation()
+    study.n(N=169)
+    world.versions()
+    world.core(study)
+    error = world.refused("confirmation")
+    assert "cap_beyond_reserved_seeds" in error and "the step is blocked" in error
+    monkeypatch.setitem(SEEDS["confirmation"], 1, range(10400, 10700))
+    world.records.write("budget-c1", world.records.budget(1, 169))
+    study.n(N=169, state="passed")  # as ``read_decision`` reads the file now
+    study.budget()
+    (only,) = world.write("confirmation").glob("*.yaml")
+    header = campaign_of(only)["header"]
+    assert header["n_record_sha256"] == world.records.digest("n-c1")
+    assert header["budget_record_sha256"] == world.records.digest("budget-c1")
+    assert campaign_of(only)["cells"][0]["seeds"] == [10400]
+
+
 def test_the_confirmation_names_its_budget_record_when_n_needs_one(world) -> None:
     confirmation_study(world, N=99, budget=True)
     out = world.write("confirmation")

@@ -1981,17 +1981,41 @@ def test_a_budget_decision_to_stop_starts_no_confirmation() -> None:
     assert "c1/confirmation" not in result["prescribed"]
 
 
-def test_a_failed_n_record_starts_no_confirmation_and_never_cuts_n() -> None:
-    """A design stop, not a technical dead end: the confirmation cannot start within the
-    reserved seeds."""
+def assert_decision_pause(result, stage: str, reason: str) -> None:
+    """A pause for a recorded decision (amendment 7): no outcome, no technical mark, nothing
+    issued, and nothing cut."""
+    step = result["step"]
+    assert (result["stage"], result["outcome"], result["reason"]) == (stage, None, None)
+    assert (step["kind"], step["technical"], step["reason"]) == ("blocked", False, reason)
+    assert "a recorded decision" in step["why"] and step["reasons"] and "cells" not in step
+
+
+def test_a_failed_n_record_pauses_for_a_decision_and_never_cuts_n() -> None:
+    """A cap beyond the reserved seeds starts no confirmation; the step names what is needed."""
     study = Study()
     study.through_validation()
     study.n(N=169)  # cap 201: beyond the 200 reserved confirmation seeds
     result = study.advance()
-    assert (result["stage"], result["outcome"], result["reason"]) == (
-        "design_stop", "design_stop", "cap_beyond_reserved_seeds")  # fmt: skip
-    assert any("201" in r for r in result["reasons"])
+    assert_decision_pause(result, "n", "cap_beyond_reserved_seeds")
+    assert any("201" in r for r in result["step"]["reasons"])
+    assert "their own amendment" in result["step"]["why"]
     assert "c1/confirmation" not in result["prescribed"]
+    assert result["problems"] == []
+
+
+def test_the_reserve_extended_by_an_amendment_lets_the_route_go_on(monkeypatch) -> None:
+    """Once a later commit extends ``SEEDS`` past the cap, the n record reads as passed
+    (``read_decision``): the budget decision (N above 90), then the confirmation up to the cap."""
+    monkeypatch.setitem(SEEDS["confirmation"], 1, range(10400, 10700))
+    study = Study()
+    study.through_validation()
+    study.n(N=169, state="passed")
+    result = study.advance()
+    assert (result["stage"], result["step"]["record"]) == ("budget", "budget-c1")
+    study.budget()
+    result = study.advance()
+    assert (result["step"]["campaign"], result["confirmation"]["cap"]) == ("confirmation", 201)
+    assert ("A", START["A"]["l"], 10600) in result["prescribed"]["c1/confirmation"]
 
 
 @pytest.mark.parametrize("kind, stage", [("engineering", "engineering"),
@@ -2015,21 +2039,14 @@ def test_an_invalid_closure_blocks() -> None:
     assert (result["step"]["kind"], result["outcome"]) == ("blocked", None)
 
 
-@pytest.mark.parametrize("kind, outcome, reason", [
-    ("simulation", "design_stop", "simulation_failed"),
-])  # fmt: skip
-def test_a_failed_engineering_or_simulation_record_ends_the_study_by_its_kind(
-    kind, outcome, reason
-) -> None:
-    """A failed engineering record is a technical dead end; a failed simulation record (no level
-    passed, or the verification failed) a design stop: the confirmation cannot start."""
+def test_a_failed_simulation_record_pauses_for_a_decision() -> None:
+    """No level passed, the verification failed or no N was attainable: nothing after it runs,
+    and coverage is not waived."""
     study = Study()
     study.ready()
-    study.entries[kind]["state"] = study.entries[kind]["record"]["state"] = "failed"
+    study.entries["simulation"]["state"] = study.entries["simulation"]["record"]["state"] = "failed"
     result = study.advance()
-    assert (result["stage"], result["outcome"], result["reason"]) == (outcome, outcome, reason)
-    assert result["step"] == {"kind": "report", "outcome": outcome, "reason": reason}
-    assert any(kind in r for r in result["reasons"])
+    assert_decision_pause(result, "simulation", "simulation_failed")
     assert "c1/search/r0" not in result["prescribed"]
 
 

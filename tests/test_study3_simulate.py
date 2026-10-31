@@ -346,7 +346,8 @@ def test_verify_refuses_without_a_level_and_record_writes_the_failed_record(worl
     results = json.loads((runs / SIMULATION_RESULTS).read_text())
     assert {r["due"] for r in results["tests"] if r["test"][0] == "verification"} == {False}
     state = progress_of(runs, repo)
-    assert (state["outcome"], state["reason"]) == ("design_stop", "simulation_failed")
+    assert (state["stage"], state["outcome"], state["step"]["reason"]) == (
+        "simulation", None, "simulation_failed")  # fmt: skip
 
 
 def test_a_verification_test_above_c_gives_the_failed_record(world) -> None:
@@ -360,12 +361,13 @@ def test_a_verification_test_above_c_gives_the_failed_record(world) -> None:
     assert problems == [] and record["level"] is not None and record["state"] == "failed"
     assert record["verification"]["passed"] is False
     state = progress_of(runs, repo)
-    assert (state["outcome"], state["reason"]) == ("design_stop", "simulation_failed")
+    assert (state["stage"], state["outcome"], state["step"]["reason"]) == (
+        "simulation", None, "simulation_failed")  # fmt: skip
 
 
 def test_no_attainable_n_skips_the_verification_and_fails_the_record(world) -> None:
     """The power short at every n of the scan up to 169, whose cap 201 exceeds the 200 reserved
-    seeds: no N is attainable, so the verification is not run (the design stop, named), its
+    seeds: no N is attainable, so the verification is not run (a pause for a decision, named), its
     tests are not due, and the record fails."""
     repo, runs, simulate = world
     ran(simulate("run", "--runs-root", runs, "--workers", 1))
@@ -382,7 +384,7 @@ def test_no_attainable_n_skips_the_verification_and_fails_the_record(world) -> N
 
     edit(screen, short)
     refused(simulate("verify", "--runs-root", runs, "--workers", 1), "no attainable n",
-            "design stop", "201")  # fmt: skip
+            "a pause for a decision", "201")  # fmt: skip
     assert not (runs / "study3" / "simulation" / "verification.json").exists()
     out = ran(simulate("record", "--runs-root", runs))
     assert "state failed" in out and "verification not_run no_attainable_n n 169 cap 201" in out
@@ -394,8 +396,9 @@ def test_no_attainable_n_skips_the_verification_and_fails_the_record(world) -> N
     verification = [r for r in results["tests"] if r["test"][0] == "verification"]
     assert verification and {r["due"] for r in verification} == {False}
     state = progress_of(runs, repo)
-    assert (state["outcome"], state["reason"]) == ("design_stop", "simulation_failed")
-    assert any("attainable" in r for r in state["reasons"])
+    assert (state["stage"], state["outcome"], state["step"]["reason"]) == (
+        "simulation", None, "simulation_failed")  # fmt: skip
+    assert any("attainable" in r for r in state["step"]["reasons"])
 
 
 def test_verify_is_never_rerolled(world) -> None:
