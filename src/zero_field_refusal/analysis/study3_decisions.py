@@ -82,17 +82,21 @@ on is a response or an observation, and this module opens none.
   least 60, when the power is short; else null); ``coverage``: one entry per level tested, in
   ascending order, with ``level``, ``tests``, ``J``, ``M`` (exactly 10 000), ``counts`` and
   ``thresholds`` (each ``comparison`` and ``joint``, the non-coverage counts X and the thresholds
-  c; each X is the largest count over the level's ``tests``, the N grid and the scenarios, and,
-  for ``comparison``, over both comparisons A–F and P–F: the worst test decides, so the level
-  passes exactly when every X is at or under its c, which is how its ``passed`` is checked; the
-  aggregate itself is checked against the results, test by test, by the J check below) and
+  c; ``comparison``'s X is the largest count over A–F's tests at N ≥ 60 and at the cap and the
+  scenarios, the tests that decide the level (amendment 7), so the level passes exactly when that
+  X is at or under its c, which is how its ``passed`` is checked; ``joint``'s is the largest over
+  the level's joint tests, reported; the aggregate itself is checked against the results, test by
+  test, by the J check below) and
   ``passed``, all with the same J, the one frozen number of coverage tests across the
   grid, the levels and the calibration and verification streams: the ``tests`` of every level
   and of the verification add up to at most J; ``level`` (L, one of 0.975, 0.980, 0.985, 0.990,
   or null when no level passed) and ``validation_blocks`` (28 or 40); ``verification``
   (``level``, ``passed``, its ``tests``, the ``calibration_stream`` and ``verification_stream``,
-  two different integers). L is the first level whose tests passed (the levels below it tested
-  and failed); a null L means every level was tested and failed.
+  two different integers); ``reading`` (null unless the record passed; else ``level``, L;
+  ``pf_confirmatory``; ``floors``: per comparison its confirmatory floor, one of 36, 45, 60, P–F's
+  null when it is withheld), the field the procedure reads (amendment 7, "The simulation's stops").
+  L is the first level whose tests passed (the levels below it tested and failed); a null L means
+  every level was tested and failed.
   **The state follows the coverage screen and its independent verification, and nothing else**:
   ``passed`` exactly when a level passed and its verification passed ("If no level passes, or the
   verification fails, the confirmation cannot start"). A pass rate below its requirement is not a
@@ -398,7 +402,7 @@ COMMON = ("kind", "state", "written_at", "code")
 FIELDS = {
     "engineering": ("checks",),
     "simulation": ("fixation", "inputs", "gates", "coverage", "level", "validation_blocks",
-                   "verification"),
+                   "verification", "reading"),
     "n": ("candidate", "rates", "active", "level", "cohort", "spread", "spread_pp", "N", "cap",
           "simulation"),
     "budget": ("candidate", "N", "cap", "decision", "answers"),
@@ -448,6 +452,10 @@ SIMULATION_RESULTS = "/".join((EXPERIMENT, SIMULATION_FOLDER, "results.json"))
 TEST_STREAMS = ("calibration", "verification")
 N_POINTS: tuple[int | str, ...] = (36, 45, 60, 75, 90, 99, "cap")
 TESTED = ("A-F", "P-F", "joint")
+# Amendment 7, "The floor": the grid sizes a comparison's confirmatory floor can take, and the tests
+# that apply to it: so P-F's failure alone raises no floor of A-F's, and no level
+FLOORS = (36, 45, 60)
+FLOOR_TESTS = {"A-F": ("A-F",), "P-F": ("P-F", "joint")}
 SELECTED_LEVEL = "selected_calibration_level"  # the results' L
 P0 = {"A-F": COVERAGE_P0["comparison"], "P-F": COVERAGE_P0["comparison"],
       "joint": COVERAGE_P0["joint"]}  # fmt: skip
@@ -465,12 +473,12 @@ CALIBRATION_FIELDS = ("studies", "blocks", "rounds", "tolerances")
 CALIBRATION_TOLERANCES = ("support", "sigma", "sigma_relative", "offset")
 MACHINE_FIELDS = ("platform", "cpu", "numpy")  # where the fixation was calibrated (reported)
 FIXATION_RULES = ("screen_simplifications", "pf_verification", "joint_verification",
-                  "verification_streams", "draw_bound")  # fmt: skip
+                  "level_and_floor", "verification_streams", "draw_bound")  # fmt: skip
 CURVATURE_FIELDS = ("A", "F", "P", "unit", "nominal_bias_af_pp", "source", "note")
 RESULTS_FIELDS = ("kind", "written_at", "fixation", "code", "M", "J", "streams", "resamples",
                   "validation_blocks", SELECTED_LEVEL, "tests", "gates", "reported")  # fmt: skip
-ROW_FIELDS = ("test", "level", "due", "p0", "studies", "draws", "reason", "X", "c", "passed",
-              "rate", "interval")  # fmt: skip
+COUNT_FIELDS = ("studies", "draws", "reason", "X", "passed", "rate", "interval")  # one count
+ROW_FIELDS = ("test", "level", "due", "p0", "c", "floor", "below", *COUNT_FIELDS)
 RESULT_GATES = ("safe_pass_rate", "empirical_pass_rate", "power_af", "power_pf", POWER_REPORT,
                 "n_scan", "detection_power")  # fmt: skip
 _DECIDED = re.compile(r".*\bM\d+[a-z]?, decided")  # a source line's end: "…; M<n>, decided"
@@ -1424,8 +1432,8 @@ class _Schema:
                              f"BinomQuantile(1 − {FAMILY_ALPHA}/{row['J']}; {row['M']}, {p0}) "
                              f"is {expected}")  # fmt: skip
                     valid = False
-                else:
-                    agree = agree and counts[name] <= expected
+                elif name == "comparison":  # the joint count is P-F's reading's, never the level's
+                    agree = counts[name] <= expected
             if valid and row["passed"] is not agree:
                 self.add(f"{where}.passed", "disagrees with the counts and the thresholds")
                 valid = False
@@ -2022,6 +2030,61 @@ def detection_power(tests: int, runs: int) -> dict[str, float]:
             for name, p0 in COVERAGE_P0.items()}  # fmt: skip
 
 
+def count_at(row: Mapping[str, Any], floor: int) -> Mapping[str, Any] | None:
+    """A test's count for a reading at ``floor``: a test at an N point, its row; a cap test, its own
+    count at its ``floor`` or a lower floor's in ``below``, None when it holds none."""
+    if row["test"][2] != "cap" or row.get("floor") == floor:
+        return row
+    below = row.get("below")
+    return below.get(str(floor)) if isinstance(below, Mapping) else None
+
+
+def floor_failures(rows: Sequence[Mapping[str, Any]], comparison: str, floor: int, j: int,
+                   m: int) -> list[dict[str, Any]]:  # fmt: skip
+    """The tests that keep ``comparison``'s reading at ``floor`` from passing among ``rows`` (one
+    stream's, at one level; amendment 7, "The floor"): its applicable tests (``FLOOR_TESTS``) at and
+    above that size, the cap counted at that floor, each recomputed from X and c = ``coverage_
+    threshold(j, m, p₀)``. A test with no X of M studies has passed nothing. Each with its X and
+    its reason."""
+    c = {tested: coverage_threshold(j, m, P0[tested]) for tested in FLOOR_TESTS[comparison]}
+    out = []
+    for row in rows:
+        _, _, point, _, tested = row["test"]
+        if tested not in c or (point != "cap" and point < floor):
+            continue
+        count = count_at(row, floor) or {}
+        x = count.get("X")
+        if not (type(x) is int and count.get("studies") == m and x <= c[tested]):
+            out.append({"test": list(row["test"]), "X": x, "reason": count.get("reason")})
+    return out
+
+
+def confirmatory_floor(rows: Sequence[Mapping[str, Any]], comparison: str, j: int,
+                       m: int) -> int | None:  # fmt: skip
+    """``comparison``'s confirmatory floor among ``rows`` (the screen's, at one level): the smallest
+    of ``FLOORS`` at which it has no ``floor_failures``, or None. A–F's exists at L by L's rule;
+    with none, P–F is withheld."""
+    return next((f for f in FLOORS if not floor_failures(rows, comparison, f, j, m)), None)
+
+
+def level_rows(rows: Sequence[Mapping[str, Any]], stream: str,
+               level: float) -> list[Mapping[str, Any]]:  # fmt: skip
+    """The rows of ``stream``'s tests at ``level``."""
+    slot = level_slot(level)
+    return [r for r in rows if r["test"][0] == stream and r["test"][3] == slot]
+
+
+def selected_level(rows: Sequence[Mapping[str, Any]], j: int, m: int) -> float | None:
+    """L on the screen (amendment 7, "The level"): the first level whose A–F tests at N ≥ 60 and
+    at the cap all pass, recomputed from X and c; None when no level does. P–F's tests and the
+    joint tests have no part in it: L is at least 0.975 whatever P–F shows."""
+    for level in LEVELS:
+        mine = level_rows(rows, "calibration", level)
+        if mine and not floor_failures(mine, "A-F", FLOORS[-1], j, m):
+            return level
+    return None
+
+
 def clopper_pearson(x: int, runs: int) -> list[float]:
     """The ordinary 95 % binomial interval of X/M (Clopper–Pearson, M21)."""
     from scipy.stats import beta
@@ -2244,13 +2307,18 @@ def coverage_decisions(
     """The simulation record's decisions recomputed from the results' rows (the J check's step
     5), and the problems of the rows:
     - per test, c = ``coverage_threshold(J, M, p₀)``, the pass X ≤ c, the rate X/M and the
-      Clopper–Pearson interval; a row with fewer than M studies must have drawn 4·M (``draws``)
-      and say ``not_attainable``, and then passes never;
-    - per level, the record's ``coverage`` row (all four): the counts are the largest X over the
-      level's tests (A–F and P–F for ``comparison``), a not-attainable test counting as X = M;
-    - L, the first level whose tests passed, and so which verification tests are due: L's with
-      an L, none without, and none when ``n_min``'s cap exceeds the 200 reserved seeds (the scan
-      found no attainable n: the verification is not run and does not pass, the design stop);
+      Clopper–Pearson interval, at each floor a cap test counts (``_row``); a row with fewer than
+      M studies must have drawn 4·M (``draws``) and say ``not_attainable``, and then passes never;
+    - per level, the record's ``coverage`` row (all four): ``comparison`` is the largest X over
+      A–F's tests at N ≥ 60 and at the cap, which decide the level (a not-attainable test counting
+      as X = M), ``joint`` the largest X of the level's joint tests, which do not;
+    - L (``selected_level``) and each comparison's floor at L (``confirmatory_floor``), and so which
+      verification tests are due: L's with an L, P–F's and the joint tests only when P–F has a
+      floor, none without an L, and none when ``n_min``'s cap exceeds the 200 reserved seeds (the
+      scan found no attainable n: the verification is not run and does not pass);
+    - the ``reading`` (amendment 7): L, A–F's floor, and P–F's floor when P–F's tests pass there
+      on the screen and in the verification (``pf_confirmatory``), else P–F withheld, which moves
+      neither L nor A–F's floor; null unless A–F's verification passed;
     - the ``verification`` (its tests, due and passed, at L), the ``gates`` (from their stored
       counts: the pass rates, the powers as the smallest correct/M over the power scenarios, a
       scenario short of M counting its missing studies as not detecting, beside ``power_af`` the
@@ -2274,28 +2342,37 @@ def coverage_decisions(
     calibration = [i for i in identities if i[0] == "calibration"]
     verification = [i for i in identities if i[0] == "verification"]
 
-    def read(identity: tuple, level: float | None) -> tuple[int, bool]:
-        """A due row's effective X (M when not attainable) and pass; its problems noted."""
-        row = rows.get(identity)
-        if row is None:
-            problems.append(f"tests: {list(identity)} has no row")
-            return m, False
-        found = _row(row, identity, level, thresholds, m, bound)
-        problems.extend(found[2])
-        return found[0], found[1]
+    def read(wanted: Sequence[tuple], level: float, floors: Sequence[int]) -> list[Mapping]:
+        """The due rows of ``wanted``, a cap's counting at ``floors``; their problems noted."""
+        out = []
+        for identity in wanted:
+            row = rows.get(identity)
+            if row is None:
+                problems.append(f"tests: {list(identity)} has no row")
+                continue
+            problems.extend(_row(row, identity, level, thresholds, m, bound, floors))
+            out.append(row)
+        return out
 
-    coverage = []
+    def largest(found: Sequence[Mapping], tested: str, least: int) -> int:
+        """The largest X of ``tested``'s tests at N ≥ ``least`` and at the cap (not attainable:
+        M)."""
+        return max((m if row.get("X") is None else row["X"] for row in found
+                    if row["test"][4] == tested
+                    and (row["test"][2] == "cap" or row["test"][2] >= least)),
+                   default=0)  # fmt: skip
+
+    screened, coverage = {}, []
     for level in LEVELS:
         slot = level_slot(level)
-        mine = [i for i in calibration if i[3] == slot]
-        read_rows = [(i[4], *read(i, level)) for i in mine]
-        counts = {
-            "comparison": max((x for c, x, _ in read_rows if c != "joint"), default=0),
-            "joint": max((x for c, x, _ in read_rows if c == "joint"), default=0),
-        }
+        mine = read([i for i in calibration if i[3] == slot], level, FLOORS)
+        screened[level] = mine
+        counts = {"comparison": largest(mine, "A-F", FLOORS[-1]),
+                  "joint": largest(mine, "joint", FLOORS[0])}  # fmt: skip
         coverage.append({"level": level, "tests": len(mine), "J": j, "M": m, "counts": counts,
                          "thresholds": dict(thresholds),
-                         "passed": all(counts[k] <= thresholds[k] for k in counts)})  # fmt: skip
+                         "passed": bool(mine) and not floor_failures(mine, "A-F", FLOORS[-1], j,
+                                                                     m)})  # fmt: skip
     selected = next((row["level"] for row in coverage if row["passed"]), None)
     gates, gate_problems = _gates_recomputed(results.get("gates"), fixation, selected)
     problems += gate_problems
@@ -2305,18 +2382,35 @@ def coverage_decisions(
     why = ("no level passed" if selected is None else
            f"n_min {n_min} has the cap {cap_of(n_min)}, beyond the {reserved} reserved seeds "
            "(no attainable n, the design stop)" if unattainable else None)  # fmt: skip
-    passed = selected is not None and not unattainable
-    for identity in verification:
-        if why is not None or identity[3] != level_slot(selected):
-            row = rows.get(identity)
-            if row is None:
-                problems.append(f"tests: {list(identity)} has no row")
-            elif not _not_due(row):
-                problems.append(f"tests: {list(identity)}: {why or 'not L'}, so the test is not "
-                                "due: every field but its test, p0 and due (false) is "
-                                "null")  # fmt: skip
-        else:
-            passed = read(identity, selected)[1] and passed
+    floors = {} if selected is None else {
+        c: confirmatory_floor(screened[selected], c, j, m) for c in FLOOR_TESTS}  # fmt: skip
+
+    def owner(identity: tuple) -> str:
+        return "A-F" if identity[4] == "A-F" else "P-F"
+
+    due = [] if why is not None else [
+        i for i in verification
+        if i[3] == level_slot(selected) and floors[owner(i)] is not None]  # fmt: skip
+    verified = []
+    for comparison in FLOOR_TESTS:
+        verified += read([i for i in due if owner(i) == comparison], selected,
+                         (floors.get(comparison),))  # fmt: skip
+    for identity in sorted(set(verification) - set(due), key=verification.index):
+        row = rows.get(identity)
+        if row is None:
+            problems.append(f"tests: {list(identity)} has no row")
+        elif not _not_due(row):
+            problems.append(f"tests: {list(identity)}: {why or 'not L, or P-F withheld'}, so the "
+                            "test is not due: every field but its test, p0 and due (false) is "
+                            "null")  # fmt: skip
+    passed = (selected is not None and not unattainable
+              and not floor_failures(verified, "A-F", floors["A-F"], j, m))  # fmt: skip
+    confirmatory = passed and floors["P-F"] is not None and not floor_failures(
+        verified, "P-F", floors["P-F"], j, m)  # fmt: skip
+    reading = None if not passed else {
+        "level": selected, "pf_confirmatory": confirmatory,
+        "floors": {"A-F": floors["A-F"],
+                   "P-F": floors["P-F"] if confirmatory else None}}  # fmt: skip
     streams = fixation["streams"]
     decided_verification = {
         "level": selected, "passed": passed, "tests": len(verification),  # all possible, in J
@@ -2331,17 +2425,18 @@ def coverage_decisions(
             problems.append(f"results.{name} is {results.get(name)!r}, recomputed {want!r}")
     state = "passed" if decided_verification["passed"] else "failed"
     decided = {"J": j, "M": m, "coverage": coverage, "level": selected,
-               "verification": decided_verification, "gates": gates,
+               "verification": decided_verification, "gates": gates, "reading": reading,
                "validation_blocks": blocks, "state": state}  # fmt: skip
     return decided, problems
 
 
 def _row(row: Mapping[str, Any], identity: tuple, level: float, thresholds: Mapping[str, int],
-         m: int, bound: int) -> tuple[int, bool, list[str]]:  # fmt: skip
-    """A due row against its recomputation: (effective X, passed, problems)."""
+         m: int, bound: int, floors: Sequence[int]) -> list[str]:  # fmt: skip
+    """A due row's problems against its recomputation; a cap test counts at ``floors``, the
+    largest in its own fields, the others in ``below``, and no other row has a floor."""
     where = f"tests: {list(identity)}"
     if set(row) != set(ROW_FIELDS):
-        return m, False, [f"{where}: fields {sorted(row)}, not {sorted(ROW_FIELDS)}"]
+        return [f"{where}: fields {sorted(row)}, not {sorted(ROW_FIELDS)}"]
     comparison = identity[4]
     c = thresholds["joint" if comparison == "joint" else "comparison"]
     found = []
@@ -2353,38 +2448,56 @@ def _row(row: Mapping[str, Any], identity: tuple, level: float, thresholds: Mapp
         found.append(f"{where}: p0 is {row['p0']!r}, not {P0[comparison]}")
     if row["c"] != c or type(row["c"]) is not int:
         found.append(f"{where}: c is {row['c']!r}, recomputed {c}")
-    studies, draws = row["studies"], row["draws"]
+    if identity[2] != "cap":
+        if row["floor"] is not None or row["below"] is not None:
+            found.append(f"{where}: a test at an N point has no floor")
+    elif row["floor"] != max(floors) or set(row["below"] or ()) != {
+            str(f) for f in floors if f != max(floors)}:  # fmt: skip
+        return [*found, f"{where}: its floors are {row['floor']!r} and {row['below']!r}, not the "
+                f"recomputed {list(floors)}"]  # fmt: skip
+    else:
+        for floor, count in (row["below"] or {}).items():
+            found += _count_problems(count, f"{where} at floor {floor}", c, m, bound)
+    return found + _count_problems(row, where, c, m, bound)
+
+
+def _count_problems(count: Any, where: str, c: int, m: int, bound: int) -> list[str]:
+    """A test's count (``COUNT_FIELDS``) against its recomputation from X and c."""
+    if not (isinstance(count, Mapping) and set(COUNT_FIELDS) <= set(count)):
+        return [f"{where}: its count is not {list(COUNT_FIELDS)}"]
+    found = []
+    studies, draws = count["studies"], count["draws"]
     if not (type(studies) is int and type(draws) is int and 0 <= studies <= m
             and studies <= draws <= bound):  # fmt: skip
-        return m, False, [*found, f"{where}: studies {studies!r} and draws {draws!r} are not "
-                          f"counts with studies ≤ M = {m} and draws ≤ 4·M = {bound}"]  # fmt: skip
+        return [f"{where}: studies {studies!r} and draws {draws!r} are not counts with studies ≤ "
+                f"M = {m} and draws ≤ 4·M = {bound}"]  # fmt: skip
     if studies < m:
-        if draws != bound or row["reason"] != NOT_ATTAINABLE:
+        if draws != bound or count["reason"] != NOT_ATTAINABLE:
             found.append(f"{where}: {studies} studies, short of M, below the 4·M = {bound} draws "
-                         f"bound ({draws} drawn, reason {row['reason']!r}): a short test stops "
+                         f"bound ({draws} drawn, reason {count['reason']!r}): a short test stops "
                          f"only at the bound, {NOT_ATTAINABLE!r}")  # fmt: skip
-        nulls = {k: row[k] for k in ("X", "rate", "interval") if row[k] is not None}
-        if nulls or row["passed"] is not False:
+        nulls = {k: count[k] for k in ("X", "rate", "interval") if count[k] is not None}
+        if nulls or count["passed"] is not False:
             found.append(f"{where}: a test not attainable has no X, rate or interval and does "
-                         f"not pass ({nulls}, passed {row['passed']!r}): recomputed")  # fmt: skip
-        return m, False, found
-    if row["reason"] is not None:
-        found.append(f"{where}: reason is {row['reason']!r} for a test of M studies")
-    x = row["X"]
+                         f"not pass ({nulls}, passed {count['passed']!r}): recomputed")  # fmt: skip
+        return found
+    if count["reason"] is not None:
+        found.append(f"{where}: reason is {count['reason']!r} for a test of M studies")
+    x = count["X"]
     if not (type(x) is int and 0 <= x <= m):
-        return m, False, [*found, f"{where}: X is {x!r}, not a count in [0, {m}]"]
+        return [*found, f"{where}: X is {x!r}, not a count in [0, {m}]"]
     passes = x <= c
-    if row["passed"] is not passes:
-        found.append(f"{where}: passed is {row['passed']!r}, but X = {x} against c = {c} gives "
+    if count["passed"] is not passes:
+        found.append(f"{where}: passed is {count['passed']!r}, but X = {x} against c = {c} gives "
                      f"{passes}: recomputed")  # fmt: skip
-    if not _close(row["rate"], x / m):
-        found.append(f"{where}: rate is {row['rate']!r}, recomputed {x / m}")
+    if not _close(count["rate"], x / m):
+        found.append(f"{where}: rate is {count['rate']!r}, recomputed {x / m}")
     interval = clopper_pearson(x, m)
-    stored = row["interval"]
+    stored = count["interval"]
     if not (isinstance(stored, list) and len(stored) == 2
             and all(_close(a, b) for a, b in zip(stored, interval, strict=True))):  # fmt: skip
-        found.append(f"{where}: interval is {row['interval']!r}, recomputed {interval}")
-    return x, passes, found
+        found.append(f"{where}: interval is {count['interval']!r}, recomputed {interval}")
+    return found
 
 
 def _identity_of(row: Any) -> tuple | None:
@@ -2883,7 +2996,7 @@ def _against_decided(record: Mapping[str, Any], decided: Mapping[str, Any]) -> l
                 else mine[k] == theirs[k] for k in theirs):  # fmt: skip
             problems.append(f"gates.{name} is {mine!r}, recomputed {theirs!r} from the "
                             "results' counts")  # fmt: skip
-    for name in ("validation_blocks", "state"):
+    for name in ("validation_blocks", "state", "reading"):
         if name == "validation_blocks" and record[name] is None and record["state"] == "failed":
             continue  # a failed record may leave the size null (the schema's allowance)
         if record[name] != decided[name]:

@@ -249,6 +249,10 @@ def run(args: argparse.Namespace) -> None:
     level = screen["level"]
     print("no level passed" if level is None else f"level {level}")
     print(f"validation_blocks {screen['validation_blocks']}")
+    if level is not None:
+        for comparison, floor in sim._floors_at(screen["tests"], level, found.fixation["J"],
+                                                screen["M"]).items():  # fmt: skip
+            print(f"floor {comparison} {floor}")
     m, gates = screen["M"], screen["gates"]
     for name in ("safe_pass_rate", "empirical_pass_rate"):
         print(f"{name} {gates[name]['passed'] / m}")
@@ -278,6 +282,8 @@ def verify(args: argparse.Namespace) -> None:
     print(f"{path} {sha256(path)}")
     print(f"level {verification['level']}")
     print(f"tests {len(tests)} passed {sum(t['passed'] is True for t in tests)}")
+    print(f"verified {str(verification['verified']).lower()}")
+    print(f"pf_confirmatory {str(verification['pf_confirmatory']).lower()}")
 
 
 def commit_time(commit: str) -> str:
@@ -335,6 +341,7 @@ def record(args: argparse.Namespace) -> None:
         "level": decided["level"],
         "validation_blocks": decided["validation_blocks"],
         "verification": decided["verification"],
+        "reading": decided["reading"],
     }  # fmt: skip
     try:
         written = write_decision(root, "simulation", entry, repo=REPO)

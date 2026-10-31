@@ -1571,8 +1571,8 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path, monkeypatch) ->
                 "cancellation between arms",
     }  # fmt: skip
     assert set(fixation["rules"]) == {"screen_simplifications", "pf_verification",
-                                      "joint_verification", "verification_streams",
-                                      "draw_bound"}  # fmt: skip
+                                      "level_and_floor", "joint_verification",
+                                      "verification_streams", "draw_bound"}  # fmt: skip
     assert fixation["rules"]["joint_verification"]["source"] == (
         "counted over the studies confirmed for A-F; a study misses jointly if A-F misses, or if "
         "P-F is active in it and misses; M27, decided"
@@ -1980,6 +1980,130 @@ def test_a_scenario_that_never_confirms_stops_at_4m_and_is_not_attainable(
     screen = json.loads(rows.read_text())
     assert screen["level"] is None  # every level fails: X = M counted
     assert screen["reported"]["NC"]["unconfirmed"] == {"af_gate": 24}
+
+
+def stops_rows(failing: dict[str, set] | None = None) -> list[dict]:
+    """A level's tests on the screen, one scenario, M = 6: X = 0, or 6 for the ``failing`` tests of
+    a level slot (N point, tested), the cap as ("cap", floor)."""
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    def count(x: int | None) -> dict:
+        return {"studies": 6, "draws": 6, "reason": None, "X": x, "passed": x == 0,
+                "rate": x / 6, "interval": None}  # fmt: skip
+
+    rows = []
+    for identity in decisions.test_identities(["C"]):
+        stream, _, point, slot, tested = identity
+        if stream != "calibration":
+            continue
+        bad = (failing or {}).get(slot, set())
+        row = {"test": list(identity), "floor": None, "below": None,
+               **count(6 if (point, tested) in bad else 0)}  # fmt: skip
+        if point == "cap":
+            row.update(count(6 if (("cap", 60), tested) in bad else 0), floor=60, below={
+                str(f): count(6 if (("cap", f), tested) in bad else 0)
+                for f in (36, 45)})  # fmt: skip
+        rows.append(row)
+    return rows
+
+
+def test_the_level_reads_a_fs_tests_from_60_and_the_cap_at_its_floor_alone() -> None:
+    """Amendment 7, "The level": A–F's tests at N ≥ 60 and at the cap decide L; its tests below 60,
+    P–F's and the joint tests do not."""
+    from zero_field_refusal.analysis.study3_decisions import selected_level
+
+    j, first = 168, "0.975"
+    for failing, level in (
+        ({}, 0.975),
+        ({first: {(36, "A-F"), (45, "A-F"), (("cap", 36), "A-F"), (("cap", 45), "A-F")}}, 0.975),
+        ({first: {(point, tested) for point in (36, 60, 99)
+                  for tested in ("P-F", "joint")}}, 0.975),
+        ({first: {(("cap", 60), "P-F"), (("cap", 60), "joint")}}, 0.975),
+        ({first: {(60, "A-F")}}, 0.98),
+        ({first: {(99, "A-F")}}, 0.98),
+        ({first: {(("cap", 60), "A-F")}}, 0.98),
+        ({first: {(60, "A-F")}, "0.980": {(75, "A-F")}, "0.985": {(90, "A-F")},
+          "0.990": {(("cap", 60), "A-F")}}, None),
+    ):  # fmt: skip
+        assert selected_level(stops_rows(failing), j, 6) == level, failing
+    above = {first: set(), "0.980": {(60, "A-F")}}
+    assert selected_level(stops_rows(above), j, 6) == 0.975
+
+
+@pytest.mark.parametrize(
+    "failing,af,pf",
+    [
+        (set(), 36, 36),
+        ({(36, "A-F")}, 45, 36),  # P–F's floor does not follow A–F's, nor its reading
+        ({(("cap", 36), "A-F")}, 45, 36),  # the capped procedure at that floor is included
+        ({(45, "A-F")}, 60, 36),
+        ({(("cap", 36), "A-F"), (("cap", 45), "A-F")}, 60, 36),
+        ({(("cap", 45), "A-F")}, 36, 36),  # the cap test read at that floor alone
+        ({(36, "P-F")}, 36, 45),  # P–F's failure alone raises no floor of A–F's
+        ({(36, "joint")}, 36, 45),
+        ({(("cap", 36), "joint")}, 36, 45),
+        ({(45, "joint")}, 36, 60),
+        ({(60, "P-F")}, 36, None),  # no floor: P–F is withheld
+        ({(99, "joint")}, 36, None),
+        ({(("cap", f), "P-F") for f in (36, 45, 60)}, 36, None),
+    ],
+)
+def test_each_comparison_has_its_own_floor(failing, af, pf) -> None:
+    """Amendment 7, "The floor": the smallest of 36, 45, 60 at which a comparison's own tests at and
+    above that size pass, the cap counted at that floor; P–F's are its marginal and joint tests."""
+    from zero_field_refusal.analysis.study3_decisions import confirmatory_floor, level_rows
+
+    rows = level_rows(stops_rows({"0.975": failing}), "calibration", 0.975)
+    assert confirmatory_floor(rows, "A-F", 168, 6) == af
+    assert confirmatory_floor(rows, "P-F", 168, 6) == pf
+
+
+def test_not_attainable_is_not_a_pass_of_the_floor() -> None:
+    from zero_field_refusal.analysis.study3_decisions import confirmatory_floor, level_rows
+
+    rows = level_rows(stops_rows(), "calibration", 0.975)
+    for row in rows:
+        if row["test"][4] == "P-F":
+            row.update(
+                studies=3, draws=24, reason="not_attainable", X=None, passed=False, rate=None
+            )
+    assert confirmatory_floor(rows, "P-F", 168, 6) is None
+    assert confirmatory_floor(rows, "A-F", 168, 6) == 36
+
+
+def test_a_cap_test_at_a_floor_counts_only_the_readings_confirmatory_there(tmp_path) -> None:
+    """M18: studies that miss the cap on fewer than 60 blocks fail the cap test at 36 and at 45, and
+    a raised floor rescues them: at floor 60 the first M studies confirmatory there all cover. So
+    L stands, at A–F's floor 60. The test's identity stays one, in J once."""
+    from zero_field_refusal.analysis.study3_decisions import confirmatory_floor, level_rows
+
+    level = 0.975
+
+    def study(index: int) -> sim.StudyOutcome:
+        few = index % 2 == 0  # 50 blocks in the analysis set, and a miss at the cap
+        covered = {(p, level, c): True for p in sim.N_POINTS for c in sim.TESTED}
+        covered |= {("cap", level, c): not few for c in sim.TESTED}
+        analyzed = {(level, c): 50 if few else 70 for c in sim.COMPARISONS}
+        return replace(outcome(index, True), covered=covered, analyzed=analyzed)
+
+    studies = [study(i) for i in range(24)]
+    identities = [("calibration", "C", p, "0.975", c) for p in sim.N_POINTS for c in sim.TESTED]
+    rows = [sim._test_row(i, level, studies, 6, 24, 168, sim.FLOORS) for i in identities]
+    cap = next(r for r in rows if r["test"][2] == "cap" and r["test"][4] == "A-F")
+    assert (cap["floor"], cap["X"], cap["studies"], cap["draws"]) == (60, 0, 6, 12)
+    assert {f: cap["below"][f]["X"] for f in ("36", "45")} == {"36": 3, "45": 3}
+    assert all(r["floor"] is None and r["below"] is None for r in rows if r["test"][2] != "cap")
+    assert sim.selected_level(rows, 168, 6) == level
+    mine = level_rows(rows, "calibration", level)
+    c = sim.coverage_threshold(168, 6, 0.025)
+    assert c < 3, "the misses at floors 36 and 45 must fail"
+    assert confirmatory_floor(mine, "A-F", 168, 6) == 60
+    # the power reads the same floor: a study on 50 blocks is descriptive there
+    sc = sim.SCENARIOS_BY_NAME["P20"]
+    detecting = [replace(o, readings={(level, "A-F"): "confirmatory"},
+                         direction={(level, "A-F"): "positive"}) for o in studies]  # fmt: skip
+    assert sim._direction_counts(detecting, sc, "A-F", level, 6, 24)["correct"] == 6
+    assert sim._direction_counts(detecting, sc, "A-F", level, 6, 24, 60)["correct"] == 3
 
 
 def test_the_scan_stops_at_the_first_n_with_the_power(tiny, tmp_path) -> None:

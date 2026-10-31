@@ -182,8 +182,8 @@ Carlo SEs. The truth's moments are remembered per (vector, arm, rates, harm mode
 offset), since the selected rates are rounded to 3 significant digits and repeat.
 
 **The engine** (§"Simulation before validation"; the files under ``RUNS_DIR/study3/simulation/``,
-reserved). A phase (``gates``, ``screen``, ``scan-<n>``, ``verification-<level>``) draws, per scenario,
-units of ``UNIT`` (250) studies in index order, each written once as a part
+reserved). A phase (``gates``, ``screen``, ``scan-<level>-<n>``, ``verification-<level>``) draws,
+per scenario, units of ``UNIT`` (250) studies in index order, each written once as a part
 (``parts/<phase>/<scenario>/<first>.json``: its header, the stream, the sizes, the fixation and
 the commit, and one row per study). A scenario's units are issued while the contiguous finished
 prefix holds fewer than M studies for some test (only as many as the shortfall needs), never past
@@ -204,8 +204,10 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
 - *gates*: G1 and G2, M validations each (28 blocks, 40 reported), the safe pass rate setting
   the validation size (28 when it reaches 0.95, else 40);
 - *screen*: the non-gate scenarios at that size, four levels, ``SCREEN_RESAMPLES``,
-  ``"screen"`` mode; L the first level whose tests pass (``selected_level``); the powers at
-  every level, and beside them the power at 1 % MCAR (``power_report``, M6b): each power study
+  ``"screen"`` mode; L the first level whose A–F tests at N ≥ 60 and at the cap pass
+  (``selected_level``, M29), each comparison's floor at each level (``confirmatory_floor``); the
+  powers at every level at its floor, and beside them the power at 1 % MCAR (``power_report``,
+  M6b): each power study
   of the screen again on its own streams with the denser mask, in the same part, its A–F
   detections counted over the studies the power counts, at the N the rule chose (before any
   n_min increase: not the power of the final increased design);
@@ -295,7 +297,10 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
 - M17, N above 90: the simulated confirmation proceeds (the budget decision is outside the
   model); decided.
 - M18, misses: an undetermined interval, or an N point not reached within 200 blocks, is a miss;
-  the cap's descriptive cases count in the cap test (conservative); decided.
+  the cap test at a floor counts only the studies whose reading is confirmatory at that floor (at
+  least that many blocks in the analysis set, amendment 7's "the capped procedure at that floor"),
+  so that a raised floor can rescue a cap failure: one row per identity, its own count at the
+  largest floor it reads and the lower ones beside it (J is unchanged); decided.
 - M19, ``safe_pass_rate``: the A–F gate's pass rate at the safe alternative, the P–F gate's
   rate reported beside it (the A–F gate is the one that moves candidates); decided.
 - M20, the power: normal shape, Δ = ±2 pp, ``power_af`` the smallest correct-direction rate over
@@ -313,6 +318,14 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
 - M28, the verification's streams: one preassigned per level, ``verification_base``, from the
   verification stream and the level's slot alone (amendment 7: no level's draws depend on whether
   another's ran); decided.
+- M29, the level and the floors (amendment 7, "The simulation's stops"): L from A–F's tests alone,
+  at the cap at floor 60, the largest floor, so that a floor exists at L; A–F's tests are A–F's own
+  and P–F's its marginal and the joint ones; a joint cap test at a floor counts the studies in which
+  each active comparison's reading is confirmatory at that floor. A failure of P–F alone advances
+  nothing: **there are no mixed levels**, the identities carry one level, so P–F is read at A–F's L
+  or not at all, and no joint check moves L (none reads A–F's reading today: A–F's tests are its
+  marginal ones). A–F's analysis set does not depend on P's activity (M16), so a verification with
+  P–F active verifies a confirmation with P withheld; decided.
 - M24, the coverage test's interval: the primary computation's only (the registration's coverage
   concerns "the interval"); decided.
 - M25, the sizes of the dry run's Part II (amendment 4): M = 200, 200 screen and 1 000
@@ -380,6 +393,8 @@ from .study3_blocks import (
 )
 from .study3_blocks import SLACK as WIDTH_SLACK
 from .study3_decisions import (
+    FLOOR_TESTS,
+    FLOORS,
     LEVELS,
     MAX_DRAWS_FACTOR,
     MIN_N,
@@ -390,12 +405,16 @@ from .study3_decisions import (
     TESTED,
     VALIDATION_BLOCKS,
     cap_of,
+    confirmatory_floor,
     coverage_threshold,
     detection_power,
     fixation_problems,
+    floor_failures,
     identities_sha256,
+    level_rows,
     level_slot,
     sample_size,
+    selected_level,
     test_identities,
 )
 from .study3_estimates import envelope, three_way_reading
@@ -1594,9 +1613,10 @@ class StudyOutcome:
     cap's ``direction`` (a power scenario's registered final direction, ``final_direction``;
     None elsewhere, or with no common direction), the confirmation's ``readings`` and its
     ``utility_claim``; the
-    ``truth`` per comparison (proportions; None when undefined); a power study of the screen's
-    ``report`` (``power_report``: per level slot its ``N``, ``confirmed``, and A–F's ``readings``
-    and ``direction`` at the denser mask; None elsewhere). In memory only, never
+    ``truth`` per comparison (proportions; None when undefined); per (level, comparison)
+    ``analyzed``, the blocks the cap's reading rests on (None: P–F not active); a power study of
+    the screen's ``report`` (``power_report``: per level slot its ``N``, ``confirmed``, and A–F's
+    ``readings`` and ``direction`` at the denser mask; None elsewhere). In memory only, never
     serialized and not compared: ``spread_pp``, ``utility`` (per arm, (vector seed, interpolated
     MMLU loss, interpolated factual loss) of the supported validation blocks), ``point_seeds``,
     ``cohorts`` and ``analysis`` (the seeds behind each test) and ``validation`` (the final
@@ -1621,6 +1641,7 @@ class StudyOutcome:
     utility_claim: Mapping[tuple[float, str], bool | None]
     truth: Mapping[str, float | None]
     report: Mapping[str, Mapping[str, Any]] | None = None
+    analyzed: Mapping[tuple[float, str], int | None] = field(default_factory=dict)
     spread_pp: float | None = field(default=None, compare=False, repr=False)
     utility: Mapping[str, tuple[tuple[int, float, float], ...]] = field(
         default_factory=dict, compare=False, repr=False
@@ -2092,7 +2113,7 @@ def _confirm(
         confirmed[level] = cap[level] <= len(reserved)
         why[level] = None if confirmed[level] else "cap_beyond_seeds"
     blocks_n: dict[float, int | None] = dict.fromkeys(levels)
-    out = {"covered": {}, "direction": {}, "readings": {}, "utility_claim": {}}
+    out = {"covered": {}, "direction": {}, "readings": {}, "utility_claim": {}, "analyzed": {}}
     memory: dict[str, dict] = {"point_seeds": {}, "cohorts": {}, "analysis": {}}
     if not any(confirmed.values()):
         return StudyOutcome(**common, active=active, confirmed=confirmed, why=why, N=N, cap=cap,
@@ -2146,6 +2167,7 @@ def _confirm(
         blocks_n[level] = len(state["started"])
         for comparison in active:
             seeds = list(state["analysis"][comparison] or ())
+            out["analyzed"][(level, comparison)] = len(seeds)
             memory["analysis"][(level, comparison)] = tuple(seeds)
             memory["cohorts"][(level, comparison)] = tuple(state["cohorts"][comparison])
             if power_reading and comparison != "A-F":
@@ -2170,7 +2192,7 @@ def _confirm(
         else:  # the procedure with P closed: P–F counts nothing, the joint test is A–F's
             covered[(point, level, "P-F")] = None
             covered[(point, level, "joint")] = covered[key]
-            for name in ("direction", "readings", "utility_claim"):
+            for name in ("direction", "readings", "utility_claim", "analyzed"):
                 out[name].setdefault((level, "P-F"), None)
     return StudyOutcome(**common, active=active, confirmed=confirmed, why=why, N=N, cap=cap,
                         blocks=blocks_n, truth=true, **out, **memory)  # fmt: skip
@@ -2265,7 +2287,7 @@ def _covers(interval: Interval | None, value: float | None) -> bool:
 
 _ROW_FIELDS = ("index", "mode", "candidate", "active", "levels", "rates", "gates", "m",
                "confirmed", "why", "N", "cap", "blocks", "covered", "direction", "readings",
-               "utility_claim", "truth", "report")  # fmt: skip
+               "utility_claim", "truth", "report", "analyzed")  # fmt: skip
 REPORT_FIELDS = ("N", "confirmed", "readings", "direction")  # a row's ``report``, per level slot
 
 
@@ -2317,6 +2339,7 @@ def outcome_json(o: StudyOutcome) -> dict[str, Any]:
         "utility_claim": pairs(o.utility_claim),
         "truth": dict(o.truth),
         "report": None if o.report is None else {k: dict(o.report[k]) for k in REPORT_FIELDS},
+        "analyzed": pairs(o.analyzed),
     }
 
 
@@ -2372,6 +2395,7 @@ def outcome_from_json(d: Mapping[str, Any]) -> StudyOutcome:
         utility_claim=pairs("utility_claim"),
         truth=dict(d["truth"]),
         report=None if report is None else {k: dict(report[k]) for k in REPORT_FIELDS},
+        analyzed=pairs("analyzed"),
     )
 
 
@@ -3048,6 +3072,15 @@ RULES: dict[str, dict[str, str]] = {
         "(the validation gate of the study's final candidate passed: a P-F closed at candidate "
         "1 reopens at candidate 2, amendment 7)",
         "source": "P's actual activity in the realized procedure; M16, decided",
+    },
+    "level_and_floor": {
+        "rule": "L is the first level whose A-F tests at N >= 60 and at the cap all pass; each "
+        "comparison's floor is the smallest of 36, 45, 60 such that its tests at and above that "
+        "size, the cap counted at that floor, pass at L; P-F's tests are its own and the joint "
+        "ones, and it is read at L or withheld, never at another level; a cap test at a floor "
+        "counts only the studies whose reading is confirmatory there",
+        "source": "docs/study3-preregistration.md, amendment 7, 'The simulation's stops'; M18 and "
+        "M29, decided",
     },
     "joint_verification": {
         "rule": "the joint test of the verification",
@@ -3942,59 +3975,82 @@ def order_statistic(values: Sequence[float], q: Fraction | float) -> float:
     return ordered[min(max(rank, 0), len(ordered) - 1)]
 
 
-def _test_row(identity: Sequence, level: float, used: Sequence[StudyOutcome], draws: int,
-              m: int, j: int) -> dict[str, Any]:  # fmt: skip
-    """One test's row (results.json's "tests"): X the misses among its M studies."""
-    _, _, point, _, comparison = identity
-    p0 = _decisions.P0[comparison]
-    c = coverage_threshold(j, m, p0)
-    row = {"test": list(identity), "level": level, "due": True, "p0": p0, "studies": len(used),
-           "draws": draws, "reason": None, "X": None, "c": c, "passed": False, "rate": None,
-           "interval": None}  # fmt: skip
+def _counts_for(o: StudyOutcome, level: float, tested: str, floor: int | None = None) -> bool:
+    """Whether a study counts for a test of ``tested`` at ``level``: confirmed at the level, and for
+    a P–F test with P–F active; for a cap test at ``floor``, only when its reading is confirmatory
+    at that floor (M18): its analysis set holds at least ``floor`` blocks, and for the joint test
+    each active comparison's does."""
+    if not o.confirmed.get(level) or (tested == "P-F" and "P-F" not in o.active):
+        return False
+    if floor is None:
+        return True
+    read = [c for c in FLOOR_TESTS if c in o.active] if tested == "joint" else [tested]
+    return all(o.analyzed[(level, c)] >= floor for c in read)
+
+
+def _test_count(identity: Sequence, level: float, rows: Sequence[StudyOutcome], m: int, bound: int,
+                c: int, floor: int | None = None) -> dict[str, Any]:  # fmt: skip
+    """A test's count (``COUNT_FIELDS``) over the first M of ``rows`` by index that count for it
+    (``_counts_for``), X their misses; short of M at the bound, no X."""
+    _, _, point, _, tested = identity
+    used = _first(rows, m, lambda o: _counts_for(o, level, tested, floor))
+    count = {"studies": len(used), "draws": _drawn(used, rows, m, bound), "reason": None, "X": None,
+             "passed": False, "rate": None, "interval": None}  # fmt: skip
     if len(used) < m:
-        row["reason"] = _decisions.NOT_ATTAINABLE
-        return row
-    key = (point, level, comparison)
+        count["reason"] = _decisions.NOT_ATTAINABLE
+        return count
+    key = (point, level, tested)
     if any(o.covered.get(key) is None for o in used):
         raise SimulationError(f"test {list(identity)}: a study it counts has no coverage flag")
     x = sum(not o.covered[key] for o in used)
-    row.update(X=x, passed=x <= c, rate=x / m, interval=_decisions.clopper_pearson(x, m))
-    return row
+    count.update(X=x, passed=x <= c, rate=x / m, interval=_decisions.clopper_pearson(x, m))
+    return count
+
+
+def _test_row(identity: Sequence, level: float, rows: Sequence[StudyOutcome], m: int, bound: int,
+              j: int, floors: Sequence[int]) -> dict[str, Any]:  # fmt: skip
+    """One test's row (results.json's "tests"). A cap test counts at each of ``floors``, the
+    largest in the row's own fields and the others in ``below`` (the same identity, in J once:
+    amendment 7, "The floor"; the screen: all three; the verification: its comparison's)."""
+    tested = identity[4]
+    p0 = _decisions.P0[tested]
+    c = coverage_threshold(j, m, p0)
+    head = {"test": list(identity), "level": level, "due": True, "p0": p0, "c": c, "floor": None,
+            "below": None}  # fmt: skip
+    if identity[2] != "cap":
+        return {**head, **_test_count(identity, level, rows, m, bound, c)}
+    counts = {f: _test_count(identity, level, rows, m, bound, c, f) for f in floors}
+    top = max(floors)
+    below = {str(f): counts[f] for f in floors if f != top}
+    return {**head, **counts[top], "floor": top, "below": below or None}
 
 
 def _not_due(identity: Sequence) -> dict[str, Any]:
     p0 = _decisions.P0[identity[4]]
     return {"test": list(identity), "level": None, "due": False, "p0": p0, "studies": None,
             "draws": None, "reason": None, "X": None, "c": None, "passed": None, "rate": None,
-            "interval": None}  # fmt: skip
+            "interval": None, "floor": None, "below": None}  # fmt: skip
 
 
-def selected_level(rows: Sequence[Mapping[str, Any]], j: int, m: int) -> float | None:
-    """L, the first level whose calibration tests all pass, recomputed from each row's X (not
-    attainable: X = M) and c = ``coverage_threshold(J, M, p₀)``; None when no level passes."""
-    for level in LEVELS:
-        mine = [r for r in rows if r["test"][0] == "calibration"
-                and r["test"][3] == level_slot(level)]  # fmt: skip
-        if mine and all(
-            type(r.get("X")) is int and r.get("studies") == m
-            and r["X"] <= coverage_threshold(j, m, _decisions.P0[r["test"][4]])
-            for r in mine
-        ):  # fmt: skip
-            return level
-    return None
+def _floors_at(tests: Sequence[Mapping[str, Any]], level: float, j: int, m: int) -> dict:
+    """Each comparison's confirmatory floor on the screen at ``level`` (None: none)."""
+    mine = level_rows(tests, "calibration", level)
+    return {c: confirmatory_floor(mine, c, j, m) for c in FLOOR_TESTS}
 
 
 def _direction_counts(rows: Sequence[StudyOutcome], scenario: Scenario, comparison: str,
-                      level: float, m: int, bound: int) -> dict[str, int]:  # fmt: skip
+                      level: float, m: int, bound: int,
+                      floor: int = FLOORS[0]) -> dict[str, int]:  # fmt: skip
     """A power scenario's correct-direction count at ``level`` over its first M confirmed
     studies, its studies and draws (M20). A study detects when its cap's reading is confirmatory
-    and its registered final direction (``final_direction``: common to the three computations)
-    is the sign of its Δ; a descriptive reading, no common direction or the wrong sign detects
-    nothing, nor do the missing studies of a test short at the bound."""
+    at the comparison's ``floor`` and its registered final direction (``final_direction``: common
+    to the three computations) is the sign of its Δ; a descriptive reading, no common direction or
+    the wrong sign detects nothing, nor do the missing studies of a test short at the bound."""
     delta = scenario.delta_af_pp if comparison == "A-F" else scenario.delta_pf_pp
     want = "positive" if delta > 0 else "negative"
     used = first_confirmed(rows, m, level)
     correct = sum(o.readings.get((level, comparison)) == CONFIRMATORY
+                  and (o.analyzed.get((level, comparison)) or 0) >= floor
                   and o.direction.get((level, comparison)) == want for o in used)  # fmt: skip
     return {"correct": correct, "studies": len(used), "draws": _drawn(used, rows, m, bound)}
 
@@ -4038,6 +4094,11 @@ def _screen_short(m: int, levels: Sequence[float]) -> Callable[[str, list], int]
     return lambda _, rows: max(m - sum(bool(o.confirmed.get(lv)) for o in rows) for lv in levels)
 
 
+def _short_of(m: int, tests: Sequence[tuple[float, str, int | None]]) -> Callable[[list], int]:
+    """The most studies one of ``tests`` (level, tested, floor: ``_counts_for``) still needs."""
+    return lambda rows: max(m - sum(_counts_for(o, *t) for o in rows) for t in tests)
+
+
 def _screen(runs_root: Path, context: Context, commit: str,
             pool: Workers | None) -> dict[str, Any]:  # fmt: skip
     """The gates, the screen and the n_min scan (§"Simulation before validation"), drawn
@@ -4057,20 +4118,22 @@ def _screen(runs_root: Path, context: Context, commit: str,
                        lambda _, rows: m - len(rows))  # fmt: skip
     gates, blocks = _gate_counts(context, gate_rows, m)
     screened = context.of("coverage", "power")
+    power_scenarios = context.of("power")
+    powered = {sc.name for sc in power_scenarios}
+    confirmed = _screen_short(m, LEVELS)
+    # The joint test at the largest floor counts the fewest studies: it reaches M last
+    counted = _short_of(m, [(lv, "joint", FLOORS[-1]) for lv in LEVELS])
     rows = _phase(pool, runs_root, context, commit,
                   units("screen", screened, LEVELS, blocks, MIN_N), bound,
-                  _screen_short(m, LEVELS))  # fmt: skip
-    tests = []
-    for identity in fixation["tests"]["list"]:
-        if identity[0] != "calibration":
-            continue
-        level = float(identity[3])
-        used = first_confirmed(rows[identity[1]], m, level)
-        tests.append(_test_row(identity, level, used, _drawn(used, rows[identity[1]], m, bound),
-                               m, j))  # fmt: skip
+                  lambda name, found: (confirmed(name, found) if name in powered
+                                       else counted(found)))  # fmt: skip
+    tests = [_test_row(identity, float(identity[3]), rows[identity[1]], m, bound, j, FLOORS)
+             for identity in fixation["tests"]["list"]
+             if identity[0] == "calibration"]  # fmt: skip
     selected = selected_level(tests, j, m)
-    power_scenarios = context.of("power")
-    power = {c: {level_slot(lv): {sc.name: _direction_counts(rows[sc.name], sc, c, lv, m, bound)
+    floors = {lv: _floors_at(tests, lv, j, m) for lv in LEVELS}
+    power = {c: {level_slot(lv): {sc.name: _direction_counts(rows[sc.name], sc, c, lv, m, bound,
+                                                             floors[lv][c] or FLOORS[0])
                                   for sc in power_scenarios} for lv in LEVELS}
              for c in COMPARISONS}  # fmt: skip
     report = {level_slot(lv): {sc.name: _report_counts(rows[sc.name], sc, lv, m, bound)
@@ -4087,7 +4150,8 @@ def _screen(runs_root: Path, context: Context, commit: str,
                            _screen_short(m, (at,)))  # fmt: skip
             counts = {}
             for sc in power_scenarios:
-                c = _direction_counts(found[sc.name], sc, "A-F", at, m, bound)
+                c = _direction_counts(found[sc.name], sc, "A-F", at, m, bound,
+                                      floors[at]["A-F"] or FLOORS[0])  # fmt: skip
                 counts[sc.name] = {"correct": c["correct"], "studies": c["studies"]}
             scan.append({"n": n, "by_scenario": counts})
             reached = min(c["correct"] for c in counts.values()) / m >= d.POWER_REQUIRED
@@ -4279,35 +4343,37 @@ def _verification(runs_root: Path, context: Context, commit: str, screen: Mappin
     ``"procedure"`` mode at L, 100 000 resamples, the realized route (candidate 1, then 2),
     N at least ``n_min`` when the power was short, P–F where its gate passed, the attained N and
     caps; per test the first M studies by index (A–F and the joint test: confirmed at L; P–F:
-    confirmed with P–F active), never past 4·M draws. Its summary (``verification.json``)."""
+    confirmed with P–F active; at the cap, confirmatory at its comparison's floor on the screen),
+    never past 4·M draws. A P–F without a floor on the screen is withheld: its tests and the joint
+    tests are not due. Its summary (``verification.json``): ``verified``, whether A–F's tests pass
+    at its floor, and ``pf_confirmatory``, whether P–F's and the joint tests pass at P–F's."""
     fixation, d = context.fixation, _decisions
     m, j = d.COVERAGE_RUNS, fixation["J"]
     bound = d.MAX_DRAWS_FACTOR * m
     level = selected_level(screen["tests"], j, m)
     if level is None:
         raise SimulationError("no level passed the screen: the verification is not due")
-    floor, blocks = _verification_floor(screen), screen["validation_blocks"]
-    coverage = context.of("coverage")
-
-    def pf(o: StudyOutcome) -> bool:
-        return bool(o.confirmed.get(level)) and "P-F" in o.active
-
-    def short(_: str, rows: list) -> int:
-        return max(m - sum(bool(o.confirmed.get(level)) for o in rows), m - sum(map(pf, rows)))
-
+    n_floor, blocks = _verification_floor(screen), screen["validation_blocks"]
+    floors = _floors_at(screen["tests"], level, j, m)
+    wanted = [(level, "A-F", floors["A-F"])]
+    if floors["P-F"] is not None:
+        wanted += [(level, "P-F", floors["P-F"]), (level, "joint", floors["P-F"])]
+    needed = _short_of(m, wanted)
     base = verification_base(fixation["streams"]["verification"], level)
     units = {sc.name: Unit(verification_phase(level), sc.name, 0, 1, base,
-                           d.VERIFICATION_RESAMPLES, (level,), blocks, floor)
-             for sc in coverage}  # fmt: skip
-    rows = _phase(pool, runs_root, context, commit, units, bound, short)
+                           d.VERIFICATION_RESAMPLES, (level,), blocks, n_floor)
+             for sc in context.of("coverage")}  # fmt: skip
+    rows = _phase(pool, runs_root, context, commit, units, bound, lambda _, found: needed(found))
     tests = []
     for identity in fixation["tests"]["list"]:
-        if identity[0] != "verification" or identity[3] != level_slot(level):
-            continue
-        found = rows[identity[1]]
-        used = (_first(found, m, pf) if identity[4] == "P-F"
-                else first_confirmed(found, m, level))  # fmt: skip
-        tests.append(_test_row(identity, level, used, _drawn(used, found, m, bound), m, j))
+        if identity[0] == "verification" and identity[3] == level_slot(level):
+            floor = floors["A-F" if identity[4] == "A-F" else "P-F"]
+            found = rows[identity[1]]
+            tests.append(_not_due(identity) if floor is None else
+                         _test_row(identity, level, found, m, bound, j, (floor,)))  # fmt: skip
+    due = [row for row in tests if row["due"]]
+    verified = not floor_failures(due, "A-F", floors["A-F"], j, m)
+    confirmatory = floors["P-F"] is not None and not floor_failures(due, "P-F", floors["P-F"], j, m)
     return {
         "kind": VERIFICATION_KIND,
         "fixation": dict(context.ref),
@@ -4315,7 +4381,10 @@ def _verification(runs_root: Path, context: Context, commit: str, screen: Mappin
         "M": m,
         "J": j,
         "level": level,
-        "n_floor": floor,
+        "floors": floors,
+        "verified": verified,
+        "pf_confirmatory": confirmatory,
+        "n_floor": n_floor,
         "validation_blocks": blocks,
         "resamples": d.VERIFICATION_RESAMPLES,
         "tests": tests,

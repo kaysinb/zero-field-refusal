@@ -182,10 +182,10 @@ class World:
                 rows.append(results_row(identity, None, None, None))
             else:
                 x = c[kind] - 20 if verified_ok else c[kind] + 1
-                rows.append(results_row(identity, level, x, c[kind]))
+                rows.append(results_row(identity, level, x, c[kind], floors=(36,)))
         if not_attainable is not None:
             stream, slot = not_attainable
-            at = next(i for i, r in enumerate(rows) if r["test"][0] == stream
+            at = next(i for i, r in enumerate(rows) if r["test"][0] == stream and r["test"][2] == 60
                       and r["test"][3] == slot and r["test"][4] == "A-F")  # fmt: skip
             rows[at] = {**rows[at], "studies": M - 7, "draws": 4 * M, "reason": NOT_ATTAINABLE,
                         "X": None, "passed": False, "rate": None, "interval": None}  # fmt: skip
@@ -317,6 +317,11 @@ class World:
             "verification": verified(level, level is not None),
         }  # fmt: skip
         record.update(over)
+        if "reading" not in over:
+            passed = isinstance(record["verification"], dict) and record["verification"].get(
+                "passed") is True and record["level"] in LEVELS  # fmt: skip
+            record["reading"] = {"level": record["level"], "pf_confirmatory": True,
+                                 "floors": {"A-F": 36, "P-F": 36}} if passed else None  # fmt: skip
         ran = self.first if how == "after_the_results" else None
         results = self.results(record, mode=mode, ran=ran, not_attainable=short)
         path = self.runs / SIMULATION_RESULTS
@@ -472,17 +477,22 @@ def default_gates() -> dict:
             "detection_power_joint": reported(detection["joint"])}  # fmt: skip
 
 
-def results_row(identity: tuple, level: float | None, x: int | None, c: int | None) -> dict:
-    """A row of the results: a test of M studies with its X, or (``level`` None) a verification
-    test not due."""
+def results_row(identity: tuple, level: float | None, x: int | None, c: int | None,
+                floors: tuple = (36, 45, 60)) -> dict:  # fmt: skip
+    """A row of the results: a test of M studies with its X (a cap test: at each of ``floors``), or
+    (``level`` None) a verification test not due."""
     p0 = 0.05 if identity[4] == "joint" else 0.025
     if level is None:
         return {"test": list(identity), "level": None, "due": False, "p0": p0, "studies": None,
                 "draws": None, "reason": None, "X": None, "c": None, "passed": None,
-                "rate": None, "interval": None}  # fmt: skip
-    return {"test": list(identity), "level": level, "due": True, "p0": p0, "studies": M,
-            "draws": M, "reason": None, "X": x, "c": c, "passed": x <= c, "rate": x / M,
-            "interval": clopper_pearson(x, M)}  # fmt: skip
+                "rate": None, "interval": None, "floor": None, "below": None}  # fmt: skip
+    count = {"studies": M, "draws": M, "reason": None, "X": x, "passed": x <= c, "rate": x / M,
+             "interval": clopper_pearson(x, M)}  # fmt: skip
+    cap = identity[2] == "cap"
+    return {"test": list(identity), "level": level, "due": True, "p0": p0, "c": c, **count,
+            "floor": max(floors) if cap else None,
+            "below": ({str(f): count for f in floors if f != max(floors)} or None) if cap
+            else None}  # fmt: skip
 
 
 def gates_with(**gates) -> dict:
@@ -726,7 +736,7 @@ def test_a_missing_engineering_field_is_refused(world, field) -> None:
 
 
 @pytest.mark.parametrize("field", ["fixation", "inputs", "gates", "coverage", "level",
-                                   "validation_blocks", "verification"])  # fmt: skip
+                                   "validation_blocks", "verification", "reading"])  # fmt: skip
 def test_a_missing_simulation_field_is_refused(world, field) -> None:
     record = world.simulation()
     del record[field]
