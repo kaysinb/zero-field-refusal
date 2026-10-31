@@ -397,6 +397,10 @@ narrow that gap but do not close it.
 
 The engineering stage comes before any scientific selection.
 
+*Scientific failures on engineering seeds are retained and disclosed; they do not themselves reject
+a candidate or rate. Candidate transitions are determined by the registered search and
+qualification stages.*
+
 1. **Build.** Implement the bridge and the switch that turns off the generation of the 521
    harmful responses in shifted and reference runs.
    - Tests check that the switch changes only the stated evaluation outputs and keeps every state
@@ -1096,13 +1100,19 @@ procedure and its records, and the simulation runs under them.
   - **One declared instability stop** in the search or the numerical qualification fails the rate
     as registered. The 80 % power is conditional on passing, and the report states that attrition.
   - **Also:** support ≥ 22 of 28 and 31 of 40; the three-computation reading; ≥ 36, or the raised
-    floor; D₂₅ ≤ 0.01·K\*; the exact v₀ hash, with its fix; the 5 pp threshold; the 24-case
-    engineering re-run; candidate 1's utility gate; the incident pause; the registered count of
+    floor; D₂₅ ≤ 0.01·K\*; the exact v₀ hash, with its fix; the 5 pp threshold; the
+    engineering re-run (the defect's potential scope is all 24 cases; a scientific failure is
+    preserved, so the re-run is 16 replacements, one preserved scientific case and seven first
+    executions); candidate 1's utility gate; the incident pause; the registered count of
     labels still missing after repair; the audit's missing-reference bounds.
 - **What was known.** These rules were changed after the following were known:
   - the registration, the code up to 8fd2df1 and the dry run's reports;
-  - the engineering stage's first pass: cases 1–17 of 24 ran and 16 passed. Case 17 (seed 10002, P
-    at 1.3·10⁻⁵) failed the bridge on v₀'s hash alone in its rest part;
+  - the engineering stage's first pass: cases 1–17 of 24 ran, with 15 qualified, one scientific
+    failure and one technical failure. The scientific failure (seed 10000, A at 2.11·10⁻⁵) is a
+    shift beyond the bound against the harness baseline, preserved as old-policy evidence. The
+    technical one, case 17 (seed 10002, P at 1.3·10⁻⁵), failed the bridge on v₀'s hash alone in its
+    rest part. These rules were decided on an incorrect tally of 16 passed, corrected here on
+    2026-10-31;
   - the K and utility of those engineering runs, read while these rules were being decided: support
     at K\* = 6 in 8 of 8 arm-blocks, and a mean MMLU loss of about 2.4, 3.0 and 3.4 pp for A, F and
     P. No harm label exists there;
