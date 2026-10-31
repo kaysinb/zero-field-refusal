@@ -2030,7 +2030,7 @@ def test_a_failed_n_record_starts_no_confirmation_and_never_cuts_n() -> None:
     reserved seeds."""
     study = Study()
     study.through_validation()
-    study.n(N=179)  # cap 201: beyond the 200 reserved confirmation seeds
+    study.n(N=169)  # cap 201: beyond the 200 reserved confirmation seeds
     result = study.advance()
     assert (result["stage"], result["outcome"], result["reason"]) == (
         "design_stop", "design_stop", "cap_beyond_reserved_seeds")  # fmt: skip
@@ -2539,7 +2539,7 @@ def test_a_start_with_no_journal_start_is_no_block() -> None:
 @pytest.mark.parametrize("supported, reading", [(35, "descriptive"), (36, "confirmatory")])
 def test_the_reading_at_the_cap_is_confirmatory_from_36_supported_blocks(supported, reading):
     seeds = list(SEEDS["confirmation"][1])
-    cap = cap_of(60)  # 70
+    cap = cap_of(60)  # 74
     endpoints = confirmation_endpoints(cap, arms=("A", "F"),
                                        special=unsupported(seeds[supported:cap]))  # fmt: skip
     state = confirmation_state(endpoints, 1, 60, ["A-F"])
@@ -2552,8 +2552,8 @@ def test_the_reading_at_the_cap_is_confirmatory_from_36_supported_blocks(support
 
 def test_at_the_cap_an_unfinished_block_leaves_the_reading_open() -> None:
     seeds = list(SEEDS["confirmation"][1])
-    endpoints = confirmation_endpoints(70, arms=("A", "F"), special={
-        **unsupported(seeds[40:70]), (seeds[5], "F", "u"): {"state": "pending"}})  # fmt: skip
+    endpoints = confirmation_endpoints(74, arms=("A", "F"), special={
+        **unsupported(seeds[40:74]), (seeds[5], "F", "u"): {"state": "pending"}})  # fmt: skip
     state = confirmation_state(endpoints, 1, 60, ["A-F"])
     assert state["stop"]["why"] == "cap" and state["readings"] == {"A-F": None}
 
@@ -2565,7 +2565,7 @@ def test_may_start_next_is_false_once_every_counter_reaches_n(started, stopped) 
     assert state["stop"]["stopped"] is stopped
 
 
-@pytest.mark.parametrize("started, stopped", [(69, False), (70, True)])
+@pytest.mark.parametrize("started, stopped", [(73, False), (74, True)])
 def test_may_start_next_is_false_once_the_cap_has_started(started, stopped) -> None:
     seeds = list(SEEDS["confirmation"][1])
     endpoints = confirmation_endpoints(started, special=unsupported(seeds[:20]))
@@ -2584,6 +2584,13 @@ def test_blocks_out_of_seed_order_or_beyond_the_cap_are_problems() -> None:
     assert any("cap" in p for p in state["problems"])
 
 
+def test_the_state_reports_the_joint_attainment_of_both_comparisons() -> None:
+    """Under independence, at the cap's support; A–F alone has no joint reading."""
+    joint = confirmation_state([], 1, 60, ["A-F", "P-F"])["joint_attainment"]
+    assert joint == pytest.approx(0.97167**2, abs=1e-4)
+    assert confirmation_state([], 1, 60, ["A-F"])["joint_attainment"] is None
+
+
 def test_confirmation_state_refuses_what_it_cannot_read() -> None:
     for args in ((3, 60, ["A-F"]), (1, 0, ["A-F"]), (1, 60.0, ["A-F"]), (1, 60, ["P-F"]),
                  (1, 60, ["A-F", "B-F"]), (1, 60, [])):  # fmt: skip
@@ -2596,7 +2603,7 @@ def test_the_confirmation_never_moves_the_candidate_or_closes_p() -> None:
     study.through_validation()
     study.n(N=60)
     seeds = list(SEEDS["confirmation"][1])
-    study.confirmation(count=70, special={**unsupported(seeds[:40], "P"),
+    study.confirmation(count=74, special={**unsupported(seeds[:40], "P"),
                                           **unsupported(seeds[:40], "F")})  # fmt: skip
     result = study.advance()
     assert (result["stage"], result["candidate"], result["outcome"], result["reason"]) == (

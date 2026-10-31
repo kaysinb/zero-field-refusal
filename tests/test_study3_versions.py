@@ -691,7 +691,7 @@ def test_an_n_record_that_did_not_pass_refuses_the_supplement(study) -> None:
     """A cap beyond the 200 reserved confirmation seeds: the n record failed, and the
     confirmation cannot start."""
     study.validated()
-    study.records.write("n-c1", study.records.n(1, 179, code=study.code, state="failed"))
+    study.records.write("n-c1", study.records.n(1, 169, code=study.code, state="failed"))
     with pytest.raises(sv.RecordRefused, match="the n-c1 record did not pass"):
         study.supplement()
 

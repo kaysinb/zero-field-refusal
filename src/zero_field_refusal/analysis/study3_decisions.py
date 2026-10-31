@@ -21,8 +21,8 @@ records; the state machine consumes only what this module accepts.
   has started (a start of one of its blocks in the launch journal).
 - ``immutable``: a record whose sha256 differs from the one a started campaign's header named.
 - ``write_decision``: validates and writes a record atomically, once; a second version is refused.
-- ``cap_of``, ``budget_reason`` and ``budget_needed``: the cap N + max(10, ⌈0.12·N⌉), and why (if
-  at all) N asks for a budget decision.
+- ``cap_of``, ``cap_attainment``, ``budget_reason`` and ``budget_needed``: the cap C(N) (amendment
+  7, "The cap"), its attainment, and why (if at all) N asks for a budget decision.
 - ``sample_size`` (with ``upper_sd`` and ``planning_power``): the N rule of "Sample size from
   validation", the smallest N ≥ 60 with Φ(2·√N/SD_up − z_L) ≥ 0.85. It is the single
   implementation of the rule: the spread script and the simulation both call it, and neither
@@ -111,10 +111,10 @@ on is a response or an observation, and this module opens none.
   rounded to 0.5 pp, and nothing else about it), ``simulation`` (the evidence of the simulation
   record itself, at ``study3/decisions/simulation.json`` under the runs directory, so the n
   record rests on the exact simulation it follows), ``N`` (an integer, at least 60, and at least
-  the simulation record's ``n_min`` when its power is short) and ``cap`` (N + max(10,
-  ⌈0.12·N⌉)). N is never cut: a cap beyond the 200 reserved confirmation seeds (10400–10599) is
-  recorded, with state ``failed`` (the confirmation cannot start within the registered seeds); the
-  state is ``passed`` otherwise.
+  the simulation record's ``n_min`` when its power is short) and ``cap`` (``cap_of``). N is never
+  cut: a cap beyond the 200 reserved confirmation seeds (10400–10599) is recorded, with state
+  ``failed`` (the confirmation cannot start within the registered seeds); the state is ``passed``
+  otherwise.
 - ``budget-c<N>``: ``candidate``, ``N`` and ``cap`` it answers (those of the ``n-c<N>`` record),
   ``decision`` (``proceed``, with state ``passed``, or ``stop``, with state ``failed``) and
   ``answers``, the evidence of the n record itself, a link of the candidate's n chain
@@ -287,6 +287,8 @@ import re
 import subprocess
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
+from fractions import Fraction
+from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
@@ -342,7 +344,9 @@ PLANNING_POWER = 0.85  # power(N) ≥ 0.85
 PLANNING_DIFFERENCE_PP = 2.0  # |Δ| = 2 pp
 SPREAD_PERCENTILE = 0.20  # χ²₀.₂₀,ₘ₋₁: the upper 80 % bound of the SD
 BUDGET_ABOVE = 90  # N above this needs the researcher's budget decision
-CAP_FLOOR, CAP_SHARE_PERCENT = 10, 12
+# Amendment 7, "The cap": C(N) is the smallest C with P[Bin(C, CAP_SUPPORT) ≥ N] ≥ CAP_ATTAINMENT
+CAP_SUPPORT = Fraction(88, 100)
+CAP_ATTAINMENT = Fraction(95, 100)
 ACTIVE = (["A-F"], ["A-F", "P-F"])
 SPREAD_STEP_PP = 0.5
 CHECKS = ("dry_run", "bridge", "theta0_utility", "stage0")
@@ -654,9 +658,22 @@ def serialized(record: Mapping[str, Any]) -> bytes:
     return (json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
 
 
+@cache
+def cap_attainment(cap: int, n: int) -> Fraction:
+    """P[Bin(cap, CAP_SUPPORT) ≥ n], exactly: per comparison at that support, no guarantee under
+    an unknown support."""
+    return sum((math.comb(cap, k) * CAP_SUPPORT**k * (1 - CAP_SUPPORT) ** (cap - k)
+                for k in range(n, cap + 1)), Fraction(0))  # fmt: skip
+
+
+@cache
 def cap_of(n: int) -> int:
-    """N + max(10, ⌈0.12·N⌉), in whole numbers."""
-    return n + max(CAP_FLOOR, -(-CAP_SHARE_PERCENT * n // 100))
+    """C(N), the smallest C with P[Bin(C, CAP_SUPPORT) ≥ N] ≥ CAP_ATTAINMENT (amendment 7, "The
+    cap"), in blocks."""
+    cap = int(n)
+    while cap_attainment(cap, n) < CAP_ATTAINMENT:
+        cap += 1
+    return cap
 
 
 def upper_sd(sd_pp: float, m: int) -> float:
@@ -1492,11 +1509,11 @@ class _Schema:
         if self.integer("N", r["N"], MIN_N):
             cap = cap_of(r["N"])
             if r["cap"] != cap or type(r["cap"]) is not int:
-                self.add("cap", f"is {r['cap']!r}, not N + max({CAP_FLOOR}, ⌈0.12·N⌉) = {cap}")
+                self.add("cap", f"is {r['cap']!r}, not C(N) = {cap}")
             else:
                 self._cap_state(r["state"], cap)
         else:
-            self.integer("cap", r["cap"], MIN_N + CAP_FLOOR)
+            self.integer("cap", r["cap"], cap_of(MIN_N))
         self._supersedes(r)
 
     def _supersedes(self, r: dict[str, Any]) -> None:
@@ -1597,7 +1614,7 @@ class _Schema:
         if r["candidate"] != self.candidate or type(r["candidate"]) is not int:
             self.add("candidate", f"is {r['candidate']!r}, not {self.candidate}")
         self.integer("N", r["N"], MIN_N)
-        self.integer("cap", r["cap"], MIN_N + CAP_FLOOR)
+        self.integer("cap", r["cap"], cap_of(MIN_N))
         decision = r["decision"]
         if decision not in DECISIONS:
             self.add("decision", f"is {decision!r}, not one of {list(DECISIONS)}")

@@ -276,20 +276,20 @@ def test_the_guard_refuses_once_every_counter_has_reached_n(world, summary) -> N
 
 
 def test_the_guard_refuses_once_the_cap_has_started(world, summary) -> None:
-    """N = 60 caps the confirmation at 70 started blocks: with A unsupported in 20 of them, A–F
+    """N = 60 caps the confirmation at 74 started blocks: with A unsupported in 20 of them, A–F
     is short of N there, and no block starts after them."""
     study = confirmation_study(world, N=60)
-    study.confirmation(count=69, special=unsupported(SEEDS["confirmation"][1][:20]))
+    study.confirmation(count=73, special=unsupported(SEEDS["confirmation"][1][:20]))
     files = block_files(world.write("confirmation"))
-    assert list(files) == [10469]  # the last block within the cap
+    assert list(files) == [10473]  # the last block within the cap
     summary.core(study)
     summary.versions()
-    assert summary.guard(10469, files[10469])[0] == 0
-    study.confirmation(count=1, first=69)
-    beyond = files[10469].with_name("beyond.yaml")
-    beyond.write_text(files[10469].read_text().replace("10469", "10470"))
-    refused(summary.guard(10470, beyond), "the confirmation has stopped",
-            "the cap of 70 blocks has started")  # fmt: skip
+    assert summary.guard(10473, files[10473])[0] == 0
+    study.confirmation(count=1, first=73)
+    beyond = files[10473].with_name("beyond.yaml")
+    beyond.write_text(files[10473].read_text().replace("10473", "10474"))
+    refused(summary.guard(10474, beyond), "the confirmation has stopped",
+            "the cap of 74 blocks has started")  # fmt: skip
 
 
 def test_the_guard_refuses_while_a_technical_mark_holds_the_confirmation(world, summary):

@@ -544,7 +544,7 @@ def test_the_route_from_engineering_to_confirmation_through_the_writer(world, mo
     fields = state["step"]["fields"]
     world.records.write("n-c1", world.records.n(1, 60, rates=fields["rates"],
                                                 active=fields["active"], cohort=fields["cohort"],
-                                                cap=70))  # fmt: skip
+                                                cap=74))  # fmt: skip
     state = world.state()
     assert (state["step"]["campaign"], state["problems"]) == ("confirmation", [])
     world.checked.clear()
@@ -974,10 +974,10 @@ def test_the_confirmation_writes_one_file_per_block_and_names_its_records(world)
     assert (out / "run.sh").is_file()
     out = world.write("confirmation", "--seeds", "10400", "10401")
     assert len(list(out.glob("*.yaml"))) == 2
-    # the cap N + max(10, ⌈0.12·N⌉) = 85 blocks: 10400-10484
-    out = world.write("confirmation", "--blocks", "10400", "10484")
-    assert len(list(out.glob("*.yaml"))) == 85
-    assert "never adds" in world.refused("confirmation", "--blocks", "10400", "10485")
+    # the cap C(75) = 91 blocks: 10400-10490
+    out = world.write("confirmation", "--blocks", "10400", "10490")
+    assert len(list(out.glob("*.yaml"))) == 91
+    assert "never adds" in world.refused("confirmation", "--blocks", "10400", "10491")
     assert "skips" in world.refused("confirmation", "--blocks", "10401", "10402")
     assert "skips" in world.refused("confirmation", "--seeds", "10401")
     assert "never reorders" in world.refused("confirmation", "--seeds", "10401", "10400")

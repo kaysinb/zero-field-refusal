@@ -36,7 +36,7 @@ All of these must hold:
 - the state's step is candidate N's confirmation campaign, and S is the seed of cells in it. A
   block not yet started must be the next block the confirmation authorizes (``confirmation``'s
   ``may_start_next`` and ``next_seed``): not after the stop (every active counter at N, or the
-  cap N + max(10, ⌈0.12·N⌉) of blocks started), not while a technical mark in a started block
+  cap C(N) of blocks started), not while a technical mark in a started block
   waits for its way out, not while a run of a started block has not ended (pending, or recovered
   with no later attempt: the counters wait for it, and the refusal names its recovery round, the
   run's own at --max-attempts 1 with its incident), not

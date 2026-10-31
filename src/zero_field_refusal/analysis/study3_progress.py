@@ -154,7 +154,7 @@ record against its committed fixation and the results' tests), so a record read 
 it; it is not checked again here.
 
 **The confirmation** ("Confirmation"). One block per campaign, in seed order from 10400, up to the
-cap N + max(10, ⌈0.12·N⌉) (the cells of every seed up to the cap are prescribed, no further). The
+cap C(N) (``cap_of``; the cells of every seed up to the cap are prescribed, no further). The
 next block is issued while ``confirmation_state`` allows it; a started block with a never-issued
 cell is completed first. A run of a started block that has not ended (``pending``, or
 ``recovered`` with no later attempt) holds the confirmation: the stop is checked between blocks,
@@ -427,6 +427,7 @@ from .study3_decisions import (
     SUPPORTED_AT,
     UNRESOLVED_AFTER_CYCLE,
     budget_reason,
+    cap_attainment,
     cap_of,
     closures,
     decision_path,
@@ -2529,7 +2530,7 @@ def confirmation_state(
     order, up to the first unfinished one: an unfinished earlier block holds the later ones),
     ``held_up`` (that block), ``cohorts`` (the first N supported blocks by seed order),
     ``supported`` (every supported block started, in any order); the ``stop`` (every active
-    counter at N, or the cap N + max(10, ⌈0.12·N⌉) blocks started); the ``readings`` once stopped
+    counter at N, or the cap C(N) blocks started); the ``readings`` once stopped
     (``confirmatory`` for a comparison at N, and at the cap with at least 36 supported blocks,
     ``descriptive`` with fewer; None while a block it needs is unfinished) and ``analysis``, the
     blocks each is read on (its cohort, or at the cap all its supported blocks); ``technical``
@@ -2615,6 +2616,8 @@ def confirmation_state(
     may = why is None and not problems and not technical and not unended and room
     return {
         "candidate": candidate, "N": N, "cap": cap, "active": comparisons, "started": started,
+        # the joint attainment under independence, at the cap's support (amendment 7, "The cap")
+        "joint_attainment": float(cap_attainment(cap, N)) ** 2 if len(comparisons) == 2 else None,
         "blocks": {s: {"state": b["state"], **{c: b[COMPARISONS[c]]["state"]
                                                 for c in comparisons}}
                    for s, b in blocks.items()},

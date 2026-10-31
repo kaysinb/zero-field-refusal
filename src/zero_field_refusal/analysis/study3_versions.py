@@ -240,7 +240,6 @@ from ..judge import IDENTITY_FIELDS, judge_identity
 from ..paths import REPO_ROOT
 from ..tracking import git_state, tracked, worktree_changes
 from .study3_decisions import (
-    CAP_FLOOR,
     DIRECTORY,
     MIN_N,
     SIMULATION_RECORD,
@@ -798,9 +797,9 @@ class _Check(_Schema):
         if self.integer("N", top["N"], MIN_N):
             cap = cap_of(top["N"])
             if top["cap"] != cap or type(top["cap"]) is not int:
-                self.add("cap", f"is {top['cap']!r}, not N + max({CAP_FLOOR}, ⌈0.12·N⌉) = {cap}")
+                self.add("cap", f"is {top['cap']!r}, not C(N) = {cap}")
         else:
-            self.integer("cap", top["cap"], MIN_N + CAP_FLOOR)
+            self.integer("cap", top["cap"], cap_of(MIN_N))
         if top["budget"] is not None:
             self.link_ref("budget", top["budget"], "budget")
         bootstrap = self.object("bootstrap", top["bootstrap"], ("seed", "resamples"))

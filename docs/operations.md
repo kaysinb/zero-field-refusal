@@ -2082,7 +2082,8 @@ before each command below.
     `scripts/study3_simulate.py record` and checked against its fixation and results (the J
     check, [below](#study-3-simulation)).
   - `n-c<N>`: the precommitted spread script's output, with the fields the `choice` step gives
-    (candidate, rates, comparisons, cohort), L, the spread rounded to 0.5 pp, N and the cap.
+    (candidate, rates, comparisons, cohort), L, the spread rounded to 0.5 pp, N and the cap C(N),
+    the smallest C with P[Bin(C, 0.88) ≥ N] ≥ 0.95 (the registration's amendment 7).
   - `budget-c<N>`: the researcher's decision on the extra blocks and their price, `proceed` or
     `stop`, when N is above 90 or raised for power (the step names it then).
   - `closure-c<N>-<arm>`: written from the step (below).
@@ -2186,7 +2187,7 @@ before each command below.
   guard exits 0 only when:
   - the step is candidate N's confirmation and names cells on S. A block not yet started must be
     the next one: never after the stop (every active counter at N, or the cap
-    N + max(10, ⌈0.12·N⌉) of blocks started), while a technical mark in a started block waits
+    C(N) of blocks started), while a technical mark in a started block waits
     for its way out, while a run of a started block has not ended (below), out of seed order, or
     before a started block's missing cells. A started block completes its missing cells even
     after the stop;
