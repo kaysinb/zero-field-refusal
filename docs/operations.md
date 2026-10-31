@@ -2318,6 +2318,35 @@ streams, the draw bound and the rest, M1–M27) are the researcher's: each is li
 source in the module's rulings and frozen, with a source line ending "M<n>, decided", in the
 fixation.
 
+- **Missing labels (M6b).** The coverage scenarios carry MCAR missing labels at 1 % (C14: 5 %
+  MNAR among harmful responses), as stress values; their coverage tests are unchanged. The power
+  gate reads its own scenarios, P18–P21 (Δ = ±2 pp at the planning spreads 3.5 and 5 pp), at
+  0.1 % MCAR: the planning rate of labels still unresolved after the labeling rounds (up to
+  three per run). C16 and C17 (Δ = +2 pp) are coverage scenarios only.
+  - **The source.** Study 1, with the same judge (WildGuard), had 0 unparseable outputs in the
+    39 900 labels of its non-collapsed runs ([stage 1](reports/stage-1.md#judge-labeling)). Its
+    rate over all runs, which includes the collapsed runs, is not used: those runs are not
+    representative.
+  - **What it is.** A conservative planning assumption for supported runs, not a proven upper
+    bound: the bound from 0 in 39 900 assumes independent labels and is computed on a selected
+    subset, the non-collapsed runs. The rate is MCAR, so label failures clustered in a run or an
+    arm, or missing not at random, are covered only by the stress scenarios.
+  - **The decision.** The researcher's, after preliminary calculations showed the power gate
+    failing at 1 %. It changes the planning alternative of the power requirement; the
+    registration sets no rate, so no amendment is needed, and the required simulation itself
+    stays prospective.
+  - **The power at 1 %** is reported beside the gate, not a gate (`power_af_1pct_missing`). Each
+    power study of the screen is drawn again on its own streams and its scenario's calibration
+    with its labels missing at 1 %, through the same uniforms (one per label: the 1 % mask
+    contains the 0.1 % mask). It is read by the registered procedure, its own validation spread,
+    N and confirmation included, to the cap's reading common to the three computations, and is
+    counted over the studies the power counts. The n_min scan does not read it.
+  - **The fixation** records the rates, this disclosure and that report's procedure
+    (`missing_labels`). Its reader refuses a fixation whose missing labels depart from them, a
+    power scenario at another rate, or a scenario that is not the grid's of its name or out of
+    its order; the J check refuses results whose power at 1 % is at another rate or over other
+    studies.
+
 ```bash
 R="$RUNS_DIR"
 project-run "$SRC" python scripts/study3_simulate.py inputs          # then commit it
@@ -2351,7 +2380,7 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
      proportion, so that a value near 0 compares by its precision; a different machine is
      printed, not refused). It then runs the gates, the screen and, when the power is short,
      the n_min scan, and writes `screen.json`. It prints L (or "no level passed"), the
-     validation size and the gates' values.
+     validation size and the gates' values, with the power at 1 % beside them.
   4. `verify` runs the binding verification at L on the verification stream (100 000
      resamples, the realized route) and writes `verification.json`. It refuses without the
      screen, with a screen of another commit than the clean HEAD, without an L (the
@@ -2387,17 +2416,25 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
     takes 37 s in a single process. C12's two candidates are the critical path: their
     selections are drawn in one process;
   - the gates: under a minute;
-  - the screen at 2 000 resamples: 0.35 CPU-seconds per study under load, about 207 000
-    studies at M = 10 000 (19 scenarios, about 9 % unconfirmed): 1.2–1.5 h on an idle machine;
+  - the screen at 2 000 resamples: 0.35 CPU-seconds per study under load, about 229 000
+    studies at M = 10 000 (21 scenarios, about 9 % unconfirmed), and each power study's report
+    at 1 % (about 44 000): 1.5–1.8 h on an idle machine. Alternated with the grid before the
+    power's own scenarios (19 scenarios, C16 and C17 also power), on a quieter machine (load
+    4–6, one process: 0.088 CPU-seconds per coverage study, 0.107 per power study, 0.050 per
+    report), the screen does about a fifth more work;
   - the verification at 100 000 resamples: 1.9 CPU-seconds per study under load, about 185 000
     studies: 5–6 h on an idle machine;
   - the n_min scan, only when the power is short: some 44 000 studies at one level per value of
     n, a few minutes each;
-  - a power scenario's study (C16, C17, P18, P19) draws, wherever the cap's primary interval
-    has a direction, three more intervals at the cap (the missing labels' two and all missing
-    harmful: the registered final direction), about a third more bootstrap work for that study:
-    a few per cent more for the screen and the verification, about a third more for the scan;
-  - in all about 9 h on an idle machine. The parts take about 1.9 kB per study (about 0.8 GB).
+  - a power scenario's study (P18–P21) draws, wherever the cap's primary interval has a
+    direction, three more intervals at the cap (the missing labels' two and all missing harmful:
+    the registered final direction), about a third more bootstrap work for that study, and the
+    scan's studies are all power studies. The coverage scenarios, C16 and C17 included, draw
+    none: the verification does about 3 % less than with C16 and C17 as power scenarios (C17
+    0.61 instead of 0.77 CPU-seconds per study, one process);
+  - the calibration has two more pairs (P20 and P21 at candidate 1), off the critical path;
+  - in all about 9.5 h on an idle machine. The parts take about 1.9 kB per study (about 0.85
+    GB).
   At the sizes of the dry run's Part II (M = 200, 200 and 1 000 resamples, 1 000 calibration
   selections per scenario and candidate, `study3_simulation`'s M25) the screen takes about 1.5
   minutes and the verification under 5; the calibration draws 1 000 selections per pair
