@@ -63,8 +63,8 @@ SENTINEL = "SEALED-RESPONSE-5d1e0b"
 CODE = {"commit": "a" * 40, "gpu_code_sha256": "b" * 64}
 WHEN = "2026-10-26T12:00:00Z"
 SEALED = ("responses", "observations")
-# The fixture's simulation: one coverage scenario (C16, coverage and power), J = 105
-FIXED = "C16"
+# The fixture's simulation: one coverage scenario (C16) and one power scenario (P20), J = 105
+FIXED, POWER = "C16", "P20"
 STREAMS = {"calibration": 11, "verification": 12}
 POLICY = {"path": "docs/study3-preregistration.md", "commit": "c" * 40, "sha256": "d" * 64,
           "amendments": [1, 2, 3, 4, 5, 6]}  # fmt: skip
@@ -123,9 +123,11 @@ class World:
         git(self.repo, "add", INPUTS)
         git(self.repo, "commit", "-qm", "the inputs record")
         self.first = git(self.repo, "rev-parse", "HEAD")
-        scenario = sim.SCENARIOS_BY_NAME[FIXED]
+        scenario, power = sim.SCENARIOS_BY_NAME[FIXED], sim.SCENARIOS_BY_NAME[POWER]
+        calibrations = {(scenario, c): fixed_calibration(c) for c in (1, 2)}
+        calibrations[(power, 1)] = fixed_calibration(1)
         fixation = sim.build_fixation(
-            self.repo / INPUTS, [scenario], {(scenario, c): fixed_calibration(c) for c in (1, 2)},
+            self.repo / INPUTS, [scenario, power], calibrations,
             code={"commit": self.first, "gpu_code_sha256": "b" * 64}, streams=STREAMS,
             repo=self.repo, policy=POLICY, written_at=WHEN)  # fmt: skip
         fixation.update(change or {})
@@ -188,7 +190,7 @@ class World:
         power = gates.get("power_af") if isinstance(gates.get("power_af"), dict) else {}
         short = value("power_af", 0.86) < 0.80
         n_min = power.get("n_min") if type(power.get("n_min")) is int else 84
-        scan = [{"n": n, "by_scenario": {FIXED: {"correct": count(0.80 if n == n_min else 0.79),
+        scan = [{"n": n, "by_scenario": {POWER: {"correct": count(0.80 if n == n_min else 0.79),
                                                  "studies": M}}}
                 for n in range(MIN_N, max(n_min, MIN_N) + 1)] if short else []  # fmt: skip
         safe = value("safe_pass_rate", 0.982)
@@ -207,7 +209,7 @@ class World:
                 "empirical_pass_rate": {"passed": count(value("empirical_pass_rate", 0.6)),
                                         "studies": M, "validation_blocks": 28},
                 **{name: {"level": level if level is not None else 0.975,
-                          "by_scenario": {FIXED: {"correct": count(value(name, default)),
+                          "by_scenario": {POWER: {"correct": count(value(name, default)),
                                                   "studies": M, "draws": M}}}
                    for name, default in (("power_af", 0.86), ("power_pf", 0.85))},
                 "n_scan": scan,

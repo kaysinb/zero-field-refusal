@@ -10,9 +10,10 @@ and label models, the truth that the coverage check compares with, one study of 
 and the calibration of each scenario. Pure numpy and scipy on the CPU; it reads no run
 directory, no harm label, response or judge output.
 
-- ``SCENARIOS`` (``SCENARIOS_BY_NAME``): the grid, C01–C17 (coverage; C16 and C17 also power),
-  P18–P19 (power only) and G1–G2 (the validation gates), each ``Scenario`` with its parameters
-  and one ``source`` line per parameter (``SOURCES``).
+- ``SCENARIOS`` (``SCENARIOS_BY_NAME``): the grid, C01–C17 (coverage; C16 and C17 at
+  Δ = +2 pp), P18–P21 (power: Δ = ±2 pp at the two spreads, missing labels at the planning rate,
+  M6b) and G1–G2 (the validation gates), each ``Scenario`` with its parameters and one ``source``
+  line per parameter (``SOURCES``).
 - ``Calibration``: what is calibrated per (scenario, candidate) through the selection: the
   per-run failure f, the safe alternative's utility shifts, the block-effect SDs and offsets.
 - ``harm_curve``, ``bracket_bias``, ``CURVATURE_PP``, ``SLOPE_PP``, ``NOMINAL_BIAS_AF_PP``: the
@@ -58,9 +59,11 @@ B ~ Bernoulli(0.1).
 y = 1[Z < Φ⁻¹(h)] with the copula Z = √ρ_b·Z_{b,i} + √(ρ_a − ρ_b)·Z_{b,a,i} + √(1 − ρ_a)·Z_{b,a,r,i}
 (ρ_a 0.7 within an arm's two endpoints, ρ_b 0.3 within a block). The judge calls y = 1 harmful
 with probability Se_a and y = 0 with FPR_a. A label is missing at the scenario's rate (MCAR), or
-among harmful responses only (MNAR). The primary h is the share judged harmful and not missing,
-over 521; each endpoint's missing count is kept, for the sensitivities of "Judge and audit"
-(h_high = (harmful + missing)/521, every missing label harmful). Given h, its expectation is
+among harmful responses only (MNAR): one uniform per label, the label missing when it is below
+the rate, so that on the same stream a denser rate's mask contains a sparser one's. The primary h
+is the share judged harmful and not missing, over 521; each endpoint's missing count is kept, for
+the sensitivities of "Judge and audit" (h_high = (harmful + missing)/521, every missing label
+harmful). Given h, its expectation is
 p_a(h) = (1 − m_h)·Se_a·h + (1 − m_n)·FPR_a·(1 − h), with m_h and m_n the missing rates among
 harmful and not harmful responses.
 
@@ -219,8 +222,9 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   procedure selects is the planning spread (study 2's spread calibration,
   ``study2_short_sim.calibrate_spread``; the registration's "true spread equal to the planning
   spread"); decided.
-- M2, P–F's spread and Δ_PF: equal to A–F's spread; Δ_PF = Δ_AF in the power scenarios, 0
-  elsewhere (none registered: P–F's power is reported; the symmetric choice); decided.
+- M2, P–F's spread and Δ_PF: equal to A–F's spread; Δ_PF = Δ_AF wherever Δ_AF ≠ 0 (C16, C17 and
+  the power scenarios), 0 elsewhere (none registered: P–F's power is reported; the symmetric
+  choice); decided.
 - M3, the shapes: heavy ×3 at 0.1, skew Gamma(2), rare π = 0.1 centered (study 2's
   ``study2_short_sim``: ``HEAVY_*``, ``GAMMA_SHAPE``, ``RARE``, used in study 2's registered
   checks); decided.
@@ -234,8 +238,23 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   panel-conditional); decided.
 - M6, the judge: Se 0.93, FPR 0.036 in every arm; C13 F and P at Se 0.75 (study 1's Gate-1
   stratum, docs/reports/gate-1.md; sparse strata 0.58–0.75); decided.
-- M6b, missing labels: MCAR 1 % in every scenario, C14 MNAR 5 % among harmful (no record holds a
-  rate: stress values); decided.
+- M6b, missing labels, the researcher's decision: MCAR 1 % in every coverage scenario and MNAR 5 %
+  among harmful responses in C14, as stress values (no record holds study 3's rate: study 2's
+  labels were never made); MCAR 0.1 % in the power scenarios (``POWER_MISSING_RATE``), the
+  planning rate of the labels still unresolved after the labeling rounds the registration allows
+  ("Judge and audit": up to three rounds per run). The 0.1 % rests on study 1's labels with the
+  same judge, WildGuard: 0 unparseable outputs in the 39 900 labels of its non-collapsed runs
+  (docs/reports/stage-1.md, "Judge labeling"). It is a conservative planning assumption for
+  supported runs, not a proven upper bound: the bound from 0 in 39 900 assumes independent labels
+  and is computed on a selected subset, the non-collapsed runs. Study 1's rate over all its runs
+  includes its collapsed runs, which are not representative, and is not used. The rate is MCAR:
+  label failures clustered in a run or an arm, or missing not at random, are covered only by the
+  stress scenarios. It was decided after preliminary calculations showed the power gate failing
+  at 1 % (the worst end of the missing labels' envelope lies about m/521 below the primary, m
+  the missing labels per run, and the power counts the reading common to the three computations,
+  M20); it changes the planning alternative of the power requirement; the registration sets no
+  rate, and the required simulation itself stays prospective. The coverage tests keep 1 %, so C16
+  and C17 (Δ = +2 pp) are coverage scenarios and P20, P21 the power's positive Δ; decided.
 - M7, support: the realized probability that a validation block is A–F-supported at the rates
   the procedure selects, failures of bracket and collapse included; f calibrated to it, 0 and
   flagged when the natural failures exceed 1 − s (the registration's "support 0.88, 0.90,
@@ -267,13 +286,14 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
 - M19, ``safe_pass_rate``: the A–F gate's pass rate at the safe alternative, the P–F gate's
   rate reported beside it (the A–F gate is the one that moves candidates); decided.
 - M20, the power: normal shape, Δ = ±2 pp, ``power_af`` the smallest correct-direction rate over
-  the two spreads and signs at L; ``n_min`` by a linear scan from 60 ("Power ≥ 80 % … at
+  the power scenarios P18–P21 (the two spreads and signs, missing labels at the planning rate,
+  M6b) at L; ``n_min`` by a linear scan from 60 ("Power ≥ 80 % … at
   |Δ| = 2 pp … the planning spread"); a study detects when its cap's reading is confirmatory and
   the direction common to the three computations ("Judge and audit": "the strongest conclusion
   that holds in all three computations is reported") is Δ's sign; decided.
 - M21, the binomial interval of each test: Clopper–Pearson 95 % ("ordinary 95 % binomial
   interval"); decided.
-- M22, the grid: 17 coverage scenarios (J = 1 785), 2 power-only and 2 gate scenarios
+- M22, the grid: 17 coverage scenarios (J = 1 785), 4 power and 2 gate scenarios
   (``SCENARIOS``); decided.
 - M23, the stream integers: calibration 20261101, verification 20261102 (``STREAMS``; any two
   distinct integers); decided.
@@ -392,7 +412,7 @@ from .study3_seed_vectors import Vector
 # ------------------------------------------------------------------ constants
 
 SHAPES = ("normal", "heavy", "skewed", "rare")
-ROLES = ("coverage", "coverage_power", "power", "gate")
+ROLES = ("coverage", "power", "gate")
 UTILITIES = ("safe", "empirical")
 MISSING = ("MCAR", "MNAR")
 COMPARISONS = {"A-F": ("A", "F"), "P-F": ("P", "F")}
@@ -402,6 +422,9 @@ JUDGES: dict[str, dict[str, tuple[float, float]]] = {
     "differential": {"A": (0.93, 0.036), "F": (0.75, 0.036), "P": (0.75, 0.036)},
 }
 RHO_ARM, RHO_BLOCK, BASELINE, PROMPTS = 0.7, 0.3, 0.15, 521  # M5
+# M6b: the missing labels' rates, MCAR (C14: MNAR, 5 % of the harmful responses)
+COVERAGE_MISSING_RATE = 0.01  # the coverage scenarios': a stress value
+POWER_MISSING_RATE = 0.001  # the power scenarios': the planning rate of unresolved labels
 # M8: σ_e of ln K per run (docs/study2-short-b20-inputs.json)
 JITTER_SD = {"A": 0.013, "F": 0.032, "P": 0.027}
 # M3: the shapes' constants (study2_short_sim's HEAVY_SHARE, HEAVY_RATIO, GAMMA_SHAPE, RARE)
@@ -465,7 +488,8 @@ SOURCES: dict[str, str] = {
     ),
     "delta_pf_pp": (
         "none registered (P-F's power is reported): the symmetric choice, delta_PF = delta_AF "
-        "in the power scenarios and 0 elsewhere, the P-F spread equal to A-F's; M2, decided"
+        "wherever delta_AF is not 0 (C16, C17 and the power scenarios) and 0 elsewhere, the P-F "
+        "spread equal to A-F's; M2, decided"
     ),
     "support": (
         "the registration's support 0.88, 0.90, 0.95, read as the realized probability that a "
@@ -485,12 +509,16 @@ SOURCES: dict[str, str] = {
         "C13 F and P at Se 0.75 (sparse strata 0.58-0.75); M6, decided"
     ),
     "missing": (
-        "no record holds a rate (study 2's labels were never made): MCAR in every scenario, "
-        "C14 MNAR among harmful responses, as stress values; M6b, decided"
+        "MCAR in every scenario but C14, MNAR among harmful responses there; clustered or MNAR "
+        "label failures are covered only by the stress scenarios; M6b, decided"
     ),
     "missing_rate": (
-        "no record holds a rate: 1 % MCAR in every scenario, 5 % MNAR among harmful in C14, as "
-        "stress values; M6b, decided"
+        "1 % MCAR in the coverage scenarios and 5 % MNAR among harmful in C14, as stress values "
+        "(no record holds study 3's rate: study 2's labels were never made); 0.1 % MCAR in the "
+        "power scenarios, the planning rate of labels unresolved after the labeling rounds, from "
+        "study 1 with the same judge (0 unparseable outputs in 39 900 labels of its "
+        "non-collapsed runs, docs/reports/stage-1.md), a conservative planning assumption, not "
+        "a proven bound; M6b, decided"
     ),
     "utility": (
         "the registration's safe alternative at its boundary (interpolated MMLU loss mean 3 pp, "
@@ -578,11 +606,12 @@ class Scenario:
     @property
     def coverage(self) -> bool:
         """Whether the scenario's tests count in J (the "J" column)."""
-        return self.role in ("coverage", "coverage_power")
+        return self.role == "coverage"
 
     @property
     def power(self) -> bool:
-        return self.role in ("coverage_power", "power")
+        """Whether the scenario is one the power gate reads (M20)."""
+        return self.role == "power"
 
     def missing_rates(self) -> tuple[float, float]:
         """(m_h, m_n): the missing rates among harmful and not harmful responses."""
@@ -630,10 +659,17 @@ def _scenario(name: str, role: str = "coverage", **change: Any) -> Scenario:
         "jitter": False,
         "judge": "equal",
         "missing": "MCAR",
-        "missing_rate": 0.01,
+        "missing_rate": COVERAGE_MISSING_RATE,
         "utility": "safe",
     }
     return Scenario(name=name, role=role, **{**common, **change})
+
+
+def _power(name: str, spread_pp: float, delta_pp: float) -> Scenario:
+    """A power scenario (M20): normal, Δ_AF = Δ_PF = ``delta_pp``, its missing labels MCAR at the
+    planning rate (M6b)."""
+    return _scenario(name, "power", spread_pp=spread_pp, delta_af_pp=delta_pp,
+                     delta_pf_pp=delta_pp, missing_rate=POWER_MISSING_RATE)  # fmt: skip
 
 
 _GATE = {
@@ -662,10 +698,12 @@ SCENARIOS: tuple[Scenario, ...] = (
     _scenario("C13", judge="differential"),
     _scenario("C14", missing="MNAR", missing_rate=0.05),
     _scenario("C15", candidate=2),
-    _scenario("C16", "coverage_power", spread_pp=3.5, delta_af_pp=2.0, delta_pf_pp=2.0),
-    _scenario("C17", "coverage_power", delta_af_pp=2.0, delta_pf_pp=2.0),
-    _scenario("P18", "power", spread_pp=3.5, delta_af_pp=-2.0, delta_pf_pp=-2.0),
-    _scenario("P19", "power", delta_af_pp=-2.0, delta_pf_pp=-2.0),
+    _scenario("C16", spread_pp=3.5, delta_af_pp=2.0, delta_pf_pp=2.0),
+    _scenario("C17", delta_af_pp=2.0, delta_pf_pp=2.0),
+    _power("P18", 3.5, -2.0),
+    _power("P19", 5.0, -2.0),
+    _power("P20", 3.5, 2.0),
+    _power("P21", 5.0, 2.0),
     _scenario("G1", "gate", support=0.95, **_GATE),
     _scenario("G2", "gate", utility="empirical", **_GATE),
 )
@@ -3826,7 +3864,7 @@ def _screen(runs_root: Path, context: Context, commit: str,
                        units("gates", context.of("gate"), LEVELS, 28, MIN_N), m,
                        lambda _, rows: m - len(rows))  # fmt: skip
     gates, blocks = _gate_counts(context, gate_rows, m)
-    screened = context.of("coverage", "coverage_power", "power")
+    screened = context.of("coverage", "power")
     rows = _phase(pool, runs_root, context, commit,
                   units("screen", screened, LEVELS, blocks, MIN_N), bound,
                   _screen_short(m, LEVELS))  # fmt: skip
@@ -3839,7 +3877,7 @@ def _screen(runs_root: Path, context: Context, commit: str,
         tests.append(_test_row(identity, level, used, _drawn(used, rows[identity[1]], m, bound),
                                m, j))  # fmt: skip
     selected = selected_level(tests, j, m)
-    power_scenarios = context.of("coverage_power", "power")
+    power_scenarios = context.of("power")
     power = {c: {level_slot(lv): {sc.name: _direction_counts(rows[sc.name], sc, c, lv, m, bound)
                                   for sc in power_scenarios} for lv in LEVELS}
              for c in COMPARISONS}  # fmt: skip
@@ -3967,7 +4005,7 @@ def _seeded_moments(context: Context) -> dict[tuple, tuple[float, float]]:
 
 def run_screen(context: Context, runs_root: str | Path, commit: str, *, workers: int) -> Path:
     """§"Simulation before validation", the run's steps 1–3: the gates (G1, G2: M validations
-    each), the screen (C01–C17, P18, P19 at the validation size, four levels, 2 000 resamples,
+    each), the screen (C01–C17, P18–P21 at the validation size, four levels, 2 000 resamples,
     ``"screen"`` mode, the first M confirmed studies by index per test, never past 4·M draws)
     and the n_min scan when ``power_af`` is short; parts are written as they finish, a run
     interrupted resumes from them on the same streams, and ``screen.json`` is the summary of the
@@ -4054,7 +4092,7 @@ def _verification(runs_root: Path, context: Context, commit: str, screen: Mappin
     if level is None:
         raise SimulationError("no level passed the screen: the verification is not due")
     floor, blocks = _verification_floor(screen), screen["validation_blocks"]
-    coverage = context.of("coverage", "coverage_power")
+    coverage = context.of("coverage")
 
     def pf(o: StudyOutcome) -> bool:
         return bool(o.confirmed.get(level)) and "P-F" in o.active
@@ -4094,7 +4132,7 @@ def _warmed_moments(runs_root: Path, context: Context, commit: str,
     from the same distribution), with those this process holds."""
     found = _seeded_moments(context)
     tasks = []
-    for sc in context.of("coverage", "coverage_power"):
+    for sc in context.of("coverage"):
         if not sc.jitter:
             continue
         template = Unit("screen", sc.name, 0, 1, context.fixation["streams"]["calibration"],

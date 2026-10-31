@@ -687,10 +687,12 @@ def test_every_scenario_parameter_has_a_decided_source() -> None:
 
 def test_the_grid_is_the_registered_one() -> None:
     names = [s.name for s in sim.SCENARIOS]
-    assert names == [f"C{i:02d}" for i in range(1, 18)] + ["P18", "P19", "G1", "G2"]
+    assert names == [f"C{i:02d}" for i in range(1, 18)] + ["P18", "P19", "P20", "P21", "G1", "G2"]
     coverage = [s for s in sim.SCENARIOS if s.coverage]
-    assert len(coverage) == 17  # J = 17 × 105
-    assert [s.name for s in sim.SCENARIOS if s.power] == ["C16", "C17", "P18", "P19"]
+    assert len(coverage) == 17 and {s.role for s in coverage} == {"coverage"}  # J = 17 × 105
+    assert [s.name for s in sim.SCENARIOS if s.power] == ["P18", "P19", "P20", "P21"]
+    assert sim.ROLES == ("coverage", "power", "gate")
+    assert not any(s.coverage and s.power for s in sim.SCENARIOS)
     by = sim.SCENARIOS_BY_NAME
     assert [by[f"C{i:02d}"].spread_pp for i in range(1, 9)] == [3.5, 5.0] * 4
     assert [by[f"C{i:02d}"].shape for i in range(1, 9)] == [
@@ -713,6 +715,8 @@ def test_the_grid_is_the_registered_one() -> None:
         ("C17", 5.0, 2.0),
         ("P18", 3.5, -2.0),
         ("P19", 5.0, -2.0),
+        ("P20", 3.5, 2.0),
+        ("P21", 5.0, 2.0),
     ):
         assert (by[name].spread_pp, by[name].delta_af_pp, by[name].delta_pf_pp) == (
             spread,
@@ -727,7 +731,15 @@ def test_the_grid_is_the_registered_one() -> None:
     )
     common = {s.name for s in sim.SCENARIOS if s.role != "gate"}
     assert all(by[n].utility == "safe" for n in common)
-    assert all(by[n].missing_rate == 0.01 for n in common - {"C14"})
+    # M6b: the coverage tests at 1 % MCAR (C14 MNAR 5 %), the power at the planning rate 0.1 %
+    assert all((by[n].missing, by[n].missing_rate) == ("MCAR", 0.01)
+               for n in {s.name for s in coverage} - {"C14"})  # fmt: skip
+    assert all((s.missing, s.missing_rate) == ("MCAR", 0.001) for s in sim.SCENARIOS if s.power)
+    # a power scenario is C16's or C17's model at Δ = ±2 pp and the planning rate
+    for name, twin in (("P18", "C16"), ("P19", "C17"), ("P20", "C16"), ("P21", "C17")):
+        delta = by[name].delta_af_pp
+        assert by[name] == replace(by[twin], name=name, role="power", missing_rate=0.001,
+                                   delta_af_pp=delta, delta_pf_pp=delta)  # fmt: skip
 
 
 def test_a_scenario_round_trips_through_json_and_refuses_another_field() -> None:
@@ -1052,7 +1064,7 @@ def test_a_pf_closed_at_candidate_1_stays_closed_at_candidate_2(setup) -> None:
     candidate 2, whose own P–F gate passes, P–F counts nothing and the joint test is A–F's, as on
     the real route. Candidate 1 with only its A–F gate failing (A's MMLU loss far above its bound)
     leaves P–F open at candidate 2; A–F's results are the same in both: the streams stay paired."""
-    sc = replace(sim.SCENARIOS_BY_NAME["C17"], name="AFPF1")
+    sc = replace(sim.SCENARIOS_BY_NAME["P21"], name="AFPF1")  # its coverage and direction
     a_far = {arm: {v.seed: (6.0 if arm == "A" else 0.0) for v in setup.vectors}
              for arm in ARM_ORDER}  # fmt: skip
     second = hand_calibration(2, 0.0, offset_a=0.04, offset_p=0.04)
@@ -1174,35 +1186,35 @@ def fixed_labels(mean: float, missing: int):
 @pytest.mark.parametrize("missing,want,counted", [(5, None, 0), (0, "positive", 1)])
 def test_the_power_counts_only_the_registered_final_direction(setup, monkeypatch, missing, want,
                                                                counted) -> None:  # fmt: skip
-    """A power study (C17, Δ +2 pp) whose 93 cap blocks have a mean difference of 1.9 pp and an
-    SD of 5.1 pp: the primary interval at its stream excludes 0 (its lower bound near 0.8 pp).
+    """A power study (P21, Δ +2 pp) whose 105 cap blocks have a mean difference of 1.9 pp and an
+    SD of 5.2 pp: the primary interval at its stream excludes 0 (its lower bound near 0.8 pp).
     With 5 missing labels at every endpoint the missing labels' envelope reaches below 0, the
     three computations share no direction, and the study detects nothing; with none, it
     detects. The direction is the final analysis's on the same blocks and stream."""
     from zero_field_refusal.analysis.study3_estimates import three_computations
     from zero_field_refusal.analysis.study3_inference import reading
 
-    sc = sim.SCENARIOS_BY_NAME["C17"]
+    sc = sim.SCENARIOS_BY_NAME["P21"]
     label, primary_of = fixed_labels(0.02, missing)
     monkeypatch.setattr(sim, "_label", label)
-    o = sim.simulate_study(sc, setup, 13, 2, resamples=2_000, levels=(0.975,))
+    o = sim.simulate_study(sc, setup, 13, 19, resamples=2_000, levels=(0.975,))
     key = (0.975, "A-F")
     assert o.confirmed[0.975] and o.readings[key] == "confirmatory"
     seeds = o.analysis[key]
     d = the_four(np.array([primary_of(s) for s in seeds]), missing / 521, missing / 521)
     final = three_computations(d, level=0.975, resamples=2_000,
-                               seed=stream(13, "bootstrap", sc.name, 2, "A-F", "cap"))  # fmt: skip
-    assert len(seeds) == 93 and reading(final["primary"]).direction == "positive"  # it detects
+                               seed=stream(13, "bootstrap", sc.name, 19, "A-F", "cap"))  # fmt: skip
+    assert len(seeds) == 105 and reading(final["primary"]).direction == "positive"  # it detects
     assert 0.007 < final["primary"].lower < 0.009
     assert o.direction[key] == final["reading"].direction == want
-    count = sim._direction_counts([o], sc, "A-F", 0.975, 1, 4)
-    assert count == {"correct": counted, "studies": 1, "draws": 3}  # index 2: drawn through it
+    count = sim._direction_counts([o], sc, "A-F", 0.975, 1, 80)
+    assert count == {"correct": counted, "studies": 1, "draws": 20}  # index 19: drawn through it
 
 
 def test_a_descriptive_reading_detects_nothing() -> None:
     """At the cap with fewer than 36 supported blocks the reading is descriptive: its direction,
     even the right one, is no detection; a confirmatory one is."""
-    sc = sim.SCENARIOS_BY_NAME["C16"]
+    sc = sim.SCENARIOS_BY_NAME["P20"]
 
     def study(index: int, reading: str, direction: str | None) -> sim.StudyOutcome:
         key = (0.975, "A-F")
@@ -1639,7 +1651,8 @@ class Interrupted(Exception):
 
 
 class Tiny(NamedTuple):
-    """A tiny grid's context (two scenarios and the two gates, M = 6, 200 and 400 resamples:
+    """A tiny grid's context (a coverage and a power scenario and the two gates, M = 6, 200 and
+    400 resamples:
     with 20, the interval is the range of 20 t*, and the joint test misses one study in five)
     and the test's monkeypatch."""
 
@@ -1687,7 +1700,7 @@ def engine_context(base: Path, scenarios, vectors, *, never: str | None = None) 
 def tiny_grid(never: str | None = None) -> list:
     first = replace(sim.SCENARIOS_BY_NAME["C02"], name=never) if never else (
         sim.SCENARIOS_BY_NAME["C02"])  # fmt: skip
-    names = ("C16", "G1", "G2")
+    names = ("P20", "G1", "G2")
     return [first, *(sim.SCENARIOS_BY_NAME[n] for n in names)]
 
 
@@ -1821,12 +1834,12 @@ def test_the_results_hold_every_identity_once(tiny, tmp_path) -> None:
     decided, problems = decisions.coverage_decisions(results, ctx.fixation)
     assert problems == [] and decided["level"] == results["selected_calibration_level"]
     assert decided["level"] is not None and decided["validation_blocks"] in (28, 40)
-    assert results["M"] == 6 and results["J"] == 210
+    assert results["M"] == 6 and results["J"] == 105
     assert all(r["studies"] == 6 for r in results["tests"] if r["due"])
     # the verification's rows are at L, and every comparison counts its own studies
     due = [r for r in results["tests"] if r["test"][0] == "verification"]
     assert {r["level"] for r in due} == {decided["level"]}
-    assert set(results["reported"]) == {"C02", "C16", "G1", "G2"}
+    assert set(results["reported"]) == {"C02", "P20", "G1", "G2"}
     assert set(results["reported"]["C02"]["blocks"]["0.975"]) == {"q10", "q50", "q90"}
     # the verification does not depend on the workers either
     other = tmp_path / "other"
@@ -1860,7 +1873,7 @@ def test_the_scan_stops_at_the_first_n_with_the_power(tiny, tmp_path) -> None:
 
     def slow_power(scenario, setup, base, index, *, n_floor=60, **kw):
         o = real(scenario, setup, base, index, n_floor=n_floor, **kw)
-        if scenario.name != "C16" or not o.direction:
+        if scenario.name != "P20" or not o.direction:
             return o
         hit = n_floor >= 63 or index % 3 == 0
         direction = {k: (("positive" if hit else None) if k[1] == "A-F" else v)
@@ -1876,7 +1889,7 @@ def test_the_scan_stops_at_the_first_n_with_the_power(tiny, tmp_path) -> None:
     assert [entry["n"] for entry in scan] == [60, 61, 62, 63]
     assert [min(c["correct"] for c in e["by_scenario"].values()) for e in scan][-1] == 6
     assert all(min(c["correct"] for c in e["by_scenario"].values()) < 5 for e in scan[:-1])
-    assert decisions._n_min(scan, True, ["C16"]) == (63, [])
+    assert decisions._n_min(scan, True, ["P20"]) == (63, [])
 
 
 def test_the_calibration_does_not_depend_on_the_workers(vectors, monkeypatch) -> None:

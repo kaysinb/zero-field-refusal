@@ -362,7 +362,7 @@ DETECTION_AT = {"comparison": 0.035, "joint": 0.065}  # the registered example's
 MAX_DRAWS_FACTOR = 4  # a test draws at most 4·M studies
 NOT_ATTAINABLE = "not_attainable"
 POWER_REQUIRED, POWER_LEVEL = REQUIRED_GATES["power_af"], LEVELS[0]  # the power without an L
-COVERAGE_ROLES, POWER_ROLES = ("coverage", "coverage_power"), ("coverage_power", "power")
+COVERAGE_ROLES, POWER_ROLES = ("coverage",), ("power",)
 FIXATION_FIELDS = ("kind", "written_at", "code", "machine", "policy", "inputs", "M", "resamples",
                    "calibration", "streams", "levels", "n_points", "p0", "gate_replicates",
                    "max_draws_factor", "rules", "curvature", "scenarios", "tests", "J",

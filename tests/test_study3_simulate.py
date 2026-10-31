@@ -39,9 +39,9 @@ REGISTRATION = "# Study 3 preregistration\n\n### Amendment 1: x\n\n### Amendment
 
 
 def tiny_grid() -> tuple:
-    """C02 (coverage) and C16 (coverage and power) at a Δ of 6 pp, whose power is not short,
-    and the two gates."""
-    big = replace(sim.SCENARIOS_BY_NAME["C16"], delta_af_pp=6.0, delta_pf_pp=6.0)
+    """C02 (coverage) and P20 (power) at a Δ of 6 pp, whose power is not short, and the two
+    gates."""
+    big = replace(sim.SCENARIOS_BY_NAME["P20"], delta_af_pp=6.0, delta_pf_pp=6.0)
     return (sim.SCENARIOS_BY_NAME["C02"], big, sim.SCENARIOS_BY_NAME["G1"],
             sim.SCENARIOS_BY_NAME["G2"])  # fmt: skip
 
@@ -215,9 +215,9 @@ def simulation_files(runs: Path) -> list[Path]:
 
 def test_the_inputs_and_the_fixation_were_written_and_committed(origin) -> None:
     fixation = json.loads((origin / SIMULATION_FIXATION).read_text())
-    assert fixation["J"] == 210 and fixation["M"] == 6
+    assert fixation["J"] == 105 and fixation["M"] == 6
     assert fixation["inputs"]["path"] == INPUTS_PATH
-    assert [s["name"] for s in fixation["scenarios"]] == ["C02", "C16", "G1", "G2"]
+    assert [s["name"] for s in fixation["scenarios"]] == ["C02", "P20", "G1", "G2"]
     assert set(fixation["scenarios"][0]["calibration"]) == {"1", "2"}
     inputs = (origin / INPUTS_PATH).read_text()
     assert len(json.loads(inputs)["vectors"]) == 25 and SENTINEL not in inputs
@@ -496,5 +496,5 @@ def test_the_power_gate_reads_the_results_as_registered(world) -> None:
     record, _ = read_decision(runs, "simulation", repo=repo)
     results = json.loads((runs / SIMULATION_RESULTS).read_text())
     by = results["gates"]["power_af"]["by_scenario"]
-    assert set(by) == {"C16"} and math.isclose(record["gates"]["power_af"]["value"],
-                                               by["C16"]["correct"] / 6)  # fmt: skip
+    assert set(by) == {"P20"} and math.isclose(record["gates"]["power_af"]["value"],
+                                               by["P20"]["correct"] / 6)  # fmt: skip
