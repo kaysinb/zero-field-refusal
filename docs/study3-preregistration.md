@@ -1025,7 +1025,9 @@ procedure and its records, and the simulation runs under them.
     of "for both comparisons". P–F is read at that L or withheld: its failure never raises L.
   - **A failure at L** advances only to a higher level that passes its calibration screen, and then
     to that level's preassigned fresh verification stream. L is never lowered, no stream is
-    rerolled, and every failed result is kept.
+    rerolled, and every failed result is kept. A failure of P–F alone advances nothing, and there
+    are no mixed levels. On an advance, the power and any required scan are computed again at the
+    new level, before its verification.
   - **J.** Every possible verification test is in J before any draw: 17 scenarios × 21 tests × 4
     levels, on the screen and in the verification. J = 2 856, and the registered formula gives
     c = 317 per comparison and 593 jointly. True non-coverage of 3.5 % per comparison is detected
@@ -1067,10 +1069,11 @@ procedure and its records, and the simulation runs under them.
   consequential use, under Part II's conditions: on synthetic records, in the Pod image, from an
   uninstalled checkout, through `project-run`.
   - Before the search, the integration replay: an engineering cycle, the decision, the simulation's
-    record, the first campaign and its readback.
+    record, the first campaign and its readback, then on the same synthetic records through the
+    stop and the cohorts' freeze, an interruption and its readback included.
   - Before validation, the guards.
-  - Before validation's labels, the labels and the spread, with the label records' schema fixed
-    before the validation fixation.
+  - Before the validation fixation, the labels and the spread, finished and replayed. The fixation
+    pins the spread's code, so it runs from that frozen checkout.
   - Before the confirmation's labels, the analysis and the audit.
   - There are no reduced-size dry runs; failure, resumption and the container get targeted checks.
   - `checks.dry_run` references Part I's report and the replay's, so the replay passes before the
