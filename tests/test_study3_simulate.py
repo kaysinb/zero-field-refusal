@@ -215,7 +215,7 @@ def simulation_files(runs: Path) -> list[Path]:
 
 def test_the_inputs_and_the_fixation_were_written_and_committed(origin) -> None:
     fixation = json.loads((origin / SIMULATION_FIXATION).read_text())
-    assert fixation["J"] == 105 and fixation["M"] == 6
+    assert fixation["J"] == 168 and fixation["M"] == 6
     assert fixation["inputs"]["path"] == INPUTS_PATH
     assert [s["name"] for s in fixation["scenarios"]] == ["C02", "P20", "G1", "G2"]
     assert set(fixation["scenarios"][0]["calibration"]) == {"1", "2"}
@@ -350,26 +350,185 @@ def test_verify_refuses_without_a_level_and_record_writes_the_failed_record(worl
         "simulation", None, "simulation_failed")  # fmt: skip
 
 
-def test_a_verification_test_above_c_gives_the_failed_record(world) -> None:
+def verification_part_folders(runs: Path) -> list[str]:
+    parts = runs / "study3" / "simulation" / "parts"
+    return sorted(p.name for p in parts.iterdir() if p.name.startswith("verification"))
+
+
+def missing_in_the_verification(monkeypatch, comparison: str, levels: tuple) -> None:
+    """Every study of the verification misses at ``levels`` in ``comparison``."""
+    real = sim.simulate_study
+
+    def staged(scenario, setup, base, index, **kw):
+        o = real(scenario, setup, base, index, **kw)
+        if kw.get("mode") != "procedure" or kw["levels"][0] not in levels:
+            return o
+        return replace(o, covered={k: False if k[2] == comparison and v is not None else v
+                                   for k, v in o.covered.items()})  # fmt: skip
+
+    monkeypatch.setattr(sim, "simulate_study", staged)
+
+
+def test_no_level_left_gives_the_failed_record_with_every_level_kept(world, monkeypatch) -> None:
+    """A–F's tests fail in every level's verification: each on its own stream, L never lowered, the
+    record failed with no L and every level kept; a pause for the procedure's reader."""
     repo, runs, simulate = world
-    for command in ("run", "verify"):
-        ran(simulate(command, "--runs-root", runs, "--workers", 1))
-    path = runs / "study3" / "simulation" / "verification.json"
-    edit(path, lambda v: missed(v["tests"][0]))
+    missing_in_the_verification(monkeypatch, "A-F", decisions.LEVELS)
+    ran(simulate("run", "--runs-root", runs, "--workers", 1))
+    out = ran(simulate("verify", "--runs-root", runs, "--workers", 1))
+    assert "no level left" in out
+    assert len(verification_part_folders(runs)) == 4
     ran(simulate("record", "--runs-root", runs))
     record, problems = read_decision(runs, "simulation", repo=repo)
-    assert problems == [] and record["level"] is not None and record["state"] == "failed"
-    assert record["verification"]["passed"] is False
+    assert problems == [] and record["level"] is None and record["state"] == "failed"
+    assert record["reading"] is None and record["verification"]["passed"] is False
+    assert [t["verified"] for t in record["levels_tried"]] == [False] * 4
     state = progress_of(runs, repo)
     assert (state["stage"], state["outcome"], state["step"]["reason"]) == (
         "simulation", None, "simulation_failed")  # fmt: skip
 
 
-def test_no_attainable_n_skips_the_verification_and_fails_the_record(world) -> None:
-    """The power short at every n of the scan up to 169, whose cap 201 exceeds the 200 reserved
-    seeds: no N is attainable, so the verification is not run (a pause for a decision, named), its
-    tests are not due, and the record fails."""
+def test_a_failed_verification_advances_with_its_power_and_scan_and_the_record_reads_back(
+    world, monkeypatch
+) -> None:
+    """Amendment 7, "A failure at L": A–F's tests fail at L = 0.975, whose power is not short; the
+    next level's power is short, so its scan runs before its verification, at that level, and its
+    n_min floors that verification, on that level's own stream. The record reads back with the
+    failed result kept, L, the power and n_min all of 0.980, and the state passed."""
     repo, runs, simulate = world
+    real = sim.simulate_study
+
+    def staged(scenario, setup, base, index, *, n_floor=60, **kw):
+        o = real(scenario, setup, base, index, n_floor=n_floor, **kw)
+        if kw.get("mode") == "procedure" and kw["levels"] == (0.975,):
+            return replace(o, covered={k: False if k[2] == "A-F" else v
+                                       for k, v in o.covered.items()})  # fmt: skip
+        if scenario.name == "P20" and o.direction:  # at 0.980, detecting only from N = 62
+            hit = n_floor >= 62 or index % 3 == 0
+            return replace(o, direction={
+                k: (("positive" if hit else None) if k == (0.98, "A-F") else v)
+                for k, v in o.direction.items()})  # fmt: skip
+        return o
+
+    monkeypatch.setattr(sim, "simulate_study", staged)
+    out = ran(simulate("run", "--runs-root", runs, "--workers", 1))
+    assert "\nlevel 0.975\n" in out and "\nn_min null\n" in out  # no scan at the screen's L
+    screen = json.loads((runs / "study3" / "simulation" / "screen.json").read_text())
+    assert screen["gates"]["n_scan"] == []
+    out = ran(simulate("verify", "--runs-root", runs, "--workers", 1))
+    assert "tried 0.975 verified false" in out and "tried 0.98 verified true" in out
+    verification = json.loads((runs / "study3" / "simulation" / "verification.json").read_text())
+    first, second = verification["levels"]
+    assert (verification["level"], first["level"], second["level"]) == (0.98, 0.975, 0.98)
+    assert first["n_floor"] == 60 and first["n_scan"] == []
+    assert second["n_floor"] == 62 and [e["n"] for e in second["n_scan"]] == [60, 61, 62]
+    assert first["stream"] != second["stream"]
+    assert first["stream"] == sim.verification_base(sim.STREAMS["verification"], 0.975)
+    assert second["stream"] == sim.verification_base(sim.STREAMS["verification"], 0.98)
+    assert verification_part_folders(runs) == ["verification-0.975", "verification-0.980"]
+    parts = runs / "study3" / "simulation" / "parts"
+    assert (parts / "scan-0.980-62" / "P20").is_dir() and not (parts / "scan-0.975-60").exists()
+    # a study of that verification is the stream's own, whether or not the failed level ran
+    context = sim.load_context(repo)
+    sc = context.scenario("C02")
+    setup = replace(context.setup, validation_blocks=screen["validation_blocks"])
+    alone = real(sc, setup, second["stream"], 0, mode="procedure", resamples=400, levels=(0.98,),
+                 n_floor=62)  # fmt: skip
+    head = json.loads((parts / "verification-0.980" / "C02" / "000000.json").read_text())
+    assert sim.outcome_from_json(head["rows"][0]) == alone
+    out = ran(simulate("record", "--runs-root", runs))
+    assert "state passed" in out and "level 0.98\n" in out
+    record, problems = read_decision(runs, "simulation", repo=repo)
+    assert problems == [] and record["state"] == "passed" and record["level"] == 0.98
+    assert record["reading"]["level"] == 0.98 and record["verification"]["level"] == 0.98
+    assert [t["level"] for t in record["levels_tried"]] == [0.975, 0.98]
+    assert [t["verified"] for t in record["levels_tried"]] == [False, True]
+    assert record["levels_tried"][0]["failed"]  # every failed result is kept
+    power = record["gates"]["power_af"]
+    assert power["power_short"] is True and power["n_min"] == 62
+    results = json.loads((runs / SIMULATION_RESULTS).read_text())
+    assert results["gates"]["power_af"]["level"] == 0.98
+    assert [e["n"] for e in results["gates"]["n_scan"]] == [60, 61, 62]
+    assert [v["level"] for v in results["verifications"]] == [0.975, 0.98]
+    due = {r["test"][3] for r in results["tests"] if r["test"][0] == "verification" and r["due"]}
+    assert due == {"0.975", "0.980"}
+    state = progress_of(runs, repo)
+    assert state["stage"] == "search", state.get("problems")
+
+
+def test_a_failure_of_pf_alone_advances_nothing(world, monkeypatch) -> None:
+    """P–F's tests fail in the verification: A–F keeps L and its floor, P–F is withheld, no other
+    level's verification runs, and the record passes: there are no mixed levels."""
+    repo, runs, simulate = world
+    missing_in_the_verification(monkeypatch, "P-F", (0.975,))
+    for command in ("run", "verify"):
+        ran(simulate(command, "--runs-root", runs, "--workers", 1))
+    assert verification_part_folders(runs) == ["verification-0.975"]
+    ran(simulate("record", "--runs-root", runs))
+    record, problems = read_decision(runs, "simulation", repo=repo)
+    assert problems == [] and record["state"] == "passed" and record["level"] == 0.975
+    assert record["reading"]["pf_confirmatory"] is False
+    assert record["reading"]["floors"]["P-F"] is None and record["reading"]["floors"]["A-F"]
+    assert [t["level"] for t in record["levels_tried"]] == [0.975]
+
+
+def test_a_pf_not_attainable_in_the_verification_is_withheld(world, monkeypatch) -> None:
+    """P–F is never active in the verification: its tests are short of M at the 4·M draws, not
+    attainable, which is no pass: P–F is withheld, A–F keeps L, and the record passes."""
+    repo, runs, simulate = world
+    real = sim.simulate_study
+
+    def staged(scenario, setup, base, index, **kw):
+        o = real(scenario, setup, base, index, **kw)
+        return replace(o, active=["A-F"]) if kw.get("mode") == "procedure" else o
+
+    monkeypatch.setattr(sim, "simulate_study", staged)
+    for command in ("run", "verify"):
+        ran(simulate(command, "--runs-root", runs, "--workers", 1))
+    ran(simulate("record", "--runs-root", runs))
+    record, problems = read_decision(runs, "simulation", repo=repo)
+    assert problems == [] and record["state"] == "passed" and record["level"] == 0.975
+    assert record["reading"]["pf_confirmatory"] is False
+    results = json.loads((runs / SIMULATION_RESULTS).read_text())
+    rows = [r for r in results["tests"] if r["test"][0] == "verification" and r["due"]]
+    short = [r for r in rows if r["test"][4] == "P-F"]
+    assert short and {(r["reason"], r["draws"], r["passed"]) for r in short} == {
+        ("not_attainable", 24, False)}  # fmt: skip
+    assert all(r["reason"] is None for r in rows if r["test"][4] != "P-F")
+
+
+def test_a_pf_failing_its_screen_is_withheld_and_not_verified(world, monkeypatch) -> None:
+    """P–F's test at 99 fails on the screen at every level: L stays where A–F's tests put it, P–F
+    has no floor there, and its verification tests and the joint ones are not due."""
+    repo, runs, simulate = world
+    real = sim.simulate_study
+
+    def staged(scenario, setup, base, index, **kw):
+        o = real(scenario, setup, base, index, **kw)
+        if kw.get("mode") != "screen":
+            return o
+        return replace(o, covered={k: False if k[0] == 99 and k[2] == "P-F" else v
+                                   for k, v in o.covered.items()})  # fmt: skip
+
+    monkeypatch.setattr(sim, "simulate_study", staged)
+    for command in ("run", "verify"):
+        ran(simulate(command, "--runs-root", runs, "--workers", 1))
+    ran(simulate("record", "--runs-root", runs))
+    record, problems = read_decision(runs, "simulation", repo=repo)
+    assert problems == [] and record["state"] == "passed" and record["level"] == 0.975
+    assert record["reading"]["pf_confirmatory"] is False
+    assert record["reading"]["floors"]["P-F"] is None
+    results = json.loads((runs / SIMULATION_RESULTS).read_text())
+    due = {r["test"][4] for r in results["tests"] if r["test"][0] == "verification" and r["due"]}
+    assert due == {"A-F"}
+
+
+def test_no_attainable_n_skips_the_verification_and_fails_the_record(world) -> None:
+    """The power short at every n of the scan up to the first whose cap exceeds the 200 reserved
+    seeds: no N is attainable, so the verification is not run (a pause for a decision, named),
+    its tests are not due, and the record fails."""
+    repo, runs, simulate = world
+    beyond = next(n for n in range(60, 400) if decisions.cap_of(n) > 200)
     ran(simulate("run", "--runs-root", runs, "--workers", 1))
     screen = runs / "study3" / "simulation" / "screen.json"
 
@@ -379,19 +538,23 @@ def test_no_attainable_n_skips_the_verification_and_fails_the_record(world) -> N
             counts["correct"] = 4  # 4 of M = 6: below 0.80
         s["gates"]["n_scan"] = [{"n": n, "by_scenario": {name: {"correct": 4, "studies": 6}
                                                          for name in by}}
-                                for n in range(60, 170)]  # fmt: skip
+                                for n in range(60, beyond + 1)]  # fmt: skip
         s["gates"]["scan_level"] = s["level"]
 
     edit(screen, short)
     refused(simulate("verify", "--runs-root", runs, "--workers", 1), "no attainable n",
-            "a pause for a decision", "201")  # fmt: skip
+            "a pause for a decision", str(decisions.cap_of(beyond)))  # fmt: skip
     assert not (runs / "study3" / "simulation" / "verification.json").exists()
     out = ran(simulate("record", "--runs-root", runs))
-    assert "state failed" in out and "verification not_run no_attainable_n n 169 cap 201" in out
+    assert (
+        "state failed" in out
+        and (f"verification not_run no_attainable_n n {beyond} cap {decisions.cap_of(beyond)}")
+        in out
+    )
     record, problems = read_decision(runs, "simulation", repo=repo)
     assert problems == [] and record["level"] is not None and record["state"] == "failed"
     assert record["verification"]["passed"] is False
-    assert record["gates"]["power_af"]["n_min"] == 169
+    assert record["gates"]["power_af"]["n_min"] == beyond
     results = json.loads((runs / SIMULATION_RESULTS).read_text())
     verification = [r for r in results["tests"] if r["test"][0] == "verification"]
     assert verification and {r["due"] for r in verification} == {False}

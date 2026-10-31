@@ -393,7 +393,7 @@ def test_a_missing_decision_record_refuses_the_fixation(study, missing) -> None:
 
 
 def test_a_failed_simulation_record_refuses_the_fixation(study) -> None:
-    study.ready(state="failed", verification=verified(passed=False))
+    study.ready(fail_verification=LEVELS)
     with pytest.raises(sv.RecordRefused, match="the simulation record did not pass"):
         study.fixation()
 
@@ -403,8 +403,7 @@ def test_a_fixation_resting_on_a_simulation_that_failed_is_refused_on_reading(st
     record = study.fixation()
     study.put(VALIDATION_C1, record, commit=False)
     path = study.root / "study3" / "decisions" / "simulation.json"
-    failed = study.records.simulation(code=study.code, state="failed",
-                                      verification=verified(passed=False))  # fmt: skip
+    failed = study.records.simulation(code=study.code, fail_verification=LEVELS)
     path.write_text(json.dumps(failed))
     study.edit(VALIDATION_C1, simulation={"path": "study3/decisions/simulation.json",
                                           "sha256": sha256(path)})  # fmt: skip
