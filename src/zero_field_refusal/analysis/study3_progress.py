@@ -46,8 +46,9 @@ outcome (``TERMINAL``, below). ``candidate``.
   engineering cycle, or a mark outside it closed after that cycle
   (``unresolved_after_cycle``);
 - ``design_stop``: the confirmation cannot start as designed: the simulation record failed (no
-  level passed, or its verification failed: ``simulation_failed``), or the n record failed, its
-  cap beyond the reserved confirmation seeds (``cap_beyond_reserved_seeds``);
+  level passed, its verification failed, or no N within the reserved seeds was attainable for
+  the power: ``simulation_failed``), or the n record failed, its cap beyond the reserved
+  confirmation seeds (``cap_beyond_reserved_seeds``);
 - ``budget_stop``: the budget record's decision is stop (``budget_stop``);
 - at ``done``, ``confirmed`` (A–F's reading is confirmatory) or ``descriptive``, with the
   readings of every active comparison (``readings``), its reason the stop's (``n_reached``,
@@ -148,8 +149,9 @@ counts, never every id. A failed n record (its cap beyond the 200 reserved confi
 means the confirmation cannot start: the design stop, with the reason; N is never cut. A power
 shortfall needs the budget record (``budget_reason``); a budget decision to stop ends the study
 before the confirmation (the budget stop). Whether the simulation's J is the one its fixation
-froze is checked by the simulation package (package 3), which writes both; it is not checked
-here.
+froze is checked by the simulation record's reader (``study3_decisions``, the J check: the
+record against its committed fixation and the results' tests), so a record read here has passed
+it; it is not checked again here.
 
 **The confirmation** ("Confirmation"). One block per campaign, in seed order from 10400, up to the
 cap N + max(10, ⌈0.12·N⌉) (the cells of every seed up to the cap are prescribed, no further). The
@@ -1038,8 +1040,9 @@ class _Walk:
             raise _Stop(self._result(kind, self._decision(kind, why)))
         if entry["state"] == "failed" and kind == "simulation":
             raise _Stop(self._report(DESIGN_STOP, "simulation_failed", [
-                "simulation: the record failed: no level passed the coverage screen or its "
-                "verification failed, and the confirmation cannot start"]))  # fmt: skip
+                "simulation: the record failed: no level passed the coverage screen, its "
+                "verification failed, or no N within the reserved seeds was attainable for the "
+                "power (the verification not run): the confirmation cannot start"]))  # fmt: skip
         if entry["state"] == "failed":
             raise _Stop(
                 self._report(

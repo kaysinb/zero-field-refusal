@@ -30,9 +30,11 @@ qualification's restart and supersession records (``qualification/c<N>/``).
 - ``step_key``: the key of a step's prescribed cells, ``c<candidate>/<step>[/r<round>]``.
 - ``read_theta0``: θ₀'s accuracies, the utility losses' baseline (study 2's θ₀ evaluation).
 
-**The decision records' folder** (``RUNS_DIR/study3/decisions/``, ``DECISIONS``) lies in the
-experiment's folder and is reserved: it is no run directory (no run id is ever named so: they are
-``<stamp>-<cell>-s<seed>-<hash>-a<attempt>``), and every walk of the experiment's folder skips it.
+**The reserved folders** (``RESERVED``) lie in the experiment's folder: the decision records'
+(``RUNS_DIR/study3/decisions/``, ``DECISIONS``) and the simulation's parts and results
+(``RUNS_DIR/study3/simulation/``, ``SIMULATION``; "Simulation before validation"). Neither is a run
+directory (no run id is ever named so: they are ``<stamp>-<cell>-s<seed>-<hash>-a<attempt>``), and
+every walk of the experiment's folder skips both.
 
 **The sealing boundary.** Of a run directory only ``config.yaml``, ``meta.json``,
 ``terminal.json``, ``summary.json``, ``evaluations.jsonl``, ``metrics.jsonl`` and
@@ -241,6 +243,8 @@ from ..protocol import load_run_config
 
 EXPERIMENT = "study3"
 DECISIONS = "decisions"  # RUNS_DIR/study3/decisions/: the decision records, reserved, no run
+SIMULATION = "simulation"  # RUNS_DIR/study3/simulation/: the simulation's parts and results
+RESERVED = (DECISIONS, SIMULATION)  # the experiment's folders that are no run directory
 ROLES = ("engineering", "search", "numerical", "validation", "confirmation")
 K_ONLY_ROLES = ("engineering", "search", "numerical")
 # "Seeds and order": validation to 10339 / 10379 with 40 blocks; confirmation in order, its
@@ -763,7 +767,7 @@ class EndpointReader:
         experiment = self.root / EXPERIMENT
         # a run folder whose start lies beyond a pinned prefix is a later run: no run of the view
         self.folders = [d for d in (sorted(experiment.iterdir()) if experiment.is_dir() else [])
-                        if d.is_dir() and d.name != DECISIONS
+                        if d.is_dir() and d.name not in RESERVED
                         and d.name not in self.journal.later]  # fmt: skip
         if files is not None and files.base != experiment:
             raise ValueError(f"the run files read under {files.base} are not {experiment}'s")

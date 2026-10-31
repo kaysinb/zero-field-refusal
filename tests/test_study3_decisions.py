@@ -8,7 +8,9 @@ import builtins
 import hashlib
 import io
 import json
+import math
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -16,9 +18,20 @@ from pathlib import Path
 import pytest
 
 from zero_field_refusal import launch
+from zero_field_refusal.analysis import study3_simulation as sim
 from zero_field_refusal.analysis.study3_decisions import (
+    COVERAGE_RUNS,
     HOLD_REASONS,
     LEVELS,
+    MIN_N,
+    NOT_ATTAINABLE,
+    PLANNING_DIFFERENCE_PP,
+    PLANNING_POWER,
+    POWER_REPORT,
+    SELECTED_LEVEL,
+    SIMULATION_FIXATION,
+    SIMULATION_RESULTS,
+    SPREAD_PERCENTILE,
     UNCOUNTED_REASONS,
     UNRESOLVED_AFTER_CYCLE,
     DecisionRefused,
@@ -26,21 +39,29 @@ from zero_field_refusal.analysis.study3_decisions import (
     budget_reason,
     cap_of,
     chain,
+    clopper_pearson,
     closures,
     confirmation_started,
     coverage_threshold,
     cycle_path,
     decision_path,
     decisions,
+    detection_power,
     end_lines,
     hold_reasons,
+    identities_sha256,
     immutable,
     kind_of,
+    level_slot,
     next_successor,
+    planning_power,
     read_decision,
+    sample_size,
     serialized,
     start_lines,
     successor_kind,
+    test_identities,
+    upper_sd,
     write_decision,
 )
 from zero_field_refusal.analysis.study3_records import SEEDS, TORN_LINE
@@ -50,10 +71,38 @@ SENTINEL = "SEALED-RESPONSE-5d1e0b"
 CODE = {"commit": "a" * 40, "gpu_code_sha256": "b" * 64}
 WHEN = "2026-10-26T12:00:00Z"
 SEALED = ("responses", "observations")
+# The fixture's simulation: the whole grid (the reader refuses any other), J = 1 785; C16 a
+# coverage scenario and P20 a power scenario that tests name
+COVER, POWER = "C16", "P20"
+COVERAGE = [s.name for s in sim.SCENARIOS if s.coverage]
+POWERS = [s.name for s in sim.SCENARIOS if s.power]
+GRID_J = len(test_identities(COVERAGE))  # 17 × 105
+LEVEL_TESTS = GRID_J // 5  # each level's calibration tests, and the verification's: 17 × 21
+STREAMS = {"calibration": 11, "verification": 12}
+POLICY = {"path": "docs/study3-preregistration.md", "commit": "c" * 40, "sha256": "d" * 64,
+          "amendments": [1, 2, 3, 4, 5, 6]}  # fmt: skip
+INPUTS = "docs/study3-simulation-inputs.json"
+M = COVERAGE_RUNS
 
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def git(repo: Path, *args: str) -> str:
+    command = ["git", "-c", "user.name=test", "-c", "user.email=test@example.org",
+               "-c", "commit.gpgsign=false", *args]  # fmt: skip
+    return subprocess.run(command, cwd=repo, check=True, capture_output=True,
+                          text=True).stdout.strip()  # fmt: skip
+
+
+def fixed_calibration(candidate: int) -> sim.Calibration:
+    return sim.Calibration(candidate=candidate, failure=0.02, realized_support=0.9,
+                           support_flagged=False, mmlu_shift={}, factual_shift={},
+                           utility_realized={}, utility_flagged=False, sigma_af=0.03,
+                           sigma_pf=0.03, offset_a=0.02, offset_p=0.02, attained_af_pp=3.5,
+                           attained_pf_pp=3.5, attained_delta_pp={"A-F": (2.0, 0.01),
+                                                                  "P-F": (2.0, 0.01)})  # fmt: skip
 
 
 class World:
@@ -70,8 +119,149 @@ class World:
             (run / folder).mkdir(parents=True)
             (run / folder / name).write_text(json.dumps({"text": SENTINEL}) + "\n")
         self.run = run
+        self.J = GRID_J
+        self.checkout()
+
+    # -- the simulation's fixation (committed in the checkout, a Git repository) and results
+
+    def checkout(self, how: str | None = None, change: dict | None = None) -> None:
+        """The checkout a Git repository: a first commit (the inputs record), then the simulation's
+        fixation committed alone (``how``: ``"uncommitted"`` leaves it untracked,
+        ``"with_another_file"`` commits it with another file; ``change``: fields of the built
+        fixation replaced before it is written)."""
+        shutil.rmtree(self.repo / ".git", ignore_errors=True)
+        git(self.repo, "init", "-q")
+        (self.repo / "docs").mkdir(exist_ok=True)
+        (self.repo / INPUTS).write_text('{"kind": "study3-simulation-inputs"}\n')
+        git(self.repo, "add", INPUTS)
+        git(self.repo, "commit", "-qm", "the inputs record")
+        self.first = git(self.repo, "rev-parse", "HEAD")
+        scenarios = list(sim.SCENARIOS)
+        calibrations = {(sc, c): fixed_calibration(c) for sc, c in sim.calibration_pairs(scenarios)}
+        fixation = sim.build_fixation(
+            self.repo / INPUTS, scenarios, calibrations,
+            code={"commit": self.first, "gpu_code_sha256": "b" * 64}, streams=STREAMS,
+            repo=self.repo, policy=POLICY, written_at=WHEN)  # fmt: skip
+        fixation.update(change or {})
+        path = self.repo / SIMULATION_FIXATION
+        path.write_text(json.dumps(fixation, indent=2, sort_keys=True) + "\n")
+        self.fixation = fixation
+        if how == "uncommitted":
+            self.fixation_commit = self.first
+            return
+        paths = [SIMULATION_FIXATION]
+        if how == "with_another_file":
+            (self.repo / "docs" / "other.md").write_text("other\n")
+            paths.append("docs/other.md")
+        git(self.repo, "add", *paths)
+        git(self.repo, "commit", "-qm", "the simulation's fixation")
+        self.fixation_commit = git(self.repo, "rev-parse", "HEAD")
+
+    def results(self, record: dict, *, mode: str | None = None, ran: str | None = None,
+                not_attainable: tuple | None = None) -> dict:  # fmt: skip
+        """``results.json`` consistent with ``record`` (its levels' counts, its verification and
+        gates), then changed as ``mode`` says."""
+        j = self.J
+        c = {"comparison": coverage_threshold(j, M, 0.025), "joint": coverage_threshold(j, M, 0.05)}
+        rows_by_level = {row.get("level"): row for row in record.get("coverage") or []
+                         if isinstance(row, dict)}  # fmt: skip
+        level = record.get("level") if record.get("level") in LEVELS else None
+        verification = record.get("verification")
+        verified_ok = isinstance(verification, dict) and verification.get("passed") is True
+        rows = []
+        for identity in test_identities(COVERAGE):
+            stream, _, _, slot, comparison = identity
+            kind = "joint" if comparison == "joint" else "comparison"
+            if stream == "calibration":
+                counts = (rows_by_level.get(float(slot)) or {}).get("counts")
+                x = counts.get(kind) if isinstance(counts, dict) else None
+                if not (type(x) is int and 0 <= x <= M):
+                    x = c[kind] - 20
+                rows.append(results_row(identity, float(slot), x, c[kind]))
+            elif level is None:
+                rows.append(results_row(identity, None, None, None))
+            else:
+                x = c[kind] - 20 if verified_ok else c[kind] + 1
+                rows.append(results_row(identity, level, x, c[kind]))
+        if not_attainable is not None:
+            stream, slot = not_attainable
+            at = next(i for i, r in enumerate(rows) if r["test"][0] == stream
+                      and r["test"][3] == slot and r["test"][4] == "A-F")  # fmt: skip
+            rows[at] = {**rows[at], "studies": M - 7, "draws": 4 * M, "reason": NOT_ATTAINABLE,
+                        "X": None, "passed": False, "rate": None, "interval": None}  # fmt: skip
+        gates = record.get("gates") if isinstance(record.get("gates"), dict) else {}
+
+        def value(name: str, default: float) -> float:
+            gate = gates.get(name)
+            found = gate.get("value") if isinstance(gate, dict) else None
+            return found if isinstance(found, float | int) and 0 <= found <= 1 else default
+
+        def count(rate: float) -> int:
+            return round(rate * M)
+
+        power = gates.get("power_af") if isinstance(gates.get("power_af"), dict) else {}
+        short = value("power_af", 0.86) < 0.80
+        n_min = power.get("n_min") if type(power.get("n_min")) is int else 84
+        scan = [{"n": n, "by_scenario": {name: {"correct": count(0.80 if n == n_min else 0.79),
+                                                "studies": M} for name in POWERS}}
+                for n in range(MIN_N, max(n_min, MIN_N) + 1)] if short else []  # fmt: skip
+        safe = value("safe_pass_rate", 0.982)
+        results = {
+            "kind": "simulation-results", "written_at": WHEN,
+            "fixation": {"path": SIMULATION_FIXATION,
+                         "sha256": sha256(self.repo / SIMULATION_FIXATION),
+                         "commit": self.fixation_commit},
+            "code": {"commit": ran or self.fixation_commit, "gpu_code_sha256": "b" * 64},
+            "M": M, "J": j, "streams": dict(STREAMS),
+            "resamples": dict(self.fixation["resamples"]),
+            "validation_blocks": 28 if safe >= 0.95 else 40, SELECTED_LEVEL: level,
+            "tests": rows,
+            "gates": {
+                "safe_pass_rate": {"passed": count(safe), "studies": M, "validation_blocks": 28},
+                "empirical_pass_rate": {"passed": count(value("empirical_pass_rate", 0.6)),
+                                        "studies": M, "validation_blocks": 28},
+                **{name: {"level": level if level is not None else 0.975,
+                          "by_scenario": {s: {"correct": count(value(name, default)),
+                                              "studies": M, "draws": M} for s in POWERS}}
+                   for name, default in (("power_af", 0.86), ("power_pf", 0.85))},
+                POWER_REPORT: {"level": level if level is not None else 0.975,
+                               "missing_rate": 0.01,
+                               "by_scenario": {s: {"correct": count(value(POWER_REPORT, 0.7)),
+                                                   "studies": M, "draws": M} for s in POWERS}},
+                "n_scan": scan,
+                "detection_power": detection_power(j, M),
+            },
+            "reported": {},
+        }  # fmt: skip
+        tests = results["tests"]
+        first = next(i for i, r in enumerate(tests) if r["test"][0] == "calibration")
+        if mode == "duplicate":
+            tests.append(dict(tests[first]))
+        elif mode == "omit":
+            tests.pop()
+        elif mode == "extra":
+            tests.append({**tests[first], "test": ["calibration", "C99", 36, "0.975", "A-F"]})
+        elif mode == "flip_pass":
+            tests[first] = {**tests[first], "passed": not tests[first]["passed"]}
+        elif mode == "verification_not_due":
+            for i, row in enumerate(tests):
+                if row["test"][0] == "verification":
+                    tests[i] = results_row(tuple(row["test"]), None, None, None)
+        elif mode == "report_rate":
+            results["gates"][POWER_REPORT]["missing_rate"] = 0.001
+        elif mode == "report_unpaired":
+            results["gates"][POWER_REPORT]["by_scenario"][POWER]["studies"] = M - 1
+        elif mode == "short_without_bound":
+            tests[first] = {**tests[first], "studies": M - 1, "draws": M, "X": None,
+                            "passed": False, "rate": None, "interval": None}  # fmt: skip
+        return results
 
     # -- evidence
+
+    def seed_vectors(self) -> dict:
+        """The reference a simulation record gives its seed vectors: the fixation's inputs record,
+        in the checkout."""
+        return {"path": INPUTS, "sha256": sha256(self.repo / INPUTS), "root": "repo"}
 
     def ref(self, name: str, text: str | None = None, *, root: str = "runs") -> dict:
         """An evidence file (a new one holding ``text``) and the reference that records it."""
@@ -94,16 +284,57 @@ class World:
                 "checks": checks, **over}  # fmt: skip
 
     def simulation(self, **over) -> dict:
+        """A simulation record (``over`` replaces its fields), with the committed fixation and
+        ``RUNS_DIR/study3/simulation/results.json`` consistent with it: its ``inputs`` (an
+        object) gain the results' reference. The fixture's own words: ``results`` (``duplicate``,
+        ``omit``, ``extra``, ``flip_pass``, ``verification_not_due``, ``short_without_bound``:
+        results that depart from the record), ``fixation`` as a word (``uncommitted``,
+        ``with_another_file``, ``after_the_results``), ``fail_levels`` (those levels fail),
+        ``not_attainable`` ((stream, level slot): one A–F test short at the 4·M bound) and
+        ``gate_value_off`` (the record's pass rate at the safe alternative off its counts)."""
+        mode = over.pop("results", None)
+        modes = ("uncommitted", "with_another_file", "after_the_results")
+        how = over.pop("fixation") if over.get("fixation") in modes else None
+        failing = set(over.pop("fail_levels", ()))
+        short = over.pop("not_attainable", None)
+        off = over.pop("gate_value_off", None)
+        if how in ("uncommitted", "with_another_file"):
+            self.checkout(how)
+        if short is not None:
+            failing.add(float(short[1]))
+        rows = [coverage_row(lv, passed=lv not in failing) for lv in LEVELS]
+        if short is not None:
+            row = rows[LEVELS.index(float(short[1]))]
+            row["counts"] = {**row["counts"], "comparison": M}
+        level = next((r["level"] for r in rows if r["passed"]), None)
         record = {
-            "kind": "simulation", "state": "passed", "written_at": WHEN, "code": CODE,
-            "fixation": self.ref("simulation-fixation.json"),
-            "inputs": {"seed_vectors": self.ref("seed-vectors.json"),
-                       "design": self.ref("design.json")},
-            "gates": default_gates(),
-            "coverage": [coverage_row(0.975)], "level": 0.975, "validation_blocks": 28,
-            "verification": verified(calibration_stream=11, verification_stream=12),
+            "kind": "simulation", "state": "passed" if level is not None else "failed",
+            "written_at": WHEN, "code": CODE,
+            "fixation": {"path": SIMULATION_FIXATION,
+                         "sha256": sha256(self.repo / SIMULATION_FIXATION), "root": "repo"},
+            "inputs": {"seed_vectors": self.seed_vectors(), "design": self.ref("design.json")},
+            "gates": default_gates(), "coverage": rows, "level": level, "validation_blocks": 28,
+            "verification": verified(level, level is not None),
         }  # fmt: skip
-        return {**record, **over}
+        record.update(over)
+        ran = self.first if how == "after_the_results" else None
+        results = self.results(record, mode=mode, ran=ran, not_attainable=short)
+        path = self.runs / SIMULATION_RESULTS
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
+        if isinstance(record["inputs"], dict) and record["inputs"] and "results" not in record[
+                "inputs"]:  # fmt: skip
+            record["inputs"] = {
+                **record["inputs"],
+                "results": {"path": SIMULATION_RESULTS, "sha256": sha256(path)},
+            }
+        if off is not None:
+            gate = record["gates"]["safe_pass_rate"]
+            record["gates"] = {
+                **record["gates"],
+                "safe_pass_rate": {**gate, "value": gate["value"] + off},
+            }
+        return record
 
     def n(self, candidate: int = 1, N: int = 75, **over) -> dict:
         first = SEEDS["validation"][candidate][0]
@@ -214,12 +445,34 @@ def power_gate(value: float, n_min: int | None = None) -> dict:
             "n_min": n_min if short else None}  # fmt: skip
 
 
+def reported(value: float) -> dict:
+    return {"value": value, "requirement": None, "passed": None}
+
+
 def default_gates() -> dict:
     """The gates of a simulation that passed them all: a pass rate at the safe alternative of
-    0.982, the power of 0.86 and the pass rate at study 2's empirical point, reported only."""
+    0.982, the power of 0.86, and, reported only, the pass rate at study 2's empirical point,
+    P–F's power and the detection powers at the fixture's J = 1 785."""
+    detection = detection_power(GRID_J, M)
     return {"safe_pass_rate": {"value": 0.982, "requirement": 0.95, "passed": True},
             "power_af": power_gate(0.86),
-            "empirical_pass_rate": {"value": 0.6, "requirement": None, "passed": None}}  # fmt: skip
+            "empirical_pass_rate": reported(0.6), "power_pf": reported(0.85),
+            POWER_REPORT: reported(0.7),
+            "detection_power_comparison": reported(detection["comparison"]),
+            "detection_power_joint": reported(detection["joint"])}  # fmt: skip
+
+
+def results_row(identity: tuple, level: float | None, x: int | None, c: int | None) -> dict:
+    """A row of the results: a test of M studies with its X, or (``level`` None) a verification
+    test not due."""
+    p0 = 0.05 if identity[4] == "joint" else 0.025
+    if level is None:
+        return {"test": list(identity), "level": None, "due": False, "p0": p0, "studies": None,
+                "draws": None, "reason": None, "X": None, "c": None, "passed": None,
+                "rate": None, "interval": None}  # fmt: skip
+    return {"test": list(identity), "level": level, "due": True, "p0": p0, "studies": M,
+            "draws": M, "reason": None, "X": x, "c": c, "passed": x <= c, "rate": x / M,
+            "interval": clopper_pearson(x, M)}  # fmt: skip
 
 
 def gates_with(**gates) -> dict:
@@ -232,8 +485,8 @@ def pass_rate(value: float) -> dict:
     return {"value": value, "requirement": 0.95, "passed": value >= 0.95}
 
 
-def coverage_row(level: float, *, passed: bool = True, J: int = 1000, M: int = 10_000,
-                 tests: int = 60) -> dict:  # fmt: skip
+def coverage_row(level: float, *, passed: bool = True, J: int = GRID_J, M: int = 10_000,
+                 tests: int = LEVEL_TESTS) -> dict:  # fmt: skip
     c, j = coverage_threshold(J, M, 0.025), coverage_threshold(J, M, 0.05)
     counts = {"comparison": c - 20, "joint": j - 20}
     if not passed:
@@ -261,9 +514,10 @@ def refused(world: World, kind: str, record: dict, *words: str) -> None:
 
 
 def verified(level=0.975, passed=True, **kw) -> dict:
-    """A simulation's independent verification."""
-    return {"level": level, "passed": passed, "tests": 20, "calibration_stream": 1,
-            "verification_stream": 2, **kw}  # fmt: skip
+    """A simulation's independent verification (the fixture's 357 verification tests and
+    streams)."""
+    return {"level": level, "passed": passed, "tests": LEVEL_TESTS, "calibration_stream": 11,
+            "verification_stream": 12, **kw}  # fmt: skip
 
 
 def sim_refused(world: World, *words: str, **over) -> None:
@@ -302,6 +556,78 @@ def test_the_coverage_thresholds_are_the_binomial_quantiles_of_the_example() -> 
     assert coverage_threshold(1000, 10_000, 0.05) == 587
 
 
+# ------------------------------------------------------------------ the N rule
+
+
+@pytest.mark.parametrize("sd,m,level,n", [(3.5, 28, 0.975, 60), (5.0, 28, 0.975, 88),
+                                          (5.0, 22, 0.975, 92), (5.0, 28, 0.98, 93)])  # fmt: skip
+def test_the_n_rule_gives_the_registered_examples(sd, m, level, n) -> None:
+    """The examples of "Sample size from validation": N is the smallest N ≥ 60 whose planning
+    power reaches 0.85."""
+    assert sample_size(sd, m, level) == n
+    up = upper_sd(sd, m)
+    assert planning_power(n, up, level) >= PLANNING_POWER
+    assert n == MIN_N or planning_power(n - 1, up, level) < PLANNING_POWER
+
+
+def test_the_examples_caps() -> None:
+    assert [cap_of(n) for n in (60, 88, 92, 93)] == [70, 99, 104, 105]
+
+
+def test_the_upper_sd_and_the_floor() -> None:
+    assert upper_sd(5.0, 28) == pytest.approx(5.70999, abs=1e-5)
+    assert sample_size(0.0, 28, 0.99) == 60
+    with pytest.raises(ValueError):
+        sample_size(5.0, 1, 0.975)
+
+
+def test_the_n_rule_constants_and_its_power() -> None:
+    assert (PLANNING_POWER, PLANNING_DIFFERENCE_PP, SPREAD_PERCENTILE) == (0.85, 2.0, 0.20)
+    assert planning_power(60, 0.0, 0.975) == 1.0  # SD_up = 0: the direction is certain
+    # Φ(2·√N/SD_up − z_L), z_L = Φ⁻¹((1 + L)/2): at L = 0.975, z_L = 2.241
+    from scipy.stats import norm
+
+    assert planning_power(88, 5.0, 0.975) == pytest.approx(
+        norm.cdf(2 * math.sqrt(88) / 5.0 - norm.ppf(0.9875)))  # fmt: skip
+    assert norm.ppf(0.9875) == pytest.approx(2.241, abs=1e-3)
+
+
+@pytest.mark.parametrize("sd,m,level", [(5.0, 1, 0.975), (5.0, 0, 0.975), (-0.1, 28, 0.975),
+                                        (math.nan, 28, 0.975), (math.inf, 28, 0.975),
+                                        (5.0, 28, 0.95), (5.0, 28, 0.9751), (5.0, 2.0, 0.975),
+                                        (5.0, True, 0.975), ("5", 28, 0.975)])  # fmt: skip
+def test_the_n_rule_refuses_what_it_does_not_define(sd, m, level) -> None:
+    with pytest.raises(ValueError):
+        sample_size(sd, m, level)
+
+
+def test_the_n_rule_takes_any_integral_type() -> None:
+    """m and N may be numpy integers (a count from an array), cast to int; a bool is no count."""
+    import numpy as np
+
+    assert sample_size(5.0, np.int64(28), 0.975) == sample_size(5.0, 28, 0.975) == 88
+    assert type(sample_size(5.0, np.int64(28), 0.975)) is int
+    assert upper_sd(5.0, np.int32(28)) == upper_sd(5.0, 28)
+    assert planning_power(np.int64(88), 5.0, 0.975) == planning_power(88, 5.0, 0.975)
+    for bad in (True, np.float64(28.0), 28.0):
+        with pytest.raises(ValueError):
+            sample_size(5.0, bad, 0.975)
+    with pytest.raises(ValueError):
+        planning_power(True, 5.0, 0.975)
+
+
+def test_the_n_rule_steps_to_the_smallest_passing_n() -> None:
+    """N does not depend on how the closed form rounds: every N the rule gives passes, and the
+    one before it (above the floor) does not, across levels, block counts and spreads."""
+    for level in LEVELS:
+        for m in (2, 3, 22, 28, 31, 40):
+            for sd in (0.5, 1.0, 2.5, 3.5, 4.0, 5.0, 6.5, 8.0):
+                n = sample_size(sd, m, level)
+                up = upper_sd(sd, m)
+                assert n >= MIN_N and planning_power(n, up, level) >= PLANNING_POWER
+                assert n == MIN_N or planning_power(n - 1, up, level) < PLANNING_POWER
+
+
 # ------------------------------------------------------------------ each schema accepted
 
 
@@ -328,7 +654,7 @@ def test_the_simulation_record_is_accepted(world) -> None:
 
 
 def test_a_simulation_that_passed_a_later_level_and_chose_40_blocks(world) -> None:
-    rows = [coverage_row(0.975, passed=False), coverage_row(0.980)]
+    rows = [coverage_row(0.975, passed=False), *(coverage_row(level) for level in LEVELS[1:])]
     verification = verified(0.98)
     gates = gates_with(safe_pass_rate=pass_rate(0.93))
     world.write("simulation", world.simulation(coverage=rows, level=0.98, validation_blocks=40,
@@ -709,11 +1035,14 @@ def test_an_evidence_sha256_is_64_lowercase_hexadecimal_digits(world, sha) -> No
 
 
 def test_evidence_is_found_by_its_root_and_an_absolute_path_needs_none(world) -> None:
+    # the simulation's own fixation is fixed (the J check), so an input carries the references
     ref = world.ref("both.json", "same\n")
     in_repo = {**ref, "root": "repo"}
-    refused(world, "simulation", world.simulation(fixation=in_repo), "fixation", "missing")
+    plain = {"seed_vectors": world.seed_vectors()}
+    refused(world, "simulation", world.simulation(inputs={**plain, "design": in_repo}),
+            "inputs.design", "missing")  # fmt: skip
     absolute = {"path": str(world.file(ref)), "sha256": ref["sha256"]}
-    world.write("simulation", world.simulation(fixation=absolute))
+    world.write("simulation", world.simulation(inputs={**plain, "design": absolute}))
     assert world.read("simulation")[1] == []
 
 
@@ -799,6 +1128,22 @@ def test_a_power_shortfall_is_recorded_and_the_record_still_passes(world) -> Non
     assert record["validation_blocks"] == 28  # the pass rate decided that, not the power
 
 
+def test_a_power_short_beyond_the_reserved_seeds_skips_the_verification(world) -> None:
+    """n_min 179, its cap 201 beyond the 200 reserved seeds: no N is attainable, so the
+    verification is not run (its tests not due) and does not pass, and the record fails (the
+    design stop); due verification rows, or a passed verification, are refused."""
+    gates = gates_with(power_af=power_gate(0.74, 179))
+    sim_refused(world, "no attainable n", "not due", gates=gates, state="failed",
+                verification=verified(0.975, False))  # fmt: skip
+    sim_refused(world, "verification.passed", gates=gates, results="verification_not_due")
+    world.write("simulation", world.simulation(gates=gates, state="failed",
+                                               verification=verified(0.975, False),
+                                               results="verification_not_due"))  # fmt: skip
+    record, problems = world.read("simulation")
+    assert problems == [] and record["state"] == "failed" and record["level"] == 0.975
+    assert record["gates"]["power_af"]["n_min"] == 179
+
+
 @pytest.mark.parametrize(
     ("power", "words"),
     [
@@ -849,7 +1194,7 @@ def test_the_simulation_state_follows_the_coverage_screen_and_its_verification_o
 
 
 def test_the_coverage_threshold_is_the_recomputed_one(world) -> None:
-    row = coverage_row(0.975)
+    row = coverage_row(0.975, J=1000)
     weaker = {**row, "thresholds": {"comparison": 400, "joint": 587}}
     sim_refused(world, "thresholds.comparison", "313", coverage=[weaker])
     sim_refused(world, "thresholds", coverage=[{**row, "J": 2000}])  # c of J = 1000 do not follow
@@ -860,7 +1205,7 @@ def test_the_coverage_threshold_is_the_recomputed_one(world) -> None:
 
 def test_a_levels_pass_agrees_with_its_counts(world) -> None:
     row = coverage_row(0.975)
-    over = {**row, "counts": {"comparison": 314, "joint": 100}}
+    over = {**row, "counts": {"comparison": row["thresholds"]["comparison"] + 1, "joint": 100}}
     sim_refused(world, "coverage[0].passed", coverage=[over])
     under = {**coverage_row(0.975, passed=False), "counts": {"comparison": 10, "joint": 10}}
     sim_refused(world, "coverage[0].passed", coverage=[under])
@@ -902,7 +1247,7 @@ def test_one_j_is_frozen_for_every_level_so_a_level_cannot_pass_on_a_raised_j(wo
     late = coverage_row(0.980, J=10**6)
     late["counts"] = {"comparison": 314, "joint": 100}
     assert coverage_threshold(1000, 10_000, 0.025) == 313 < 314 <= late["thresholds"]["comparison"]
-    rows = [coverage_row(0.975, passed=False), late]
+    rows = [coverage_row(0.975, passed=False, J=1000), late]
     sim_refused(world, "coverage[1].J", "one frozen number", coverage=rows, level=0.98,
                 verification=verified(0.98))  # fmt: skip
     # the same level at the J of the first: it fails, as it should
@@ -913,16 +1258,15 @@ def test_one_j_is_frozen_for_every_level_so_a_level_cannot_pass_on_a_raised_j(wo
 
 def test_the_tests_of_the_levels_and_the_verification_fit_within_the_frozen_j(world) -> None:
     # four levels of 900 tests each under J = 1000
-    rows = [coverage_row(level, passed=level == 0.990, tests=900) for level in LEVELS]
+    rows = [coverage_row(level, passed=level == 0.990, tests=900, J=1000) for level in LEVELS]
     sim_refused(world, "coverage", "add up", "J = 1000", coverage=rows, level=0.99,
                 verification=verified(0.99))  # fmt: skip
-    # the sum equal to J is accepted, one more is not
-    one = [coverage_row(0.975, tests=980)]
-    world.write("simulation", world.simulation(coverage=one, verification=verified(tests=20)))
+    # the sum equal to J is accepted (the fixation's J = 1 785: four levels of 357 tests and 357
+    # verification tests), one more is not
+    world.write("simulation", world.simulation())
     assert world.read("simulation")[1] == []
     decision_path(world.runs, "simulation").unlink()
-    sim_refused(world, "coverage", "1001", "J = 1000", coverage=one,
-                verification=verified(tests=21))  # fmt: skip
+    sim_refused(world, "coverage", "1786", "J = 1785", verification=verified(tests=LEVEL_TESTS + 1))
     sim_refused(world, "verification.tests", verification=verified(tests=0))
     sim_refused(world, "verification.tests", verification=verified(tests=1.5))
     sim_refused(world, "verification", "tests",
@@ -939,13 +1283,13 @@ def test_m_is_exactly_ten_thousand_on_every_row(world, m) -> None:
 
 
 def test_the_reported_gates_are_accepted_and_no_other_gate_is_a_name(world) -> None:
-    reported = {"value": 0.7, "requirement": None, "passed": None}
-    gates = gates_with(power_pf=reported, detection_power_comparison=reported,
-                       detection_power_joint=reported)  # fmt: skip
+    # the detection powers are the fixture's, at its J (default_gates): the J check recomputes them
+    gates = gates_with(power_pf={"value": 0.7, "requirement": None, "passed": None})
     world.write("simulation", world.simulation(gates=gates))
     assert set(world.read("simulation")[0]["gates"]) == {
-        "safe_pass_rate", "power_af", "empirical_pass_rate", "power_pf",
+        "safe_pass_rate", "power_af", "empirical_pass_rate", "power_pf", POWER_REPORT,
         "detection_power_comparison", "detection_power_joint"}  # fmt: skip
+    assert POWER_REPORT == "power_af_1pct_missing"
 
 
 GATE_NAMES = [
@@ -970,8 +1314,11 @@ def test_a_gate_with_another_name_is_refused(world, name) -> None:
     sim_refused(world, f"gates.{name}", "not a gate", gates=gates_with(**{name: with_requirement}))
 
 
-@pytest.mark.parametrize("name", ["empirical_pass_rate", "power_pf", "detection_power_comparison",
-                                  "detection_power_joint"])  # fmt: skip
+REPORTED = ["empirical_pass_rate", "power_pf", POWER_REPORT, "detection_power_comparison",
+            "detection_power_joint"]  # fmt: skip
+
+
+@pytest.mark.parametrize("name", REPORTED)
 def test_a_reported_gate_has_no_requirement(world, name) -> None:
     sim_refused(
         world,
@@ -998,14 +1345,15 @@ def test_a_reported_gate_has_no_requirement(world, name) -> None:
      "has space", "a-b", "", "x" * 41, "caf\u00e9"],
 )  # fmt: skip
 def test_an_input_name_is_a_plain_word_that_marks_no_hidden_value(world, name) -> None:
-    inputs = {"seed_vectors": world.ref("seed-vectors.json"), name: world.ref("extra.json")}
+    inputs = {"seed_vectors": world.seed_vectors(), name: world.ref("extra.json")}
     sim_refused(world, "inputs", "is not a lowercase word", inputs=inputs)
 
 
 @pytest.mark.parametrize("name", ["a", "ab", "seed_vectors", "design", "grid_of_levels", "x" * 40,
                                   "a_" * 19 + "ab"])  # fmt: skip
 def test_the_input_names_of_a_simulation_that_are_plain_words_are_accepted(world, name) -> None:
-    inputs = {"seed_vectors": world.ref("seed-vectors.json"), name: world.ref("extra.json")}
+    extra = {} if name == "seed_vectors" else {name: world.ref("extra.json")}  # bound to inputs
+    inputs = {"seed_vectors": world.seed_vectors(), **extra}
     world.write("simulation", world.simulation(inputs=inputs))
     assert name in world.read("simulation")[0]["inputs"]
 
@@ -1046,6 +1394,357 @@ def test_a_passed_simulation_has_a_level_a_size_and_inputs(world) -> None:
     refused(world, "simulation", world.simulation(level=None), "level", "passed record")
     refused(world, "simulation", world.simulation(inputs={}), "inputs")
     refused(world, "simulation", world.simulation(inputs=[world.ref("a.json")]), "inputs")
+
+
+# ------------------------------------------------------------------ the J check
+
+
+def test_the_proposed_grid_has_j_1785() -> None:
+    names = [s.name for s in sim.SCENARIOS if s.role.startswith("coverage")]
+    ids = test_identities(names)
+    assert len(names) == 17 and len(ids) == len(set(ids)) == 1785
+    assert sum(i[0] == "verification" for i in ids) == 357
+    assert {i[3] for i in ids if i[0] == "verification"} == {"selected_calibration_level"}
+    assert (coverage_threshold(1785, 10_000, 0.025), coverage_threshold(1785, 10_000, 0.05)) == (
+        315,
+        590,
+    )
+    # the coverage tests' identities as before the power's own scenarios (M6b): J, their order
+    assert identities_sha256(ids) == (
+        "934ff6355d03122e67e831a72168e71afacb3e6f04201eacbd4724170473671b"
+    )
+
+
+def test_the_identities_are_in_enumeration_order_with_their_sha256() -> None:
+    ids = test_identities(["C01", "C02"])
+    assert ids[0] == ("calibration", "C01", 36, "0.975", "A-F")
+    assert ids[:3] == [("calibration", "C01", 36, "0.975", c) for c in ("A-F", "P-F", "joint")]
+    assert ids[3] == ("calibration", "C01", 36, "0.980", "A-F")
+    assert ids[84] == ("calibration", "C02", 36, "0.975", "A-F")
+    assert ids[168] == ("verification", "C01", 36, SELECTED_LEVEL, "A-F")
+    assert ids[-1] == ("verification", "C02", "cap", SELECTED_LEVEL, "joint")
+    blob = json.dumps([list(i) for i in ids], separators=(",", ":")).encode()
+    assert identities_sha256(ids) == hashlib.sha256(blob).hexdigest()
+    assert [level_slot(lv) for lv in LEVELS] == ["0.975", "0.980", "0.985", "0.990"]
+
+
+def test_detection_power_reproduces_the_registered_example() -> None:
+    assert detection_power(1000, 10_000) == pytest.approx(
+        {"comparison": 0.978, "joint": 0.995}, abs=5e-4
+    )
+    assert detection_power(1785, 10_000) == pytest.approx(
+        {"comparison": 0.971, "joint": 0.993}, abs=5e-4
+    )
+
+
+def test_the_clopper_pearson_interval_holds_the_rate() -> None:
+    from scipy.stats import binomtest
+
+    for x in (0, 1, 250, 9999, 10_000):
+        lo, hi = clopper_pearson(x, 10_000)
+        assert lo <= x / 10_000 <= hi
+        found = binomtest(x, 10_000).proportion_ci(0.95, method="exact")
+        assert (lo, hi) == pytest.approx((found.low, found.high), abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "change,word", [("duplicate", "twice"), ("omit", "missing"), ("extra", "not in the fixation")]
+)
+def test_a_results_set_other_than_the_fixations_is_refused(world, change, word) -> None:
+    refused(world, "simulation", world.simulation(results=change), word)
+
+
+def test_a_row_j_other_than_the_fixations_is_refused(world) -> None:
+    rows = [coverage_row(lv, J=world.J + 1) for lv in LEVELS]
+    refused(world, "simulation", world.simulation(coverage=rows), "J")
+
+
+def test_a_stored_pass_the_counts_contradict_is_refused(world) -> None:
+    refused(world, "simulation", world.simulation(results="flip_pass"), "recomputed")
+
+
+def test_no_level_passing_leaves_the_verification_not_due_and_is_accepted(world) -> None:
+    world.write("simulation", world.simulation(fail_levels=LEVELS))
+    record, problems = world.read("simulation")
+    assert problems == [] and record["level"] is None and record["state"] == "failed"
+    assert record["verification"]["passed"] is False
+    results = json.loads((world.runs / SIMULATION_RESULTS).read_text())
+    due = {row["due"] for row in results["tests"] if row["test"][0] == "verification"}
+    assert due == {False}
+
+
+def test_due_verification_rows_must_be_present_when_a_level_passed(world) -> None:
+    refused(world, "simulation", world.simulation(results="verification_not_due"), "due")
+
+
+@pytest.mark.parametrize("how,phrase", [("uncommitted", "is not committed"),
+                                        ("with_another_file", "committed alone"),
+                                        ("after_the_results", "descendant")])  # fmt: skip
+def test_the_fixation_must_precede_the_first_draw(world, how, phrase) -> None:
+    refused(world, "simulation", world.simulation(fixation=how), "fixation", phrase)
+
+
+def test_the_seed_vectors_are_the_fixations_inputs_record(world) -> None:
+    """The record's seed vectors are bound to the fixation's inputs record: its path in the
+    checkout and the sha256 the fixation pinned."""
+    other = world.ref("seed-vectors.json")
+    refused(world, "simulation", world.simulation(inputs={"seed_vectors": other}),
+            "inputs.seed_vectors", "the fixation's inputs record")  # fmt: skip
+    refused(world, "simulation", world.simulation(inputs={"design": world.ref("design.json")}),
+            "inputs.seed_vectors")  # fmt: skip
+
+
+def test_the_j_check_is_remembered_by_what_it_depends_on(world, monkeypatch) -> None:
+    """Reading the record again under the same HEAD, record, fixation and results reads Git no
+    more; a change of the results is read afresh."""
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    world.write("simulation", world.simulation())
+    assert world.read("simulation")[1] == []
+    calls = []
+    real = decisions.fixation_problems
+    monkeypatch.setattr(decisions, "fixation_problems",
+                        lambda *a, **k: calls.append(1) or real(*a, **k))  # fmt: skip
+    assert world.read("simulation")[1] == [] and calls == []
+    path = world.runs / SIMULATION_RESULTS
+    path.write_text(path.read_text() + " ")
+    found, problems = world.read("simulation")
+    assert found is None and calls == [1] and any("sha256" in p for p in problems)
+
+
+# A fixation at the registered M with the dry run's reduced sizes, and the constants of the dry
+# run's commit that would freeze it
+REDUCED = {
+    "resamples": ({"resamples": {"screen": 200, "verification": 1_000}},
+                  {"SCREEN_RESAMPLES": 200, "VERIFICATION_RESAMPLES": 1_000}),
+    "calibration": ({"calibration": {**sim.calibration_record(), "studies": 1_000}},
+                    {"CALIBRATION_STUDIES": 1_000}),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("word", list(REDUCED))
+def test_a_fixation_of_reduced_sizes_is_refused_under_the_registered_ones(
+    world, monkeypatch, word
+) -> None:
+    """The shared reader checks the fixation's sizes against the registered ones (2 000 and
+    100 000 resamples, M = 10 000, the calibration's selections and tolerances), not only its
+    types: a fixation of the production M with reduced resamples, or calibration selections, is
+    refused on writing and on reading; under the dry run's own constants (its commit's) the same
+    record is read."""
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    change, constants = REDUCED[word]
+    world.checkout(change=change)
+    assert world.fixation["M"] == COVERAGE_RUNS
+    record = world.simulation()
+    refused(world, "simulation", record, "fixation", word)
+    with monkeypatch.context() as patched:
+        for name, value in constants.items():
+            patched.setattr(decisions, name, value)
+        world.write("simulation", record)
+        assert world.read("simulation") == (record, [])
+    found, problems = world.read("simulation")  # the registered sizes again
+    assert found is None and any(word in p for p in problems)
+
+
+# M6b's limitation, word for word
+CLUSTERED = (
+    "Run- or arm-level clustered label failures are not explicitly modeled. The stress "
+    "scenarios cover higher MCAR missingness and harmful-response-dependent MNAR."
+)
+
+
+def test_the_fixation_records_the_missing_labels_with_their_disclosure(world) -> None:
+    """M6b: the coverage scenarios at 1 % MCAR (stress values), the power scenarios at the
+    planning rate 0.1 % MCAR, with its definition, its status (not a proven bound), its source,
+    its limitation and the decision; the fixture's power scenario at that rate."""
+    labels = world.fixation["missing_labels"]
+    assert labels == sim.missing_labels_record()
+    assert (labels["coverage"]["missing"], labels["coverage"]["missing_rate"]) == ("MCAR", 0.01)
+    assert (labels["power"]["missing"], labels["power"]["missing_rate"]) == ("MCAR", 0.001)
+    power = labels["power"]
+    for name, words in (
+        ("definition", ("unresolved after the labeling rounds", "up to three rounds per run")),
+        ("status", ("conservative planning assumption", "not a proven upper bound",
+                    "independent labels", "selected subset", "non-collapsed runs")),
+        ("source", ("WildGuard", "0 unparseable outputs in 39 900 labels", "non-collapsed",
+                    "docs/reports/stage-1.md", "not representative", "not used")),
+        ("limitation", (CLUSTERED,)),
+        ("decision", ("the researcher's", "preliminary calculations", "power gate failing at 1 %",
+                      "planning alternative", "sets no rate", "stays prospective")),
+    ):  # fmt: skip
+        assert all(w in power[name] for w in words), (name, power[name])
+    text = json.dumps(labels).lower()
+    assert not any(w in text for w in ("unseen", "nobody", "no one", "not seen", "blind"))
+    assert "covered only" not in text and CLUSTERED in sim.SOURCES["missing"]
+    # the power at 1 %: the rule's N, not the final increased design's; delta scales under MCAR
+    report = labels["report"]
+    assert "before any n_min increase" in report["role"]
+    assert "not the power of the final increased design" in report["role"]
+    assert all(w in report["draws"] for w in ("0.99 / 0.999", "1.982 pp",
+                                               "need not shrink by exactly 1 %"))  # fmt: skip
+    assert all(s["missing_rate"] == 0.001 for s in world.fixation["scenarios"]
+               if s["role"] == "power")  # fmt: skip
+
+
+LABELS_DEPART = {
+    "power_rate": ("power", "missing_rate", 0.01),
+    "coverage_rate": ("coverage", "missing_rate", 0.001),
+    "status": ("power", "status", "an upper bound"),
+}
+
+
+@pytest.mark.parametrize("name", list(LABELS_DEPART))
+def test_a_fixation_whose_missing_labels_depart_is_refused(world, name) -> None:
+    part, field, value = LABELS_DEPART[name]
+    labels = sim.missing_labels_record()
+    labels[part][field] = value
+    world.checkout(change={"missing_labels": labels})
+    refused(world, "simulation", world.simulation(), "fixation", "missing_labels",
+            "missing_labels_record")  # fmt: skip
+
+
+def scenarios_with(world, which: str, change: dict) -> list[dict]:
+    return [({**e, **change} if e["name"] == which else e) for e in world.fixation["scenarios"]]
+
+
+SCENARIOS_DEPART = {
+    "power_at_1_percent": (POWER, {"missing_rate": 0.01},
+                           ("P20's missing labels are MCAR at 0.01", "missing_labels.power",
+                            "departs in missing_rate")),
+    "another_delta": (POWER, {"delta_af_pp": 1.0},
+                      ("P20 is not the grid's", "departs in delta_af_pp")),
+    "another_name": (POWER, {"name": "P99"}, ("P99 is not a scenario of the grid",)),
+    "power_role": (COVER, {"role": "power"}, ("C16 is not the grid's", "departs in role",
+                                               "missing labels are MCAR at 0.01")),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("name", list(SCENARIOS_DEPART))
+def test_a_fixation_whose_scenarios_depart_from_the_grid_is_refused(world, name) -> None:
+    """Each of the fixation's scenarios is the grid's of its name (every parameter and source
+    line), a power scenario's missing labels at the planning rate: a power scenario at 1 %, a
+    changed Δ, a scenario the grid does not hold or C16 as a power scenario is refused, on
+    writing and on reading."""
+    which, change, words = SCENARIOS_DEPART[name]
+    world.checkout(change={"scenarios": scenarios_with(world, which, change)})
+    refused(world, "simulation", world.simulation(), "fixation", *words)
+
+
+def test_the_fixture_fixation_is_the_whole_grid(world) -> None:
+    assert [s["name"] for s in world.fixation["scenarios"]] == [s.name for s in sim.SCENARIOS]
+    assert world.fixation["J"] == GRID_J == 1785 and LEVEL_TESTS == 357
+
+
+def test_a_fixation_missing_p20_is_refused(world) -> None:
+    """The fixation holds the whole grid, as it holds every identity: without P20 it is refused,
+    on writing and on reading."""
+    entries = [e for e in world.fixation["scenarios"] if e["name"] != POWER]
+    world.checkout(change={"scenarios": entries})
+    refused(world, "simulation", world.simulation(), "fixation", "lack the grid's ['P20']",
+            "whole grid")  # fmt: skip
+
+
+def test_a_fixation_with_an_extra_scenario_is_refused(world) -> None:
+    """A scenario beyond the grid (P20's model under another name) is refused."""
+    twin = {**next(e for e in world.fixation["scenarios"] if e["name"] == POWER), "name": "P22"}
+    world.checkout(change={"scenarios": [*world.fixation["scenarios"], twin]})
+    refused(world, "simulation", world.simulation(), "fixation", "hold ['P22'], beyond the grid",
+            "P22 is not a scenario of the grid")  # fmt: skip
+
+
+def test_a_fixation_with_c16_and_c17_swapped_is_refused(world) -> None:
+    """The grid's scenarios in another order are refused, though each is the grid's."""
+    entries = list(world.fixation["scenarios"])
+    names = [e["name"] for e in entries]
+    i, j = names.index("C16"), names.index("C17")
+    entries[i], entries[j] = entries[j], entries[i]
+    world.checkout(change={"scenarios": entries})
+    refused(world, "simulation", world.simulation(), "fixation", "are not in the grid's order")
+
+
+@pytest.mark.parametrize("mode,words", [
+    ("report_rate", (POWER_REPORT, "missing rate 0.01", "missing_labels.report")),
+    ("report_unpaired", (POWER_REPORT, "power_af's studies and draws (paired)")),
+])  # fmt: skip
+def test_the_power_at_1_percent_is_the_fixations_over_the_powers_studies(world, mode, words):
+    """The results' power at 1 % is at the fixation's rate (``missing_labels.report``) and over
+    the studies and draws ``power_af`` counts (paired), or the record is refused."""
+    refused(world, "simulation", world.simulation(results=mode), *words)
+
+
+def test_the_power_at_1_percent_is_recomputed_from_its_counts(world) -> None:
+    record = world.simulation()
+    gate = record["gates"][POWER_REPORT]
+    record["gates"] = {**record["gates"], POWER_REPORT: {**gate, "value": gate["value"] + 1e-3}}
+    refused(world, "simulation", record, f"gates.{POWER_REPORT}", "recomputed")
+    world.write("simulation", world.simulation())
+    assert world.read("simulation")[0]["gates"][POWER_REPORT] == {"value": 0.7,
+                                                                  "requirement": None,
+                                                                  "passed": None}  # fmt: skip
+
+
+def test_the_fixation_must_be_unchanged_since_its_commit(world) -> None:
+    record = world.simulation()
+    path = world.repo / SIMULATION_FIXATION
+    path.write_text(path.read_text().replace('"J": 1785', '"J": 1785 '))
+    record["fixation"] = {**record["fixation"], "sha256": sha256(path)}
+    refused(world, "simulation", record, "fixation", "changed since its commit")
+
+
+def test_the_gates_are_recomputed_from_their_counts(world) -> None:
+    refused(world, "simulation", world.simulation(gate_value_off=1e-3), "safe_pass_rate")
+
+
+def test_a_not_attainable_test_fails_its_level(world) -> None:
+    world.write("simulation", world.simulation(not_attainable=("calibration", "0.975")))
+    record, problems = world.read("simulation")
+    assert problems == [] and record["coverage"][0]["passed"] is False
+    assert (
+        record["coverage"][0]["counts"]["comparison"] == 10_000
+        or record["coverage"][0]["counts"]["joint"] == 10_000
+    )
+    assert record["level"] == 0.98 and record["state"] == "passed"
+
+
+def test_a_short_row_below_the_draw_bound_is_refused(world) -> None:
+    refused(world, "simulation", world.simulation(results="short_without_bound"), "4·M")
+
+
+def test_a_row_whose_test_is_no_identity_is_refused(world) -> None:
+    record = world.simulation()
+    path = world.runs / SIMULATION_RESULTS
+    results = json.loads(path.read_text())
+    results["tests"][0] = {**results["tests"][0], "test": [["calibration"], COVER]}
+    path.write_text(json.dumps(results))
+    reference = {"path": SIMULATION_RESULTS, "sha256": sha256(path)}
+    record["inputs"] = {**record["inputs"], "results": reference}
+    refused(world, "simulation", record, "missing")
+
+
+def test_the_record_names_the_fixation_and_the_results_exactly(world) -> None:
+    record = world.simulation()
+    copy = world.repo / "docs" / "copy.json"
+    copy.write_bytes((world.repo / SIMULATION_FIXATION).read_bytes())
+    other = {"path": "docs/copy.json", "sha256": sha256(copy), "root": "repo"}
+    refused(world, "simulation", {**record, "fixation": other}, "fixation", SIMULATION_FIXATION)
+    inputs = {k: v for k, v in record["inputs"].items() if k != "results"}
+    refused(world, "simulation", {**record, "inputs": inputs}, "inputs.results")
+
+
+def test_every_decision_is_recomputed_from_the_results(world) -> None:
+    """The record must be the results' recomputation in every field the J check names."""
+    base = world.simulation()
+    rows = [dict(r) for r in base["coverage"]]
+    rows[1] = {**rows[1], "counts": {**rows[1]["counts"], "comparison": 7}}  # still passes
+    refused(world, "simulation", {**base, "coverage": rows}, "coverage[1].counts", "recomputed")
+    detection = dict(base["gates"]["detection_power_joint"], value=0.5)
+    refused(world, "simulation", {**base, "gates": {**base["gates"],
+            "detection_power_joint": detection}}, "detection_power_joint")  # fmt: skip
+    short = gates_with(power_af=power_gate(0.74, 83))  # the scan reached 0.80 at 84
+    world.simulation(gates=gates_with(power_af=power_gate(0.74, 84)))  # results: n_min 84
+    refused(world, "simulation", {**world.simulation(gates=gates_with(
+        power_af=power_gate(0.74, 84))), "gates": short}, "power_af")  # fmt: skip
 
 
 # ------------------------------------------------------------------ the records answered
@@ -2666,6 +3365,29 @@ def supersedes(world: World, predecessor: str) -> dict:
 
 def state_of(world: World, kind: str = "n-c1") -> str:
     return decisions(world.runs, 1, repo=world.repo)[kind]["state"]
+
+
+def test_the_simulation_record_has_no_successor_and_stays_in_force_after_a_cycle(world) -> None:
+    """The simulation record precedes the search, so no cycle makes it stale: it has no successor
+    kind and no chain, a cycle lists it among no stale records, and after the cycle it is still
+    read whole (the J check at J = 1 785 included), with an n successor under the fix's code
+    resting on it."""
+    from zero_field_refusal.analysis import study3_cycle
+
+    with pytest.raises(ValueError):
+        chain(world.runs, "simulation")
+    with pytest.raises(ValueError):
+        kind_of("simulation-2")
+    world.chain()  # engineering, simulation, n-c1 under the old code
+    published_cycle(world)
+    stale = study3_cycle.stale_records(world.runs, 1, repo=world.repo, old_code=OLD_CODE)
+    assert [s["path"] for s in stale] == ["study3/decisions/n-c1.json"]
+    assert world.fixation["J"] == GRID_J == 1785
+    world.write("n-c1-2", world.n(code=FIXED, kind="n-c1-2", supersedes=supersedes(world, "n-c1")))
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert found["simulation"]["state"] == "passed", found["simulation"]["problems"]
+    assert found["simulation"]["path"].endswith("study3/decisions/simulation.json")
+    assert found["n-c1"]["state"] == "passed" and found["n-c1"]["path"].endswith("n-c1-2.json")
 
 
 def test_successors_name_their_predecessor_and_the_cycle(world) -> None:

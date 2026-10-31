@@ -2027,7 +2027,8 @@ before each command below.
      `qualify.py driver ... --engineering` ([above](#study-3-numerical-qualification)). The
      engineering record then names the records of its four checks: the dry run, the bridge,
      θ₀'s utility (`scripts/check_theta0_utility.py`) and the stage-0 check.
-  2. **The simulation record**, before the search.
+  2. **The simulation record**, before the search: written by `scripts/study3_simulate.py record`
+     ([below](#study-3-simulation)).
   3. **The search.** `search-round0`, then `search-round1` where a median missed.
   4. **The numerical qualification.** `numerical`, run through its printed `qualify.py driver`;
      then `repair` (one round per arm, amendment 3) for an arm whose K misses by more than 0.05
@@ -2077,7 +2078,9 @@ before each command below.
   - `engineering`: the researcher's, once the four checks are recorded, each by its record's path
     and sha256; it passes only when all four passed.
   - `simulation`: the simulation's output (its fixation and inputs, the gates, the coverage
-    screen, L, the validation size and the independent verification).
+    screen, L, the validation size and the independent verification), written by
+    `scripts/study3_simulate.py record` and checked against its fixation and results (the J
+    check, [below](#study-3-simulation)).
   - `n-c<N>`: the precommitted spread script's output, with the fields the `choice` step gives
     (candidate, rates, comparisons, cohort), L, the spread rounded to 0.5 pp, N and the cap.
   - `budget-c<N>`: the researcher's decision on the extra blocks and their price, `proceed` or
@@ -2455,6 +2458,146 @@ before each command below.
 
   The hold and the failure's evidence stay as they are, and a closed or held label is never
   issued again.
+
+## Study 3: simulation
+
+The [simulation before validation](study3-preregistration.md#simulation-before-validation) runs
+after the engineering stage and before the search ([seeds and order](study3-preregistration.md#seeds-and-order)),
+on the CPU of the local machine. `scripts/study3_simulate.py` writes its inputs, its fixation,
+the run's files and the simulation record; `analysis.study3_simulation` holds the models, the
+procedure and the engine, `analysis.study3_seed_vectors` the inputs, `analysis.study3_decisions`
+the record's checks. Their docstrings hold every rule. The modeling values (the harm and label
+models, the support, the safe alternative, the spread and Δ through the selection, the grid, the
+streams, the draw bound and the rest, M1–M27) are the researcher's: each is listed with its
+source in the module's rulings and frozen, with a source line ending "M<n>, decided", in the
+fixation.
+
+- **Missing labels (M6b).** The coverage scenarios carry MCAR missing labels at 1 % (C14: 5 %
+  MNAR among harmful responses), as stress values; their coverage tests are unchanged. The power
+  gate reads its own scenarios, P18–P21 (Δ = ±2 pp at the planning spreads 3.5 and 5 pp), at
+  0.1 % MCAR: the planning rate of labels still unresolved after the labeling rounds (up to
+  three per run). C16 and C17 (Δ = +2 pp) are coverage scenarios only.
+  - **The source.** Study 1, with the same judge (WildGuard), had 0 unparseable outputs in the
+    39 900 labels of its non-collapsed runs ([stage 1](reports/stage-1.md#judge-labeling)). Its
+    rate over all runs, which includes the collapsed runs, is not used: those runs are not
+    representative.
+  - **What it is.** A conservative planning assumption for supported runs, not a proven upper
+    bound: the bound from 0 in 39 900 assumes independent labels and is computed on a selected
+    subset, the non-collapsed runs. The rate is MCAR. Run- or arm-level clustered label failures
+    are not explicitly modeled. The stress scenarios cover higher MCAR missingness and
+    harmful-response-dependent MNAR.
+  - **The decision.** The researcher's, after preliminary calculations showed the power gate
+    failing at 1 %. It changes the planning alternative of the power requirement; the
+    registration sets no rate, so no amendment is needed, and the required simulation itself
+    stays prospective.
+  - **The power at 1 %** is reported beside the gate, not a gate (`power_af_1pct_missing`). Each
+    power study of the screen is drawn again on its own streams and its scenario's calibration
+    with its labels missing at 1 %, through the same uniforms (one per label: the 1 % mask
+    contains the 0.1 % mask). It is read by the registered procedure, its own validation spread,
+    N and confirmation included, to the cap's reading common to the three computations, and is
+    counted over the studies the power counts. The n_min scan does not read it.
+    - It uses the N the rule chose, before any n_min increase. It is not the power of the
+      final increased design.
+    - Under MCAR, Δ scales by 0.99 / 0.999: ±2 pp becomes about ±1.982 pp. The SD need not
+      shrink by exactly 1 %.
+  - **The fixation** records the rates, this disclosure and that report's procedure
+    (`missing_labels`). Its reader refuses a fixation whose missing labels depart from them, a
+    power scenario at another rate, or scenarios other than the whole grid (one missing, one
+    extra, one out of order or one whose values differ), as it refuses the identities; the J
+    check refuses results whose power at 1 % is at another rate or over other studies.
+
+```bash
+R="$RUNS_DIR"
+project-run "$SRC" python scripts/study3_simulate.py inputs          # then commit it
+project-run "$SRC" python scripts/study3_simulate.py fixation --workers 16  # commit it alone
+project-run "$SRC" python scripts/study3_simulate.py run --runs-root "$R" --workers 16
+project-run "$SRC" python scripts/study3_simulate.py verify --runs-root "$R" --workers 16
+project-run "$SRC" python scripts/study3_simulate.py record --runs-root "$R"
+project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
+```
+
+- **The order.**
+  1. `inputs` writes study 2's whole seed vectors, `docs/study3-simulation-inputs.json`, from
+     the two study-2 roots under `RUNS_DIR` (`--roots`) and θ₀'s evaluation (`--theta0`), each
+     named in the record relative to `RUNS_DIR` (a path outside it is refused), so that the
+     committed record holds no home directory. It reads of a run only its config, terminal
+     record and step-25 evaluation (K and the utility), never a response, a label or a judge
+     output. Commit it.
+  2. `fixation` needs a clean checkout with the inputs record tracked. It calibrates every
+     scenario at every candidate it can run (f, the safe shifts, σ at the Δ = 0 offsets and the
+     offsets, through the selection, over `--workers` processes), enumerates the coverage tests
+     (J = 1 785) and writes `docs/study3-simulation-fixation.json`, with the machine it ran on.
+     Commit it alone, before the first draw.
+  3. `run` checks, before any draw, that the fixation is tracked, committed once and alone in
+     HEAD or an ancestor and unchanged, that its inputs and tests are the pinned ones, that its
+     sizes are the registered ones (M, 2 000 and 100 000 resamples, the calibration's selections
+     and tolerances: `analysis.study3_decisions`' constants, which every reader of the simulation
+     record checks, `study3_summary.py record simulation` included), that the checkout is clean,
+     and that no results, no screen and no part of another fixation or commit
+     exist; it recomputes the calibration (integers and identities exactly; floats within a
+     relative 10⁻⁹ or within their solver's precision, 10⁻⁹ pp for a pp field and 10⁻¹¹ for a
+     proportion, so that a value near 0 compares by its precision; a different machine is
+     printed, not refused). It then runs the gates, the screen and, when the power is short,
+     the n_min scan, and writes `screen.json`. It prints L (or "no level passed"), the
+     validation size and the gates' values, with the power at 1 % beside them.
+  4. `verify` runs the binding verification at L on the verification stream (100 000
+     resamples, the realized route) and writes `verification.json`. It refuses without the
+     screen, with a screen of another commit than the clean HEAD, without an L (the
+     verification is not due), when the n_min scan stopped at an n whose cap exceeds the 200
+     reserved seeds (no attainable n: the verification is not run, the design stop) and once
+     `verification.json` exists: it is never rerolled.
+  5. `record` writes `results.json` and then the simulation record, which binds the results
+     and the seed vectors by sha256. Both are refused when the results fail the J check (an
+     identity listed twice, missing or not in the fixation, a pass, L, a gate or a size that
+     does not recompute), and a second record is refused, as `study3_summary.py record` refuses
+     it. No level passing, a verification that fails, or no attainable n (the verification not
+     run; `record` prints `verification not_run no_attainable_n`) gives a failed record: the
+     design stop (`progress`: `design_stop`, `simulation_failed`).
+- **The files.** Under `$RUNS_DIR/study3/simulation/` (reserved, no run directory): the parts
+  (`parts/<phase>/<scenario>/<first>.json`, 250 studies each, the phase `gates`, `screen`,
+  `scan-<n>` or `verification`), `screen.json`, `verification.json` and `results.json`. Every
+  file is JSON, written whole and once. The simulation record lies under
+  `$RUNS_DIR/study3/decisions/simulation.json`.
+- **Resuming.** Every study is a pure function of its stream, its scenario and its index, and a
+  test takes the first M studies that count for it by index: the results depend neither on
+  `--workers`, nor on the order in which parts finish, nor on an interruption. Run `run` (or
+  `verify`) again after an interruption: it keeps the finished parts of this fixation and
+  commit, draws the missing ones, and writes the same bytes as an uninterrupted run. A part of
+  another fixation or commit stops it, named; remove the run's simulation folder only for a new
+  commit.
+- **Time on the 16 local cores.** The figures below were measured under load, on 2026-10-31 on
+  synthetic inputs of 25 vectors, the machine shared with other work (load 15–50), so their
+  CPU-seconds per study are above a quiet machine's. A single process measured alone takes
+  0.21 s per screen study (2 000 resamples) and 0.68 s per verification study (100 000
+  resamples).
+  - the calibration, in `fixation` and again in `run`: about 59 000 CPU-seconds each under that
+    load (1.5 h of wall time; about 1 h on an idle machine); one pair, C13 at 2 000 selections,
+    takes 37 s in a single process. C12's two candidates are the critical path: their
+    selections are drawn in one process;
+  - the gates: under a minute;
+  - the screen at 2 000 resamples: 0.35 CPU-seconds per study under load, about 229 000
+    studies at M = 10 000 (21 scenarios, about 9 % unconfirmed), and each power study's report
+    at 1 % (about 44 000): 1.5–1.8 h on an idle machine. Alternated with the grid before the
+    power's own scenarios (19 scenarios, C16 and C17 also power), on a quieter machine (load
+    4–6, one process: 0.088 CPU-seconds per coverage study, 0.107 per power study, 0.050 per
+    report), the screen does about a fifth more work;
+  - the verification at 100 000 resamples: 1.9 CPU-seconds per study under load, about 185 000
+    studies: 5–6 h on an idle machine;
+  - the n_min scan, only when the power is short: some 44 000 studies at one level per value of
+    n, a few minutes each;
+  - a power scenario's study (P18–P21) draws, wherever the cap's primary interval has a
+    direction, three more intervals at the cap (the missing labels' two and all missing harmful:
+    the registered final direction), about a third more bootstrap work for that study, and the
+    scan's studies are all power studies. The coverage scenarios, C16 and C17 included, draw
+    none: the verification does about 3 % less than with C16 and C17 as power scenarios (C17
+    0.61 instead of 0.77 CPU-seconds per study, one process);
+  - the calibration has two more pairs (P20 and P21 at candidate 1), off the critical path;
+  - in all about 9.5 h on an idle machine. The parts take about 1.9 kB per study (about 0.85
+    GB).
+  At the sizes of the dry run's Part II (M = 200, 200 and 1 000 resamples, 1 000 calibration
+  selections per scenario and candidate, `study3_simulation`'s M25) the screen takes about 1.5
+  minutes and the verification under 5; the calibration draws 1 000 selections per pair
+  instead of 10 000.
 
 ## Judge server
 

@@ -36,7 +36,14 @@ from zero_field_refusal.analysis.study3_progress import (
     progress,
     qualification_code,
 )
-from zero_field_refusal.analysis.study3_records import COUNTING, SEEDS, Cell, Endpoint, step_key
+from zero_field_refusal.analysis.study3_records import (
+    COUNTING,
+    RESERVED,
+    SEEDS,
+    Cell,
+    Endpoint,
+    step_key,
+)
 from zero_field_refusal.analysis.study3_search import CANDIDATES, adjusted_rate
 
 ARMS = ("A", "F", "P")
@@ -3028,7 +3035,7 @@ def test_read_state_gives_the_state_and_the_endpoints_it_read(worlds) -> None:
     )
     assert state == read(records, runs)
     assert sorted(e.run_id for e in endpoints if e.cell.step == "search") == sorted(
-        p.name for p in (runs.root / "study3").iterdir() if p.name != "decisions"
+        p.name for p in (runs.root / "study3").iterdir() if p.name not in RESERVED
     )
     broken = study3_progress.read_state(
         runs.root, repo=records.repo, expected_code=EXPECTED, theta0=runs.root / "nowhere"
@@ -3607,7 +3614,8 @@ def test_the_reader_reads_each_run_file_once(worlds, monkeypatch) -> None:
     real_open = builtins.open
 
     def counting(file, *args, **kwargs):
-        if f"{os.sep}study3{os.sep}" in str(file) and "decisions" not in str(file):
+        reserved = any(f"{os.sep}{name}{os.sep}" in str(file) for name in RESERVED)
+        if f"{os.sep}study3{os.sep}" in str(file) and not reserved:  # run files only
             opened[str(file)] = opened.get(str(file), 0) + 1
         return real_open(file, *args, **kwargs)
 

@@ -35,7 +35,7 @@ from test_study3_campaigns import (
     script_module,
     sealed_reads,
 )
-from test_study3_decisions import HELD, STATED
+from test_study3_decisions import HELD, REDUCED, STATED
 from test_study3_decisions import held as decision_hold
 from test_study3_progress import START, Study, run_of, unsupported
 from test_study3_versions import CONFIRMATION_C1, FIRST, SECOND, VALIDATION_C1
@@ -857,7 +857,7 @@ def test_check_holds_before_a_validation_launch_and_refuses_otherwise(
 def test_a_record_is_published_once(world, summary) -> None:
     """Records are published whole and only where none is: a record found at the path when it is
     linked into place is kept, and the command refuses."""
-    path = world.repo / "docs" / "record.json"
+    path = world.repo / "published" / "record.json"  # a folder of its own (docs/ holds others)
     path.parent.mkdir(parents=True, exist_ok=True)
     with pytest.raises(SystemExit) as found:
         summary.script.publish("versions", path, {"kind": "first"})
@@ -1015,6 +1015,22 @@ def test_record_writes_each_kind_once_and_prints_why_it_refuses(world, summary, 
                                  source)  # fmt: skip
     assert code == 2 and "invalid choice" in error
     assert attempts == [] and SENTINEL not in error
+
+
+@pytest.mark.parametrize("word", list(REDUCED))
+def test_record_refuses_a_simulation_whose_fixation_has_reduced_sizes(world, summary, tmp_path,
+                                                                      word) -> None:  # fmt: skip
+    """A simulation record resting on a fixation at the registered M but reduced resamples (or
+    calibration selections) is refused by ``record simulation`` under the registered sizes: the
+    shared reader checks them, not only ``study3_simulate.py``."""
+    records = world.records
+    records.checkout(change=REDUCED[word][0])
+    assert records.fixation["M"] == 10_000
+    source = tmp_path / "simulation.json"
+    source.write_text(json.dumps(records.simulation()))
+    refused(summary.run("record", "simulation", "--runs-root", world.root, "--from", source),
+            "fixation", word)  # fmt: skip
+    assert not decision_path(world.root, "simulation").exists()
 
 
 def test_record_opens_no_file_under_a_runs_sealed_folder(world, summary, monkeypatch) -> None:

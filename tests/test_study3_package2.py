@@ -104,6 +104,8 @@ PACKAGE = (
     ANALYSIS / "study3_progress.py",
     ANALYSIS / "study3_records.py",
     ANALYSIS / "study3_search.py",
+    ANALYSIS / "study3_seed_vectors.py",
+    ANALYSIS / "study3_simulation.py",
     ANALYSIS / "study3_versions.py",
     ANALYSIS / "qualification_records.py",
     ANALYSIS / "campaign_prep.py",
@@ -139,6 +141,7 @@ OTHER = (
 SCRIPTS = (
     REPO_ROOT / "scripts" / "study3_campaigns.py",
     REPO_ROOT / "scripts" / "study3_summary.py",
+    REPO_ROOT / "scripts" / "study3_simulate.py",
 )
 SUMMARY = SCRIPTS[1]
 LABEL_MODULES = ("zero_field_refusal.analysis.study2_labels", "zero_field_refusal.labeling",
@@ -764,7 +767,7 @@ def test_the_package_imports_no_gpu_module_and_loads_no_script() -> None:
     - ``campaign_prep``'s lazy import of ``analysis.study2_short`` (study 2's ``prep`` only) loads
       torch and ``zero_field_refusal.runtime``.
     The scripts run no training: none calls a GPU path."""
-    assert len(PACKAGE) == 12 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
+    assert len(PACKAGE) == 14 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
     for path in PACKAGE:
         assert gpu_uses(path, "zero_field_refusal.analysis") == set(), path.name
     for path in SCRIPTS:
@@ -867,7 +870,7 @@ class Route(CampaignWorld):
         self.base = base
         git(self.repo, "init", "-q")
         (self.repo / ".gitignore").write_text("/evidence/\n")  # the decision records' evidence
-        (self.repo / "docs").mkdir()
+        (self.repo / "docs").mkdir(exist_ok=True)  # the fixation is there already
         (self.repo / REGISTRATION).write_text("# Study 3 preregistration\n" + AMENDMENTS)
         code = self.repo / "src" / "zero_field_refusal" / "train.py"
         code.parent.mkdir(parents=True)

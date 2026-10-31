@@ -330,6 +330,23 @@ topics:
   - src/zero_field_refusal/analysis/campaign_prep.py
   - tests/test_study3_*.py
   - tests/test_qualification_records.py
+- id: study3_simulation
+  title: Study 3's simulation before validation — inputs, fixation, run, verification and record
+  source: docs/operations.md#study-3-simulation
+  review:
+  - docs/study3-preregistration.md#simulation-before-validation
+  - docs/study3-preregistration.md#seeds-and-order
+  - docs/study3-preregistration.md#amendment-4-the-dry-run-in-two-parts
+  - docs/operations.md#study-3-campaigns
+  - docs/architecture.md#modules
+  watch:
+  - scripts/study3_simulate.py
+  - src/zero_field_refusal/analysis/study3_simulation.py
+  - src/zero_field_refusal/analysis/study3_seed_vectors.py
+  - docs/study3-simulation-*.json
+  - tests/test_study3_simulate.py
+  - tests/test_study3_simulation.py
+  - tests/test_study3_seed_vectors.py
 - id: provenance_and_delivery
   title: Run provenance, storage, reports and release
   source: docs/architecture.md#experiment-tracking-and-storage
