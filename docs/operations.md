@@ -2012,7 +2012,12 @@ so it holds no spread. It holds:
 - the stage and its step: a campaign with its cells; a decision record to write, with its path
   and the fields the route fixes; a step that waits, or is blocked with its reasons and ways out;
   a terminal outcome, scientific or the budget's (a technical mark is a pause and ends nothing);
-- the active arms and comparisons, the rates, the route, the closures and the problems;
+- the active arms and comparisons, the rates, the route, the closures and the problems. On the
+  route, `withhold_pf`: the simulation's reading withholds P–F, so P runs up to the validation, the
+  n record names A–F alone and the blocks hold four runs; and `reopen_pf`: candidate 2, reached by
+  A–F's rule, tests again a P closed scientifically at candidate 1 ([amendment
+  7](study3-preregistration.md#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run)).
+  At the cap each comparison reads against its floor, from the simulation record's `reading`;
 - the validation and confirmation runs that do not count for the commit they ran (`not_counted`,
   below);
 - the launch journal's resolved torn lines (`resolved_torn_lines`): each line's log, line number
@@ -2083,7 +2088,10 @@ before each command below.
     check, [below](#study-3-simulation)).
   - `n-c<N>`: the precommitted spread script's output, with the fields the `choice` step gives
     (candidate, rates, comparisons, cohort), L, the spread rounded to 0.5 pp, N and the cap C(N),
-    the smallest C with P[Bin(C, 0.88) ≥ N] ≥ 0.95 (the registration's amendment 7).
+    the smallest C with P[Bin(C, 0.88) ≥ N] ≥ 0.95 (the registration's amendment 7). A cap beyond
+    the reserved seeds gives a failed record: a pause for a decision (`cap_beyond_reserved_seeds`).
+    N is never cut; once an amendment extends the reserved seeds past the cap, the same record
+    reads as passed.
   - `budget-c<N>`: the researcher's decision on the extra blocks and their price, `proceed` or
     `stop`, when N is above 90 or raised for power (the step names it then).
   - `closure-c<N>-<arm>`: no step names one (below, "Holds and closures").
@@ -2170,7 +2178,7 @@ before each command below.
 
   ```bash
   project-run "$SRC" python scripts/study3_campaigns.py confirmation --runs-root "$R" \
-    --candidate 1 --out "$C/c1-confirmation-1" --blocks 10400 10469
+    --candidate 1 --out "$C/c1-confirmation-1" --blocks 10400 10473
   project-run "$SRC" bash "$C/c1-confirmation-1/run.sh"   # detached
   ```
 
