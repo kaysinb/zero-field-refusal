@@ -9,6 +9,7 @@ world under the sealed-path guard, every label reader a raiser. Candidate 1's K*
 at K_l = 4.8 and K_u = 7.5, so every arm's weight is 1/2."""
 
 import dataclasses
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -311,6 +312,37 @@ def test_the_gate_checks_the_in_force_supplement(checkout, monkeypatch) -> None:
     assert any("supplement" in p and "invalid" in p for p in checkout.open())
     monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (None, []))
     assert any("supplement" in p for p in checkout.open())
+
+
+def test_after_a_cycle_at_the_confirmation_the_freeze_names_the_supplements_successor(
+    tmp_path, monkeypatch
+) -> None:
+    """A cycle during the confirmation makes the first supplement stale, and its successor
+    (``docs/study3-fixation-confirmation-c1-2.json``, the cycle's fix) is the link in force of
+    the chain, the one its full reader reads (``read_confirmation_fixation``, here accepting it):
+    the freeze names the successor by its path and sha256, never the first link."""
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    first = repo / "docs" / "study3-fixation-confirmation-c1.json"
+    successor = repo / "docs" / "study3-fixation-confirmation-c1-2.json"
+    first.write_text(json.dumps({"kind": "fixation-confirmation", "k": 1}))
+    successor.write_text(json.dumps({"kind": "fixation-confirmation", "k": 2}))
+    read = []
+
+    def full_reader(candidate, **kw):
+        read.append(candidate)
+        return {"k": 2}, []
+
+    monkeypatch.setattr(fz, "read_confirmation_fixation", full_reader)
+    link, problems = fz.in_force_supplement(1, runs_root=tmp_path / "runs", repo=repo)
+    assert problems == [] and read == [1]
+    assert link == {"path": "docs/study3-fixation-confirmation-c1-2.json",
+                    "sha256": hashlib.sha256(successor.read_bytes()).hexdigest(),
+                    "root": "repo"}  # fmt: skip
+    record = fz.freeze_record(done().advance(), done().endpoints, candidate=1, supplement=link,
+                              code=CODE, written_at=WHEN,
+                              labels={"confirmation_runs": 0, "ledger_runs": 0})  # fmt: skip
+    assert record["supplement"] == link
 
 
 # ------------------------------------------------------------------ the builder on files

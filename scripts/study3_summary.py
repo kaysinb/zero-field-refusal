@@ -14,6 +14,9 @@ researcher writes: the versions record, the staged fixation, the decision record
     python scripts/study3_summary.py record KIND --runs-root DIR --from FILE
     python scripts/study3_summary.py closure --runs-root DIR --candidate N --arm ARM
         [--run-id RUN_ID] [--theta0 RUN_DIR]
+    python scripts/study3_summary.py cycle --runs-root DIR --candidate N --diagnosis TEXT
+        --fix TEXT --stage STAGE=reuse|rerun[:ARMS] ... --justification STAGE=TEXT ...
+        [--theta0 RUN_DIR] [--dry-run]
 
 The rules are docs/study3-preregistration.md's: "Validation, confirmation and stopping", "Failure
 routes", "Seeds and order", "Voiding and supersession" and amendments 1-3.
@@ -46,8 +49,9 @@ All of these must hold:
   (``c<N>-confirmation-<optimizer>-<rate>-s<S>``, config experiments/study3, the arm, B = 20, the
   rate and the role, the one seed S);
 - the records its header names are as they were when it was written: the n record (always) and
-  the budget record (when named), each the candidate's under RUNS_DIR with the sha256 the header
-  gives, and the versions record, in the checkout, of its named sha256;
+  the budget record (when named), each the candidate's under RUNS_DIR (its chain's link in force:
+  a successor after a cycle) with the sha256 the header gives, and the versions record, in the
+  checkout, of its named sha256;
 - ``study3_versions.versions_problems`` finds no problem in that versions record for the
   confirmation of candidate N, the running checkout's HEAD included: it prevents a block from
   running under a commit other than the pinned one. It does not stand for comparing each run's
@@ -85,20 +89,89 @@ the stage read as ``progress`` reads it, θ₀ from --theta0) or its confirmatio
 of agreements, integers in [0, 2³²), as "Inference" and "The audit" require), once, at its fixed
 path docs/study3-fixation-<step>-c<N>.json. It needs a clean checkout of a known commit: the
 record's code is HEAD's commit and that commit's GPU code, which the builders take as given. The
-record is then committed alone, before the next one is written.
+record is then committed alone, before the next one is written. After candidate N's cycle
+(module docstring, "After a cycle") a record of it is written only when the state's step names
+it: the first supplement once the state is at N's confirmation, a stale fixation's successor
+(``docs/study3-fixation-<step>-c<N>-<k>.json``, naming the record before it and the cycle) when
+the step names that successor.
 
 **record** writes a decision record (engineering, simulation, n-c<N>, budget-c<N>) from a JSON
 file through ``study3_decisions.write_decision``, which validates it against the evidence it
 names and the records it answers: written once, never over another; a refusal prints its reasons.
+After candidate N's cycle an n or budget record is written only when the state's step names it:
+the first record, or, the record in force stale through the cycle, its next successor
+(``n-c<N>-<k>``, ``budget-c<N>-<k>``; the file carries ``supersedes``), its content checked
+first (after the confirmation has started, N, the cap and the cohort stand). Once candidate N has
+a cycle record, its n and budget records, its fixations and a versions record naming its fixation
+are written only under the cycle's fix (the code in force for N's runs), and no record under the
+old code of any candidate's cycle (``study3_decisions.after_cycle_code``): what a cycle lists as
+stale then changes after it only when a file is tampered with.
+
+**After a cycle** ("Voiding and supersession", "Sample size from validation", "Seeds and order").
+The write-once records of the old GPU code are stale; their successors come in the registered
+order, each committed alone: (1) the validation fixation's successor and its versions record;
+(2) the validation's reissued cells, issued under them; (3) the n record's successor (spread, N,
+cohort, on the validation that counts) and the budget record's when N asks for one; (4) the
+supplement's successor and its versions record. A successor written out of turn is refused with
+the step the state names. Once the candidate's confirmation has started, the validation is not
+reopened (``cycle`` refuses validation=rerun and search=rerun) and the successors keep N, the cap,
+the cohort and the seeds.
 
 **closure** writes the closure record closure-c<N>-<ARM> with exactly the fields the state's step
-gives: a held run's decision step, or the way out of a run under another commit (its last end
-line, or its start line, with its uncounted reason). Any other technical mark outside the
-qualification stops the route for the researcher's decision (``engineering_route_pending``): the
-step names no closure for it, and none is written. It refuses when the step names no closure of
+gives: a held run's decision step, the way out of a run under another commit (its last end
+line, or its start line, with its uncounted reason), or, once candidate N's engineering cycle is
+spent, the way out of a technical mark outside the qualification left unresolved after it (its
+last end line, or its start line, with the reason ``unresolved_after_cycle`` and the candidate's
+supersession record, ``qualification/c<N>/supersede-<n>.json``, by its sha256: "Failure routes").
+Before the cycle such a mark takes its engineering cycle (``engineering_cycle``, below): the step
+names no closure for it, and none is written. It refuses when the step names no closure of
 that candidate and arm, and, when the step names several (two runs of the arm), unless --run-id
 chooses the run. The record's state is ``failed`` (a terminal technical
 outcome) and its code HEAD's commit and that commit's GPU code.
+
+**cycle** writes candidate N's engineering cycle for its technical marks outside the
+qualification ("Failure routes": one cycle per candidate, a diagnosis, a fix, re-qualification of
+the affected cases and reruns of the affected runs; "Voiding and supersession"): the cycle
+record ``RUNS_DIR/study3/decisions/cycle-c<N>.json`` and its bridge,
+``qualification/c<N>/supersede-1.json`` in ``scripts/qualify.py``'s own format
+(``analysis.study3_cycle``). The right to a cycle is judged
+on the existing chain of engineering cycles: the records are read with no expected code
+(``read_records``), the code in force is the chain's end (``chain_end``; N's own supersession
+records aside, so that a cycle recorded already is refused as such), and the state under it must
+be candidate N's ``engineering_cycle`` step; the fix's own code never enters that judgement
+(the chain does not hold it before the cycle). The fix is checked on its own: a clean checkout of
+a known commit whose GPU code is another than the code in force. The ordinary readers
+(``progress``, ``check``, ``guard``, the campaign writer) keep this checkout's code as their
+expected code: from the fix's checkout, before the cycle, they report the chain problem and refuse
+to launch or issue anything. The marks, their stage and the closed arms are the state's; each
+claim (``--stage STAGE=reuse|rerun[:ARMS]``, every arm by default; the qualification's all or
+nothing) carries its justification (``--justification STAGE=TEXT``), one line each, as the
+diagnosis and the fix. The journal prefix is pinned first, then the records before the cycle are
+read under it (``pre_cycle_records``) and the cycle derived from them (``derive_cycle``):
+``written_at`` now, ``host`` this machine. --dry-run prints the record and the bridge and writes
+nothing; otherwise both are published, the record first, and the two paths are printed, then the
+journal repair to run where RUNS_DIR is (the bridge's ``old_record.path`` names this machine's
+path): ``project-run "$SRC" python scripts/qualify.py supersede --campaign <engineering campaign
+file> --candidate N --engineering --case <its first case> --record <the cycle record> --diagnosis
+D --fix F``, the campaign file ``RUNS_DIR/campaigns/<name>.yaml``, ``<name>`` the campaign of the
+journal's first engineering start. Run again with its own arguments over a published record
+whose bridge is missing, it writes only the bridge (from the record: ``rebuild_bridge``).
+Refusals, in this order: the fix (a checkout that is not clean or of no known commit); a launch
+journal that cannot be read whole (a log unreadable or under a sealed folder, an unresolved torn
+line: ``journal_unread``, named before anything that reads the journal short of it); the code in
+force ("a fix that leaves the GPU code unchanged is no cycle"); a supersession record of N
+there already, or a cycle record whose arguments are not these ("recorded already"); no
+engineering campaign file where it is looked for; on the existing chain, a step that is not N's
+engineering cycle, a state with problems, or a journal that is not whole (an unresolved torn
+line, a line a published record requires and no log holds: ``journal_problems``); a run of N in a
+stage and arm the claims rerun that has not ended (pending, or recovered with no later attempt);
+a claim or justification missing or malformed, a marked arm not rerun, the search rerun once a
+validation fixation exists, or the validation or the search rerun once the confirmation has
+started; and what ``derive_cycle`` refuses (a run of N in flight, in any stage and arm: its
+start in the pinned journal prefix, no end line in it and nothing settling it, named, since its
+records would change after the cycle is written; a mark under a known other GPU code, a record
+under a sealed folder or there and unreadable, a qualification launcher run the readers cannot
+settle, and the rest it names).
 
 Every record is JSON, written whole and only where none is (``study3_decisions._publish``).
 Nothing here opens a response, a harm label or a judge output: a campaign file, a record file or a
@@ -111,40 +184,75 @@ import hashlib
 import json
 import math
 import re
+import shlex
+import socket
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
 import yaml
 
 from zero_field_refusal import code_identity
+from zero_field_refusal.analysis.study3_cycle import (
+    STAGE_STEPS,
+    CycleRefused,
+    derive_cycle,
+    journal_problems,
+    journal_seen,
+    journal_unread,
+    parse_claims,
+    pre_cycle_records,
+    publish_cycle,
+    rebuild_bridge,
+)
 from zero_field_refusal.analysis.study3_decisions import (  # its sealed-path rule, its
     DecisionRefused,  # write-once publication
+    _problems,
     _publish,
     _under_sealed,
+    after_cycle_code,
+    chain,
+    confirmation_started,
+    cycle_path,
     decision_path,
+    kind_of,
+    next_successor,
+    read_decision,
     write_decision,
 )
-from zero_field_refusal.analysis.study3_progress import progress
+from zero_field_refusal.analysis.study3_progress import (
+    ENGINEERING_CYCLE,
+    THETA0_RUN,
+    advance,
+    chain_end,
+    progress,
+    read_records,
+)
 from zero_field_refusal.analysis.study3_records import (
     ARMS,
     BATCH,
     RATE_TOLERANCE,
     SEEDS,
     STEP_ROLES,
+    journal_lines,
     sealed_why,
 )
 from zero_field_refusal.analysis.study3_search import ARM_ORDER
 from zero_field_refusal.analysis.study3_versions import (
+    _FIXATION_NAME,
     RecordRefused,
     confirmation_fixation,
+    fixation_chain,
     fixation_name,
+    fixation_number,
     validation_fixation,
     versions_name,
     versions_problems,
     versions_record,
 )
+from zero_field_refusal.config import load_config
 from zero_field_refusal.paths import REPO_ROOT, runs_root
 from zero_field_refusal.tracking import git_state
 
@@ -160,6 +268,8 @@ MISSING = object()
 # The decision records ``record`` writes from a file (a closure is written from the step)
 RECORDS = ("engineering", "simulation", "n-c1", "n-c2", "budget-c1", "budget-c2")
 STEPS = ("validation", "confirmation")  # the fixation's stages
+NO_CYCLE = ("a fix that leaves the GPU code unchanged is no cycle: commit it and read the state "
+            "again")  # fmt: skip
 
 
 def refuse(command: str, why: str) -> NoReturn:
@@ -179,7 +289,30 @@ def unopened(path: Path, base: Path) -> str:
 def state_of(args: argparse.Namespace) -> dict[str, Any]:
     """The state of the records under --runs-root, read under this checkout's GPU code."""
     expected = code_identity.gpu_code_identity(repo=REPO)["sha256"]
-    return progress(args.runs_root, repo=REPO, expected_code=expected, theta0=args.theta0)
+    return progress(args.runs_root, repo=REPO, expected_code=expected,
+                    theta0=getattr(args, "theta0", None))  # fmt: skip
+
+
+def after_cycle(args: argparse.Namespace, candidate: int) -> dict[str, Any] | None:
+    """The state, once candidate N has a valid cycle record outside the qualification (module
+    docstring, "After a cycle"); None before (no state is read when no cycle record is
+    there)."""
+    if not (cycle_path(args.runs_root, candidate).exists()
+            or cycle_path(args.runs_root, candidate).is_symlink()):  # fmt: skip
+        return None
+    state = state_of(args)
+    found = (state.get("cycle") or {}).get(candidate) or {}
+    return state if found.get("state") == "valid" else None
+
+
+def named_step(command: str, state: dict[str, Any], kind: str) -> None:
+    """Refused unless the state's step names the record ``kind`` (module docstring, "After a
+    cycle": each successor in the registered order)."""
+    step = state["step"]
+    if not (step.get("kind") == "decision" and step.get("record") == kind):
+        refuse(command, f"{kind}: the state's step does not name it: after the cycle the records "
+               "are written in the registered order, each when the step names it (the state names "
+               f"{shown(state)})")  # fmt: skip
 
 
 def shown(state: dict[str, Any]) -> str:
@@ -371,7 +504,8 @@ def block_problems(data: Any, candidate: int, seed: int, cells: list,
                 problems.append("its header names no n record (n_record): the confirmation "
                                 "rests on it")  # fmt: skip
             continue
-        named, path = decision_path(".", kind).as_posix(), decision_path(root, kind)
+        path = in_force(root, kind)  # the chain's link in force (a successor after a cycle)
+        named = decision_path(".", path.name[: -len(".json")]).as_posix()
         if header[key] != named:
             problems.append(f"its header's {key} is {header[key]!r}, not {named}")
         elif _under_sealed(path, root):
@@ -395,6 +529,13 @@ def block_problems(data: Any, candidate: int, seed: int, cells: list,
                             f"{header.get('versions_record_sha256')}, and it is now "
                             f"{sha256(path)}")  # fmt: skip
     return problems
+
+
+def in_force(root: Path, kind: str) -> Path:
+    """The link in force of an n or budget record's chain (``study3_decisions.chain``: the first
+    record, or its last successor); the first record's path when there is none."""
+    links = chain(root, kind)
+    return Path(links[-1]["path"]) if links else decision_path(root, kind)
 
 
 def check(args: argparse.Namespace) -> None:
@@ -508,6 +649,11 @@ def write_versions(args: argparse.Namespace) -> None:
             refuse("versions", f"{own} supersedes {versions_name(k - 1)}, the record before "
                    f"it, not {args.supersedes}")  # fmt: skip
     root = args.runs_root if args.runs_root is not None else runs_root()  # read with a fixation
+    code = head_code("versions", clean=False)
+    stale = after_cycle_code(root, code["gpu_code_sha256"],
+                             candidate=fixation_candidate(args.fixation), repo=REPO)  # fmt: skip
+    if stale:
+        refuse("versions", "; ".join(stale))
     try:
         record = versions_record(REPO / own, runs_root=root, fixation=args.fixation,
                                  reason=args.reason, supersedes_reason=args.supersedes_reason,
@@ -517,24 +663,60 @@ def write_versions(args: argparse.Namespace) -> None:
     publish("versions", REPO / own, record)
 
 
+def fixation_candidate(path: Path | None) -> int | None:
+    """The candidate of the fixation record a versions record names (``--fixation``), or None
+    (none named, or no fixation record's name in the checkout)."""
+    if path is None:
+        return None
+    try:
+        name = (REPO / path).resolve().relative_to(REPO.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+    found = _FIXATION_NAME.fullmatch(name)
+    return int(found.group(2)) if found else None
+
+
 def write_fixation(args: argparse.Namespace) -> None:
     """The validation fixation or the confirmation supplement (module docstring,
     "fixation")."""
     step, candidate = args.step, args.candidate
+    names = fixation_chain(step, candidate, repo=REPO)
+    state = after_cycle(args, candidate)
+    supersedes = None
     path = REPO / fixation_name(step, candidate)
+    if names and state is None:
+        refuse("fixation", f"{REPO / names[-1]} exists: a fixation record is written once")
+    if names:  # a stale record's successor, when the state's step names it
+        k = fixation_number(names[-1]) + 1
+        named_step("fixation", state, f"fixation-{step}-c{candidate}-{k}")
+        path = REPO / fixation_name(step, candidate, k)
+        cycle = cycle_path(args.runs_root, candidate)
+        supersedes = {"path": names[-1], "sha256": sha256(REPO / names[-1]),
+                      "reason": f"cycle_c{candidate}",
+                      "cycle": {"path": decision_path(".", f"cycle-c{candidate}").as_posix(),
+                                "sha256": sha256(cycle)}}  # fmt: skip
+    elif state is not None and step == "confirmation" and (
+            state["stage"], state["candidate"]) != ("confirmation", candidate):  # fmt: skip
+        refuse("fixation", f"the confirmation supplement of candidate {candidate} is written once "
+               "the state is at its confirmation: after the cycle, the records come in the "
+               f"registered order (the state names {shown(state)})")  # fmt: skip
     if path.exists() or path.is_symlink():
         refuse("fixation", f"{path} exists: a fixation record is written once")
     code = head_code("fixation", clean=True)
+    stale = after_cycle_code(args.runs_root, code["gpu_code_sha256"], candidate=candidate,
+                             repo=REPO)  # fmt: skip
+    if stale:
+        refuse("fixation", "; ".join(stale))
     try:
         if step == "validation":
             record = validation_fixation(args.runs_root, candidate, code=code, repo=REPO,
-                                         theta0=args.theta0)  # fmt: skip
+                                         theta0=args.theta0, supersedes=supersedes)  # fmt: skip
         else:
             record = confirmation_fixation(args.runs_root, candidate, code=code,
                                            bootstrap_seed=args.bootstrap_seed,
                                            audit_seed=args.audit_seed,
                                            agreement_seed=args.agreement_seed,
-                                           repo=REPO)  # fmt: skip
+                                           repo=REPO, supersedes=supersedes)  # fmt: skip
     except RecordRefused as exc:
         refuse("fixation", str(exc))
     publish("fixation", path, record)
@@ -550,8 +732,23 @@ def write_record(args: argparse.Namespace) -> None:
         record = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         refuse("record", f"{source} cannot be read ({type(exc).__name__})")
+    kind = args.kind
+    family, candidate = kind_of(kind)
+    state = after_cycle(args, candidate) if family in ("n", "budget") else None
+    if state is not None:  # after the cycle: the first record, or the next successor
+        if chain(args.runs_root, kind):
+            kind = next_successor(args.runs_root, kind)
+            try:
+                found = json.loads(json.dumps(record, allow_nan=False))
+            except (TypeError, ValueError) as exc:
+                refuse("record", f"{kind}: not a JSON record ({exc})")
+            problems = _problems(args.runs_root, kind, found, REPO)
+            if problems:  # its content first: after the confirmation started, N stands
+                refuse("record", f"{kind}: not written, {len(problems)} problem(s): "
+                       + "; ".join(problems))  # fmt: skip
+        named_step("record", state, kind)
     try:
-        path = write_decision(args.runs_root, args.kind, record, repo=REPO)
+        path = write_decision(args.runs_root, kind, record, repo=REPO)
     except DecisionRefused as exc:
         refuse("record", str(exc))
     print(path)
@@ -593,6 +790,192 @@ def write_closure(args: argparse.Namespace) -> None:
     print(path)
 
 
+# ------------------------------------------------------------------ the engineering cycle
+
+
+def write_cycle(args: argparse.Namespace) -> None:
+    """Candidate N's engineering cycle outside the qualification (module docstring, "cycle")."""
+    root, candidate = args.runs_root, args.candidate
+    state = git_state(REPO)
+    if not state.get("commit") or state.get("dirty") is not False:
+        refuse("cycle", f"the fix is not a clean checkout of a known commit ({state}): {NO_CYCLE}")
+    identity = code_identity.gpu_code_identity(state["commit"], REPO)
+    code = {"commit": state["commit"], "gpu_code_sha256": identity["sha256"]}
+    theta0 = args.theta0 if args.theta0 is not None else root / THETA0_RUN
+    settings = load_config("experiments/qualification")
+    try:
+        seen = journal_seen(root)  # pinned before the records are read
+    except CycleRefused as exc:
+        refuse("cycle", "; ".join(exc.reasons))
+    unread = journal_unread(root)  # what every reader below would read short of: named first
+    if unread:
+        refuse("cycle", "the launch journal is not whole: " + "; ".join(unread))
+    records = read_records(root, repo=REPO, expected_code=None, theta0=theta0, settings=settings)
+    # the code in force before N's cycle: the existing chain's end, N's own supersession records
+    # aside (with none of them, the chain's end; with one, the cycle is recorded already)
+    old = chain_end(replace(records, cycles={c: found for c, found in records.cycles.items()
+                                             if c < candidate}))  # fmt: skip
+    if old is None:
+        refuse("cycle", "the chain of engineering cycles has no start (no valid engineering "
+               "record): no code is in force for a fix to leave")  # fmt: skip
+    if code["gpu_code_sha256"] == old:
+        refuse("cycle", f"the fix's GPU code is the code in force ({old}): {NO_CYCLE}")
+    recorded = sorted((root / "qualification" / f"c{candidate}").glob("supersede-*.json"))
+    if recorded:
+        refuse("cycle", f"candidate {candidate}'s engineering cycle is recorded already "
+               f"({recorded[0]}): one engineering cycle per candidate")  # fmt: skip
+    campaign, case = engineering_campaign(root)
+    path = cycle_path(root, candidate)
+    if path.exists() or path.is_symlink():  # its bridge missing: written from the record alone
+        record, problems = read_decision(root, f"cycle-c{candidate}", repo=REPO)
+        if record is None:
+            refuse("cycle", f"candidate {candidate}'s engineering cycle is recorded already "
+                   f"({path}), and its record is not valid: " + "; ".join(problems))  # fmt: skip
+        claims = claims_of(args)
+        asked = {"diagnosis": args.diagnosis, "fix": args.fix, "code": code,
+                 "stages": {name: {"action": c.action, "arms": list(c.arms),
+                                   "justification": c.justification}
+                            for name, c in claims.items()}}  # fmt: skip
+        other = [key for key, value in asked.items() if record.get(key) != value]
+        if other:
+            refuse("cycle", f"candidate {candidate}'s engineering cycle is recorded already "
+                   f"({path}), with another {', '.join(other)}: a cycle record is written once, "
+                   "and run again with its own arguments the command writes only its missing "
+                   "bridge")  # fmt: skip
+        try:
+            bridge = rebuild_bridge(root, record, fix_identity=identity,
+                                    run_codes=records.run_codes, settings=settings,
+                                    host=socket.gethostname())  # fmt: skip
+        except CycleRefused as exc:
+            refuse("cycle", "; ".join(exc.reasons))
+        return finish_cycle(args, record, bridge, campaign, case)
+    found = advance(records, expected_code=old)  # the right to a cycle, on the existing chain
+    step = found["step"]
+    ways = [way["cycle"] for way in step.get("ways_out") or []
+            if isinstance(way, dict) and "cycle" in way]  # fmt: skip
+    if (found["problems"] or found.get("candidate") != candidate
+            or step.get("reason") != ENGINEERING_CYCLE or not ways):  # fmt: skip
+        why = "; ".join(found["problems"]) or shown(found)
+        refuse("cycle", f"on the existing chain (the code in force, {old}) the state is not "
+               f"candidate {candidate}'s engineering cycle: {why}")  # fmt: skip
+    broken = journal_problems(root)
+    if broken:
+        refuse("cycle", "the launch journal is not whole: " + "; ".join(broken))
+    fields, fixation = ways[0]["fields"], ways[0].get("fixation")
+    claims = claims_of(args)
+    reruns = {step_: claim.arms for name, claim in claims.items() if claim.action == "rerun"
+              for step_ in STAGE_STEPS[name]}  # fmt: skip
+    latest: dict[Any, int] = {}
+    for e in records.endpoints:
+        latest[e.label] = max(latest.get(e.label, 0), e.attempt or 0)
+    waiting = sorted(e.run_id for e in records.endpoints if e.cell.candidate == candidate
+                     and e.cell.step in reruns and e.arm in reruns[e.cell.step]
+                     and e.state in ("pending", "recovered")
+                     and (e.attempt or 0) >= latest.get(e.label, 0))  # fmt: skip
+    if waiting:
+        refuse("cycle", f"runs of a stage the claims rerun have not ended (pending, or "
+               f"recovered with no later attempt): {waiting[:10]}: the cycle waits for "
+               "them")  # fmt: skip
+    if fixation is not None and "search" in claims and claims["search"].action == "rerun":
+        refuse("cycle", f"the validation fixation {fixation} exists: the search is never rerun "
+               "after it: search=rerun is refused (search=reuse, with its "
+               "justification)")  # fmt: skip
+    if confirmation_started(root, candidate) and any(
+            name in claims and claims[name].action == "rerun"
+            for name in ("search", "validation")):  # fmt: skip
+        refuse("cycle", "after the confirmation has started, validation is not reopened without "
+               "an explicit prospective amendment: validation=rerun and search=rerun are "
+               "refused")  # fmt: skip
+    ref = None if fixation is None else {"path": fixation, "sha256": sha256(REPO / fixation),
+                                         "root": "repo"}  # fmt: skip
+    try:
+        before = pre_cycle_records(root, candidate, journal=seen, without=None, theta0=theta0,
+                                   repo=REPO, settings=settings)  # fmt: skip
+        record, bridge = derive_cycle(
+            root, candidate, records=before, marks=fields["marks"], stage=fields["stage"],
+            closed_arms=[arm for arm in ARM_ORDER if arm not in found["active"]["arms"]],
+            old_code=old, fixation=ref, claims=claims, diagnosis=args.diagnosis, fix=args.fix,
+            code=code, fix_identity=identity, settings=settings, repo=REPO,
+            written_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            host=socket.gethostname(), journal=seen)  # fmt: skip
+    except CycleRefused as exc:
+        refuse("cycle", "; ".join(exc.reasons))
+    finish_cycle(args, record, bridge, campaign, case)
+
+
+def claims_of(args: argparse.Namespace) -> dict[str, Any]:
+    """The claims and their justifications (``study3_cycle.parse_claims``), or refused."""
+    try:
+        return parse_claims(args.stage or [], args.justification or [])
+    except CycleRefused as exc:
+        refuse("cycle", "; ".join(exc.reasons))
+
+
+def finish_cycle(args: argparse.Namespace, record: dict, bridge: dict, campaign: Path,
+                 case: str) -> None:  # fmt: skip
+    """The cycle printed (--dry-run), or published, its paths and its journal repair printed."""
+    if args.dry_run:
+        print(json.dumps(record, indent=2, ensure_ascii=False))
+        print(json.dumps(bridge, indent=1, ensure_ascii=False))
+        return
+    try:
+        path, bridge_path = publish_cycle(args.runs_root, args.candidate, record, bridge,
+                                          repo=REPO)  # fmt: skip
+    except CycleRefused as exc:
+        refuse("cycle", "; ".join(exc.reasons))
+    print(path)
+    print(bridge_path)
+    print(repair_command(campaign, args.candidate, case, bridge["old_record"]["path"],
+                         record["diagnosis"], record["fix"]))  # fmt: skip
+
+
+def repair_command(campaign: Path, candidate: int, case: str, record: str, diagnosis: str,
+                   fix: str) -> str:  # fmt: skip
+    """qualify.py's journal repair of the cycle (``supersede`` with the cycle record), to run
+    where RUNS_DIR is: it writes the bridge's journal lines."""
+    words = ["supersede", "--campaign", str(campaign), "--candidate", str(candidate),
+             "--engineering", "--case", case, "--record", record, "--diagnosis", diagnosis,
+             "--fix", fix]  # fmt: skip
+    return 'project-run "$SRC" python scripts/qualify.py ' + " ".join(map(shlex.quote, words))
+
+
+def engineering_campaign(root: Path) -> tuple[Path, str]:
+    """The engineering campaign file the journal repair takes and its first case
+    (``s<seed>/<optimizer>-<rate>``): ``RUNS_DIR/campaigns/<name>.yaml``, ``<name>`` the
+    campaign of the journal's first start of the engineering stage. Refused, naming where it
+    looked, when there is none."""
+    first = None
+    for log in journal_lines(root)[0]:
+        for line in log.lines:
+            found = line.record or {}
+            header = found.get("header") if isinstance(found.get("header"), dict) else {}
+            if (found.get("event") == "start" and header.get("study") == 3
+                    and header.get("step") == "engineering"):  # fmt: skip
+                key = (str(found.get("time") or ""), log.path, line.line)
+                if first is None or key < first[0]:
+                    first = (key, PurePosixPath(log.path).stem)
+    where = root / "campaigns"
+    if first is None:
+        refuse("cycle", f"the launch journal holds no start of the engineering stage: no "
+               f"engineering campaign file under {where}/ can be named for the journal repair "
+               "(qualify.py supersede --campaign)")  # fmt: skip
+    path = where / f"{first[1]}.yaml"
+    if _under_sealed(path, root):
+        refuse("cycle", f"{path} {unopened(path, root)}: not opened")
+    if not path.is_file():
+        refuse("cycle", f"the engineering campaign file {path} is not there (the campaign of the "
+               f"journal's first engineering start, under {where}/): the journal repair takes "
+               "it (qualify.py supersede --campaign)")  # fmt: skip
+    try:
+        cell = yaml.safe_load(path.read_text(encoding="utf-8"))["cells"][0]
+        pairs = dict(o.split("=", 1) for o in cell["overrides"])
+        case = f"s{int(cell['seeds'][0])}/{pairs['optimizer']}-{float(pairs['optimizer.lr']):g}"
+    except (OSError, ValueError, yaml.YAMLError, KeyError, IndexError, TypeError) as exc:
+        refuse("cycle", f"{path}: its first cell names no optimizer, rate and seed "
+               f"({type(exc).__name__}): no engineering campaign")  # fmt: skip
+    return path, case
+
+
 # ------------------------------------------------------------------ the command line
 
 
@@ -608,15 +991,24 @@ def main(argv: list[str] | None = None) -> None:
                                 "supplement")  # fmt: skip
     decided = commands.add_parser("record", help="write a decision record from a JSON file")
     closed = commands.add_parser("closure", help="write the closure record the step names")
+    cycled = commands.add_parser("cycle", help="write the engineering cycle of technical marks "
+                                 "outside the qualification")  # fmt: skip
     runs = "RUNS_DIR: the run records, the launch journal and the decision records"
-    for command in (shown_, checked, held, fixed, decided, closed):
+    for command in (shown_, checked, held, fixed, decided, closed, cycled):
         command.add_argument("--runs-root", type=Path, required=True, help=runs)
-    for command in (shown_, checked, fixed, closed):
+    for command in (shown_, checked, fixed, closed, cycled):
         command.add_argument("--theta0", type=Path,
                              help="θ₀'s evaluation (study 2's under RUNS_DIR by default; "
                              "fixation: validation only)")  # fmt: skip
-    for command in (checked, fixed, closed):
+    for command in (checked, fixed, closed, cycled):
         command.add_argument("--candidate", type=int, choices=(1, 2), required=True)
+    cycled.add_argument("--diagnosis", required=True, help="the diagnosis, one line")
+    cycled.add_argument("--fix", required=True, help="the fix, one line")
+    cycled.add_argument("--stage", action="append", metavar="STAGE=reuse|rerun[:ARMS]",
+                        help="a stage's claim, one per stage started")  # fmt: skip
+    cycled.add_argument("--justification", action="append", metavar="STAGE=TEXT",
+                        help="a claim's justification, one line")  # fmt: skip
+    cycled.add_argument("--dry-run", action="store_true", help="print the records, write none")
     checked.add_argument("--seed", type=int, required=True, help="the block's seed")
     checked.add_argument("--campaign", type=Path, required=True, help="the block's campaign file")
     held.add_argument("--campaign", type=Path, required=True,
@@ -659,6 +1051,7 @@ def main(argv: list[str] | None = None) -> None:
         "fixation": write_fixation,
         "record": write_record,
         "closure": write_closure,
+        "cycle": write_cycle,
     }
     commands_[args.command](args)
 

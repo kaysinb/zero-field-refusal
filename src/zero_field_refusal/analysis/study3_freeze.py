@@ -68,7 +68,8 @@ labeling refuses a confirmation run while the gate names a problem.
   those supported for P and F, while P–F is active.
 - *A run under another commit* (the state's ``not_counted``) enters no block here, as it enters no
   count.
-- *The in-force supplement* is the supplement's base record
+- *The in-force supplement* is the last link of the supplement's chain (the first record, or
+  its successor after a cycle: ``study3_versions.fixation_chain``), valid by its full reader
   (``study3_versions.read_confirmation_fixation``), read through ``in_force_supplement`` alone.
 """
 
@@ -94,6 +95,7 @@ from .study3_versions import (
     _added,
     _blob,
     committed_changes,
+    fixation_chain,
     fixation_name,
     read_confirmation_fixation,
 )
@@ -286,11 +288,12 @@ def in_force_supplement(
 ) -> tuple[dict[str, str] | None, list[str]]:
     """The in-force confirmation supplement of candidate N as a link, ``{"path", "sha256",
     "root": "repo"}``, valid by its full reader, and its problems; absent: (None, []). The
-    supplement's base record is its one link (``read_confirmation_fixation``)."""
+    supplement in force is its chain's last link (``fixation_chain``: the first record, or its
+    successor after a cycle), the one ``read_confirmation_fixation`` reads in full."""
     record, problems = read_confirmation_fixation(candidate, runs_root=runs_root, repo=repo)
     if record is None:
         return None, list(problems)
-    name = fixation_name("confirmation", candidate)
+    name = fixation_chain("confirmation", candidate, repo=repo)[-1]
     return {"path": name, "sha256": _digest(Path(repo) / name), "root": "repo"}, []
 
 

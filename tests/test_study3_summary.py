@@ -45,6 +45,7 @@ from test_study3_versions import sha256 as vsha256
 from zero_field_refusal import launch
 from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import decision_path, end_lines, read_decision
+from zero_field_refusal.analysis.study3_progress import advance, progress, read_records
 from zero_field_refusal.analysis.study3_records import SEEDS, Endpoint
 from zero_field_refusal.launch import load_campaign
 from zero_field_refusal.paths import REPO_ROOT
@@ -78,6 +79,7 @@ class Summary:
 
     def core(self, study: Study) -> None:
         self.monkeypatch.setattr(self.script, "progress", lambda *a, **k: study.advance())
+        self.monkeypatch.setattr(self.script, "read_records", lambda *a, **k: study.records())
 
     def versions(self, problems=()) -> None:
         def check(record, **kw):
@@ -146,6 +148,18 @@ def test_progress_prints_the_state_as_json(world, summary, monkeypatch) -> None:
                                    world.root / "no-theta0")  # fmt: skip
     assert code == 0 and json.loads(printed)["step"]["kind"] == "blocked"
     assert "θ₀" in printed
+
+
+def test_progress_is_advance_over_read_records(world) -> None:
+    """``progress`` is ``advance`` over the records ``read_records`` reads, under the same
+    expected code: the reading and the route are two steps, on real files."""
+    world.ready()
+    world.launched(world.write("search-round0"))
+    kw = {"repo": world.repo, "theta0": world.runs.theta0, "settings": {}}
+    state = progress(world.root, expected_code=EXPECTED, **kw)
+    assert state == advance(read_records(world.root, expected_code=EXPECTED, **kw),
+                            expected_code=EXPECTED)  # fmt: skip
+    assert (state["stage"], state["step"]["campaign"]) == ("numerical", "numerical")
 
 
 def test_progress_prints_the_resolved_torn_lines(world, summary) -> None:
@@ -684,7 +698,8 @@ def checkout(tmp_path, monkeypatch, capsys) -> tuple[VersionsStudy, Summary]:
     """A Git checkout and its RUNS_DIR (the versions tests' ``Study``), and the summary script
     run from that checkout."""
     study = VersionsStudy(tmp_path, monkeypatch)
-    return study, Summary(study, monkeypatch, capsys)
+    summary = Summary(study, monkeypatch, capsys)
+    return study, summary
 
 
 def fixation_argv(study: VersionsStudy, step: str = "validation", *more) -> list:
@@ -892,6 +907,45 @@ def test_the_fixation_records_are_written_at_their_paths_once(checkout, monkeypa
          "procedure": "pps-with-replacement-400-400-200"})  # fmt: skip
     refused(summary.run(*fixation_argv(study, "confirmation", *SEED_ARGS)), "exists")
     assert attempts == []
+
+
+def test_the_validation_fixation_is_written_with_the_route_after_it_in_place(checkout) -> None:
+    """The route after the validation fixation (its successor records and the confirmation
+    boundary) is in place: the validation fixation is written as its builder builds it, with no
+    gate before it."""
+    study, summary = checkout
+    study.ready(real=True)
+    assert not hasattr(summary.script, "POST_FIXATION_ROUTE")
+    code, _, err = summary.run(*fixation_argv(study, "validation", "--theta0",
+                                              study.runs.theta0))  # fmt: skip
+    assert code == 0, err
+    assert (study.repo / sv.fixation_name("validation", 1)).is_file()
+
+
+def test_after_a_cycle_the_fixation_and_versions_records_carry_the_code_in_force(
+    checkout, monkeypatch
+) -> None:
+    """Once the candidate has a cycle record, a fixation and a versions record naming its
+    fixation are written only under the code in force: the writer asks
+    ``study3_decisions.after_cycle_code`` with HEAD's GPU code and the candidate, and writes
+    nothing it refuses."""
+    study, summary = checkout
+    study.ready(real=True)
+    asked = []
+
+    def after_cycle_code(runs_root, code, *, candidate=None, repo=None):
+        asked.append((code, candidate))
+        return [f"its GPU code {code} is not candidate 1's code in force"]
+
+    monkeypatch.setattr(summary.script, "after_cycle_code", after_cycle_code)
+    refused(summary.run(*fixation_argv(study, "validation", "--theta0", study.runs.theta0)),
+            "code in force")  # fmt: skip
+    assert not (study.repo / VALIDATION_C1).exists()
+    refused(summary.run("versions", "--out", FIRST, "--reason", "validation_c1", "--fixation",
+                        VALIDATION_C1, "--runs-root", study.root), "code in force")  # fmt: skip
+    assert not (study.repo / FIRST).exists()
+    head = study.now()["gpu_code_sha256"]
+    assert asked == [(head, 1), (head, 1)]
 
 
 def test_the_fixation_command_refuses_what_its_builders_refuse(checkout) -> None:
@@ -1102,11 +1156,13 @@ def test_closure_writes_a_way_out_chosen_by_its_run(world, summary, monkeypatch)
         "other_commit", None)  # fmt: skip
 
 
-def test_closure_has_none_to_write_for_a_technical_mark_outside_the_qualification(
-    world, summary, monkeypatch
-) -> None:
-    """A technical validation run stops the route for the researcher's decision: the step names
-    no closure, and ``closure`` writes none."""
+def test_closure_writes_the_after_cycle_closure_from_the_step(world, summary, monkeypatch):
+    """A technical validation run before the candidate's engineering cycle takes the cycle: the
+    step names no closure, and ``closure`` writes none. After the cycle (here qualify.py's own
+    supersession record, on disk) the mark is unresolved after it: the step names its closure
+    (its last end line, the reason ``unresolved_after_cycle``, the supersession record by its
+    sha256), which ``closure`` writes and the schema accepts; once written, the route ends with
+    the technical feasibility report."""
     study = Study()
     study.through_validation()
     run_id = run_of(study, "validation", "F", "u", 10304)
@@ -1118,15 +1174,39 @@ def test_closure_has_none_to_write_for_a_technical_mark_outside_the_qualificatio
     end = end_lines(world.root)[run_id]
     study.technical(run_id, log=end["path"], line=end["line"])
     study.ends[run_id]["line_sha256"] = end["line_sha256"]
-    step = study.advance()["step"]
-    assert (step["kind"], step["reason"]) == ("blocked", "engineering_route_pending")
     summary.core(study)
     monkeypatch.setattr(
         summary.script, "git_state", lambda repo=None: {"commit": "a" * 40, "dirty": False}
     )
-    refused(summary.run("closure", "--runs-root", world.root, "--candidate", 1, "--arm", "F"),
-            "names no closure record closure-c1-F", "engineering_route_pending")  # fmt: skip
+    argv = ["closure", "--runs-root", world.root, "--candidate", 1, "--arm", "F"]
+    assert study.advance()["step"]["reason"] == "engineering_cycle"
+    refused(summary.run(*argv), "names no closure record closure-c1-F", "engineering_cycle")
     assert not decision_path(world.root, "closure-c1-F").exists()
+    bridge = world.root / "qualification" / "c1" / "supersede-1.json"
+    bridge.parent.mkdir(parents=True)
+    bridge.write_text(json.dumps({"candidate": 1, "supersession": 1}))
+    cited = {"path": "qualification/c1/supersede-1.json",
+             "sha256": hashlib.sha256(bridge.read_bytes()).hexdigest()}  # fmt: skip
+    study.cycle()
+    study.cycles[1][0].update(path=str(bridge), sha256=cited["sha256"])
+    step = study.advance()["step"]
+    assert (step["kind"], step["reason"]) == ("blocked", "unresolved_after_cycle")
+    (way,) = [w for w in step["ways_out"] if "closure" in w]
+    code, printed, error = summary.run(*argv)
+    assert code == 0, error
+    path = decision_path(world.root, "closure-c1-F")
+    assert printed.strip() == str(path)
+    record, problems = read_decision(world.root, "closure-c1-F", repo=world.repo)
+    assert problems == []
+    assert {key: record[key] for key in FIELDS} == way["closure"]["fields"]
+    assert (record["line"], record["reason"], record["cycle"]) == (
+        {"kind": "end", **{k: end[k] for k in ("path", "line", "line_sha256")}},
+        "unresolved_after_cycle", cited)  # fmt: skip
+    study.entries["closure-c1-F"] = {"kind": "closure-c1-F", "state": "failed", "record": record,
+                                     "path": str(path), "problems": []}  # fmt: skip
+    result = study.advance()
+    assert (result["outcome"], result["reason"]) == (
+        "technical_feasibility_report", "unresolved_after_cycle")  # fmt: skip
 
 
 def test_closure_writes_the_closure_of_a_run_under_another_commit(world, summary,
@@ -1160,6 +1240,14 @@ def test_closure_writes_the_closure_of_a_run_under_another_commit(world, summary
     result = study.advance()
     assert (result["outcome"], result["reason"]) == (
         "technical_feasibility_report", "dirty_checkout")  # fmt: skip
+
+
+def test_operations_describe_the_cycle_route() -> None:
+    text = (REPO_ROOT / "docs/operations.md").read_text()
+    assert "engineering_route_pending" not in text and "study3_summary.py cycle" in text
+    assert "unresolved_after_cycle" in text and "other_gpu_code" in text
+    assert "study3-fixation-validation-c<N>-2.json" in text and "n-c<N>-2" in text
+    assert "confirmation_fixed" in text
 
 
 def test_the_summary_imports_no_gpu_path() -> None:

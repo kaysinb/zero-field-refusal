@@ -25,16 +25,18 @@ from test_study3_decisions import held as decision_hold
 from test_study3_records import SENTINEL, header, seal
 from test_study3_records import World as RunWorld
 
-from zero_field_refusal import launch
+from zero_field_refusal import code_identity, launch
 from zero_field_refusal.analysis import study3_progress
+from zero_field_refusal.analysis.study3_cycle import STAGE_STEPS, Claim
 from zero_field_refusal.analysis.study3_decisions import START_REASON, cap_of, end_reason
 from zero_field_refusal.analysis.study3_progress import (
     Records,
     advance,
     confirmation_state,
     progress,
+    qualification_code,
 )
-from zero_field_refusal.analysis.study3_records import SEEDS, Cell, Endpoint, step_key
+from zero_field_refusal.analysis.study3_records import COUNTING, SEEDS, Cell, Endpoint, step_key
 from zero_field_refusal.analysis.study3_search import CANDIDATES, adjusted_rate
 
 ARMS = ("A", "F", "P")
@@ -49,6 +51,7 @@ K_ONLY = ("engineering", "search", "numerical", "repair")
 WHEN = "2026-10-25T12:00:00+00:00"
 START = CANDIDATES[1]["start"]
 ENGINEERING_SHA = "1" * 64  # the engineering record file's sha256 now
+RAN = "5" * 40  # the commit the reader tests' runs ran, its GPU code EXPECTED
 NAMED = {"engineering_record": "study3/decisions/engineering.json",
          "engineering_record_sha256": ENGINEERING_SHA}  # a search header naming it  # fmt: skip
 
@@ -111,6 +114,9 @@ class Study:
         self.cycles: dict[int, list[dict]] = {1: [], 2: []}  # each candidate's cycle records
         self.expected = EXPECTED  # the chain of engineering cycles' end
         self.uncounted: dict[str, dict] = {}  # runs under another commit than the pinned one
+        self.cycle_records: dict[int, dict] = {}  # each candidate's cycle record, as read
+        self.run_codes: dict[str, str | None] = {}  # run id -> its GPU code, where it is known
+        self.fixed: dict[int, dict[str, dict]] = {}  # the fixation chains' links in force
 
     # -- decision records
 
@@ -378,10 +384,87 @@ class Study:
                        headers=self.headers, digests=self.digests, ends=self.ends,
                        starts=self.starts, cycles=self.cycles,
                        recoverable=frozenset(self.recoverable),
-                       uncounted=self.uncounted)  # fmt: skip
+                       uncounted=self.uncounted, cycle_records=self.cycle_records,
+                       run_codes=self.run_codes, fixed=self.fixed)  # fmt: skip
 
     def advance(self, **kw) -> dict:
         return advance(self.records(), **{"expected_code": self.expected, **kw})
+
+    # -- the engineering cycle outside the qualification
+
+    def cycle_record(self, candidate=1, *, stage, claims, kept_failures=()) -> list[str]:
+        """The candidate's cycle outside the qualification, valid as ``read_cycle`` reads it:
+        its record (the old code the chain's end now; the claims; every counting run of the
+        search, the validation and the confirmation in a stage and arm the claims rerun
+        affected, but the ``kept_failures``, kept as scientific failures) and its bridge
+        (``cycle``: the chain moves to the fix); the affected runs superseded. The
+        qualification's side is the readings'. Returns the affected run ids."""
+        old, kept = self.expected, sorted(kept_failures)
+        affected = []
+        for e in sorted(self.endpoints, key=lambda e: e.run_id):
+            stage_ = next((s for s in ("search", "validation", "confirmation")
+                           if e.cell.step in STAGE_STEPS[s]), None)  # fmt: skip
+            claim = claims.get(stage_)
+            if (e.candidate == candidate and claim is not None and claim.action == "rerun"
+                    and e.arm in claim.arms and e.state in COUNTING
+                    and e.run_id not in kept):  # fmt: skip
+                affected.append(e)
+        fix = self.cycle(candidate)
+        for e in affected:
+            self.change(e.run_id, state="superseded", K=None, steps=None)
+        runs = [{"run_id": e.run_id, "label": e.label, "step": e.cell.step, "arm": e.arm,
+                 "rate": e.lr, "seed": e.seed, "gpu_code": old} for e in affected]  # fmt: skip
+        record = {
+            "kind": f"cycle-c{candidate}", "state": "passed", "written_at": WHEN,
+            "code": {"commit": "c" * 40, "gpu_code_sha256": fix}, "candidate": candidate,
+            "stage": stage, "old_code": old,
+            "stages": {name: {"action": c.action, "arms": list(c.arms),
+                              "justification": c.justification} for name, c in claims.items()},
+            "affected": {"runs": runs, "records": [],
+                         "qualification": {"records": [], "launchers": [], "restarts": []}},
+            "kept": [{"run_id": run, "why": "scientific_failure",
+                      "evidence": {"path": f"study3/{run}/meta.json", "sha256": "8" * 64}}
+                     for run in kept],
+            "bridge": f"qualification/c{candidate}/supersede-1.json",
+        }  # fmt: skip
+        path = f"/runs/study3/decisions/cycle-c{candidate}.json"
+        self.cycle_records[candidate] = {
+            "state": "valid", "path": path,
+            "bridge_path": f"/runs/qualification/c{candidate}/supersede-1.json",
+            "record": record, "bridge": {"candidate": candidate}, "claims": dict(claims),
+            "affected": [r["run_id"] for r in runs], "kept": record["kept"],
+            "repair_record": path, "problems": [],
+        }  # fmt: skip
+        return [e.run_id for e in affected]
+
+    def add_search_run(self, arm, label, seed, *, attempt=2, candidate=1) -> Endpoint:
+        """A further attempt of a search cell (round 0) at its target, its campaign naming the
+        engineering record and its last end line ``done``."""
+        spec = CANDIDATES[candidate]
+        found = ep(arm, spec["start"][arm][label], seed, step="search", candidate=candidate,
+                   attempt=attempt, K=spec["targets"][label])  # fmt: skip
+        self.add(found)
+        self.headers[found.run_id] = {"study": 3, "candidate": candidate, "step": "search",
+                                      "round": 0, **NAMED}  # fmt: skip
+        self.ends[found.run_id] = {"path": f"launch/study3-c{candidate}-search.jsonl",
+                                   "line": 40 + len(self.ends), "line_sha256": "c" * 64,
+                                   "outcome": "done", "attempt": attempt,
+                                   "run": found.label}  # fmt: skip
+        return found
+
+    def reissue_search(self, code, candidate=1) -> list[Endpoint]:
+        """A fresh usable attempt of every search cell whose attempts are superseded, under the
+        GPU code ``code``."""
+        out = []
+        for e in [e for e in self.endpoints if e.cell.step == "search" and e.state == "superseded"
+                  and e.candidate == candidate]:  # fmt: skip
+            start = CANDIDATES[candidate]["start"][e.arm]
+            label = next(name for name in LABELS if math.isclose(start[name], e.lr))
+            found = self.add_search_run(e.arm, label, e.seed, attempt=e.attempt + 1,
+                                        candidate=candidate)  # fmt: skip
+            self.run_codes[found.run_id] = code
+            out.append(found)
+        return out
 
     def other_commit(self, run_id, reason="other_commit", commit="e" * 40, *,
                      ended=True) -> dict:  # fmt: skip
@@ -815,27 +898,32 @@ def test_a_superseded_launcher_run_waits_for_its_next_attempt() -> None:
     assert any("s10200: its next attempt" in w for w in result["step"]["waiting"])
 
 
-ROUTE_PENDING = "engineering_route_pending"
-ROUTE_WHY = ("the registered engineering cycle for a technical mark outside the qualification is "
-             "not implemented yet: the researcher decides")  # fmt: skip
-NOT_ACCEPTED = ("a closure of a technical mark outside the qualification is not accepted until "
-                "its engineering route exists")  # fmt: skip
+CYCLE = "engineering_cycle"
+CYCLE_WHY = ("one engineering cycle at once: diagnosis, a fix that changes the GPU code, and a "
+             "claim per stage (reuse or rerun, with its justification); a fix that leaves the GPU "
+             "code unchanged is no cycle, and the mark resolves only if the recomputed reading no "
+             "longer gives it")  # fmt: skip
+NOT_ACCEPTED = ("a closure carries its route's reason (an uncounted reason, or "
+                "unresolved_after_cycle), never the launcher's outcome")  # fmt: skip
 
 
-def assert_route_pending(result, *runs: Endpoint) -> None:
-    """The stop for the researcher's decision: blocked, technical, with its reason id and why;
-    each run named (its id, label, arm and step), its way out the decision, beside a recovery
-    round where the launcher would open one; no closure offered, no outcome, no cell."""
+def assert_cycle_offered(result, *runs: Endpoint) -> None:
+    """The marks' engineering cycle: blocked, technical, with its reason id and why; each run
+    named (its id, label, arm and step), its own way out a recovery round where the launcher
+    would open one, never a decision or a closure; then the cycle's way out, its fields naming
+    the candidate, the marks' stage and every mark; no outcome, no cell."""
     step = result["step"]
     assert (step["kind"], step["technical"], step["reason"], step["why"]) == (
-        "blocked", True, ROUTE_PENDING, ROUTE_WHY)  # fmt: skip
+        "blocked", True, CYCLE, CYCLE_WHY)  # fmt: skip
     assert (result["outcome"], result["reason"], "cells" in step) == (None, None, False)
-    assert [w["run_id"] for w in step["ways_out"]] == [e.run_id for e in runs]
-    for e, way in zip(runs, step["ways_out"], strict=True):
-        assert (way["label"], way["arm"], way["step"], way["decision"]) == (
-            e.label, e.arm, e.cell.step, {"decision": ROUTE_PENDING})  # fmt: skip
-        assert "closure" not in way
+    *ways, way = step["ways_out"]
+    assert [w["run_id"] for w in ways] == [e.run_id for e in runs]
+    for e, found in zip(runs, ways, strict=True):
+        assert (found["label"], found["arm"], found["step"]) == (e.label, e.arm, e.cell.step)
+        assert "closure" not in found and "decision" not in found
         assert any(e.run_id in r and e.label in r and e.cell.step in r for r in step["reasons"])
+    assert way["cycle"]["fields"] == {"candidate": runs[0].candidate, "stage": runs[0].cell.step,
+                                      "marks": sorted(e.run_id for e in runs)}  # fmt: skip
 
 
 def closure_refused(result, arm: str) -> None:
@@ -849,14 +937,13 @@ def closure_refused(result, arm: str) -> None:
 
 @pytest.mark.parametrize("step", ["search", "validation", "confirmation"])
 @pytest.mark.parametrize("arm", ["A", "F", "P"])
-def test_a_technical_mark_outside_the_qualification_stops_for_the_researchers_decision(
-    step, arm
-) -> None:
-    """The registered route of a technical mark is one engineering cycle (diagnosis, fix,
-    re-qualification); outside the qualification it is not implemented yet, and nothing cancels
-    it silently: the step stops for the researcher's decision, with the recovery round where the
-    launcher opens one (a validation or confirmation run's after ``check``), and no closure. A
-    closure record written for the mark anyway is a problem and decides nothing."""
+def test_an_outside_mark_offers_the_cycle_and_the_recovery_round(step, arm) -> None:
+    """The registered route of a technical mark outside the qualification is one engineering
+    cycle per candidate (diagnosis, a fix, a claim per stage): the step is blocked, technical,
+    and offers the cycle (its record, its fields, every stage started that needs a claim, later
+    ones included, and the command that writes it) beside the mark's recovery round where the
+    launcher opens one (a validation or confirmation run's after ``check``); no decision and no
+    closure. A closure record written for the mark anyway is a problem and decides nothing."""
     study = Study()
     study.through_validation()
     if step == "confirmation":
@@ -866,17 +953,615 @@ def test_a_technical_mark_outside_the_qualification_stops_for_the_researchers_de
     broken = study.technical(run_of(study, step, arm, "u", seed),
                              log=f"launch/study3-c1-{step}.jsonl")  # fmt: skip
     result = study.advance()
+    step_ = result["step"]
     assert result["stage"] == step
-    assert_route_pending(result, broken)
-    (way,) = result["step"]["ways_out"]
-    assert broken.label in way["recovery"]
-    assert ("study3_summary.py check" in way["recovery"]) is (step != "search")
+    assert (step_["kind"], step_["technical"], step_["reason"]) == ("blocked", True, CYCLE)
+    assert (result["outcome"], "cells" in step_) == (None, False)
+    assert_cycle_offered(result, broken)
+    *runs, way = step_["ways_out"]
+    assert [w["run_id"] for w in runs] == [broken.run_id]
+    assert "closure" not in runs[0] and "decision" not in runs[0]
+    assert broken.label in runs[0]["recovery"]
+    assert ("study3_summary.py check" in runs[0]["recovery"]) is (step != "search")
+    assert way["cycle"]["fields"] == {"candidate": 1, "stage": step, "marks": [broken.run_id]}
+    started = ["search", "qualification", "validation",
+               *(["confirmation"] if step == "confirmation" else [])]  # fmt: skip
+    assert way["cycle"]["stages"] == started  # every started stage, later ones included
+    assert (way["cycle"]["record"], way["cycle"]["path"], way["cycle"]["fixation"]) == (
+        "cycle-c1", "study3/decisions/cycle-c1.json", None)  # fmt: skip
+    command = way["cycle"]["command"]
+    assert command.startswith("study3_summary.py cycle --runs-root <RUNS_DIR> --candidate 1 ")
+    assert all(f"--stage {s}=" in command and f"--justification {s}=" in command
+               for s in started)  # fmt: skip
     if step == "confirmation":
         assert result["confirmation"]["may_start_next"] is False
-    study.closure(broken.run_id)
+    study.closure(broken.run_id)  # a closure written anyway: refused, decides nothing
     result = study.advance()
     assert result["stage"] == step
+    assert any("never the launcher's outcome" in p for p in result["problems"])
     closure_refused(result, arm)
+
+
+def test_once_the_candidates_cycle_is_spent_no_second_is_offered() -> None:
+    """One engineering cycle per candidate: once a supersession record of the candidate exists
+    (qualify.py's or a cycle's bridge), the step offers no cycle: the mark is unresolved after
+    it."""
+    study = Study()
+    study.through_validation()
+    broken = study.technical(run_of(study, "validation", "F", "u", 10304))
+    study.cycle()  # the candidate's cycle, recorded by qualify.py
+    step = study.advance()["step"]
+    assert (step["kind"], step["reason"]) == ("blocked", "unresolved_after_cycle")
+    assert [w["run_id"] for w in step["ways_out"]] == [broken.run_id]
+    assert not [w for w in step["ways_out"] if "cycle" in w]
+
+
+SEED = {"search": 10102, "validation": 10304, "confirmation": 10402}  # a mark's seed per stage
+
+
+def at_stage(step: str) -> Study:
+    """Candidate 1 at the stage of a mark outside the qualification: its search (the
+    engineering and simulation records passed), through its validation, or at its
+    confirmation's sixth block (the n record, five blocks run)."""
+    study = Study()
+    if step == "search":
+        study.ready()
+        study.search()
+        return study
+    study.through_validation()
+    if step == "confirmation":
+        study.n(N=60)
+        study.confirmation(count=5)
+    return study
+
+
+@pytest.mark.parametrize("step", ["search", "validation", "confirmation"])
+@pytest.mark.parametrize("arm", ["A", "F", "P"])
+def test_after_the_cycle_an_outside_mark_is_closed_unresolved(step, arm) -> None:
+    """Once the candidate's one engineering cycle is spent, a technical mark outside the
+    qualification is unresolved after it ("Failure routes"): the step is blocked, technical,
+    with the reason ``unresolved_after_cycle``, and offers the mark's closure record (its last
+    end line, that reason, the candidate's supersession record as its cycle) beside its
+    recovery round. Once the closure is written, A or F ends with the technical feasibility
+    report, and P closes P–F."""
+    study = at_stage(step)
+    study.cycle()  # the candidate's cycle is spent
+    if step == "confirmation":
+        study.n(N=60)  # the n record under the fix's code, as one written after the cycle
+    broken = study.technical(run_of(study, step, arm, "u", SEED[step]),
+                             log=f"launch/study3-c1-{step}.jsonl")  # fmt: skip
+    step_ = study.advance()["step"]
+    assert (step_["kind"], step_["reason"]) == ("blocked", "unresolved_after_cycle")
+    (way,) = [w for w in step_["ways_out"] if "closure" in w]
+    assert way["closure"]["fields"]["cycle"]["path"] == "qualification/c1/supersede-1.json"
+    assert "recovery" in way
+    study.closure(broken.run_id, reason="unresolved_after_cycle",
+                  cycle=way["closure"]["fields"]["cycle"])  # fmt: skip
+    result = study.advance()
+    if arm == "P":
+        assert "P-F" not in result["active"]["comparisons"] and result["outcome"] is None
+    else:
+        assert (result["outcome"], result["reason"]) == (
+            "technical_feasibility_report", "unresolved_after_cycle")  # fmt: skip
+
+
+def test_a_qualification_cycle_spends_the_cycle_for_later_marks() -> None:
+    study = Study()
+    study.ready()
+    study.search()
+    study.cycle()  # qualify.py's own record
+    study.numerical()
+    study.validation()
+    study.technical(run_of(study, "validation", "F", "u", 10304))
+    assert study.advance()["step"]["reason"] == "unresolved_after_cycle"
+
+
+RERUN = Claim("rerun", ("A", "F", "P"), "the fix changes what these runs compute")
+REUSE = Claim("reuse", (), "the fix leaves these runs as they ran")
+
+
+def test_a_search_run_under_another_gpu_code_is_a_mark_before_any_cycle() -> None:
+    study = Study()
+    study.ready()
+    study.search()
+    run = run_of(study, "search", "A", "u", 10101)
+    study.run_codes = {e.run_id: EXPECTED for e in study.endpoints if e.cell.step == "search"} | {
+        run: "e" * 64}  # fmt: skip
+    step = study.advance()["step"]
+    assert step["kind"] == "blocked" and any(run in r and "other_gpu_code" in r
+                                             for r in step["reasons"])  # fmt: skip
+    assert [w["reason"] for w in step["ways_out"] if w["run_id"] == run] == ["other_gpu_code"]
+
+
+def test_a_search_run_whose_gpu_code_cannot_be_told_is_a_mark() -> None:
+    """A run of a dirty checkout, or of a commit the checkout cannot place, has no GPU code: it
+    is not shown to be under the code in force."""
+    study = Study()
+    study.ready()
+    study.search()
+    run = run_of(study, "search", "F", "l", 10100)
+    study.run_codes = {e.run_id: EXPECTED for e in study.endpoints if e.cell.step == "search"} | {
+        run: None}  # fmt: skip
+    study.ends[run] = {
+        "path": "launch/study3-c1-search.jsonl",
+        "line": 3,
+        "line_sha256": "c" * 64,
+        "outcome": "done",
+        "attempt": 1,
+        "run": "F",
+    }  # its last end line
+    step = study.advance()["step"]
+    (way,) = step["ways_out"]
+    assert (way["run_id"], way["reason"]) == (run, "other_gpu_code")
+    assert way["closure"]["fields"]["reason"] == "other_gpu_code"
+    assert way["closure"]["fields"]["cycle"] is None
+    # most often a commit this checkout cannot place: fetched before a terminal closure
+    assert any("fetch its commit and read the state again" in r for r in step["reasons"])
+
+
+def test_a_counting_run_of_a_rerun_stage_under_another_gpu_code_is_a_mark() -> None:
+    study = Study()
+    study.ready()
+    study.search()
+    old = study.expected
+    study.cycle_record(stage="search", claims={"search": RERUN})  # the search runs superseded
+    late = study.add_search_run("A", "u", 10101, attempt=2)  # launched later from an old checkout
+    study.run_codes[late.run_id] = old
+    assert study.advance()["step"]["ways_out"][0]["reason"] == "other_gpu_code"
+    study.closure(late.run_id, reason="other_gpu_code", cycle=None)
+    assert study.advance()["outcome"] == "technical_feasibility_report"
+
+
+def test_a_kept_scientific_failure_keeps_its_route_after_a_search_rerun() -> None:
+    study = Study()
+    study.ready()
+    old = study.expected
+    study.search(special={("F", "u", 10102): {"state": "scientific", "K": None}})  # F's stop
+    study.technical(run_of(study, "search", "A", "u", 10101), log="launch/study3-c1-search.jsonl")
+    study.cycle_record(stage="search", claims={"search": RERUN},
+                       kept_failures=[run_of(study, "search", "F", "u", 10102)])  # fmt: skip
+    study.run_codes = {e.run_id: old for e in study.endpoints if e.cell.step == "search"}
+    study.reissue_search(code=study.expected)  # the superseded cells rerun under the fix, usable
+    result = study.advance()
+    assert not [r for r in result["step"].get("reasons", []) if "other_gpu_code" in r]
+    assert result["candidate"] == 2 and result["route"][-1]["event"] == "candidate"
+
+
+def test_a_qualify_cycle_leaves_earlier_search_runs_counting() -> None:
+    study = Study()
+    study.ready()
+    study.search()
+    study.cycle()  # qualify.py's own cycle: no claims
+    study.run_codes = {e.run_id: EXPECTED for e in study.endpoints if e.cell.step == "search"}
+    assert study.advance()["stage"] != "search"
+
+
+def test_a_search_rerun_of_some_arms_leaves_the_others_counting_under_the_old_code() -> None:
+    """The claim's arms: a search rerun of A alone reuses F's and P's runs under the old code,
+    and only a counting A run under it is a mark."""
+    study = Study()
+    study.ready()
+    study.search()
+    old = study.expected
+    study.cycle_record(stage="search", claims={"search": Claim("rerun", ("A",), "A's runs")})
+    study.run_codes = {e.run_id: old for e in study.endpoints if e.cell.step == "search"}
+    fresh = study.reissue_search(code=study.expected)
+    assert {e.arm for e in fresh} == {"A"}
+    assert study.advance()["stage"] != "search"
+    late = study.add_search_run("A", "l", 10100, attempt=3)
+    study.run_codes[late.run_id] = old
+    (way,) = study.advance()["step"]["ways_out"]
+    assert (way["run_id"], way["reason"]) == (late.run_id, "other_gpu_code")
+
+
+def through_validation_with_mark(arm: str, seed: int) -> Study:
+    """Candidate 1 through its validation, its run of ``arm`` at its upper rate on ``seed`` a
+    technical mark."""
+    study = Study()
+    study.through_validation()
+    study.technical(run_of(study, "validation", arm, "u", seed))
+    return study
+
+
+def test_an_after_cycle_mark_whose_supersession_record_cannot_be_read_names_it() -> None:
+    """After the candidate's cycle, a mark whose closure would cite a supersession record that
+    cannot be read (no sha256): the step names that record, and offers no closure."""
+    study = through_validation_with_mark("F", 10304)
+    study.cycle()
+    study.cycles[1][0]["sha256"] = None
+    step = study.advance()["step"]
+    assert step["reason"] == "unresolved_after_cycle"
+    assert any("qualification/c1/supersede-1.json" in r and "cannot be read" in r
+               for r in step["reasons"])  # fmt: skip
+    assert all("closure" not in way for way in step["ways_out"])
+
+
+# ------------------------------------------------------------------ after the validation fixation
+
+FIXED_RATES = {arm: dict(START[arm]) for arm in ARMS}  # the rates the fixation fixed (l, u)
+
+
+def fixation_link(candidate: int, step: str, k: int, code: str) -> dict:
+    """A fixation chain's link in force (``Records.fixed``): its path, number, code and rates."""
+    name = f"docs/study3-fixation-{step}-c{candidate}" + ("" if k == 1 else f"-{k}") + ".json"
+    start = CANDIDATES[candidate]["start"]
+    rates = {arm: {"lr_l": start[arm]["l"], "lr_u": start[arm]["u"]} for arm in ARMS}
+    return {"path": name, "k": k, "code": code, "rates": rates}
+
+
+def failing_reading(arm: str, candidate: int = 1) -> dict:
+    """Candidate N's qualification reading, the starting rates qualified but ``arm``'s upper rate
+    failing (a scientific failure of its re-qualification)."""
+    study = Study()
+    for a in ARMS:
+        for label in LABELS:
+            state = "failing" if (a, label) == (arm, "u") else "qualified"
+            study.rate(candidate, a, CANDIDATES[candidate]["start"][a][label], state)
+    return study.readings[candidate]
+
+
+def post_fixation_cycle(candidate: int = 1, *, reissued_validation: dict | None = None,
+                        requalified_K_miss: tuple[str, str] | None = None,
+                        confirming: bool = False) -> Study:  # fmt: skip
+    """Candidate N (candidate 1 failed at its numerical qualification first, for N = 2) through
+    its validation fixation (``fixed``: its first link, the old code) and its validation, and a
+    valid cycle record after the fixation through the re-qualification (its reading qualified):
+    a validation mark, the search reused, the qualification and the validation rerun (its runs
+    superseded). ``reissued_validation``: the fixation's successor written and the validation
+    reissued, A supported in ``supported`` of 28 blocks; ``requalified_K_miss``: (arm, label)
+    whose re-qualified numerical runs miss their target (a repair the new runs would call for;
+    its search runs on 0, .03, .06, .3 in ln K); ``confirming``: the n record and three
+    confirmation blocks before the cycle, at the confirmation instead (the validation reused, the
+    confirmation rerun)."""
+    study = Study()
+    study.ready()
+    offsets = None if requalified_K_miss is None else {requalified_K_miss: [0.0, 0.03, 0.06, 0.3]}
+    if candidate == 2:
+        study.search(1)
+        study.numerical(1, states={"A": "failing"})
+    study.search(candidate, offsets=offsets)
+    study.numerical(candidate)
+    study.validation(candidate)
+    if confirming:
+        study.n(candidate, N=60)
+        study.confirmation(candidate, count=3)
+    old = study.expected
+    study.fixed = {candidate: {"validation": fixation_link(candidate, "validation", 1, old)}}
+    if confirming:
+        study.fixed[candidate]["confirmation"] = fixation_link(candidate, "confirmation", 1, old)
+        study.technical(run_of(study, "confirmation", "F", "u", 10401, candidate))
+        claims = {"search": REUSE, "qualification": RERUN, "validation": REUSE,
+                  "confirmation": RERUN}  # fmt: skip
+        study.cycle_record(candidate, stage="confirmation", claims=claims)
+    else:
+        study.technical(run_of(study, "validation", "F", "u",
+                               SEEDS["validation"][candidate][4], candidate))  # fmt: skip
+        study.cycle_record(
+            candidate,
+            stage="validation",
+            claims={"search": REUSE, "qualification": RERUN, "validation": RERUN},
+        )
+    record = study.cycle_records[candidate]["record"]
+    record["fixation"] = {"path": study.fixed[candidate]["validation"]["path"], "sha256": "7" * 64,
+                          "root": "repo"}  # fmt: skip
+    # the write-once records of the old code there when the cycle is written, as it lists them
+    record["affected"]["records"] = sorted(
+        [dict(record["fixation"]),
+         *([{"path": study.fixed[candidate]["confirmation"]["path"], "sha256": "6" * 64,
+             "root": "repo"}, {"path": f"study3/decisions/n-c{candidate}.json",
+                               "sha256": "5" * 64}] if confirming else [])],
+        key=lambda entry: entry["path"])  # fmt: skip
+    if requalified_K_miss is not None:  # the re-qualification's runs miss the target
+        arm, label = requalified_K_miss
+        for e in [
+            e
+            for e in study.endpoints
+            if e.cell.step == "numerical"
+            and e.arm == arm
+            and e.candidate == candidate
+            and math.isclose(e.lr, CANDIDATES[candidate]["start"][arm][label])
+        ]:
+            study.change(e.run_id, K=CANDIDATES[candidate]["targets"][label] * math.exp(0.3))
+    if reissued_validation is not None:
+        study.fixed[candidate]["validation"] = fixation_link(candidate, "validation", 2,
+                                                             study.expected)  # fmt: skip
+        supported = reissued_validation["supported"]
+        spec, seeds = CANDIDATES[candidate], SEEDS["validation"][candidate][:28]
+        for i, seed in enumerate(seeds):
+            for arm in ARMS:
+                for label in LABELS:
+                    K = spec["targets"][label]
+                    if arm == "A" and label == "u" and i >= supported:
+                        K = 5.0  # below K*: A unsupported in this block
+                    study.add(ep(arm, spec["start"][arm][label], seed, step="validation",
+                                 candidate=candidate, K=K, attempt=2))  # fmt: skip
+    return study
+
+
+def test_requalification_failing_before_the_confirmation_takes_the_registered_route() -> None:
+    """After the validation fixation, before the confirmation has started: a fixed rate's
+    re-qualification failing scientifically takes the registered route (A or F at candidate 1:
+    candidate 2; at candidate 2: the scientific feasibility report; P: P–F closes)."""
+    study = post_fixation_cycle(candidate=1)
+    study.readings[1] = failing_reading("F")
+    assert study.advance()["route"][-1]["event"] == "candidate"
+    study2 = post_fixation_cycle(candidate=2)
+    study2.readings[2] = failing_reading("A", 2)
+    assert study2.advance()["outcome"] == "scientific_feasibility_report"
+    study3 = post_fixation_cycle(candidate=1)
+    study3.readings[1] = failing_reading("P")
+    result = study3.advance()
+    assert "P-F" not in result["active"]["comparisons"] and result["candidate"] == 1
+
+
+def test_a_rerun_validation_failing_its_gate_before_the_confirmation_takes_the_registered_route(
+) -> None:  # fmt: skip
+    """The validation rerun after the fixation's successor, A supported in 21 of 28 blocks: the
+    A–F gate fails, and candidate 1 moves on."""
+    study = post_fixation_cycle(candidate=1, reissued_validation={"supported": 21})
+    assert study.advance()["route"][-1]["event"] == "candidate"
+
+
+def test_after_the_fixation_the_repair_never_changes_a_rate() -> None:
+    """A cycle whose record names a fixation keeps the fixation's rates: a repair the
+    re-qualified runs would call for is listed and never issued."""
+    study = post_fixation_cycle(candidate=1, requalified_K_miss=("A", "l"))
+    result = study.advance()
+    assert result["rates"] == FIXED_RATES
+    assert result["repair_not_applied"] and result["repair_not_applied"][0]["arm"] == "A"
+    assert not any(key.endswith("/repair") for key in result["prescribed"])
+
+
+def test_after_a_cycle_the_stale_records_successors_come_in_the_registered_order() -> None:
+    """A cycle at the confirmation (the validation reused): the step names (1) the validation
+    fixation's successor, then (3) the n record's successor with its predecessor's N, cap and
+    cohort (the confirmation has started), then (4) the supplement's successor; the cycle's
+    listing names each stale record and its successor once written."""
+    study = post_fixation_cycle(candidate=1, confirming=True)
+    study.cycle_records[1]["record"]["affected"]["records"] = [
+        {"path": "docs/study3-fixation-confirmation-c1.json", "sha256": "3" * 64, "root": "repo"},
+        {"path": "docs/study3-fixation-validation-c1.json", "sha256": "1" * 64, "root": "repo"},
+        {"path": "study3/decisions/n-c1.json", "sha256": "2" * 64}]  # fmt: skip
+    result = study.advance()
+    assert (result["stage"], result["step"]["record"]) == ("validation", "fixation-validation-c1-2")
+    assert result["step"]["path"] == "docs/study3-fixation-validation-c1-2.json"
+    assert result["cycle"][1]["successors"] == {
+        "docs/study3-fixation-confirmation-c1.json": None,
+        "docs/study3-fixation-validation-c1.json": None,
+        "study3/decisions/n-c1.json": None,
+    }
+    study.fixed[1]["validation"] = fixation_link(1, "validation", 2, study.expected)
+    result = study.advance()
+    step = result["step"]
+    assert (result["stage"], step["record"]) == ("choice", "n-c1-2")
+    old = study.entries["n-c1"]["record"]
+    assert {k: step["fields"][k] for k in ("N", "cap", "cohort")} == {
+        k: old[k] for k in ("N", "cap", "cohort")}  # fmt: skip
+    assert step["fields"]["supersedes"] == "study3/decisions/n-c1.json"
+    successor = {**old, "kind": "n-c1-2",
+                 "code": {"commit": "c" * 40, "gpu_code_sha256": study.expected}}  # fmt: skip
+    study.entries["n-c1"] = {**entry("n-c1", "passed", successor),
+                             "path": "/runs/study3/decisions/n-c1-2.json",
+                             "chain": ["/runs/study3/decisions/n-c1.json",
+                                       "/runs/study3/decisions/n-c1-2.json"]}  # fmt: skip
+    result = study.advance()
+    assert (result["stage"], result["step"]["record"]) == (
+        "confirmation", "fixation-confirmation-c1-2")  # fmt: skip
+    assert result["cycle"][1]["successors"] == {
+        "docs/study3-fixation-confirmation-c1.json": None,
+        "docs/study3-fixation-validation-c1.json": "docs/study3-fixation-validation-c1-2.json",
+        "study3/decisions/n-c1.json": "study3/decisions/n-c1-2.json"}  # fmt: skip
+
+
+def test_a_stale_budget_record_is_no_longer_needed_once_n_needs_none() -> None:
+    """A cycle before the confirmation, its n and budget records of the old code listed as stale
+    (N = 99 asked for the budget decision); the validation reissued, and the n record's successor
+    gives N = 60, at most 90 and not raised for power: no budget decision is needed
+    (``budget_reason``), so the stale budget record asks for no successor (none has a ``why``)
+    and the route goes on to the confirmation."""
+    study = post_fixation_cycle(candidate=1, reissued_validation={"supported": 28})
+    record = study.cycle_records[1]["record"]
+    old = record["old_code"]
+    study.n(N=99)
+    study.budget()
+    budget = study.entries["budget-c1"]
+    budget["record"]["code"]["gpu_code_sha256"] = old
+    record["affected"]["records"] = sorted(
+        [*record["affected"]["records"],
+         {"path": "study3/decisions/n-c1.json", "sha256": "5" * 64},
+         {"path": "study3/decisions/budget-c1.json", "sha256": "4" * 64}],
+        key=lambda entry: entry["path"])  # fmt: skip
+    successor = {**study.n(N=60), "kind": "n-c1-2"}
+    study.entries["n-c1"] = {**entry("n-c1", "passed", successor),
+                             "path": "/runs/study3/decisions/n-c1-2.json",
+                             "chain": ["/runs/study3/decisions/n-c1.json",
+                                       "/runs/study3/decisions/n-c1-2.json"]}  # fmt: skip
+    result = study.advance()
+    step = result["step"]
+    assert step.get("record") != "budget-c1-2" and (step.get("fields") or {}).get("why", 1)
+    assert result["stage"] == "confirmation", (result["stage"], step)
+    assert not [p for p in result["problems"] if "budget-c1" in p]
+
+
+def test_an_old_code_record_the_cycle_does_not_list_is_not_stale() -> None:
+    """A write-once record is stale only when its cycle lists it (``affected.records``: those
+    there when it was written). After a cycle at the validation, its fixation's successor written
+    and the validation reissued: an n record of the old code written after the cycle asks for no
+    successor (none could name a record the cycle lists): it is invalid, its code not the one in
+    force, and the cycle stays valid. A fixation's successor whose code equals the old one is not
+    stale either: no further successor is asked of it."""
+    study = post_fixation_cycle(candidate=1, reissued_validation={"supported": 28})
+    old = study.cycle_records[1]["record"]["old_code"]
+    assert [e["path"] for e in study.cycle_records[1]["record"]["affected"]["records"]] == [
+        "docs/study3-fixation-validation-c1.json"]  # fmt: skip
+    study.n(N=60)
+    study.entries["n-c1"]["record"]["code"]["gpu_code_sha256"] = old
+    result = study.advance()
+    assert result["step"].get("record") != "n-c1-2"
+    assert result["step"]["kind"] == "blocked"
+    assert any(f"its GPU code {old}" in p and "the code in force" in p
+               for p in result["step"]["reasons"])  # fmt: skip
+    assert result["cycle"][1]["state"] == "valid"
+    study = post_fixation_cycle(candidate=1, reissued_validation={"supported": 28})
+    study.fixed[1]["validation"] = fixation_link(1, "validation", 2, old)
+    result = study.advance()
+    assert result["step"].get("record") != "fixation-validation-c1-3"
+    assert result["cycle"][1]["successors"] == {
+        "docs/study3-fixation-validation-c1.json": "docs/study3-fixation-validation-c1-2.json"
+    }
+
+
+def test_once_the_confirmation_started_a_failing_requalification_moves_nothing() -> None:
+    """The confirmation has started: a fixed rate's re-qualification failing scientifically
+    blocks the route (``confirmation_fixed``); the candidate is not moved, no arm is closed."""
+    for arm in ("F", "P"):
+        study = post_fixation_cycle(candidate=1, confirming=True)
+        study.readings[1] = failing_reading(arm)
+        result = study.advance()
+        step = result["step"]
+        assert (result["candidate"], step["kind"], step["reason"]) == (
+            1, "blocked", "confirmation_fixed")  # fmt: skip
+        assert result["active"]["arms"] == ["A", "F", "P"]
+        assert all(event["event"] not in ("candidate", "close_pf") for event in result["route"])
+
+
+def test_an_arm_closed_before_the_confirmation_started_keeps_its_route() -> None:
+    """P failed at its qualification and P–F closed before the confirmation started (its n record
+    of A–F): with blocks started, the walk closes P as before and reaches the confirmation; no
+    ``confirmation_fixed``."""
+    study = Study()
+    study.ready()
+    study.search()
+    study.numerical(states={("P", "u"): "failing"})
+    study.validation(arms=("A", "F"))
+    study.n(N=60, arms=("A", "F"))
+    study.confirmation(count=3, arms=("A", "F"))
+    result = study.advance()
+    assert (result["stage"], result["active"]["arms"]) == ("confirmation", ["A", "F"])
+    assert result["step"].get("reason") != "confirmation_fixed"
+
+
+def qualification_reading(state: str) -> dict:
+    """Candidate 1's qualification reading, every starting rate in ``state``."""
+    study = Study()
+    for arm in ARMS:
+        for label in LABELS:
+            study.rate(1, arm, START[arm][label], state)
+    return study.readings[1]
+
+
+def requalifying_reading() -> dict:
+    """The re-qualification under way: the voided cases wait for their next attempts."""
+    return qualification_reading("incomplete")
+
+
+def qualified_reading() -> dict:
+    return qualification_reading("qualified")
+
+
+def cells_of(study: Study, run_ids) -> set:
+    return {(e.arm, e.lr, e.seed) for e in study.endpoints if e.run_id in set(run_ids)}
+
+
+def search_runs_count(result) -> bool:
+    """The search's runs count: the walk is past candidate 1's search, no search cell issued."""
+    step = result["step"]
+    return (result["candidate"], result["outcome"]) == (1, None) and result["stage"] not in (
+        "engineering", "simulation", "search") and not str(step.get("campaign")).startswith(
+        "search")  # fmt: skip
+
+
+def test_superseded_runs_are_listed_and_reissued_after_requalification() -> None:
+    study = through_validation_with_mark("F", 10304)
+    affected = study.cycle_record(stage="validation", claims={"search": REUSE,
+                                                              "qualification": RERUN,
+                                                              "validation": RERUN})  # fmt: skip
+    study.readings[1] = requalifying_reading()  # numerical: the voided cases waiting
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("numerical", "pending")
+    assert {a["run_id"] for a in result["cycle"][1]["affected"]} == set(affected)
+    listed = result["cycle"][1]
+    assert (listed["state"], listed["stage"], listed["claims"]) == (
+        "valid", "validation", {"search": "reuse", "qualification": "rerun",
+                                "validation": "rerun"})  # fmt: skip
+    assert listed["successors"] == {} and listed["repair_record"] == listed["record"]
+    study.readings[1] = qualified_reading()
+    result = study.advance()
+    assert result["step"]["kind"] == "campaign" and cells(result["step"]) == cells_of(
+        study, affected
+    )
+
+
+def test_a_reused_stage_keeps_counting_under_the_old_code() -> None:
+    study = through_validation_with_mark("F", 10304)
+    old = study.expected
+    study.cycle_record(stage="validation", claims={"search": REUSE, "qualification": REUSE,
+                                                   "validation": RERUN})  # fmt: skip
+    records = study.records()
+    assert qualification_code(records, 1) == old
+    assert search_runs_count(study.advance())
+    study.cycle_records[1]["claims"]["qualification"] = RERUN  # the qualification rerun
+    assert qualification_code(study.records(), 1) == study.expected != old
+
+
+def test_an_analysis_only_fix_resolves_a_mark_only_through_the_recomputed_reading() -> None:
+    study = Study()
+    study.ready()
+    study.search()
+    run = run_of(study, "search", "F", "u", 10102)
+    study.change(run, state="technical", K=None)  # the reading under the old analysis rule
+    assert study.advance()["step"]["reason"] == "engineering_cycle"
+    study.change(run, state="usable", K=6.0, steps=25)  # the fixed rule's reading of the same
+    result = study.advance()
+    assert result["step"].get("reason") != "engineering_cycle" and result["cycle"] == {}
+
+
+def test_the_cycle_is_listed_wherever_the_walk_stops() -> None:
+    """A cycle record of the candidate is listed in the result whatever the stage: an invalid
+    one with its state, a qualify.py cycle (no cycle record) not at all."""
+    study = Study()
+    study.through_validation()
+    study.cycle_records[1] = {"state": "invalid", "path": "/runs/study3/decisions/cycle-c1.json",
+                              "problems": ["/runs/cycle-c1.json: a problem"]}  # fmt: skip
+    listed = study.advance()["cycle"]
+    assert list(listed) == [1] and listed[1]["state"] == "invalid"
+    assert (listed[1]["affected"], listed[1]["claims"], listed[1]["stage"]) == ([], {}, None)
+    plain = Study()
+    plain.ready()
+    plain.search()
+    plain.cycle()
+    assert plain.advance()["cycle"] == {}
+
+
+def test_an_after_cycle_closure_must_cite_the_candidates_cycle() -> None:
+    """The closure of a mark left unresolved after the cycle carries that reason and cites the
+    candidate's supersession record by its sha256; another cycle, or the launcher's outcome as
+    its reason, closes nothing."""
+    study = at_stage("validation")
+    study.cycle()
+    broken = study.technical(run_of(study, "validation", "F", "u", 10304))
+    (way,) = [w for w in study.advance()["step"]["ways_out"] if "closure" in w]
+    cycle = way["closure"]["fields"]["cycle"]
+    study.closure(broken.run_id, reason="unresolved_after_cycle",
+                  cycle={**cycle, "sha256": "0" * 64})  # fmt: skip
+    result = study.advance()
+    assert (result["step"]["kind"], result["outcome"]) == ("blocked", None)
+    study.closure(broken.run_id, cycle=cycle)  # the launcher's outcome as its reason
+    result = study.advance()
+    assert (result["step"]["kind"], result["outcome"]) == ("blocked", None)
+
+
+def test_an_invalid_cycle_record_blocks_the_candidate_from_the_search_on() -> None:
+    """A cycle record that is not valid (here: a problem the readers found) blocks the
+    candidate's walk from its search on, with its problems, as an invalid decision record
+    blocks the stage that rests on it."""
+    study = Study()
+    study.through_validation()
+    study.cycle_records[1] = {"state": "invalid", "problems": ["/runs/cycle-c1.json: a problem"]}
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("search", "blocked")
+    assert result["step"]["reasons"] == ["/runs/cycle-c1.json: a problem"]
+    assert "/runs/cycle-c1.json: a problem" in result["problems"]
 
 
 def test_a_recovery_round_reruns_a_technical_run_and_its_next_attempt_decides() -> None:
@@ -914,21 +1599,21 @@ def test_a_technical_run_the_launcher_never_ended_stops_and_its_start_closure_is
         "attempt": 1,
         "run": broken.label,
     }
-    assert_route_pending(study.advance(), broken)
+    assert_cycle_offered(study.advance(), broken)
     study.closure(broken.run_id)  # its start line
     closure_refused(study.advance(), "P")
 
 
 def test_a_mark_whose_terminal_record_is_published_has_no_recovery_round() -> None:
     """The launcher opens a recovery round only for an attempt with no published terminal record:
-    only the researcher's decision is left."""
+    only the engineering cycle is left."""
     study = Study()
     study.through_validation()
     run_id = run_of(study, "validation", "F", "u", 10304)
     broken = study.technical(run_id, outcome="done", published=True, state="usable", K=None)
     result = study.advance()
-    assert_route_pending(result, broken)
-    (way,) = result["step"]["ways_out"]
+    assert_cycle_offered(result, broken)
+    way, _ = result["step"]["ways_out"]
     assert "recovery" not in way
     assert not any("recovery round" in r for r in result["step"]["reasons"])
 
@@ -944,7 +1629,7 @@ def test_a_search_run_the_search_counts_as_technical_is_a_mark_that_stops(fields
     broken = study.technical(run_id, outcome="done", published=True, **fields)
     result = study.advance()
     assert result["stage"] == "search"
-    assert_route_pending(result, broken)
+    assert_cycle_offered(result, broken)
     study.closure(run_id)
     closure_refused(study.advance(), "F")
 
@@ -958,7 +1643,7 @@ def test_a_usable_validation_run_lacking_a_number_is_a_mark_that_stops(fields) -
     broken = study.technical(run_id, outcome="done", published=True, **fields)
     result = study.advance()
     assert result["stage"] == "validation"
-    assert_route_pending(result, broken)
+    assert_cycle_offered(result, broken)
     study.closure(run_id)
     closure_refused(study.advance(), "P")  # P stays open
 
@@ -981,7 +1666,7 @@ def test_a_validation_run_its_block_cannot_place_is_a_mark_that_stops() -> None:
     }
     result = study.advance()
     assert result["stage"] == "validation"
-    assert_route_pending(result, stray)
+    assert_cycle_offered(result, stray)
     study.closure("stray-r1")
     closure_refused(study.advance(), "F")
 
@@ -1007,7 +1692,7 @@ def test_a_confirmation_run_listed_as_unresolved_is_a_mark_that_stops() -> None:
                              log="launch/study3-c1-confirmation.jsonl")  # fmt: skip
     result = study.advance()
     assert result["stage"] == "confirmation"
-    assert_route_pending(result, broken)
+    assert_cycle_offered(result, broken)
     assert result["confirmation"]["may_start_next"] is False
     study.closure(run_id)
     closure_refused(study.advance(), "A")
@@ -1867,8 +2552,8 @@ def test_the_confirmation_never_moves_the_candidate_or_closes_p() -> None:
 
 
 def test_a_technical_confirmation_run_stops_the_confirmation() -> None:
-    """A technical mark in the confirmation is no failed endpoint: the step stops for the
-    researcher's decision, no block starts, and a closure routes nothing."""
+    """A technical mark in the confirmation is no failed endpoint: the step offers its
+    engineering cycle, no block starts, and a closure routes nothing."""
     study = Study()
     study.through_validation()
     study.n(N=60)
@@ -1877,7 +2562,7 @@ def test_a_technical_confirmation_run_stops_the_confirmation() -> None:
                              log="launch/study3-c1-confirmation.jsonl")  # fmt: skip
     result = study.advance()
     assert result["stage"] == "confirmation"
-    assert_route_pending(result, broken)
+    assert_cycle_offered(result, broken)
     assert result["confirmation"]["may_start_next"] is False
     study.closure(broken.run_id)
     closure_refused(study.advance(), "F")
@@ -2213,12 +2898,23 @@ THETA0_RUN = Path("study2_stage_a") / "20261014T192927Z-theta0-s2000-abb703a1-a1
 
 
 @pytest.fixture
-def worlds(tmp_path):
+def worlds(tmp_path, monkeypatch):
     """A runs directory with its decision records (and their evidence, in a checkout), and the
-    runs: the reader tests' helpers on one root."""
+    runs: the reader tests' helpers on one root. The runs ran a clean checkout of ``RAN``, whose
+    GPU code is the engineering record's (``gpu_code_identity`` gives it; any other commit is
+    the real one's), until a test says otherwise."""
     records = DecisionWorld(tmp_path)
     shutil.rmtree(records.run)  # the records tests' own sentinel run: no run of this study
     runs = RunWorld(tmp_path / "runs")
+    runs.git = {"commit": RAN, "dirty": False}
+    real = code_identity.gpu_code_identity
+
+    def identity(commit="HEAD", repo=None, *args, **kwargs):
+        if commit == RAN:
+            return {"commit": RAN, "files": 1, "sha256": EXPECTED}
+        return real(commit, *([] if repo is None else [repo]), *args, **kwargs)
+
+    monkeypatch.setattr(code_identity, "gpu_code_identity", identity)
     # the engineering stage's log: a decision record is checked against the journal
     (runs.root / "launch").mkdir()
     (runs.root / "launch" / "study3-c1-engineering.jsonl").write_text("")
@@ -2262,7 +2958,9 @@ def named(records, round_=0, candidate=1) -> dict:
             "engineering_record_sha256": records.digest("engineering")}  # fmt: skip
 
 
-def search_round0(records, runs, offsets=None, candidate=1) -> None:
+def search_round0(records, runs, offsets=None, candidate=1, git=None) -> None:
+    """The candidate's search round 0 at the start rates (K at the targets times e^offset), the
+    runs' ``meta.json`` recording ``git`` (the world's by default)."""
     spec = CANDIDATES[candidate]
     for arm in ARMS:
         for label in LABELS:
@@ -2270,7 +2968,8 @@ def search_round0(records, runs, offsets=None, candidate=1) -> None:
                 k = spec["targets"][label] * math.exp((offsets or {}).get((arm, label), 0.0))
                 runs.run(arm, spec["start"][arm][label], seed, role="search", round_=0, k=k,
                          prescribe=False, campaign=f"study3-c{candidate}-search-r0",
-                         candidate=candidate, head=named(records, 0, candidate))  # fmt: skip
+                         candidate=candidate, head=named(records, 0, candidate),
+                         git=git or runs.git)  # fmt: skip
 
 
 def numerical_runs(runs, candidate=1) -> None:
@@ -2559,7 +3258,7 @@ def test_ways_out_list_a_recovery_round_only_where_the_launcher_opens_one(
 ) -> None:
     """The launcher opens a round of the run's own where its attempts are used up (a round spent
     on an earlier attempt included: a further round, one attempt), and never for a diverged run
-    or a completed one: there only the researcher's decision is listed (no closure)."""
+    or a completed one: there only the engineering cycle is listed (no decision, no closure)."""
     records, runs = worlds
     records.write("engineering", records.engineering())
     records.write("simulation", records.simulation())
@@ -2567,9 +3266,10 @@ def test_ways_out_list_a_recovery_round_only_where_the_launcher_opens_one(
     result = read(records, runs)
     assert (result["stage"], result["step"]["kind"], result["problems"]) == (
         "search", "blocked", [])  # fmt: skip
-    assert result["step"]["reason"] == ROUTE_PENDING
-    (way,) = result["step"]["ways_out"]
-    assert way["run_id"] == run_id and way["decision"] == {"decision": ROUTE_PENDING}
+    assert result["step"]["reason"] == CYCLE
+    way, cycle = result["step"]["ways_out"]
+    assert way["run_id"] == run_id and "decision" not in way
+    assert cycle["cycle"]["fields"] == {"candidate": 1, "stage": "search", "marks": [run_id]}
     assert "closure" not in way
     assert ("recovery" in way) is recovery, case
     assert "check" not in way.get("recovery", ""), case  # a search run's round needs none
@@ -2596,8 +3296,8 @@ def test_a_technical_run_whose_round_is_spent_is_recoverable_at_one_attempt(
     result = read(records, runs)
     assert (result["stage"], result["step"]["kind"], result["problems"]) == (
         "search", "blocked", [])  # fmt: skip
-    (way,) = result["step"]["ways_out"]
-    assert way["run_id"] == run_id
+    way, cycle = result["step"]["ways_out"]  # the run's own, then its cycle
+    assert way["run_id"] == run_id and cycle["cycle"]["fields"]["marks"] == [run_id]
     assert f"--only {label} --max-attempts 1 --recovery" in way["recovery"]
     assert "no earlier round of the label gave" in way["recovery"]
     assert all(option in way["recovery"] for option in ("--incident-time", "--cause",
@@ -2630,8 +3330,8 @@ def test_a_run_with_attempts_left_under_its_round_is_offered_no_round(worlds) ->
     result = read(records, runs)
     assert (result["stage"], result["step"]["kind"], result["problems"]) == (
         "search", "blocked", [])  # fmt: skip
-    (way,) = result["step"]["ways_out"]
-    assert way["run_id"] == run_id and "recovery" not in way
+    way, cycle = result["step"]["ways_out"]  # the run's own, then its cycle
+    assert way["run_id"] == run_id and "recovery" not in way and "cycle" in cycle
 
 
 def test_the_reader_blocks_on_a_refused_run(worlds) -> None:
@@ -2849,12 +3549,12 @@ def test_the_reader_reads_a_real_qualification_through_its_engineering_cycle(
     from zero_field_refusal import code_identity
 
     # the GPU codes as sha256 a decision record can carry: the records' (the launcher runs'
-    # commit abc123) and the fix's (this checkout's after the cycle)
+    # commit abc123, and the search runs' RAN) and the fix's (this checkout's after the cycle)
     old = {**RECORDS_CODE, "sha256": "e" * 64}
     fix = {**RECORDS_CODE, "commit": "f" * 40, "sha256": "f" * 64}
 
     def gpu_code(commit="HEAD", *args, **kwargs):
-        return dict(fix if commit == "HEAD" else old if commit == "abc123" else
+        return dict(fix if commit == "HEAD" else old if commit in ("abc123", RAN) else
                     {**old, "sha256": "3" * 64})  # fmt: skip
 
     monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(old))

@@ -210,6 +210,9 @@ class World:
         shutil.rmtree(self.records.run)  # the records tests' own run: none here without a start
         self.root, self.repo = self.records.runs, self.records.repo
         self.runs = RunWorld(self.root)
+        # the runs ran a clean checkout (its GPU code EXPECTED: ``gpu_code_identity`` below) until
+        # a versions record pins a commit of the checkout (``versions``)
+        self.runs.git = {"commit": "a" * 40, "dirty": False}
         # θ₀ also where ``progress`` reads it by default: a confirmation is written without
         # --theta0 here, so that its run.sh calls the guard without it
         default = self.root / THETA0_RUN
@@ -220,8 +223,8 @@ class World:
         self.capsys, self.monkeypatch = capsys, monkeypatch
         self.script = script_module(SCRIPT, "study3_campaigns")
         monkeypatch.setattr(self.script, "REPO", self.repo)
-        stamps = itertools.count(1)
-        monkeypatch.setattr(self.script, "stamp", lambda: f"20261027T{next(stamps):06d}Z")
+        self.stamps = itertools.count(1)  # the writer's stamps, kept with the world
+        monkeypatch.setattr(self.script, "stamp", lambda: f"20261027T{next(self.stamps):06d}Z")
         monkeypatch.setattr(
             code_identity,
             "gpu_code_identity",
@@ -738,8 +741,8 @@ def test_a_blocked_step_and_a_terminal_stage_are_refused(world) -> None:
 
 
 def test_no_block_is_written_while_a_technical_mark_outside_the_qualification_stands(world):
-    """A technical confirmation run stops the route for the researcher's decision: the writer
-    refuses a new block, naming the stop."""
+    """A technical confirmation run's route is its engineering cycle: the writer refuses a new
+    block, naming the stop."""
     study = Study()
     study.through_validation()
     study.n(N=60)
@@ -748,8 +751,101 @@ def test_no_block_is_written_while_a_technical_mark_outside_the_qualification_st
                              log="launch/study3-c1-confirmation.jsonl")  # fmt: skip
     world.core(study)
     error = world.refused("confirmation")
-    assert "the step is blocked" in error and "engineering_route_pending" in error
+    assert "the step is blocked" in error and "engineering_cycle" in error
     assert broken.run_id in error
+
+
+CYCLE_WRITTEN_AT = "2026-10-28T12:00:00+00:00"  # the cycle record's written_at: the incident
+
+
+def validation_superseded_by_cycle(world, *, arm: str = "F", label: str = "u",
+                                   seed: int = 10300) -> tuple[Study, str]:  # fmt: skip
+    """Candidate 1 through its validation, its run of ``arm`` at its ``label`` rate on ``seed``
+    superseded by its engineering cycle outside the qualification (the state's cycle listing:
+    its bridge under RUNS_DIR, its written_at, its fix), the records the validation's header
+    names written: the step is the validation campaign of that one cell. Returns the study and
+    the cell's label as the writer names it."""
+    study = Study()
+    study.through_validation()
+    run = run_of(study, "validation", arm, label, seed)
+    study.change(run, state="superseded", K=None, steps=None)
+    study.cycle()  # the chain moves to the fix
+    record = {"stage": "validation", "written_at": CYCLE_WRITTEN_AT,
+              "code": {"commit": "c" * 40, "gpu_code_sha256": study.expected},
+              "affected": {"runs": [{"run_id": run, "step": "validation", "gpu_code": EXPECTED}]},
+              "kept": []}  # fmt: skip
+    path = str(world.root / "study3" / "decisions" / "cycle-c1.json")
+    study.cycle_records[1] = {"state": "valid", "path": path, "record": record,
+                              "bridge_path": str(world.root / "qualification/c1/supersede-1.json"),
+                              "claims": {}, "repair_record": path, "problems": []}  # fmt: skip
+    world.ready()
+    world.versions()
+    world.core(study)
+    rate = START[arm][label]
+    return study, f"c1-validation-{OPT[arm]}-{rate:g}-s{seed}/s{seed}"
+
+
+def test_the_campaign_writer_prints_a_recovery_round_per_reissued_label(world) -> None:
+    """A validation cell its engineering cycle superseded, its label's latest attempt one the cycle
+    affected and used up under the cell's config hash: the writer prints, after the check and
+    before the launch, the label's
+    own recovery round (``--only`` it at one attempt, the cycle as its reason, the cycle's time as
+    the incident's, the fix as its cause, the bridge as its evidence), in the file's comments
+    too; a label with no attempt, or under a new config hash (a new run), is launched plainly."""
+    study, label = validation_superseded_by_cycle(world)
+    first = world.write("validation")  # the label never started: a plain launch
+    assert "--recovery" not in printed(world)
+    (launched,) = world.launched(first)  # its run, under the cell's config hash
+    world.write("validation")  # its latest attempt is no run the cycle affected: a plain launch
+    assert "--recovery" not in printed(world)
+    study.cycle_records[1]["record"]["affected"]["runs"][0]["run_id"] = launched
+    out = world.write("validation")
+    shown = printed(world).splitlines()
+    (line,) = [x for x in shown if "--recovery" in x]
+    assert f"--only {label} --max-attempts 1" in line
+    assert '--recovery "engineering cycle c1"' in line
+    assert "--evidence " + str(world.root / "qualification/c1/supersede-1.json") in line
+    assert "--incident-time " + CYCLE_WRITTEN_AT in line
+    assert f'--cause "engineering cycle c1, fix {"c" * 40}"' in line
+    assert line.startswith(f"Recovery: python scripts/launch.py {out} ")
+    order = [x.split(":", 1)[0] for x in shown if x.startswith(("Check:", "Recovery:", "Run:"))]
+    assert order == ["Check", "Recovery", "Run"]
+    assert line in campaign_of(out)["comments"]
+    world.monkeypatch.setattr(world.script, "cell_hash", lambda *a, **k: "1" * 16)  # a new hash
+    world.write("validation")
+    assert "--recovery" not in printed(world)
+
+
+def test_the_driver_runs_a_reissued_labels_recovery_round_before_its_blocks_launch(
+    world, tmp_path
+) -> None:
+    """A confirmation block with a reissued label: after its guard, the label's recovery round,
+    then the block's launch (which then skips the label's completed run); a block without one is
+    launched as before."""
+    confirmation_study(world)
+    out = world.write("confirmation", "--blocks", "10400", "10401")
+    files = sorted(out.glob("*.yaml"))
+    recovery = (f"python scripts/launch.py {files[0]} --only L/s10400 --max-attempts 1 "
+                '--recovery "engineering cycle c1" --incident-time 2026-10-28T12:00:00+00:00 '
+                '--cause "engineering cycle c1, fix c" '
+                "--evidence /runs/supersede-1.json")  # fmt: skip
+    driver = tmp_path / "run.sh"
+    driver.write_text(world.script.driver_text(
+        1, world.root, [(10400, files[0], sha256(files[0])), (10401, files[1], sha256(files[1]))],
+        "now", None, {10400: [recovery]}))  # fmt: skip
+    stand_in = StandIn(tmp_path / "stand-in")
+    done, found = stand_in.run(driver, tmp_path)
+    assert done.returncode == 0, done.stderr
+    guard = ["scripts/study3_summary.py", "guard", "--runs-root", str(world.root), "--candidate",
+             "1", "--seed"]  # fmt: skip
+    assert [args for *_, args in found] == [
+        [*guard, "10400", "--campaign", str(files[0])],
+        ["scripts/launch.py", str(files[0]), "--only", "L/s10400", "--max-attempts", "1",
+         "--recovery", "engineering cycle c1", "--incident-time", "2026-10-28T12:00:00+00:00",
+         "--cause", "engineering cycle c1, fix c", "--evidence", "/runs/supersede-1.json"],
+        ["scripts/launch.py", str(files[0]), "--max-attempts", "1"],
+        [*guard, "10401", "--campaign", str(files[1])],
+        ["scripts/launch.py", str(files[1]), "--max-attempts", "1"]]  # fmt: skip
 
 
 def test_a_step_with_no_cells_is_refused(world) -> None:
