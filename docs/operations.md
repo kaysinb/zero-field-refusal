@@ -2343,9 +2343,9 @@ fixation.
     counted over the studies the power counts. The n_min scan does not read it.
   - **The fixation** records the rates, this disclosure and that report's procedure
     (`missing_labels`). Its reader refuses a fixation whose missing labels depart from them, a
-    power scenario at another rate, or a scenario that is not the grid's of its name or out of
-    its order; the J check refuses results whose power at 1 % is at another rate or over other
-    studies.
+    power scenario at another rate, or scenarios other than the whole grid (one missing, one
+    extra, one out of order or one whose values differ), as it refuses the identities; the J
+    check refuses results whose power at 1 % is at another rate or over other studies.
 
 ```bash
 R="$RUNS_DIR"

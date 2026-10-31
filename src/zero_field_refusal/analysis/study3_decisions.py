@@ -1415,9 +1415,10 @@ def fixation_problems(
     HEAD's blob and its commit's blob are the same bytes), and its schema is closed: its sizes
     are the registered ones (M ``COVERAGE_RUNS``, the resamples ``SCREEN_RESAMPLES`` and
     ``VERIFICATION_RESAMPLES``, the calibration ``study3_simulation.calibration_record``), its
-    scenarios are the grid's (each the ``study3_simulation.SCENARIOS`` scenario of its name,
-    every parameter and source line, in the grid's order; a power scenario's missing labels at
-    the planning rate, ``missing_labels.power``), its missing labels the decided ones
+    scenarios are the grid as a whole (``study3_simulation.SCENARIOS``: the same names in the same
+    order, none missing and none extra, as the identities are, each with every parameter, its
+    role and its source lines equal; a power scenario's missing labels at the planning rate,
+    ``missing_labels.power``), its missing labels the decided ones
     (``study3_simulation.missing_labels_record``), its ``tests`` are exactly
     ``test_identities`` of its coverage scenarios, with their count and sha256, J their count,
     and the thresholds and detection powers recomputed. Nothing is read from a fixation with a
@@ -1573,10 +1574,16 @@ def _fixation_schema(f: Any) -> list[str]:
                       f"departs in {', '.join(differ)} (study3_simulation.SCENARIOS)")  # fmt: skip
     if len(set(names)) != len(names):
         check.add("scenarios", "lists a scenario twice")
-    elif names != sorted(names, key=lambda n: order.index(n) if n in order else len(order)):
-        check.add("scenarios", "are not in the grid's order (study3_simulation.SCENARIOS)")
-    if scenarios and not power:
-        check.add("scenarios", "hold no power scenario: the power gate reads them (M20)")
+    missing = [n for n in order if n not in names]
+    extra = [n for n in names if n not in grid]
+    if missing:
+        check.add("scenarios", f"lack the grid's {missing}: the fixation holds the whole grid "
+                  "(study3_simulation.SCENARIOS)")  # fmt: skip
+    if extra:
+        check.add("scenarios", f"hold {extra}, beyond the grid (study3_simulation.SCENARIOS)")
+    if not missing and not extra and names != order:
+        check.add("scenarios", f"are not in the grid's order {order} "
+                  "(study3_simulation.SCENARIOS)")  # fmt: skip
     tests = check.object("tests", f["tests"], ("list", "count", "sha256"))
     if tests is not None:
         want = test_identities(coverage)

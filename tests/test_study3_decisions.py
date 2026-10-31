@@ -64,8 +64,13 @@ SENTINEL = "SEALED-RESPONSE-5d1e0b"
 CODE = {"commit": "a" * 40, "gpu_code_sha256": "b" * 64}
 WHEN = "2026-10-26T12:00:00Z"
 SEALED = ("responses", "observations")
-# The fixture's simulation: one coverage scenario (C16) and one power scenario (P20), J = 105
+# The fixture's simulation: the whole grid (the reader refuses any other), J = 1 785; C16 a
+# coverage scenario and P20 a power scenario that tests name
 FIXED, POWER = "C16", "P20"
+COVERAGE = [s.name for s in sim.SCENARIOS if s.coverage]
+POWERS = [s.name for s in sim.SCENARIOS if s.power]
+GRID_J = len(test_identities(COVERAGE))  # 17 × 105
+LEVEL_TESTS = GRID_J // 5  # each level's calibration tests, and the verification's: 17 × 21
 STREAMS = {"calibration": 11, "verification": 12}
 POLICY = {"path": "docs/study3-preregistration.md", "commit": "c" * 40, "sha256": "d" * 64,
           "amendments": [1, 2, 3, 4, 5, 6]}  # fmt: skip
@@ -107,7 +112,7 @@ class World:
             (run / folder).mkdir(parents=True)
             (run / folder / name).write_text(json.dumps({"text": SENTINEL}) + "\n")
         self.run = run
-        self.J = 105
+        self.J = GRID_J
         self.checkout()
 
     # -- the simulation's fixation (committed in the checkout, a Git repository) and results
@@ -124,11 +129,10 @@ class World:
         git(self.repo, "add", INPUTS)
         git(self.repo, "commit", "-qm", "the inputs record")
         self.first = git(self.repo, "rev-parse", "HEAD")
-        scenario, power = sim.SCENARIOS_BY_NAME[FIXED], sim.SCENARIOS_BY_NAME[POWER]
-        calibrations = {(scenario, c): fixed_calibration(c) for c in (1, 2)}
-        calibrations[(power, 1)] = fixed_calibration(1)
+        scenarios = list(sim.SCENARIOS)
+        calibrations = {(sc, c): fixed_calibration(c) for sc, c in sim.calibration_pairs(scenarios)}
         fixation = sim.build_fixation(
-            self.repo / INPUTS, [scenario, power], calibrations,
+            self.repo / INPUTS, scenarios, calibrations,
             code={"commit": self.first, "gpu_code_sha256": "b" * 64}, streams=STREAMS,
             repo=self.repo, policy=POLICY, written_at=WHEN)  # fmt: skip
         fixation.update(change or {})
@@ -158,7 +162,7 @@ class World:
         verification = record.get("verification")
         verified_ok = isinstance(verification, dict) and verification.get("passed") is True
         rows = []
-        for identity in test_identities([FIXED]):
+        for identity in test_identities(COVERAGE):
             stream, _, _, slot, comparison = identity
             kind = "joint" if comparison == "joint" else "comparison"
             if stream == "calibration":
@@ -191,8 +195,8 @@ class World:
         power = gates.get("power_af") if isinstance(gates.get("power_af"), dict) else {}
         short = value("power_af", 0.86) < 0.80
         n_min = power.get("n_min") if type(power.get("n_min")) is int else 84
-        scan = [{"n": n, "by_scenario": {POWER: {"correct": count(0.80 if n == n_min else 0.79),
-                                                 "studies": M}}}
+        scan = [{"n": n, "by_scenario": {name: {"correct": count(0.80 if n == n_min else 0.79),
+                                                "studies": M} for name in POWERS}}
                 for n in range(MIN_N, max(n_min, MIN_N) + 1)] if short else []  # fmt: skip
         safe = value("safe_pass_rate", 0.982)
         results = {
@@ -210,13 +214,13 @@ class World:
                 "empirical_pass_rate": {"passed": count(value("empirical_pass_rate", 0.6)),
                                         "studies": M, "validation_blocks": 28},
                 **{name: {"level": level if level is not None else 0.975,
-                          "by_scenario": {POWER: {"correct": count(value(name, default)),
-                                                  "studies": M, "draws": M}}}
+                          "by_scenario": {s: {"correct": count(value(name, default)),
+                                              "studies": M, "draws": M} for s in POWERS}}
                    for name, default in (("power_af", 0.86), ("power_pf", 0.85))},
                 POWER_REPORT: {"level": level if level is not None else 0.975,
                                "missing_rate": 0.01,
-                               "by_scenario": {POWER: {"correct": count(value(POWER_REPORT, 0.7)),
-                                                       "studies": M, "draws": M}}},
+                               "by_scenario": {s: {"correct": count(value(POWER_REPORT, 0.7)),
+                                                   "studies": M, "draws": M} for s in POWERS}},
                 "n_scan": scan,
                 "detection_power": detection_power(j, M),
             },
@@ -441,8 +445,8 @@ def reported(value: float) -> dict:
 def default_gates() -> dict:
     """The gates of a simulation that passed them all: a pass rate at the safe alternative of
     0.982, the power of 0.86, and, reported only, the pass rate at study 2's empirical point,
-    P–F's power and the detection powers at the fixture's J = 105."""
-    detection = detection_power(105, M)
+    P–F's power and the detection powers at the fixture's J = 1 785."""
+    detection = detection_power(GRID_J, M)
     return {"safe_pass_rate": {"value": 0.982, "requirement": 0.95, "passed": True},
             "power_af": power_gate(0.86),
             "empirical_pass_rate": reported(0.6), "power_pf": reported(0.85),
@@ -474,8 +478,8 @@ def pass_rate(value: float) -> dict:
     return {"value": value, "requirement": 0.95, "passed": value >= 0.95}
 
 
-def coverage_row(level: float, *, passed: bool = True, J: int = 105, M: int = 10_000,
-                 tests: int = 21) -> dict:  # fmt: skip
+def coverage_row(level: float, *, passed: bool = True, J: int = GRID_J, M: int = 10_000,
+                 tests: int = LEVEL_TESTS) -> dict:  # fmt: skip
     c, j = coverage_threshold(J, M, 0.025), coverage_threshold(J, M, 0.05)
     counts = {"comparison": c - 20, "joint": j - 20}
     if not passed:
@@ -503,9 +507,9 @@ def refused(world: World, kind: str, record: dict, *words: str) -> None:
 
 
 def verified(level=0.975, passed=True, **kw) -> dict:
-    """A simulation's independent verification (the fixture's 21 verification tests and
+    """A simulation's independent verification (the fixture's 357 verification tests and
     streams)."""
-    return {"level": level, "passed": passed, "tests": 21, "calibration_stream": 11,
+    return {"level": level, "passed": passed, "tests": LEVEL_TESTS, "calibration_stream": 11,
             "verification_stream": 12, **kw}  # fmt: skip
 
 
@@ -1194,7 +1198,7 @@ def test_the_coverage_threshold_is_the_recomputed_one(world) -> None:
 
 def test_a_levels_pass_agrees_with_its_counts(world) -> None:
     row = coverage_row(0.975)
-    over = {**row, "counts": {"comparison": 314, "joint": 100}}
+    over = {**row, "counts": {"comparison": row["thresholds"]["comparison"] + 1, "joint": 100}}
     sim_refused(world, "coverage[0].passed", coverage=[over])
     under = {**coverage_row(0.975, passed=False), "counts": {"comparison": 10, "joint": 10}}
     sim_refused(world, "coverage[0].passed", coverage=[under])
@@ -1250,12 +1254,12 @@ def test_the_tests_of_the_levels_and_the_verification_fit_within_the_frozen_j(wo
     rows = [coverage_row(level, passed=level == 0.990, tests=900, J=1000) for level in LEVELS]
     sim_refused(world, "coverage", "add up", "J = 1000", coverage=rows, level=0.99,
                 verification=verified(0.99))  # fmt: skip
-    # the sum equal to J is accepted (the fixation's J = 105: four levels of 21 tests and 21
+    # the sum equal to J is accepted (the fixation's J = 1 785: four levels of 357 tests and 357
     # verification tests), one more is not
     world.write("simulation", world.simulation())
     assert world.read("simulation")[1] == []
     decision_path(world.runs, "simulation").unlink()
-    sim_refused(world, "coverage", "106", "J = 105", verification=verified(tests=22))
+    sim_refused(world, "coverage", "1786", "J = 1785", verification=verified(tests=LEVEL_TESTS + 1))
     sim_refused(world, "verification.tests", verification=verified(tests=0))
     sim_refused(world, "verification.tests", verification=verified(tests=1.5))
     sim_refused(world, "verification", "tests",
@@ -1606,12 +1610,36 @@ def test_a_fixation_whose_scenarios_depart_from_the_grid_is_refused(world, name)
     refused(world, "simulation", world.simulation(), "fixation", *words)
 
 
-def test_a_fixation_out_of_the_grids_order_or_without_power_is_refused(world) -> None:
-    first, second = world.fixation["scenarios"]
-    world.checkout(change={"scenarios": [second, first]})
-    refused(world, "simulation", world.simulation(), "fixation", "grid's order")
-    world.checkout(change={"scenarios": [first]})
-    refused(world, "simulation", world.simulation(), "fixation", "no power scenario")
+def test_the_fixture_fixation_is_the_whole_grid(world) -> None:
+    assert [s["name"] for s in world.fixation["scenarios"]] == [s.name for s in sim.SCENARIOS]
+    assert world.fixation["J"] == GRID_J == 1785 and LEVEL_TESTS == 357
+
+
+def test_a_fixation_missing_p20_is_refused(world) -> None:
+    """The fixation holds the whole grid, as it holds every identity: without P20 it is refused,
+    on writing and on reading."""
+    entries = [e for e in world.fixation["scenarios"] if e["name"] != POWER]
+    world.checkout(change={"scenarios": entries})
+    refused(world, "simulation", world.simulation(), "fixation", "lack the grid's ['P20']",
+            "whole grid")  # fmt: skip
+
+
+def test_a_fixation_with_an_extra_scenario_is_refused(world) -> None:
+    """A scenario beyond the grid (P20's model under another name) is refused."""
+    twin = {**next(e for e in world.fixation["scenarios"] if e["name"] == POWER), "name": "P22"}
+    world.checkout(change={"scenarios": [*world.fixation["scenarios"], twin]})
+    refused(world, "simulation", world.simulation(), "fixation", "hold ['P22'], beyond the grid",
+            "P22 is not a scenario of the grid")  # fmt: skip
+
+
+def test_a_fixation_with_c16_and_c17_swapped_is_refused(world) -> None:
+    """The grid's scenarios in another order are refused, though each is the grid's."""
+    entries = list(world.fixation["scenarios"])
+    names = [e["name"] for e in entries]
+    i, j = names.index("C16"), names.index("C17")
+    entries[i], entries[j] = entries[j], entries[i]
+    world.checkout(change={"scenarios": entries})
+    refused(world, "simulation", world.simulation(), "fixation", "are not in the grid's order")
 
 
 @pytest.mark.parametrize("mode,words", [
@@ -1638,7 +1666,7 @@ def test_the_power_at_1_percent_is_recomputed_from_its_counts(world) -> None:
 def test_the_fixation_must_be_unchanged_since_its_commit(world) -> None:
     record = world.simulation()
     path = world.repo / SIMULATION_FIXATION
-    path.write_text(path.read_text().replace('"J": 105', '"J": 105 '))
+    path.write_text(path.read_text().replace('"J": 1785', '"J": 1785 '))
     record["fixation"] = {**record["fixation"], "sha256": sha256(path)}
     refused(world, "simulation", record, "fixation", "changed since its commit")
 

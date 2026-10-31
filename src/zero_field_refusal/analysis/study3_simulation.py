@@ -265,7 +265,7 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   confirmation) to the cap's reading common to the three computations; it counts over the
   studies the power counts, and the n_min scan does not read it. The fixation records the
   rates, the disclosure and that report's procedure (``missing_labels_record``), and its reader
-  checks them and that each of its scenarios is the grid's; decided.
+  checks them and that its scenarios are the whole grid; decided.
 - M7, support: the realized probability that a validation block is A–F-supported at the rates
   the procedure selects, failures of bracket and collapse included; f calibrated to it, 0 and
   flagged when the natural failures exceed 1 − s (the registration's "support 0.88, 0.90,
@@ -3331,12 +3331,12 @@ def read_fixation(path: str | Path, repo: str | Path) -> dict[str, Any]:
     as the J check reads it (``study3_decisions.fixation_problems``): committed once, alone and
     unchanged at HEAD (so in HEAD's history: HEAD or an ancestor of it holds it), its schema
     closed, its sizes the registered ones (the resamples and the calibration's size and
-    tolerances, ``calibration_record``, included), its scenarios the grid's (``SCENARIOS``, by
-    name, in its order, the power scenarios at the planning rate), its missing labels the decided
-    ones (``missing_labels_record``) and its tests exactly its coverage scenarios' identities.
-    Returns ``fixation``,
-    ``commit``, ``sha256``, the ``scenarios`` (``Scenario``) and ``calibrations`` ((scenario,
-    candidate) → ``Calibration``). ``ValueError`` naming every problem."""
+    tolerances, ``calibration_record``, included), its scenarios the whole grid (``SCENARIOS``:
+    every scenario, none extra, in its order, each equal; the power scenarios at the planning
+    rate), its missing labels the decided ones (``missing_labels_record``) and its tests exactly
+    its coverage scenarios' identities. Returns ``fixation``, ``commit``, ``sha256``, the
+    ``scenarios`` (``Scenario``) and ``calibrations`` ((scenario, candidate) →
+    ``Calibration``). ``ValueError`` naming every problem."""
     repo = Path(repo)
     full = Path(path) if Path(path).is_absolute() else repo / path
     try:

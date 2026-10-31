@@ -1594,6 +1594,10 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path, monkeypatch) ->
         sim.read_fixation(path, repo)
     run_git(repo, "add", decisions.SIMULATION_FIXATION)
     run_git(repo, "commit", "-qm", "the fixation")
+    # four scenarios are not the code's whole grid: refused; under a code whose grid they are, read
+    with pytest.raises(ValueError, match="lack the grid's"):
+        sim.read_fixation(decisions.SIMULATION_FIXATION, repo)
+    monkeypatch.setattr(sim, "SCENARIOS", tuple(scenarios))
     found = sim.read_fixation(decisions.SIMULATION_FIXATION, repo)
     assert found["fixation"] == fixation and found["commit"] == run_git(repo, "rev-parse", "HEAD")
     assert found["scenarios"] == scenarios
@@ -1649,16 +1653,16 @@ def test_the_fixations_schema_is_closed(tmp_path) -> None:
     from zero_field_refusal.analysis import study3_decisions as decisions
 
     repo = checkout_with_registration(tmp_path)
-    scenarios = [sim.SCENARIOS_BY_NAME["C02"], sim.SCENARIOS_BY_NAME["P18"]]
+    scenarios = list(sim.SCENARIOS)  # the whole grid: the reader refuses any other
     inputs = repo / "docs" / "study3-simulation-inputs.json"
     code = {"commit": "a" * 40, "gpu_code_sha256": "b" * 64}
-    power = {(scenarios[1], 1): a_calibration(1)}
+    calibrations = {(sc, c): a_calibration(c) for sc, c in sim.calibration_pairs(scenarios)}
     with pytest.raises(ValueError, match="candidate 2"):  # the verification's fallback
-        sim.build_fixation(inputs, scenarios, {(scenarios[0], 1): a_calibration(1), **power},
+        sim.build_fixation(inputs, scenarios,
+                           {k: v for k, v in calibrations.items() if k != (scenarios[0], 2)},
                            code=code, streams=sim.STREAMS, repo=repo)  # fmt: skip
-    fixation = sim.build_fixation(inputs, scenarios,
-                                  {**{(scenarios[0], c): a_calibration(c) for c in (1, 2)},
-                                   **power}, code=code, streams=sim.STREAMS, repo=repo)  # fmt: skip
+    fixation = sim.build_fixation(inputs, scenarios, calibrations, code=code, streams=sim.STREAMS,
+                                  repo=repo)  # fmt: skip
     assert fixation["machine"] == sim.machine_record()
     assert set(fixation["machine"]) == {"platform", "cpu", "numpy"}
     only_first = {**fixation["scenarios"][0], "calibration": {
@@ -1680,7 +1684,7 @@ def test_the_fixations_schema_is_closed(tmp_path) -> None:
         ({"calibration": {**fixation["calibration"], "tolerances": {
             **fixation["calibration"]["tolerances"], "sigma": -1.0}}}, "calibration.tolerances"),
         ({"calibration": {"studies": 10_000}}, "calibration"),
-        ({"J": 106}, "J"),
+        ({"J": 1786}, "J"),
         ({"thresholds": {"comparison": 300, "joint": 573}}, "thresholds"),
         ({"streams": {"calibration": 5, "verification": 5}}, "streams"),
         ({"max_draws_factor": 5}, "max_draws_factor"),
@@ -1688,7 +1692,9 @@ def test_the_fixations_schema_is_closed(tmp_path) -> None:
         ({"rules": {**fixation["rules"], "draw_bound": {"rule": "x", "source": "y"}}},
          "draw_bound"),
         ({"missing_labels": labels}, "missing_labels"),
-        ({"scenarios": fixation["scenarios"][:1]}, "no power scenario"),
+        ({"scenarios": fixation["scenarios"][:-1]}, "lack the grid's ['G2']"),
+        ({"scenarios": [*fixation["scenarios"], {**fixation["scenarios"][-1], "name": "G3"}]},
+         "hold ['G3'], beyond the grid"),
         ({"scenarios": fixation["scenarios"][::-1]}, "grid's order"),
     ):  # fmt: skip
         problems = decisions._fixation_schema({**fixation, **change})
