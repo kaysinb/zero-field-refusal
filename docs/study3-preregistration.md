@@ -1100,7 +1100,7 @@ procedure and its records, and the simulation runs under them.
     engineering re-run; candidate 1's utility gate; the incident pause; the registered count of
     labels still missing after repair; the audit's missing-reference bounds.
 - **What was known.** These rules were changed after the following were known:
-  - the registration, the code up to ⟨commit⟩ and the dry run's reports;
+  - the registration, the code up to 8fd2df1 and the dry run's reports;
   - the engineering stage's first pass: cases 1–17 of 24 ran and 16 passed. Case 17 (seed 10002, P
     at 1.3·10⁻⁵) failed the bridge on v₀'s hash alone in its rest part;
   - the K and utility of those engineering runs, read while these rules were being decided: support
