@@ -2483,8 +2483,9 @@ fixation.
     representative.
   - **What it is.** A conservative planning assumption for supported runs, not a proven upper
     bound: the bound from 0 in 39 900 assumes independent labels and is computed on a selected
-    subset, the non-collapsed runs. The rate is MCAR, so label failures clustered in a run or an
-    arm, or missing not at random, are covered only by the stress scenarios.
+    subset, the non-collapsed runs. The rate is MCAR. Run- or arm-level clustered label failures
+    are not explicitly modeled. The stress scenarios cover higher MCAR missingness and
+    harmful-response-dependent MNAR.
   - **The decision.** The researcher's, after preliminary calculations showed the power gate
     failing at 1 %. It changes the planning alternative of the power requirement; the
     registration sets no rate, so no amendment is needed, and the required simulation itself
@@ -2495,6 +2496,10 @@ fixation.
     contains the 0.1 % mask). It is read by the registered procedure, its own validation spread,
     N and confirmation included, to the cap's reading common to the three computations, and is
     counted over the studies the power counts. The n_min scan does not read it.
+    - It uses the N the rule chose, before any n_min increase. It is not the power of the
+      final increased design.
+    - Under MCAR, Δ scales by 0.99 / 0.999: ±2 pp becomes about ±1.982 pp. The SD need not
+      shrink by exactly 1 %.
   - **The fixation** records the rates, this disclosure and that report's procedure
     (`missing_labels`). Its reader refuses a fixation whose missing labels depart from them, a
     power scenario at another rate, or scenarios other than the whole grid (one missing, one

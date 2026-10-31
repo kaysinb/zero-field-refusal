@@ -317,8 +317,9 @@ VALIDATION_BLOCKS = (28, 40)
 SUPPORTED_AT = {28: 22, 40: 31}  # the validation gate's minimum of supported blocks
 REQUIRED_GATES = {"safe_pass_rate": 0.95, "power_af": 0.80}
 # Gates that are only reported: the pass rate at study 2's empirical point, P-F's power, A-F's
-# power with labels missing at 1 % (study3_simulation's M6b), and the detection power of the
-# coverage screen at the actual J (per comparison and joint)
+# power with labels missing at 1 % (study3_simulation's M6b: at the N the rule chose, before
+# any n_min increase, not the power of the final increased design), and the detection power
+# of the coverage screen at the actual J (per comparison and joint)
 POWER_REPORT = "power_af_1pct_missing"
 REPORTED_GATES = ("empirical_pass_rate", "power_pf", POWER_REPORT, "detection_power_comparison",
                   "detection_power_joint")  # fmt: skip
@@ -2481,7 +2482,8 @@ def _power_report(gates: Mapping[str, Any], fixation: Mapping[str, Any], level: 
     """The power at the fixation's denser missing rate (``POWER_REPORT``, reported beside
     ``power_af``): its level ``power_af``'s, its rate the fixation's ``missing_labels.report``,
     its counts over every power scenario, each over ``power_af``'s studies and draws (paired);
-    the smallest correct/M, and the problem."""
+    the smallest correct/M, and the problem. It is the power at the N the rule chose, before
+    any n_min increase, not the power of the final increased design."""
     m, g = COVERAGE_RUNS, gates[POWER_REPORT]
     rate = fixation["missing_labels"]["report"]["missing_rate"]
     by = g.get("by_scenario") if isinstance(g, Mapping) else None

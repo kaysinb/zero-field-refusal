@@ -1547,6 +1547,13 @@ def test_a_fixation_of_reduced_sizes_is_refused_under_the_registered_ones(
     assert found is None and any(word in p for p in problems)
 
 
+# M6b's limitation, word for word
+CLUSTERED = (
+    "Run- or arm-level clustered label failures are not explicitly modeled. The stress "
+    "scenarios cover higher MCAR missingness and harmful-response-dependent MNAR."
+)
+
+
 def test_the_fixation_records_the_missing_labels_with_their_disclosure(world) -> None:
     """M6b: the coverage scenarios at 1 % MCAR (stress values), the power scenarios at the
     planning rate 0.1 % MCAR, with its definition, its status (not a proven bound), its source,
@@ -1562,13 +1569,20 @@ def test_the_fixation_records_the_missing_labels_with_their_disclosure(world) ->
                     "independent labels", "selected subset", "non-collapsed runs")),
         ("source", ("WildGuard", "0 unparseable outputs in 39 900 labels", "non-collapsed",
                     "docs/reports/stage-1.md", "not representative", "not used")),
-        ("limitation", ("clustered", "missing not at random", "only by the stress scenarios")),
+        ("limitation", (CLUSTERED,)),
         ("decision", ("the researcher's", "preliminary calculations", "power gate failing at 1 %",
                       "planning alternative", "sets no rate", "stays prospective")),
     ):  # fmt: skip
         assert all(w in power[name] for w in words), (name, power[name])
     text = json.dumps(labels).lower()
     assert not any(w in text for w in ("unseen", "nobody", "no one", "not seen", "blind"))
+    assert "covered only" not in text and CLUSTERED in sim.SOURCES["missing"]
+    # the power at 1 %: the rule's N, not the final increased design's; delta scales under MCAR
+    report = labels["report"]
+    assert "before any n_min increase" in report["role"]
+    assert "not the power of the final increased design" in report["role"]
+    assert all(w in report["draws"] for w in ("0.99 / 0.999", "1.982 pp",
+                                               "need not shrink by exactly 1 %"))  # fmt: skip
     assert all(s["missing_rate"] == 0.001 for s in world.fixation["scenarios"]
                if s["role"] == "power")  # fmt: skip
 

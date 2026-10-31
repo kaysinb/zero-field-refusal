@@ -209,7 +209,8 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   ``"screen"`` mode; L the first level whose tests pass (``selected_level``); the powers at
   every level, and beside them the power at 1 % MCAR (``power_report``, M6b): each power study
   of the screen again on its own streams with the denser mask, in the same part, its A–F
-  detections counted over the studies the power counts;
+  detections counted over the studies the power counts, at the N the rule chose (before any
+  n_min increase: not the power of the final increased design);
 - *scan-<n>*: when ``power_af`` at L (0.975 without an L) is short, the power scenarios again
   from the same streams with N at least n = 60, 61, …, to the first n whose smallest power
   reaches 0.80 or whose cap exceeds the 200 reserved seeds;
@@ -250,22 +251,25 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   (docs/reports/stage-1.md, "Judge labeling"). It is a conservative planning assumption for
   supported runs, not a proven upper bound: the bound from 0 in 39 900 assumes independent labels
   and is computed on a selected subset, the non-collapsed runs. Study 1's rate over all its runs
-  includes its collapsed runs, which are not representative, and is not used. The rate is MCAR:
-  label failures clustered in a run or an arm, or missing not at random, are covered only by the
-  stress scenarios. It was decided after preliminary calculations showed the power gate failing
-  at 1 % (the worst end of the missing labels' envelope lies about m/521 below the primary, m
-  the missing labels per run, and the power counts the reading common to the three computations,
-  M20); it changes the planning alternative of the power requirement; the registration sets no
-  rate, and the required simulation itself stays prospective. The coverage tests keep 1 %, so C16
-  and C17 (Δ = +2 pp) are coverage scenarios and P20, P21 the power's positive Δ. The power at
-  1 % MCAR is reported beside the gate, not a gate (``power_report``): each power study of the
-  screen again on its own streams and its scenario's calibration, its labels missing at 1 %
-  through the same uniforms (one per label, missing below the rate: the 1 % mask contains the
-  0.1 % mask), through the registered procedure (its own validation spread, N, cap and
-  confirmation) to the cap's reading common to the three computations; it counts over the
-  studies the power counts, and the n_min scan does not read it. The fixation records the
-  rates, the disclosure and that report's procedure (``missing_labels_record``), and its reader
-  checks them and that its scenarios are the whole grid; decided.
+  includes its collapsed runs, which are not representative, and is not used. The rate is MCAR.
+  Run- or arm-level clustered label failures are not explicitly modeled. The stress scenarios cover
+  higher MCAR missingness and harmful-response-dependent MNAR. It was decided after preliminary
+  calculations showed the power gate failing at 1 % (the worst end of the missing labels' envelope
+  lies about m/521 below the primary, m the missing labels per run, and the power counts the
+  reading common to the three computations, M20); it changes the planning alternative of the power
+  requirement; the registration sets no rate, and the required simulation itself stays prospective.
+  The coverage tests keep 1 %, so C16 and C17 (Δ = +2 pp) are coverage scenarios and P20, P21 the
+  power's positive Δ. The power at 1 % MCAR is reported beside the gate, not a gate
+  (``power_report``): each power study of the screen again on its own streams and its scenario's
+  calibration, its labels missing at 1 % through the same uniforms (one per label, missing below
+  the rate: the 1 % mask contains the 0.1 % mask), through the registered procedure (its own
+  validation spread, N, cap and confirmation) to the cap's reading common to the three
+  computations; it counts over the studies the power counts, and the n_min scan does not read it.
+  It uses the N the rule chose, before any n_min increase, and is not the power of the final
+  increased design. Under MCAR, Δ scales by 0.99 / 0.999 (±2 pp becomes about ±1.982 pp), and the
+  SD need not shrink by exactly 1 %. The fixation records the rates, the disclosure and that
+  report's procedure (``missing_labels_record``), and its reader checks them and that its scenarios
+  are the whole grid; decided.
 - M7, support: the realized probability that a validation block is A–F-supported at the rates
   the procedure selects, failures of bracket and collapse included; f calibrated to it, 0 and
   flagged when the natural failures exceed 1 − s (the registration's "support 0.88, 0.90,
@@ -521,9 +525,10 @@ SOURCES: dict[str, str] = {
         "C13 F and P at Se 0.75 (sparse strata 0.58-0.75); M6, decided"
     ),
     "missing": (
-        "MCAR in every scenario but C14, MNAR among harmful responses there; clustered or MNAR "
-        "label failures are covered only by the stress scenarios (the fixation's missing_labels); "
-        "M6b, decided"
+        "MCAR in every scenario but C14, MNAR among harmful responses there (the fixation's "
+        "missing_labels). Run- or arm-level clustered label failures are not explicitly "
+        "modeled. The stress scenarios cover higher MCAR missingness and "
+        "harmful-response-dependent MNAR. M6b, decided"
     ),
     "missing_rate": (
         "1 % MCAR in the coverage scenarios and 5 % MNAR among harmful in C14, as stress values "
@@ -2230,8 +2235,11 @@ def power_report(scenario: Scenario, setup: Setup, base: int, index: int, *, res
     streams and its scenario's calibration, its labels missing at ``REPORT_MISSING_RATE``
     (``report_scenario``: each label's one uniform, so that its mask contains the scenario's),
     through the registered procedure (its own validation spread, N, cap and confirmation) to A–F's
-    cap reading and final direction (``simulate_study``'s ``power_reading``). Per level slot:
-    ``N``, ``confirmed``, ``readings`` and ``direction`` (A–F's)."""
+    cap reading and final direction (``simulate_study``'s ``power_reading``). It uses the N the
+    rule chose, before any n_min increase: it is not the power of the final increased design.
+    Under MCAR, Δ scales by 0.99 / 0.999 (±2 pp becomes about ±1.982 pp), and the SD need not
+    shrink by exactly 1 %. Per level slot: ``N``, ``confirmed``, ``readings`` and ``direction``
+    (A–F's)."""
     if not scenario.power:
         raise ValueError(f"scenario {scenario.name} is not a power scenario")
     denser = report_scenario(scenario)
@@ -3079,9 +3087,10 @@ MISSING_LABELS: dict[str, dict[str, Any]] = {
         "of its non-collapsed runs (docs/reports/stage-1.md, 'Judge labeling'); study 1's rate "
         "over all its runs includes its collapsed runs, which are not representative, and is "
         "not used; M6b, decided",
-        "limitation": "missing completely at random: label failures clustered in a run or an "
-        "arm, or missing not at random, are covered only by the stress scenarios (1 % MCAR in "
-        "the coverage scenarios, 5 % MNAR among harmful responses in C14)",
+        "limitation": "missing completely at random. Run- or arm-level clustered label "
+        "failures are not explicitly modeled. The stress scenarios cover higher MCAR "
+        "missingness and harmful-response-dependent MNAR. They are 1 % MCAR in the coverage "
+        "scenarios and 5 % MNAR among harmful responses in C14",
         "decision": "the researcher's, after preliminary calculations showed the power gate "
         "failing at 1 % MCAR; it changes the planning alternative of the power requirement "
         "(docs/study3-preregistration.md, 'Simulation before validation'); the registration "
@@ -3092,13 +3101,16 @@ MISSING_LABELS: dict[str, dict[str, Any]] = {
         "missing_rate": REPORT_MISSING_RATE,
         "comparison": "A-F",
         "role": "reported beside power_af, not a gate: it has no requirement, and the n_min scan "
-        "does not read it",
+        "does not read it; it uses the N the rule chose, before any n_min increase, and is not "
+        "the power of the final increased design",
         "studies": "each power study of the screen, at every level; at a level, the studies "
         "power_af counts there (the first M confirmed by index), paired; the results give it at "
         "power_af's level",
         "draws": "each study's own streams (the screen's calibration base, the scenario's name "
         "and the study's index) and its power scenario's frozen calibration: the same search, "
-        "validation, confirmation, label and bootstrap draws",
+        "validation, confirmation, label and bootstrap draws; under MCAR, delta scales by "
+        "0.99 / 0.999 (+2 or -2 pp becomes about +1.982 or -1.982 pp), and the SD need not "
+        "shrink by exactly 1 %",
         "coupling": "one uniform per label on the study's label stream, the label missing when "
         "its uniform is below the rate: the 1 % mask contains the 0.1 % mask",
         "reading": "the registered procedure at the denser mask: its own validation spread, N, "
