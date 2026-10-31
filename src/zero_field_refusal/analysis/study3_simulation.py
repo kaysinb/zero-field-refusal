@@ -182,7 +182,7 @@ Carlo SEs. The truth's moments are remembered per (vector, arm, rates, harm mode
 offset), since the selected rates are rounded to 3 significant digits and repeat.
 
 **The engine** (§"Simulation before validation"; the files under ``RUNS_DIR/study3/simulation/``,
-reserved). A phase (``gates``, ``screen``, ``scan-<n>``, ``verification``) draws, per scenario,
+reserved). A phase (``gates``, ``screen``, ``scan-<n>``, ``verification-<level>``) draws, per scenario,
 units of ``UNIT`` (250) studies in index order, each written once as a part
 (``parts/<phase>/<scenario>/<first>.json``: its header, the stream, the sizes, the fixation and
 the commit, and one row per study). A scenario's units are issued while the contiguous finished
@@ -306,10 +306,13 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
   that holds in all three computations is reported") is Δ's sign; decided.
 - M21, the binomial interval of each test: Clopper–Pearson 95 % ("ordinary 95 % binomial
   interval"); decided.
-- M22, the grid: 17 coverage scenarios (J = 1 785), 4 power and 2 gate scenarios
-  (``SCENARIOS``); decided.
+- M22, the grid: 17 coverage scenarios (J = 2 856, every possible test of amendment 7), 4 power
+  and 2 gate scenarios (``SCENARIOS``); decided.
 - M23, the stream integers: calibration 20261101, verification 20261102 (``STREAMS``; any two
   distinct integers); decided.
+- M28, the verification's streams: one preassigned per level, ``verification_base``, from the
+  verification stream and the level's slot alone (amendment 7: no level's draws depend on whether
+  another's ran); decided.
 - M24, the coverage test's interval: the primary computation's only (the registration's coverage
   concerns "the interval"); decided.
 - M25, the sizes of the dry run's Part II (amendment 4): M = 200, 200 screen and 1 000
@@ -3030,7 +3033,7 @@ def _calibrate_scenario(
 # ------------------------------------------------------------------ the fixation
 
 FIXATION_KIND = "simulation-fixation"
-STREAMS = {"calibration": 20261101, "verification": 20261102}  # M23
+STREAMS = {"calibration": 20261101, "verification": 20261102}  # M23; per level: M28
 # The procedure's rules the fixation freezes, each with its source (ending "M<n>, decided")
 RULES: dict[str, dict[str, str]] = {
     "screen_simplifications": {
@@ -3050,6 +3053,12 @@ RULES: dict[str, dict[str, str]] = {
         "rule": "the joint test of the verification",
         "source": "counted over the studies confirmed for A-F; a study misses jointly if A-F "
         "misses, or if P-F is active in it and misses; M27, decided",
+    },
+    "verification_streams": {
+        "rule": "each level's verification has its preassigned stream, derived from the "
+        "verification stream and the level alone",
+        "source": "every possible verification test is in J before any draw, and no level's "
+        "draws depend on whether another's ran (amendment 7); M28, decided",
     },
     "draw_bound": {
         "rule": "each test draws at most max_draws_factor times M studies; a test short of M "
@@ -3380,7 +3389,7 @@ PART_KIND, SCREEN_KIND, VERIFICATION_KIND = (
     "simulation-verification",
 )
 RESULTS_KIND = "simulation-results"
-PHASES = ("gates", "screen", "verification")  # and "scan-<n>", one per n of the n_min scan
+PHASES = ("gates", "screen")  # and "scan-<n>", one per n of the n_min scan, and a verification's
 CALIBRATION_TOLERANCE = 1e-9  # the recomputed calibration's floats, relative
 # ... or within an absolute floor, the solvers' own precision on the field's scale, so that a
 # result near 0 (Δ = 0's attained truth, an offset o⁰ near 0) compares by its precision
@@ -3407,6 +3416,7 @@ CALIBRATION_FLOORS: dict[str, float] = {
 }
 QUANTILES = {"q10": Fraction(1, 10), "q50": Fraction(1, 2), "q90": Fraction(9, 10)}
 _SCAN = re.compile(r"scan-([1-9][0-9]*)")
+_VERIFICATION = re.compile(r"verification-(0\.[0-9]{3})")
 _PART_NAME = re.compile(r"[0-9]{6}\.json")
 _NAME = re.compile(r"[A-Za-z0-9_-]+")
 
@@ -3427,19 +3437,36 @@ def results_path(runs_root: str | Path) -> Path:
     return Path(runs_root) / SIMULATION_RESULTS
 
 
+def verification_phase(level: float) -> str:
+    """The phase of ``level``'s verification."""
+    return f"verification-{level_slot(level)}"
+
+
+def verification_base(base: int, level: float) -> int:
+    """``level``'s preassigned verification stream (M28), from the verification stream ``base``
+    and the level alone, so that no level's draws depend on whether another's ran."""
+    return _base(stream(base, "verification", level_slot(level)))
+
+
 def _phase_ok(phase: Any) -> bool:
     if phase in PHASES:
         return True
-    found = _SCAN.fullmatch(phase) if isinstance(phase, str) else None
+    if not isinstance(phase, str):
+        return False
+    found = _VERIFICATION.fullmatch(phase)
+    if found is not None:
+        return found.group(1) in [level_slot(lv) for lv in LEVELS]
+    found = _SCAN.fullmatch(phase)
     return found is not None and int(found.group(1)) >= MIN_N
 
 
 def part_path(runs_root: str | Path, phase: str, scenario: str, first: int) -> Path:
     """The part of ``scenario``'s studies from index ``first`` in ``phase`` (``gates``,
-    ``screen``, ``scan-<n>`` or ``verification``): ``parts/<phase>/<scenario>/<first>.json``
-    under the simulation's folder."""
+    ``screen``, ``scan-<n>`` or ``verification-<level>``):
+    ``parts/<phase>/<scenario>/<first>.json`` under the simulation's folder."""
     if not _phase_ok(phase):
-        raise ValueError(f"no phase {phase!r} (phases: {PHASES} and scan-<n>, n ≥ {MIN_N})")
+        raise ValueError(f"no phase {phase!r} (phases: {PHASES}, scan-<n>, n ≥ {MIN_N}, and "
+                         "verification-<level>)")  # fmt: skip
     if not (isinstance(scenario, str) and _NAME.fullmatch(scenario)):
         raise ValueError(f"scenario {scenario!r} is no folder name")
     if not (_integer(first) and 0 <= first < 10**6):
@@ -3485,7 +3512,7 @@ class Unit:
 
     @property
     def mode(self) -> str:
-        return "procedure" if self.phase == "verification" else "screen"
+        return "procedure" if self.phase.startswith("verification") else "screen"
 
 
 def header(unit: Unit, fixation_ref: Mapping[str, str], commit: str) -> dict[str, Any]:
@@ -4255,7 +4282,7 @@ def _verification(runs_root: Path, context: Context, commit: str, screen: Mappin
     confirmed with P–F active), never past 4·M draws. Its summary (``verification.json``)."""
     fixation, d = context.fixation, _decisions
     m, j = d.COVERAGE_RUNS, fixation["J"]
-    bound, base = d.MAX_DRAWS_FACTOR * m, fixation["streams"]["verification"]
+    bound = d.MAX_DRAWS_FACTOR * m
     level = selected_level(screen["tests"], j, m)
     if level is None:
         raise SimulationError("no level passed the screen: the verification is not due")
@@ -4268,12 +4295,14 @@ def _verification(runs_root: Path, context: Context, commit: str, screen: Mappin
     def short(_: str, rows: list) -> int:
         return max(m - sum(bool(o.confirmed.get(level)) for o in rows), m - sum(map(pf, rows)))
 
-    units = {sc.name: Unit("verification", sc.name, 0, 1, base, d.VERIFICATION_RESAMPLES, (level,),
-                           blocks, floor) for sc in coverage}  # fmt: skip
+    base = verification_base(fixation["streams"]["verification"], level)
+    units = {sc.name: Unit(verification_phase(level), sc.name, 0, 1, base,
+                           d.VERIFICATION_RESAMPLES, (level,), blocks, floor)
+             for sc in coverage}  # fmt: skip
     rows = _phase(pool, runs_root, context, commit, units, bound, short)
     tests = []
     for identity in fixation["tests"]["list"]:
-        if identity[0] != "verification":
+        if identity[0] != "verification" or identity[3] != level_slot(level):
             continue
         found = rows[identity[1]]
         used = (_first(found, m, pf) if identity[4] == "P-F"
@@ -4405,7 +4434,9 @@ def results_record(screen: Mapping[str, Any], verification: Mapping[str, Any] | 
     elif verification is None or verification.get("level") != level:
         raise SimulationError(f"level {level} passed the screen: its verification is due")
     else:
-        rows += list(verification["tests"])
+        verified = {tuple(r["test"]): r for r in verification["tests"]}
+        rows += [verified.get(tuple(i), _not_due(i)) for i in fixation["tests"]["list"]
+                 if i[0] == "verification"]  # fmt: skip
     at = d.POWER_LEVEL if level is None else level
     power = screen["gates"]["power"]
     gates = {

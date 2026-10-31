@@ -689,7 +689,7 @@ def test_the_grid_is_the_registered_one() -> None:
     names = [s.name for s in sim.SCENARIOS]
     assert names == [f"C{i:02d}" for i in range(1, 18)] + ["P18", "P19", "P20", "P21", "G1", "G2"]
     coverage = [s for s in sim.SCENARIOS if s.coverage]
-    assert len(coverage) == 17 and {s.role for s in coverage} == {"coverage"}  # J = 17 × 105
+    assert len(coverage) == 17 and {s.role for s in coverage} == {"coverage"}  # J = 17 × 168
     assert [s.name for s in sim.SCENARIOS if s.power] == ["P18", "P19", "P20", "P21"]
     assert sim.ROLES == ("coverage", "power", "gate")
     assert not any(s.coverage and s.power for s in sim.SCENARIOS)
@@ -1557,7 +1557,7 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path, monkeypatch) ->
     fixation = sim.build_fixation(
         inputs, scenarios, calibrations, code=code, streams=sim.STREAMS, repo=repo
     )
-    assert fixation["J"] == 2 * 105 and fixation["tests"]["count"] == 210
+    assert fixation["J"] == 2 * 168 and fixation["tests"]["count"] == 336
     assert fixation["streams"] == {"calibration": 20261101, "verification": 20261102}
     assert fixation["policy"]["path"] == "docs/study3-preregistration.md"
     assert fixation["policy"]["amendments"] == [1, 2]
@@ -1571,7 +1571,8 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path, monkeypatch) ->
                 "cancellation between arms",
     }  # fmt: skip
     assert set(fixation["rules"]) == {"screen_simplifications", "pf_verification",
-                                      "joint_verification", "draw_bound"}  # fmt: skip
+                                      "joint_verification", "verification_streams",
+                                      "draw_bound"}  # fmt: skip
     assert fixation["rules"]["joint_verification"]["source"] == (
         "counted over the studies confirmed for A-F; a study misses jointly if A-F misses, or if "
         "P-F is active in it and misses; M27, decided"
@@ -1603,7 +1604,7 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path, monkeypatch) ->
     assert found["scenarios"] == scenarios
     assert found["calibrations"] == {(sc, c): cal for (sc, c), cal in calibrations.items()}
     # modified after its commit, or its tests edited: refused
-    path.write_text(text.replace('"J": 210', '"J": 211'))
+    path.write_text(text.replace('"J": 336', '"J": 337'))
     with pytest.raises(ValueError, match="changed since its commit"):
         sim.read_fixation(path, repo)
     path.write_text(text)
@@ -1684,7 +1685,7 @@ def test_the_fixations_schema_is_closed(tmp_path) -> None:
         ({"calibration": {**fixation["calibration"], "tolerances": {
             **fixation["calibration"]["tolerances"], "sigma": -1.0}}}, "calibration.tolerances"),
         ({"calibration": {"studies": 10_000}}, "calibration"),
-        ({"J": 1786}, "J"),
+        ({"J": 2857}, "J"),
         ({"thresholds": {"comparison": 300, "joint": 573}}, "thresholds"),
         ({"streams": {"calibration": 5, "verification": 5}}, "streams"),
         ({"max_draws_factor": 5}, "max_draws_factor"),
@@ -1707,9 +1708,9 @@ def test_the_grid_of_the_proposal_has_its_thresholds() -> None:
 
     names = [s.name for s in sim.SCENARIOS if s.coverage]
     j = len(decisions.test_identities(names))
-    assert j == 1785
+    assert j == 2856
     assert {n: decisions.coverage_threshold(j, 10_000, p) for n, p in
-            decisions.COVERAGE_P0.items()} == {"comparison": 315, "joint": 590}  # fmt: skip
+            decisions.COVERAGE_P0.items()} == {"comparison": 317, "joint": 593}  # fmt: skip
     assert sim.N_POINTS is decisions.N_POINTS and sim.TESTED is decisions.TESTED
     assert sim.MAX_DRAWS_FACTOR is decisions.MAX_DRAWS_FACTOR
 
@@ -1910,7 +1911,7 @@ def test_the_results_hold_every_identity_once(tiny, tmp_path) -> None:
     decided, problems = decisions.coverage_decisions(results, ctx.fixation)
     assert problems == [] and decided["level"] == results["selected_calibration_level"]
     assert decided["level"] is not None and decided["validation_blocks"] in (28, 40)
-    assert results["M"] == 6 and results["J"] == 105
+    assert results["M"] == 6 and results["J"] == 168
     assert all(r["studies"] == 6 for r in results["tests"] if r["due"])
     # beside the power, the power at 1 % at its level, the fixation's rate, a reported gate
     level = results["gates"]["power_af"]["level"]
@@ -1922,8 +1923,8 @@ def test_the_results_hold_every_identity_once(tiny, tmp_path) -> None:
         "value": min(c["correct"] for c in by.values()) / 6, "requirement": None,
         "passed": None}  # fmt: skip
     # the verification's rows are at L, and every comparison counts its own studies
-    due = [r for r in results["tests"] if r["test"][0] == "verification"]
-    assert {r["level"] for r in due} == {decided["level"]}
+    due = [r for r in results["tests"] if r["test"][0] == "verification" and r["due"]]
+    assert {r["level"] for r in due} == {decided["level"]} and len(due) == 21
     assert set(results["reported"]) == {"C02", "P20", "G1", "G2"}
     assert set(results["reported"]["C02"]["blocks"]["0.975"]) == {"q10", "q50", "q90"}
     # the verification does not depend on the workers either

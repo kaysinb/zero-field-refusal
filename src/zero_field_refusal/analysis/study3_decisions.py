@@ -448,7 +448,7 @@ SIMULATION_RESULTS = "/".join((EXPERIMENT, SIMULATION_FOLDER, "results.json"))
 TEST_STREAMS = ("calibration", "verification")
 N_POINTS: tuple[int | str, ...] = (36, 45, 60, 75, 90, 99, "cap")
 TESTED = ("A-F", "P-F", "joint")
-SELECTED_LEVEL = "selected_calibration_level"  # a verification test's level slot
+SELECTED_LEVEL = "selected_calibration_level"  # the results' L
 P0 = {"A-F": COVERAGE_P0["comparison"], "P-F": COVERAGE_P0["comparison"],
       "joint": COVERAGE_P0["joint"]}  # fmt: skip
 DETECTION_AT = {"comparison": 0.035, "joint": 0.065}  # the registered example's departures
@@ -465,7 +465,7 @@ CALIBRATION_FIELDS = ("studies", "blocks", "rounds", "tolerances")
 CALIBRATION_TOLERANCES = ("support", "sigma", "sigma_relative", "offset")
 MACHINE_FIELDS = ("platform", "cpu", "numpy")  # where the fixation was calibrated (reported)
 FIXATION_RULES = ("screen_simplifications", "pf_verification", "joint_verification",
-                  "draw_bound")  # fmt: skip
+                  "verification_streams", "draw_bound")  # fmt: skip
 CURVATURE_FIELDS = ("A", "F", "P", "unit", "nominal_bias_af_pp", "source", "note")
 RESULTS_FIELDS = ("kind", "written_at", "fixation", "code", "M", "J", "streams", "resamples",
                   "validation_blocks", SELECTED_LEVEL, "tests", "gates", "reported")  # fmt: skip
@@ -1993,17 +1993,13 @@ def level_slot(level: float) -> str:
 def test_identities(scenarios: Sequence[str]) -> list[tuple[str, str, int | str, str, str]]:
     """The identities of the coverage tests of ``scenarios`` (the coverage scenarios, in the
     grid's order), in enumeration order: stream (``TEST_STREAMS``), scenario, N point
-    (``N_POINTS``), level slot (each level of the ladder in calibration, ``SELECTED_LEVEL`` in
-    verification) and comparison (``TESTED``). Per scenario 4 × 7 × 3 calibration and 7 × 3
-    verification tests, 105 in all."""
-    out = []
-    for stream in TEST_STREAMS:
-        slots = [level_slot(lv) for lv in LEVELS] if stream == "calibration" else [SELECTED_LEVEL]
-        for scenario in scenarios:
-            for point in N_POINTS:
-                for slot in slots:
-                    out += [(stream, scenario, point, slot, c) for c in TESTED]
-    return out
+    (``N_POINTS``), level slot (each level of the ladder, on both streams: every possible
+    verification test is in J before any draw, amendment 7) and comparison (``TESTED``). Per
+    scenario 2 × 4 × 7 × 3 = 168; over the grid's 17, J = 2 856."""
+    slots = [level_slot(lv) for lv in LEVELS]
+    return [(stream, scenario, point, slot, c) for stream in TEST_STREAMS
+            for scenario in scenarios for point in N_POINTS for slot in slots
+            for c in TESTED]  # fmt: skip
 
 
 test_identities.__test__ = False  # a function of this module: no test collector's
@@ -2252,10 +2248,9 @@ def coverage_decisions(
       and say ``not_attainable``, and then passes never;
     - per level, the record's ``coverage`` row (all four): the counts are the largest X over the
       level's tests (A–F and P–F for ``comparison``), a not-attainable test counting as X = M;
-    - L, the first level whose tests passed, and so which verification tests are due: all of
-      them with an L, none without (``selected_calibration_level`` stands for L), and none when
-      ``n_min``'s cap exceeds the 200 reserved seeds (the scan found no attainable n: the
-      verification is not run and does not pass, the design stop);
+    - L, the first level whose tests passed, and so which verification tests are due: L's with
+      an L, none without, and none when ``n_min``'s cap exceeds the 200 reserved seeds (the scan
+      found no attainable n: the verification is not run and does not pass, the design stop);
     - the ``verification`` (its tests, due and passed, at L), the ``gates`` (from their stored
       counts: the pass rates, the powers as the smallest correct/M over the power scenarios, a
       scenario short of M counting its missing studies as not detecting, beside ``power_af`` the
@@ -2312,19 +2307,19 @@ def coverage_decisions(
            "(no attainable n, the design stop)" if unattainable else None)  # fmt: skip
     passed = selected is not None and not unattainable
     for identity in verification:
-        if why is not None:
+        if why is not None or identity[3] != level_slot(selected):
             row = rows.get(identity)
             if row is None:
                 problems.append(f"tests: {list(identity)} has no row")
             elif not _not_due(row):
-                problems.append(f"tests: {list(identity)}: {why}, so the verification is not "
+                problems.append(f"tests: {list(identity)}: {why or 'not L'}, so the test is not "
                                 "due: every field but its test, p0 and due (false) is "
                                 "null")  # fmt: skip
         else:
             passed = read(identity, selected)[1] and passed
     streams = fixation["streams"]
     decided_verification = {
-        "level": selected, "passed": passed, "tests": len(verification),
+        "level": selected, "passed": passed, "tests": len(verification),  # all possible, in J
         "calibration_stream": streams["calibration"],
         "verification_stream": streams["verification"],
     }  # fmt: skip

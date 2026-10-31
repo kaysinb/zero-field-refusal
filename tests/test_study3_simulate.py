@@ -215,7 +215,7 @@ def simulation_files(runs: Path) -> list[Path]:
 
 def test_the_inputs_and_the_fixation_were_written_and_committed(origin) -> None:
     fixation = json.loads((origin / SIMULATION_FIXATION).read_text())
-    assert fixation["J"] == 105 and fixation["M"] == 6
+    assert fixation["J"] == 168 and fixation["M"] == 6
     assert fixation["inputs"]["path"] == INPUTS_PATH
     assert [s["name"] for s in fixation["scenarios"]] == ["C02", "P20", "G1", "G2"]
     assert set(fixation["scenarios"][0]["calibration"]) == {"1", "2"}
@@ -386,8 +386,11 @@ def test_no_attainable_n_skips_the_verification_and_fails_the_record(world) -> N
             "design stop", str(decisions.cap_of(beyond)))  # fmt: skip
     assert not (runs / "study3" / "simulation" / "verification.json").exists()
     out = ran(simulate("record", "--runs-root", runs))
-    assert "state failed" in out and (
-        f"verification not_run no_attainable_n n {beyond} cap {decisions.cap_of(beyond)}") in out
+    assert (
+        "state failed" in out
+        and (f"verification not_run no_attainable_n n {beyond} cap {decisions.cap_of(beyond)}")
+        in out
+    )
     record, problems = read_decision(runs, "simulation", repo=repo)
     assert problems == [] and record["level"] is not None and record["state"] == "failed"
     assert record["verification"]["passed"] is False

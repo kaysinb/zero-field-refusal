@@ -71,13 +71,13 @@ SENTINEL = "SEALED-RESPONSE-5d1e0b"
 CODE = {"commit": "a" * 40, "gpu_code_sha256": "b" * 64}
 WHEN = "2026-10-26T12:00:00Z"
 SEALED = ("responses", "observations")
-# The fixture's simulation: the whole grid (the reader refuses any other), J = 1 785; C16 a
+# The fixture's simulation: the whole grid (the reader refuses any other), J = 2 856; C16 a
 # coverage scenario and P20 a power scenario that tests name
 COVER, POWER = "C16", "P20"
 COVERAGE = [s.name for s in sim.SCENARIOS if s.coverage]
 POWERS = [s.name for s in sim.SCENARIOS if s.power]
-GRID_J = len(test_identities(COVERAGE))  # 17 × 105
-LEVEL_TESTS = GRID_J // 5  # each level's calibration tests, and the verification's: 17 × 21
+GRID_J = len(test_identities(COVERAGE))  # 17 × 168
+LEVEL_TESTS = GRID_J // 8  # each level's tests on each stream: 17 × 21
 STREAMS = {"calibration": 11, "verification": 12}
 POLICY = {"path": "docs/study3-preregistration.md", "commit": "c" * 40, "sha256": "d" * 64,
           "amendments": [1, 2, 3, 4, 5, 6]}  # fmt: skip
@@ -178,7 +178,7 @@ class World:
                 if not (type(x) is int and 0 <= x <= M):
                     x = c[kind] - 20
                 rows.append(results_row(identity, float(slot), x, c[kind]))
-            elif level is None:
+            elif level is None or slot != level_slot(level):
                 rows.append(results_row(identity, None, None, None))
             else:
                 x = c[kind] - 20 if verified_ok else c[kind] + 1
@@ -350,7 +350,7 @@ class World:
                        "run_ids": [f"run-{s}-{k}" for s in seeds for k in range(4)]},
             "spread": {"script": self.ref("study3_spread.py", root="repo"),
                        "output": self.ref("spread-output.json")},
-            "spread_pp": 4.5, "N": N, "cap": cap_of(N),
+            "spread_pp": 4.5, "N": N, "cap": cap_or_none(N),
             "simulation": {"path": "study3/decisions/simulation.json",
                            "sha256": self.digest("simulation"), "root": "runs"},
         }  # fmt: skip
@@ -359,7 +359,7 @@ class World:
     def budget(self, candidate: int = 1, N: int = 99, **over) -> dict:
         record = {
             "kind": f"budget-c{candidate}", "state": "passed", "written_at": WHEN, "code": CODE,
-            "candidate": candidate, "N": N, "cap": cap_of(N), "decision": "proceed",
+            "candidate": candidate, "N": N, "cap": cap_or_none(N), "decision": "proceed",
             "answers": {"path": f"study3/decisions/n-c{candidate}.json",
                         "sha256": self.digest(f"n-c{candidate}")},
         }  # fmt: skip
@@ -436,6 +436,13 @@ class World:
 CAPS = {60: 70, 75: 85, 83: 93, 84: 95, 90: 101, 99: 111, 100: 112, 120: 135, 178: 200,
         179: 201}  # fmt: skip
 RESERVED = len(SEEDS["confirmation"][1])
+
+
+def cap_or_none(n) -> int | None:
+    """``cap_of(n)``; None for what is no N, as a record with no cap to compare."""
+    return cap_of(n) if type(n) is int else None
+
+
 WITHIN = max(n for n in range(MIN_N, 2 * RESERVED) if cap_of(n) <= RESERVED)  # the last N within
 BEYOND = WITHIN + 1  # the first N whose cap exceeds the reserved confirmation seeds
 
@@ -455,7 +462,7 @@ def reported(value: float) -> dict:
 def default_gates() -> dict:
     """The gates of a simulation that passed them all: a pass rate at the safe alternative of
     0.982, the power of 0.86, and, reported only, the pass rate at study 2's empirical point,
-    P–F's power and the detection powers at the fixture's J = 1 785."""
+    P–F's power and the detection powers at the fixture's J = 2 856."""
     detection = detection_power(GRID_J, M)
     return {"safe_pass_rate": {"value": 0.982, "requirement": 0.95, "passed": True},
             "power_af": power_gate(0.86),
@@ -517,9 +524,9 @@ def refused(world: World, kind: str, record: dict, *words: str) -> None:
 
 
 def verified(level=0.975, passed=True, **kw) -> dict:
-    """A simulation's independent verification (the fixture's 357 verification tests and
-    streams)."""
-    return {"level": level, "passed": passed, "tests": LEVEL_TESTS, "calibration_stream": 11,
+    """A simulation's independent verification (the fixture's 1 428 possible verification tests
+    and streams)."""
+    return {"level": level, "passed": passed, "tests": 4 * LEVEL_TESTS, "calibration_stream": 11,
             "verification_stream": 12, **kw}  # fmt: skip
 
 
@@ -871,7 +878,7 @@ def test_an_n_below_sixty_or_not_an_integer_is_refused(world, n, cap) -> None:
 def test_n_of_sixty_is_the_smallest(world) -> None:
     world.chain(through="simulation")
     world.write("n-c1", world.n(N=60))
-    assert world.read("n-c1")[0]["cap"] == 70
+    assert world.read("n-c1")[0]["cap"] == cap_of(60)
 
 
 @pytest.mark.parametrize(
@@ -1265,12 +1272,13 @@ def test_the_tests_of_the_levels_and_the_verification_fit_within_the_frozen_j(wo
     rows = [coverage_row(level, passed=level == 0.990, tests=900, J=1000) for level in LEVELS]
     sim_refused(world, "coverage", "add up", "J = 1000", coverage=rows, level=0.99,
                 verification=verified(0.99))  # fmt: skip
-    # the sum equal to J is accepted (the fixation's J = 1 785: four levels of 357 tests and 357
-    # verification tests), one more is not
+    # the sum equal to J is accepted (the fixation's J = 2 856: four levels of 357 tests and 1 428
+    # possible verification tests), one more is not
     world.write("simulation", world.simulation())
     assert world.read("simulation")[1] == []
     decision_path(world.runs, "simulation").unlink()
-    sim_refused(world, "coverage", "1786", "J = 1785", verification=verified(tests=LEVEL_TESTS + 1))
+    sim_refused(world, "coverage", "2857", "J = 2856",
+                verification=verified(tests=4 * LEVEL_TESTS + 1))  # fmt: skip
     sim_refused(world, "verification.tests", verification=verified(tests=0))
     sim_refused(world, "verification.tests", verification=verified(tests=1.5))
     sim_refused(world, "verification", "tests",
@@ -1403,19 +1411,24 @@ def test_a_passed_simulation_has_a_level_a_size_and_inputs(world) -> None:
 # ------------------------------------------------------------------ the J check
 
 
-def test_the_proposed_grid_has_j_1785() -> None:
+def test_the_grid_has_j_2856_every_possible_verification_test_in_it() -> None:
+    """Amendment 7's J: 17 scenarios × 21 tests × 4 levels × 2 streams, its thresholds and
+    detection powers, and the identity list pinned by its count and sha256."""
     names = [s.name for s in sim.SCENARIOS if s.role.startswith("coverage")]
     ids = test_identities(names)
-    assert len(names) == 17 and len(ids) == len(set(ids)) == 1785
-    assert sum(i[0] == "verification" for i in ids) == 357
-    assert {i[3] for i in ids if i[0] == "verification"} == {"selected_calibration_level"}
-    assert (coverage_threshold(1785, 10_000, 0.025), coverage_threshold(1785, 10_000, 0.05)) == (
-        315,
-        590,
+    assert len(names) == 17 and len(ids) == len(set(ids)) == 2856 == 17 * 21 * 4 * 2
+    assert sum(i[0] == "verification" for i in ids) == 1428
+    slots = {level_slot(lv) for lv in LEVELS}
+    assert {i[3] for i in ids if i[0] == "verification"} == slots
+    assert (coverage_threshold(2856, 10_000, 0.025), coverage_threshold(2856, 10_000, 0.05)) == (
+        317,
+        593,
     )
-    # the coverage tests' identities as before the power's own scenarios (M6b): J, their order
+    assert detection_power(2856, 10_000) == pytest.approx(
+        {"comparison": 0.963, "joint": 0.990}, abs=5e-4
+    )
     assert identities_sha256(ids) == (
-        "934ff6355d03122e67e831a72168e71afacb3e6f04201eacbd4724170473671b"
+        "223fd0335b0aca06ae08d557284a4fdcaafa78008ae1936391b777d14271b664"
     )
 
 
@@ -1425,8 +1438,8 @@ def test_the_identities_are_in_enumeration_order_with_their_sha256() -> None:
     assert ids[:3] == [("calibration", "C01", 36, "0.975", c) for c in ("A-F", "P-F", "joint")]
     assert ids[3] == ("calibration", "C01", 36, "0.980", "A-F")
     assert ids[84] == ("calibration", "C02", 36, "0.975", "A-F")
-    assert ids[168] == ("verification", "C01", 36, SELECTED_LEVEL, "A-F")
-    assert ids[-1] == ("verification", "C02", "cap", SELECTED_LEVEL, "joint")
+    assert ids[168] == ("verification", "C01", 36, "0.975", "A-F")
+    assert ids[-1] == ("verification", "C02", "cap", "0.990", "joint")
     blob = json.dumps([list(i) for i in ids], separators=(",", ":")).encode()
     assert identities_sha256(ids) == hashlib.sha256(blob).hexdigest()
     assert [level_slot(lv) for lv in LEVELS] == ["0.975", "0.980", "0.985", "0.990"]
@@ -1435,9 +1448,6 @@ def test_the_identities_are_in_enumeration_order_with_their_sha256() -> None:
 def test_detection_power_reproduces_the_registered_example() -> None:
     assert detection_power(1000, 10_000) == pytest.approx(
         {"comparison": 0.978, "joint": 0.995}, abs=5e-4
-    )
-    assert detection_power(1785, 10_000) == pytest.approx(
-        {"comparison": 0.971, "joint": 0.993}, abs=5e-4
     )
 
 
@@ -1637,7 +1647,7 @@ def test_a_fixation_whose_scenarios_depart_from_the_grid_is_refused(world, name)
 
 def test_the_fixture_fixation_is_the_whole_grid(world) -> None:
     assert [s["name"] for s in world.fixation["scenarios"]] == [s.name for s in sim.SCENARIOS]
-    assert world.fixation["J"] == GRID_J == 1785 and LEVEL_TESTS == 357
+    assert world.fixation["J"] == GRID_J == 2856 and LEVEL_TESTS == 357
 
 
 def test_a_fixation_missing_p20_is_refused(world) -> None:
@@ -1691,7 +1701,7 @@ def test_the_power_at_1_percent_is_recomputed_from_its_counts(world) -> None:
 def test_the_fixation_must_be_unchanged_since_its_commit(world) -> None:
     record = world.simulation()
     path = world.repo / SIMULATION_FIXATION
-    path.write_text(path.read_text().replace('"J": 1785', '"J": 1785 '))
+    path.write_text(path.read_text().replace('"J": 2856', '"J": 2856 '))
     record["fixation"] = {**record["fixation"], "sha256": sha256(path)}
     refused(world, "simulation", record, "fixation", "changed since its commit")
 
@@ -3386,7 +3396,7 @@ def test_the_simulation_record_has_no_successor_and_stays_in_force_after_a_cycle
     published_cycle(world)
     stale = study3_cycle.stale_records(world.runs, 1, repo=world.repo, old_code=OLD_CODE)
     assert [s["path"] for s in stale] == ["study3/decisions/n-c1.json"]
-    assert world.fixation["J"] == GRID_J == 1785
+    assert world.fixation["J"] == GRID_J == 2856
     world.write("n-c1-2", world.n(code=FIXED, kind="n-c1-2", supersedes=supersedes(world, "n-c1")))
     found = decisions(world.runs, 1, repo=world.repo)
     assert found["simulation"]["state"] == "passed", found["simulation"]["problems"]
