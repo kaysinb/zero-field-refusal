@@ -195,7 +195,7 @@ def lanczos(
     near an eigenvalue, not necessarily the top one. A random start in a space of n parameters
     overlaps the top eigenvector by ≈ 1/√n, and the Ritz value can rest near a lower eigenvalue,
     residual small, before the top one emerges (at 40 steps two such starts agreed on 489 for a
-    true 500, review r9), so no residual stops the iteration early.
+    true 500), so no residual stops the iteration early.
     ``hvp(v, out)`` adds H·v into ``out`` and returns it. Each step forms H·v − β·v_prev in the
     previous vector's memory, then takes α from it (Paige's ordering), so two vectors stay alive
     besides the product's own. ``start`` (a unit vector) is consumed: the list is emptied.

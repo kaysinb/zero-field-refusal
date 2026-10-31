@@ -70,7 +70,7 @@ benign panels, nothing written to a run record.
   each arm's U-rate on the others. Twin A is the regular run of that seed, arm, rate and B
   (experiment ``study2_short``, ``study2_short.role=numerical``), which must conform
   (``conformance``) and is re-run; the re-run must be numerically consistent with it
-  (``compare_archive``, review fa21): the rows' steps, tokens and denominator, the monitor's
+  (``compare_archive``): the rows' steps, tokens and denominator, the monitor's
   steps, the stop and the streams read (training prefix, v₀'s) exactly, the loss, gradient norm,
   NLL per token and monitor K at every step within the policy's ``twin_a_consistency``
   (|x − y| ≤ 1e-8 + 1e-4·max(|x|, |y|), both finite); the bitwise flag is kept beside it. A
@@ -91,12 +91,12 @@ benign panels, nothing written to a run record.
   v₀ stream and training prefix.
 - **Attempts.** Each case and control is written per attempt; an incomplete one runs once
   more, in a fresh process. A failure is the attempt's record, never lost.
-- **Memory** (review fa14, 1): one seed's setup at a time. Each seed's setup and cases run in a
+- **Memory**: one seed's setup at a time. Each seed's setup and cases run in a
   function of their own and the device is released before the next seed's setup; the setup's
   own temporaries (batch 0's replayed targets, the device copies) are gone before
   ``twin_setup`` yields, and ``shared`` holds the residual alone until ``seed_directions`` pops
   it. The controls' setup is held by one dict, released when they are done.
-- **Cases given up** (review fa14, 2): a case, or its same-path control, that the check request
+- **Cases given up**: a case, or its same-path control, that the check request
   names given up by the launcher and whose regular run is not located is recorded without a
   GPU (``given_up_twins``, ``given_up_controls``): incomplete, with the request's path and
   sha256 as its evidence (``given_up_body``), not qualified (technical) after its rerun. With
@@ -116,21 +116,21 @@ benign panels, nothing written to a run record.
   whose GPU code is HEAD's (``code_identity.reuse_check``), under the frozen settings, with
   the policy's perturbations, of the regular run located now. Reading moves nothing; only a
   real run of a part, from a clean checkout and after the code check, sets a record aside.
-- **GPU code** (review fa13): the qualification attaches to the GPU code the regular runs and the
+- **GPU code**: the qualification attaches to the GPU code the regular runs and the
   check executed (``code_identity.gpu_code_identity``), not to a commit. Nothing runs, and no
   record counts, unless the commit each regular run recorded has the check's GPU identity
   (``code_check``, ``require_code``).
-- **The run environment** (the final review of gate B, I3): twin A can be expected to
-  reproduce its run (numerically consistent with it, review fa21) only where the run was made;
+- **The run environment**: twin A can be expected to
+  reproduce its run (numerically consistent with it) only where the run was made;
   ``environment_check`` compares each regular run's recorded GPU names, driver, CUDA, Python,
   packages and container image with the check's (``environment_departures``), and the script
   runs nothing on a mismatch. Each record holds
-  the host memory when it was written (``host_record``, M7).
-- **Voiding** (the final review of gate B, I2): after a GPU-path change the numerical runs made
+  the host memory when it was written (``host_record``).
+- **Voiding**: after a GPU-path change the numerical runs made
   under the old GPU code can never be checked again; ``void_plan`` and ``void_numerical`` move
   them, the check's directory and the launcher's record of their campaigns to
   ``RUNS_DIR/void/<old GPU code>/`` with an inventory, so that the selection calls for the runs
-  and the check anew. Not once S3 has started at that batch (the coordinator's ruling).
+  and the check anew. Not once S3 has started at that batch.
 """
 
 from __future__ import annotations
@@ -192,7 +192,7 @@ PERTURBATIONS = ("p1", "p2", "p3", "p4")
 REFERENCE = "reference"
 PAIRS = (*PERTURBATIONS, REFERENCE)  # every D3 case holds exactly these pairs
 BRANCHES = ("F", "B", "A", "ambiguous", "incomplete")
-HESSIANS = {  # D2's two Hessians, as their labels say (review M9)
+HESSIANS = {  # D2's two Hessians, as their labels say
     "soft": "(a) exact soft-loss Hessian, with the control's replayed targets (≈ Gauss–Newton at "
             "θ₀: the two differ by the residual term)",
     "nll": "(b) exact Hessian of the sampled NLL (may be indefinite)",
@@ -1284,7 +1284,7 @@ def apply_perturbation(
     return attempts
 
 
-# Review fa21: a re-run's numerical consistency with its archived run. These fields are compared
+# A re-run's numerical consistency with its archived run. These fields are compared
 # within the rule; every other fact of the comparison is exact. The rule's values are the frozen
 # policy's (configs/experiments/numerical_check.yaml, ``twin_a_consistency``), the same for every
 # arm and batch.
@@ -1296,7 +1296,7 @@ MISMATCHES_KEPT = 50  # the record's list of mismatches is capped, never its cou
 
 
 def within_tolerance(x: Any, y: Any, rule: Mapping[str, float]) -> bool:
-    """Review fa21's rule: two finite numbers with |x − y| ≤ abs + rel·max(|x|, |y|). A
+    """Twin A's consistency rule: two finite numbers with |x − y| ≤ abs + rel·max(|x|, |y|). A
     non-finite value (or anything but a number) on either side is outside it, even when the two
     sides are bitwise equal."""
     return (_number(x) and _number(y)
@@ -1318,9 +1318,9 @@ def _bitwise_equal(
     readings: Sequence[Mapping[str, Any]],
     monitor: Sequence[Mapping[str, Any]],
 ) -> bool:
-    """The comparison before review fa21, kept as it was (``bitwise_equal``): as many training
-    rows, each row's loss, gradient norm, NLL per token, tokens and denominator that the archived
-    row holds, the same monitor steps and each one's K, all bit for bit."""
+    """The comparison before twin A's consistency rule, kept as it was (``bitwise_equal``): as
+    many training rows, each row's loss, gradient norm, NLL per token, tokens and denominator that
+    the archived row holds, the same monitor steps and each one's K, all bit for bit."""
     keys = ("loss", "grad_norm", "nll_per_token", "tokens", "denominator")
     if len(archived) != len(rows):
         return False
@@ -1352,8 +1352,9 @@ def compare_archive(
 ) -> dict[str, Any]:
     """The re-run's per-step metrics and monitor K against the archived run's (``run_dir``).
 
-    ``bitwise_equal`` is the comparison before review fa21, kept as it was (``_bitwise_equal``).
-    ``consistent`` is twin A's gate (review fa21): every exact fact equal and every toleranced
+    ``bitwise_equal`` is the comparison before twin A's consistency rule, kept as it was
+    (``_bitwise_equal``).
+    ``consistent`` is twin A's gate: every exact fact equal and every toleranced
     value within ``rule`` (``within_tolerance``):
 
     - **exact**: the training rows' step indices, in order (a missing, extra or reordered row is
@@ -2221,7 +2222,7 @@ def twin_setup(
     the soft-target residual at θ₀ on batch 0 with generation-path targets (``control_residual``
     under ``residual_cfg``; host tensors), with its statistics.
 
-    Memory (review fa14, 1): the setup's own temporaries (the replayed targets of batch 0, the
+    Memory: the setup's own temporaries (the replayed targets of batch 0, the
     device copies of v₀ and the residual) are released before it yields, and ``shared`` holds
     the residual's only reference, so that a caller that pops it (``seed_directions``) frees it.
     At exit, ``shared`` is emptied and the setup's references are dropped; the caller must hold
@@ -2330,7 +2331,7 @@ def run_twin_a(
     """Twin A: the regular run of ``cfg`` re-run from θ₀ with its monitor, its trainable
     parameters saved to ``checkpoints`` at ``eval_at``, and compared with its archive
     (``run_dir``; ``archive``, ``compare_archive``): bit for bit (``bitwise_equal``) and for
-    numerical consistency under ``rule`` (``consistent``, review fa21), with its stop and the
+    numerical consistency under ``rule`` (``consistent``), with its stop and the
     streams it read: the training prefix and, for an arm that reads v₀, ``v0_stream`` (the
     setup's preconditioner stream)."""
     twins.reset()
@@ -2403,7 +2404,7 @@ def run_case(
     """One D3 case: twin A (checked against its archive), p1–p4 and the reference, each against
     twin A by D_twin at ``eval_at``, each with its state (``pair_state``: within, exceeding or
     incomplete). A twin A that differs from its archived run, bit for bit, makes the case
-    ``incomplete``: no pair is run against a twin that is not the archived run (review I1)."""
+    ``incomplete``: no pair is run against a twin that is not the archived run."""
     d = settings.diagnostic
     bound = float(d.bound)
     env = twins.env
@@ -2556,7 +2557,7 @@ def decide_branch(
     ``facts.incomplete``, when:
     - an output is missing: D1, the determinism record, or a prescribed case;
     - an output was written at another commit than ``commit`` (HEAD; without it, D1's), or at
-      a commit other than the other parts' (review I4);
+      a commit other than the other parts';
     - the determinism check failed (Revision 2, 9), whatever any case says (it is checked
       before Branch A);
     - a prescribed case does not hold exactly the pairs p1–p4 and the reference;
@@ -2720,7 +2721,7 @@ def decide_branch(
     return outcome(7, "ambiguous")
 
 
-# ----------------------------------------- the numerical check (amendment 4, section 1, fa12)
+# ----------------------------------------- the numerical check (amendment 4, section 1)
 
 QUALIFIED, FAILING = "qualified", "failing"  # an (arm, rate)
 NOT_QUALIFIED = "not_qualified"  # technical: incomplete after its one rerun; never instability
@@ -2750,8 +2751,8 @@ class NumericalError(DiagnosticError):
 class NumericalScope:
     """The numerical check's frozen scope (configs/experiments/numerical_check.yaml): seeds,
     arms, the regular runs' experiment and role, the measurement steps, the perturbations'
-    fixed norm and survival rule, the bound's definition, twin A's consistency rule (review
-    fa21) and the memory rule."""
+    fixed norm and survival rule, the bound's definition, twin A's consistency rule and the memory
+    rule."""
 
     seeds: tuple[int, ...]  # the first holds every selected rate and the controls
     arms: tuple[str, ...]  # optimizer names
@@ -2769,13 +2770,13 @@ class NumericalScope:
     rounding_scale: float
     k_star_factor: float  # K*(U) = √(factor·U)
     bound_fraction: float  # the bound is this fraction of K*(U)
-    # Review fa21: twin A against its archived run, |x − y| ≤ abs + rel·max(|x|, |y|) on the
+    # Twin A against its archived run, |x − y| ≤ abs + rel·max(|x|, |y|) on the
     # toleranced fields (``compare_archive``), as (("abs", a), ("rel", r))
     twin_a_consistency: tuple[tuple[str, float], ...]
     memory_rule_gb: float
     # The settings' declarative keys (``evaluation: k_only`` and the generation flag beside it),
     # as JSON by key: compared like the rest, so that settings declaring another evaluation
-    # are not this scope's (review nit)
+    # are not this scope's
     declared: tuple[tuple[str, str], ...]
 
     @classmethod
@@ -2786,7 +2787,7 @@ class NumericalScope:
         if not (isinstance(rule, dict) and set(rule) == {"abs", "rel"}
                 and all(_number(v) and v >= 0 for v in rule.values())):  # fmt: skip
             raise NumericalError(f"twin_a_consistency must be {{abs, rel}}, two finite numbers "
-                                 f"≥ 0 (review fa21), got {rule!r}")  # fmt: skip
+                                 f"≥ 0, got {rule!r}")  # fmt: skip
         scope = cls(
             seeds=tuple(int(s) for s in n.seeds), arms=tuple(str(a) for a in n.arms),
             primary_arms=tuple(str(a) for a in n.primary_arms),
@@ -2832,7 +2833,7 @@ class NumericalScope:
 
     @property
     def consistency_rule(self) -> dict[str, float]:
-        """Twin A's consistency rule (review fa21): ``{"abs": a, "rel": r}``."""
+        """Twin A's consistency rule: ``{"abs": a, "rel": r}``."""
         return dict(self.twin_a_consistency)
 
     def policy(
@@ -2840,9 +2841,9 @@ class NumericalScope:
     ) -> dict[str, Any]:
         """The numerical policy a qualification is attached to (with its batch and seeds): the
         GPU code the regular runs and the check executed (``code_identity.gpu_code_identity``:
-        commit, file count, sha256; review fa13), the norm, the Gaussian directions' seeds, the
+        commit, file count, sha256), the norm, the Gaussian directions' seeds, the
         survival rule and its retry, the bound, the steps, the reference's modes and twin A's
-        consistency rule (``twin_a_consistency``, review fa21); beside it, for provenance, the
+        consistency rule (``twin_a_consistency``); beside it, for provenance, the
         commits that wrote the records read (``tool_commit``). Any change of it voids the
         qualification."""
         return {"gpu_code": None if gpu_code is None else dict(gpu_code),
@@ -3025,8 +3026,7 @@ def run_identity(run_dir: Path) -> dict[str, Any]:
     """A regular run as a record names it: its place under the runs root
     (``<experiment>/<run id>``, so that RUNS_DIR may be restored elsewhere), run id, config hash
     (``meta.json``) and the sha256 of the records the check compares or reads (config, metrics,
-    monitor, terminal). The verdict counts a record only for the run located now (review of
-    Task 1, M3 and N3)."""
+    monitor, terminal). The verdict counts a record only for the run located now."""
     digest = hashlib.sha256()
     for name in ("config.yaml", "metrics.jsonl", "monitor.jsonl", "terminal.json"):
         path = run_dir / name
@@ -3041,13 +3041,13 @@ def run_identity(run_dir: Path) -> dict[str, Any]:
 def code_check(
     run_dirs: Iterable[Path], tool_commit: str | None, *, skipped: str | None = None
 ) -> dict[str, Any]:
-    """Review fa13: the GPU-code identity (``code_identity.gpu_code_identity``) of the check's
+    """The GPU-code identity (``code_identity.gpu_code_identity``) of the check's
     own commit and of the commit each regular run recorded (``meta.json``, its ``git`` entry).
     ``consistent`` when every run was made from a clean checkout of a commit whose GPU identity
     equals the check's; the check refuses to run otherwise (``require_code``). ``gpu_code`` is
     the runs' identity (their commit's when they share one, else the check's: equal to it).
     Without any run, the check refuses too ("no regular run to compare with"), unless
-    ``skipped`` says why none is located (review fa14, 2: every case given up by the launcher):
+    ``skipped`` says why none is located (every case given up by the launcher):
     then it is skipped with that ``note``, and ``gpu_code`` is the check's own identity, which
     the verdict's policy records."""
 
@@ -3100,8 +3100,8 @@ def require_code(code: Mapping[str, Any] | None) -> None:
 
 
 # The run environment a regular run's meta.json records (``tracking.Run``), compared field by
-# field with the check's own (the final review of gate B, I3): twin A can be expected to
-# reproduce its run (numerically consistent with it, review fa21) only on the same GPU, driver,
+# field with the check's own: twin A can be expected to
+# reproduce its run (numerically consistent with it) only on the same GPU, driver,
 # CUDA, Python and packages, so another environment would turn a technical difference into
 # not_qualified for every case.
 ENVIRONMENT_FIELDS = ("hardware.gpus", "hardware.driver", "hardware.torch_cuda", "python")
@@ -3170,12 +3170,12 @@ def environment_departures(
 def environment_check(
     run_dirs: Iterable[Path], here: Mapping[str, Any] | None = None, *, skipped: str | None = None
 ) -> dict[str, Any]:
-    """The final review of gate B, I3: each regular run's recorded environment against the
+    """Each regular run's recorded environment against the
     check's (``environment_departures``; ``here``: ``current_environment`` by default).
     ``consistent`` when no run departs; ``problems`` name each departing field, with the runs
     that recorded each value. The parts that run the check refuse otherwise, recording
     nothing (scripts/numerical_check.py). Without any run, it refuses too, unless ``skipped``
-    says why none is located (review fa14, 2, as for ``code_check``): it is skipped with that
+    says why none is located (as for ``code_check``): it is skipped with that
     ``note``."""
     here = current_environment() if here is None else dict(here)
     departing: dict[tuple[str, str, str], list[str]] = {}
@@ -3196,11 +3196,11 @@ def environment_check(
     return {"consistent": not problems, "here": here, "problems": problems, "note": note}
 
 
-# --------------------------------- voiding a numerical check after a GPU-path change (gate B, I2)
+# --------------------------------- voiding a numerical check after a GPU-path change (gate B)
 
 VOID_DIR = "void"  # RUNS_DIR/void/<the old GPU code's sha256, first 12>/: what ``void`` moved
 # The roles of S3 (validation, confirmation, the time course): a run of one at the batch refuses
-# the void (the coordinator's ruling on concern C1)
+# the void
 VOID_REFUSED_ROLES = ("validation", "confirmation", "timecourse")
 CAMPAIGNS_DIR = "campaigns"  # RUNS_DIR/campaigns/: where the operator keeps the campaign files
 
@@ -3262,14 +3262,14 @@ def _file_sha256(path: Path) -> str:
 def void_plan(
     root: Path, scope: NumericalScope, batch: int, upper: float, state: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """What ``void_numerical`` would move, read only (the final review of gate B, I2): after a
+    """What ``void_numerical`` would move, read only: after a
     GPU-path change the check cannot run on the numerical runs made under the old GPU code (the
     code check refuses them), and the selection would wait at a stale check forever. Under
     ``root`` (RUNS_DIR): every run of the scope's experiment at ``batch`` whose role is the
     scope's (numerical), or that runs on a numerical seed or evaluates K only, and whose recorded
     commit's GPU code (``code_identity.gpu_code_identity``) differs from HEAD's (``state``, a
     clean checkout); the check's directory ``numerical/b{B}-u{U}/``, if there; and the launcher's
-    record of the campaigns that made those runs (the coordinator's ruling on concern C2), so
+    record of the campaigns that made those runs, so
     that a fresh campaign at the same rates, with the same cell names and config hashes, starts
     with every attempt and can be given up: each ``launch/<campaign>.jsonl`` whose start records
     name a run moved, its attempts' logs ``launch/<campaign>/``, and the campaign's own file
@@ -3278,9 +3278,9 @@ def void_plan(
     ``void/<old GPU code's sha256, first 12>/``, at their paths under ``root``. ``problems``
     (each a refusal): a checkout that is not clean; a run of the role validation, confirmation
     or timecourse at ``batch`` (S3 has started: a GPU-path change after that is outside this
-    procedure, the coordinator's ruling on concern C1); a check directory ``numerical/b{B}-u*/``
-    of another U at ``batch`` (the numerical runs at B serve that check too: the coordinator's
-    ruling on the re-review's N1); no numerical run whose GPU code differs; such a run of
+    procedure); a check directory ``numerical/b{B}-u*/``
+    of another U at ``batch`` (the numerical runs at B serve that check too); no numerical
+    run whose GPU code differs; such a run of
     another role; a run that records no clean commit or whose commit has no readable GPU code;
     old runs of several GPU codes; a journal to move that also names a run left in place; a
     destination that exists. A missing ``numerical/b{B}-u{U}/`` is allowed (a GPU-path change
@@ -3340,7 +3340,7 @@ def void_plan(
         problems.insert(0, f"{len(later)} run(s) of the role validation, confirmation or "
                            f"timecourse at B {batch} ({later[0]}{', …' if len(later) > 1 else ''})"
                            ": S3 has started. A GPU-path change after S3 has started is outside "
-                           "this procedure and goes to the coordinator: voiding those runs means "
+                           "this procedure and goes to the researcher: voiding those runs means "
                            "spending on S3 again, which is a budget decision")  # fmt: skip
     old = {run["gpu_code"]["sha256"]: run["gpu_code"] for run in moved}
     if head is not None and not moved:
@@ -3352,15 +3352,14 @@ def void_plan(
                         "record")  # fmt: skip
     directory = numerical_root(batch, upper, root)
     # The numerical runs at B serve every U's check: another U's check directory at B holds
-    # verdicts (and marks) the replay must still read, which voiding the runs would strand (the
-    # coordinator's ruling on the re-review's N1)
+    # verdicts (and marks) the replay must still read, which voiding the runs would strand
     others = sorted(p.relative_to(root).as_posix()
                     for p in directory.parent.glob(f"b{int(batch)}-u*")
                     if p.is_dir() and p != directory)  # fmt: skip
     if others:
         problems.append(f"the check directories {others} of another U at B {batch} exist: the "
                         "numerical runs at B serve them too, and voiding them would leave those "
-                        "verdicts unread; this case goes to the coordinator")  # fmt: skip
+                        "verdicts unread; this case goes to the researcher")  # fmt: skip
     paths = [run["run"] for run in moved]
     check = directory.relative_to(root).as_posix() if directory.is_dir() else None
     if check is not None:
@@ -3408,8 +3407,7 @@ def void_numerical(root: Path, plan: Mapping[str, Any], state: Mapping[str, Any]
         "what": "the numerical runs and the check made under GPU code other than HEAD's, with "
                 "the launcher's logs and the files of the campaigns that made them, moved out of "
                 "RUNS_DIR's experiment, numerical/, launch/ and campaigns/ by "
-                "scripts/numerical_check.py void (the final review of gate B, I2; the "
-                "coordinator's ruling on concern C2); nothing deleted",
+                "scripts/numerical_check.py void; nothing deleted",
         "batch": plan["batch"], "U": plan["U"], "moved": plan["paths"],
         "check_directory": plan["check_directory"],
         "runs": plan["runs"], "kept": plan["kept"], "old_gpu_code": plan["old_gpu_code"],
@@ -3510,13 +3508,13 @@ def run_numerical_case(
     regular run stopped by an instability rule gives the attempt ``instability``
     (``instability_stop``: evidence against the rate); one that does not conform otherwise, or a
     twin A that stopped or is not numerically consistent with its archive (``compare_archive``
-    under the scope's ``twin_a_consistency``, review fa21; the reason names the first field, step
+    under the scope's ``twin_a_consistency``; the reason names the first field, step
     and values outside it: ``inconsistency``), makes the attempt incomplete; either way no pair
     is run. ``progress`` holds twin A and the pairs as they are done."""
     eval_at, bound = list(scope.eval_at), scope.bound(case.upper)
     cfg = run_config(run_dir)
     problems = conformance(cfg, run_dir, scope, case, stop=False)
-    if not problems:  # review N4: an instability stop is evidence only for a conforming run
+    if not problems:  # an instability stop is evidence only for a conforming run
         unstable = instability_stop(run_dir)
         if unstable is not None:
             return {"status": INSTABILITY, "reason": unstable, "pairs": {}}
@@ -3532,7 +3530,7 @@ def run_numerical_case(
             cfg, twins, shared["monitor"], run_dir, checkpoints, eval_at,
             v0_stream=shared["v0_stream"], rule=scope.consistency_rule,
         )  # fmt: skip
-        # Review fa21: the gate is numerical consistency with the archived run, not bit for bit
+        # The gate is numerical consistency with the archived run, not bit for bit
         if twin_a["stop"] is not None or not twin_a["archive"]["consistent"]:
             reason = (f"twin A stopped: {twin_a['stop']}" if twin_a["stop"] is not None
                       else inconsistency(twin_a["archive"]))  # fmt: skip
@@ -3561,7 +3559,7 @@ def run_numerical_case(
 
 
 def host_record() -> dict[str, Any]:
-    """The host memory when a record is written (the final review of gate B, M7), as the drift
+    """The host memory when a record is written, as the drift
     records it: this process's peak resident memory so far (``ru_maxrss``) and the free host
     memory (MemAvailable, the cgroup's limit less its working set, and the smaller), GB of 1e9
     bytes. The check holds θ₀, v₀, the second model and the p1 direction on the host (≈ 25-30 GB
@@ -3644,7 +3642,7 @@ def run_numerical_twins(
     the launcher apart, without a GPU (``given_up_twins``). Nothing runs unless ``code``
     (``code_check``) shows the regular runs' GPU code to be the check's (``require_code``).
 
-    Memory (review fa14, 1): each seed's setup and cases run in a function of their own
+    Memory: each seed's setup and cases run in a function of their own
     (``run_cases``), so that nothing of the setup (the models, θ₀, v₀, the directions, the
     monitor) is reachable once it returns, and the device is released (``_release_device``)
     before the next seed's setup allocates. A failed case or setup is released the same way,
@@ -3767,7 +3765,7 @@ def run_numerical_controls(
     ``control_path``. Nothing runs unless ``code`` shows the regular runs' GPU code
     to be the check's (``require_code``). Returns the records by rate.
 
-    Memory (review fa14, 1): the setup shared by the controls (``_control_setup``) is held by
+    Memory: the setup shared by the controls (``_control_setup``) is held by
     ``setup`` alone, and each control's own models and optimizer are released when
     ``same_path_run`` returns; a failed control is released once its exception, which holds the
     failing frames, is dropped, and the setup when the last control is done."""
@@ -3786,7 +3784,7 @@ def run_numerical_controls(
             cfg = run_config(run_dir)
             record.update(regular_run=str(run_dir), regular_run_identity=run_identity(run_dir))
             problems = conformance(cfg, run_dir, scope, case, stop=False)
-            unstable = None if problems else instability_stop(run_dir)  # review N4
+            unstable = None if problems else instability_stop(run_dir)
             problems = problems or conformance(cfg, run_dir, scope, case)
             if unstable is not None:  # evidence against the rate: the control is rejected
                 record.update(status=INSTABILITY, state=INSTABILITY, reason=unstable)
@@ -3854,7 +3852,7 @@ def _control_setup(env: Environment, cfg: DictConfig) -> dict[str, Any]:
     """What every same-path control of a part shares, from the first control's run config: the
     student and its trainable set, θ₀ and v₀ (host), v₀'s hash and stream. Built in a function
     of its own, so that the device copy of v₀ is gone and the returned dict holds the only
-    references once it returns (review fa14, 1)."""
+    references once it returns."""
     student, trainable = _model(env, cfg)
     names = [n for n, _ in trainable]
     theta0 = {n: p.detach().cpu().clone() for n, p in trainable}
@@ -3867,12 +3865,12 @@ def _control_setup(env: Environment, cfg: DictConfig) -> dict[str, Any]:
     return setup
 
 
-# A case the check request names given up (review fa14, 2): its record's reason and evidence
+# A case the check request names given up: its record's reason and evidence
 GIVEN_UP = "given up by the launcher"
 
 
 def given_up_body(request: Mapping[str, Any], why: str) -> dict[str, Any]:
-    """Review fa14, 2: an attempt of a case, or of its same-path control, whose regular run the
+    """An attempt of a case, or of its same-path control, whose regular run the
     launcher gave up on (the check request names it in ``given_up``) and is not located:
     incomplete, its reason "given up by the launcher" with the request's path and sha256 as the
     evidence, and ``why`` no run is located. Incomplete after its rerun too, it is
@@ -3906,7 +3904,7 @@ def given_up_twins(
     request: Mapping[str, Any],
     **provenance: Any,
 ) -> dict[str, dict[str, Any]]:
-    """Review fa14, 2: attempt ``attempt`` of each case the check request (``request``: its
+    """Attempt ``attempt`` of each case the check request (``request``: its
     ``path`` and ``sha256``) names given up and whose regular run is not located, recorded
     without a GPU (no model, no device): ``given_up_body`` in the twins part's record
     (``twin_record``, no numerics). The rest of the twins part is ``run_numerical_twins``.
@@ -3937,7 +3935,7 @@ def given_up_controls(
     request: Mapping[str, Any],
     **provenance: Any,
 ) -> dict[str, dict[str, Any]]:
-    """Review fa14, 2: attempt ``attempt`` of the same-path control at each of ``rates`` whose
+    """Attempt ``attempt`` of the same-path control at each of ``rates`` whose
     regular run (``control_case``) the check request names given up and is not located,
     recorded without a GPU as ``given_up_twins`` records a case: ``given_up_body`` in a
     control's record (``control_record``), state incomplete, no numerics. The rest of the
@@ -3977,7 +3975,7 @@ def _same(record: Mapping[str, Any], identity: Mapping[str, Any], key: str, lr: 
 
 
 class RecordReader:
-    """Which records the verdict and the parts read (review of Task 1, I1, I3 and M3). A record
+    """Which records the verdict and the parts read. A record
     counts when:
 
     - this checkout is a clean checkout of a commit (HEAD);
@@ -4043,7 +4041,7 @@ class RecordReader:
 
 
 def _policy_problems(record: Mapping[str, Any], scope: NumericalScope) -> list[str]:
-    """How an attempt's perturbations depart from the policy (review of Task 1, I1): each
+    """How an attempt's perturbations depart from the policy: each
     perturbed pair's first attempt at the fixed norm (1e-6 relative), a second attempt only as
     the single retry, exactly ``rounding_scale`` times the first."""
     problems = []
@@ -4084,8 +4082,8 @@ def attempt_state(
     - **incomplete** when its perturbations depart from the policy (``_policy_problems``);
     - **exceeding** when any of its pairs is (``pair_state``, recomputed at the bound of U;
       divergence counts), whatever else the attempt shows;
-    - **within** when it is complete (twin A numerically consistent with its archive, review
-      fa21: ``compare_archive``'s ``consistent``; every pair of p1–p4 and the reference present,
+    - **within** when it is complete (twin A numerically consistent with its archive:
+      ``compare_archive``'s ``consistent``; every pair of p1–p4 and the reference present,
       the reference in one of the policy's modes) and every pair is within;
     - **incomplete** otherwise."""
     scope = reader.scope
