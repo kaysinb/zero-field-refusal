@@ -1059,12 +1059,12 @@ def test_procedure_mode_ends_in_the_scientific_report_when_candidate_2_fails(set
     assert o.candidate == 2 and o.why == {0.975: "scientific_report"} and not o.covered
 
 
-def test_a_pf_closed_at_candidate_1_stays_closed_at_candidate_2(setup) -> None:
-    """Both of candidate 1's gates fail: P–F is closed for the rest of the study, so at
-    candidate 2, whose own P–F gate passes, P–F counts nothing and the joint test is A–F's, as on
-    the real route. Candidate 1 with only its A–F gate failing (A's MMLU loss far above its bound)
-    leaves P–F open at candidate 2; A–F's results are the same in both: the streams stay paired."""
-    sc = replace(sim.SCENARIOS_BY_NAME["P21"], name="AFPF1")  # its coverage and direction
+def test_a_pf_closed_at_candidate_1_reopens_at_candidate_2(setup) -> None:
+    """Both of candidate 1's gates fail: P–F reopens at candidate 2 when A–F's rule reaches it
+    (amendment 7), under its own gate on its own seeds, exactly as when only candidate 1's A–F gate
+    failed (A's MMLU loss far above its bound): candidate 1's gates change no stream of candidate
+    2's. A candidate 2 whose P–F gate fails leaves P–F inactive, the joint test A–F's."""
+    sc = replace(sim.SCENARIOS_BY_NAME["C17"], name="AFPF1")
     a_far = {arm: {v.seed: (6.0 if arm == "A" else 0.0) for v in setup.vectors}
              for arm in ARM_ORDER}  # fmt: skip
     second = hand_calibration(2, 0.0, offset_a=0.04, offset_p=0.04)
@@ -1076,31 +1076,31 @@ def test_a_pf_closed_at_candidate_1_stays_closed_at_candidate_2(setup) -> None:
         first = sim.simulate_study(sc, s, 13, 0, resamples=200, levels=(0.975,),
                                    validation_only=True)  # fmt: skip
         assert first.candidate == 1 and dict(first.gates) == gates
-    closed, reopened = (sim.simulate_study(sc, s, 13, 0, mode="procedure", resamples=200,
-                                           levels=(0.975,)) for s in (both, only_af))  # fmt: skip
-    assert closed.candidate == reopened.candidate == 2 and closed.confirmed[0.975]
+    reopened, open_all_along = (sim.simulate_study(
+        sc, s, 13, 0, mode="procedure", resamples=200, levels=(0.975,))
+        for s in (both, only_af))  # fmt: skip
+    assert reopened.candidate == open_all_along.candidate == 2 and reopened.confirmed[0.975]
     assert reopened.active == ["A-F", "P-F"] and dict(reopened.gates) == {"AF": True, "PF": True}
-    assert closed.active == ["A-F"] and dict(closed.gates) == {"AF": True, "PF": None}
     assert any(v is not None for k, v in reopened.covered.items() if k[2] == "P-F")
-    for (point, level, comparison), value in closed.covered.items():
+    # the paired streams: candidate 2's rates, blocks, truths, intervals and readings, P's included
+    assert reopened == open_all_along
+    assert reopened.analysis == open_all_along.analysis
+    import json  # the row round-trips
+
+    text = json.dumps(sim.outcome_json(reopened), allow_nan=False, sort_keys=True)
+    assert sim.outcome_from_json(json.loads(text)) == reopened
+    # candidate 2's own P–F gate fails: P–F stays inactive at the end of the route
+    p_far = {arm: {v.seed: (6.0 if arm == "P" else 0.0) for v in setup.vectors}
+             for arm in ARM_ORDER}  # fmt: skip
+    closed = replace(both, calibrations={**both.calibrations, (sc, 2): replace(
+        second, mmlu_shift=p_far, factual_shift=dict.fromkeys(ARM_ORDER, 0.0))})  # fmt: skip
+    o = sim.simulate_study(sc, closed, 13, 0, mode="procedure", resamples=200, levels=(0.975,))
+    assert o.candidate == 2 and o.active == ["A-F"] and dict(o.gates) == {"AF": True, "PF": False}
+    for (point, level, comparison), value in o.covered.items():
         if comparison == "P-F":
             assert value is None
         elif comparison == "joint":
-            assert value == closed.covered[(point, level, "A-F")]
-    for name in ("direction", "readings", "utility_claim"):
-        assert getattr(closed, name)[(0.975, "P-F")] is None
-    # the paired streams: candidate 2's rates, blocks, truth, intervals and readings for A–F
-    assert closed.rates == reopened.rates and closed.truth["A-F"] == reopened.truth["A-F"]
-    key = (0.975, "A-F")
-    assert closed.analysis[key] == reopened.analysis[key]
-    assert closed.direction[key] == reopened.direction[key]
-    assert closed.readings[key] == reopened.readings[key]
-    assert {k: v for k, v in closed.covered.items() if k[2] == "A-F"} == {
-        k: v for k, v in reopened.covered.items() if k[2] == "A-F"}  # fmt: skip
-    import json  # the row round-trips with its closed gate
-
-    text = json.dumps(sim.outcome_json(closed), allow_nan=False, sort_keys=True)
-    assert sim.outcome_from_json(json.loads(text)) == closed
+            assert value == o.covered[(point, level, "A-F")]
     # P open at candidate 1 and both of candidate 2's gates failing: candidate 2's own P–F gate
     ended = replace(only_af, calibrations={**only_af.calibrations, (sc, 2): hand_calibration(
         2, 0.6)})  # fmt: skip

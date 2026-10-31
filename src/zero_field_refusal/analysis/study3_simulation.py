@@ -143,11 +143,9 @@ The two modes. ``"screen"``: the scenario's candidate with no fallback (a failed
 1, then candidate 2 (fresh search, repair and validation on its seeds, with its calibration),
 then the scientific feasibility report (``scientific_report``); N raised to ``n_min`` when the
 screen found the power short; P–F counted only where its gate passed, the joint test then A–F's
-(M27). A P–F closed at candidate 1 (both of its gates failed) stays closed at candidate 2
-("Failure routes": "P is closed, with its runs and its counter"; ``study3_progress`` keeps it
-closed for the rest of the study, and candidate 2 issues no P cell): candidate 2's P runs are
-still drawn, so that every stream stays paired, but its P–F gate is not read
-(``gates["PF"]`` None).
+(M27). A P–F closed scientifically at candidate 1 reopens at candidate 2 when A–F's rule reaches
+it (amendment 7, "P's closure"), under unchanged criteria and on that candidate's own seeds: its
+P–F gate is read there, and its P runs are drawn on every route, so that every stream stays paired.
 
 **The calibration through the selection** (``calibrate_scenario``; M1, M7, M10, M15). On the
 stream (calibration base, "support", scenario, candidate) (``calibration_stream``),
@@ -292,8 +290,8 @@ the dry run's Part II changes those four lines and nothing else, and its reader 
 - M15, Δ's scale: the judge-rated estimand's, the offsets solved so that the truth averaged over
   the selections is Δ ("h: judge-rated" in the notation); decided.
 - M16, P–F with P closed: the screen computes it as if active, the verification counts P–F only
-  where its gate passed and P was not closed at an earlier candidate (A–F's analysis set does not
-  depend on P's activity); decided.
+  where the gate of the study's final candidate passed (A–F's analysis set does not depend on P's
+  activity); decided.
 - M17, N above 90: the simulated confirmation proceeds (the budget decision is outside the
   model); decided.
 - M18, misses: an undetermined interval, or an N point not reached within 200 blocks, is a miss;
@@ -1586,8 +1584,8 @@ class StudyOutcome:
     """One simulated study (§"Simulation before validation"): its ``index`` and ``mode``, the
     final ``candidate`` and the ``active`` comparisons; the ``levels`` it ran; ``rates`` per
     candidate that ran (arm → ``l``/``u``); the final candidate's validation ``gates`` (``AF``,
-    ``PF``; ``PF`` None at candidate 2 when P–F closed at candidate 1) and ``m``, the
-    A–F-supported validation blocks; per level ``confirmed`` and ``why`` (``UNCONFIRMED``),
+    ``PF``) and ``m``, the A–F-supported validation blocks; per level ``confirmed`` and ``why``
+    (``UNCONFIRMED``),
     ``N``, ``cap`` and ``blocks`` (started at the stop); ``covered`` per (N point, level,
     comparison) (None: P–F not active in ``"procedure"`` mode); per (level, comparison) the
     cap's ``direction`` (a power scenario's registered final direction, ``final_direction``;
@@ -2001,8 +1999,8 @@ def simulate_study(
     setup (module docstring, "The procedure"). ``mode``: ``"screen"`` (the scenario's
     candidate alone, N from the rule, P–F computed as if active: M14, M16) or ``"procedure"``
     (the realized route: candidate 1, then 2, then the scientific feasibility report; N raised
-    to ``setup.n_min``; P–F only where its gate passed, and not after it closed at candidate 1).
-    ``n_floor``: N is at least this (the n_min scan). ``validation_only``: the search, repair
+    to ``setup.n_min``; P–F only where the final candidate's gate passed: amendment 7, "P's
+    closure"). ``n_floor``: N is at least this (the n_min scan). ``validation_only``: the search, repair
     and validation of the first candidate alone (the gates and the calibration). ``candidate``:
     the first candidate (the scenario's by default). ``labels`` False skips the labels (no
     spread, no confirmation): the calibration's draws, whose label noise enters through its
@@ -2025,17 +2023,13 @@ def simulate_study(
     if mode == "procedure" and first == 1 and not validation_only:
         route.append((2, ("candidate-2",)))
     rates: dict[int, dict[str, dict[str, float]]] = {}
-    closed = False  # P–F closed at an earlier candidate: closed for the rest of the study
     for c, prefix in route:
         validation = _validate(scenario, setup, root, index, c, prefix, labels)
         rates[c] = validation.rates
-        if validation.gates["AF"] or mode == "screen" or validation_only or c == route[-1][0]:
+        if validation.gates["AF"] or mode == "screen" or validation_only:
             break
-        closed = closed or not validation.gates["PF"]  # the next candidate starts with it
     c = validation.candidate
     gates = dict(validation.gates)
-    if closed:  # the later candidate issues no P cell: it has no P–F gate (its draws are kept)
-        gates["PF"] = None
     common = {
         "index": int(index),
         "mode": mode,
@@ -3048,7 +3042,8 @@ RULES: dict[str, dict[str, str]] = {
     },
     "pf_verification": {
         "rule": "in the verification a P-F test counts only the studies in which P-F is active "
-        "(its validation gate passed, and P was not closed at an earlier candidate)",
+        "(the validation gate of the study's final candidate passed: a P-F closed at candidate "
+        "1 reopens at candidate 2, amendment 7)",
         "source": "P's actual activity in the realized procedure; M16, decided",
     },
     "joint_verification": {
