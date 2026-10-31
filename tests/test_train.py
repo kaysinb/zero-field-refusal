@@ -417,6 +417,73 @@ def test_frozen_adam_soft_control_estimates_v0_from_the_nll_loss(env, monkeypatc
         torch.testing.assert_close(v, e, rtol=1e-5, atol=1e-12)
 
 
+def v0_estimate(env, run_id):
+    """A frozen-Adam config with its stream, and the call of its v₀ estimate on a fresh model."""
+    from zero_field_refusal import train
+    from zero_field_refusal.models import freeze
+    from zero_field_refusal.tracking import Run
+
+    cfg = config("optimizer=adam_frozen", "optimizer.lr=1e-3", "optimizer.preconditioner.batches=3")
+    prepare(env, cfg, "training", "preconditioner")
+    model = env.new_model()
+    params = [p for _, p in freeze(model, cfg.train.freeze)]
+
+    def estimate():
+        with Run(cfg, run_id=run_id) as run:
+            return train._theta0_second_moment(cfg, env, model, params, run)
+
+    return estimate
+
+
+def attention_flags() -> tuple[bool, bool, bool]:
+    flags = torch.backends.cuda
+    return flags.flash_sdp_enabled(), flags.mem_efficient_sdp_enabled(), flags.math_sdp_enabled()
+
+
+def test_the_v0_estimate_runs_inside_the_math_backend(env, monkeypatch) -> None:
+    """Every batch's forward and backward (``accumulate_gradient`` holds both), under the real
+    flags: on the GPU the production backend's v₀ is not reproducible."""
+    from torch.nn.attention import SDPBackend
+
+    from zero_field_refusal import train
+
+    entered, seen = [], []
+    kernel, accumulate = train.sdpa_kernel, train.accumulate_gradient
+
+    def recording_kernel(backends):
+        entered.append(backends)
+        return kernel(backends)
+
+    def recording_accumulate(*args, **kwargs):
+        seen.append(attention_flags())
+        stats = accumulate(*args, **kwargs)
+        seen.append(attention_flags())
+        return stats
+
+    monkeypatch.setattr(train, "sdpa_kernel", recording_kernel)
+    monkeypatch.setattr(train, "accumulate_gradient", recording_accumulate)
+    v0_estimate(env, "estimate")()
+    assert entered == [[SDPBackend.MATH]]
+    assert seen == [(False, False, True)] * 6  # 3 batches: on entry and on return
+
+
+def test_the_v0_backend_flags_are_restored(env, monkeypatch) -> None:
+    """Training goes on under the flags in force before, also after a failed estimate."""
+    from zero_field_refusal import train
+
+    before = attention_flags()
+    v0_estimate(env, "estimate")()
+    assert attention_flags() == before
+
+    def out_of_memory(*args, **kwargs):
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(train, "accumulate_gradient", out_of_memory)
+    with pytest.raises(RuntimeError, match="out of memory"):
+        v0_estimate(env, "failed-estimate")()
+    assert attention_flags() == before
+
+
 def test_training_stops_without_a_passed_path_check(env) -> None:
     cfg = config()
     prepare(env, cfg, "training")

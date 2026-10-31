@@ -816,6 +816,8 @@ only; judge labels are read by the looks, the final analyses and the audit alone
   `docker/`, and `Dockerfile`, `.dockerignore`, `.python-version`, `pyproject.toml` and `uv.lock`;
   the analysis-only scripts (`study2_short_campaigns.py`, `study2_short_summary.py`,
   `study2_short_simulate.py` and the others listed in `code_identity.ANALYSIS_SCRIPTS`) are not.
+  Neither is any file under `scripts/diagnostics/`, stand-alone diagnostics that no run executes
+  (amendment 7 of study 3's registration).
   Gate C also leaves alone the modules the launcher and the GPU tools load: `analysis/__init__.py`
   and its imports, and `analysis/stage_a.py`. `tests/test_gate_c.py` checks both against the
   gate-B record; a gate-C change that fails it would void S2's qualification.
@@ -1494,6 +1496,17 @@ docstring holds the rules, and "A case restart" below has the complete list of t
   Each FA rate needs its case on the first numerical seed, which holds the rate's same-path
   control. `plan` refuses any other campaign, and lists the cases, the GPU time
   and the disk.
+- **v₀'s attention backend.** v₀ is estimated under the math attention backend in every process
+  (`train._theta0_second_moment`, `runtime.V0_SDPA_BACKENDS`): the launcher run, the harness's
+  parts and the same-path control, every micro-batch's forward and backward. Training stays on the
+  production backend. On the GPU, 9 of 110 recomputations of v₀ differed under the production
+  backend (the memory-efficient one) and 0 of 110 under the math backend, fresh processes included,
+  at the same time and memory. The numerics setup records the policy (`v0_sdpa_backends`, in
+  `meta.json`'s `inputs.numerics_setup` and in each part's `numerics_setup`), and the bridge's
+  `numerics_setup` equality ([its conditions](study3-preregistration.md#numerical-qualification))
+  compares it: a launcher run of code without the key does not bridge to a part with it.
+  `launch.expected_numerics` leaves the key out, since it judges a run by what its config asks for:
+  a run of older code stays classified, its declared stop included.
 - **Each case, in order, one at a time:**
   1. a complete case (below) is skipped: nothing of it runs again (`complete` exits 0; 3 says
      no, and any other exit of `complete` or `decided` stops the driver). A case whose recorded

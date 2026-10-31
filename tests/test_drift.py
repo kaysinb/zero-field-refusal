@@ -19,6 +19,7 @@ from conftest import tiny_model, tiny_tokenizer
 from omegaconf import OmegaConf
 from test_fa_control_diagnostic import forbid_outcomes
 from test_train import APPENDABLE, SMALL, prompt_sets
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from zero_field_refusal import drift
 from zero_field_refusal import fa_control_diagnostic as fcd
@@ -263,15 +264,16 @@ def tiny_world(tmp_path_factory):
 
 def direct(env, cfg, scope) -> tuple[dict, list, str]:
     """All 64 updates of every optimizer kept in float64 (flattened over the trainable
-    parameters), v₀ by ``optim.estimate_second_moment`` on the v₀ stream's batches, and the
-    statistics from their definitions."""
+    parameters), v₀ by ``optim.estimate_second_moment`` on the v₀ stream's batches, under the
+    attention backend a run estimates it under, and the statistics from their definitions."""
     model = env.new_model()
     trainable = freeze(model, cfg.train.freeze)
     names, params = [n for n, _ in trainable], [p for _, p in trainable]
     stream, _ = load_stream_for(cfg, env, "preconditioner", scope.seed)
     pre = [stream[i * BATCH : (i + 1) * BATCH] for i in range(scope.v0_batches)]
-    v0 = estimate_second_moment(params, lambda i: accumulate_gradient(model, pre[i], cfg, env),
-                                scope.v0_batches)  # fmt: skip
+    with sdpa_kernel(SDPBackend.MATH):
+        v0 = estimate_second_moment(params, lambda i: accumulate_gradient(model, pre[i], cfg, env),
+                                    scope.v0_batches)  # fmt: skip
     v0_sha256 = fcd.tensors_sha256(list(zip(names, v0, strict=True)))
     flat_v0 = torch.cat([v.reshape(-1) for v in v0])
     samples = StreamPrefix(cfg, env, scope.seed).take(0, scope.batches * BATCH)

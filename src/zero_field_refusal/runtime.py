@@ -109,6 +109,11 @@ def environment(cfg: DictConfig, device: str | torch.device) -> Environment:
 # The cuBLAS workspace of deterministic kernels: without it, cuBLAS has no deterministic GEMMs
 # and ``torch.use_deterministic_algorithms(True)`` refuses them on CUDA ≥ 10.2.
 DETERMINISTIC_CUBLAS_WORKSPACE = ":4096:8"
+# The attention backends v₀ is estimated under (``train._theta0_second_moment``), by their names in
+# ``torch.nn.attention.SDPBackend``. On the GPU, 9 of 110 recomputations of v₀ differed under the
+# production backend (the memory-efficient one) and 0 of 110 under the math backend, fresh
+# processes included, at the same time and memory.
+V0_SDPA_BACKENDS = ("MATH",)
 
 
 def configure_numerics(cfg: DictConfig, device: str | torch.device) -> dict[str, Any]:
@@ -133,7 +138,11 @@ def configure_numerics(cfg: DictConfig, device: str | torch.device) -> dict[str,
     The returned record holds the settings read back from torch and the environment, not the
     config's values: ``tf32_matmul``, ``tf32_cudnn``, ``matmul_precision``, ``deterministic``,
     ``cublas_workspace_config``, ``memory_limit_gb`` and ``memory_fraction`` (None without a cap;
-    the fraction None on the CPU too) and ``device_index`` (None on the CPU).
+    the fraction None on the CPU too) and ``device_index`` (None on the CPU). It also holds
+    ``v0_sdpa_backends``, the policy ``V0_SDPA_BACKENDS``: no flag set here, since only v₀'s
+    estimate runs under it, but part of the record because v₀ must be one across the launcher and
+    the harness ("The bridge's conditions"), so that the bridge's ``numerics_setup`` equality
+    compares it.
     """
     from .fa_control_diagnostic import apply_memory_rule, cuda_index  # it imports this module
 
@@ -163,6 +172,7 @@ def configure_numerics(cfg: DictConfig, device: str | torch.device) -> dict[str,
         "memory_limit_gb": None if rule is None else rule["limit_gb"],
         "memory_fraction": None if rule is None else rule["fraction"],
         "device_index": index,
+        "v0_sdpa_backends": list(V0_SDPA_BACKENDS),
     }
 
 

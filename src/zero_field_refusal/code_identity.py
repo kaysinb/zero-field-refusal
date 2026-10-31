@@ -10,9 +10,10 @@ A **GPU path** is every tracked file under ``src/zero_field_refusal/``, ``script
 ``configs/`` and ``docker/``, and ``pyproject.toml``, ``uv.lock`` and the files that build the
 run environment's image (``Dockerfile``, its build context's ``.dockerignore`` and
 ``.python-version``; ``docker/project-run.py`` is the image's launcher), except the analysis
-package (its ``stage_a.py`` stays in: the launcher imports it to qualify terminal records) and the
-scripts that only read records or plan campaigns. The default is inclusion, so an omission errs
-toward a stricter check.
+package (its ``stage_a.py`` stays in: the launcher imports it to qualify terminal records), the
+scripts that only read records or plan campaigns, and the stand-alone diagnostics under
+``scripts/diagnostics/``, which no run executes (docs/study3-preregistration.md, amendment 7). The
+default is inclusion, so an omission errs toward a stricter check.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ INCLUDED = ("src/zero_field_refusal/", "scripts/", "configs/", "docker/")
 INCLUDED_FILES = ("pyproject.toml", "uv.lock", "Dockerfile", ".dockerignore", ".python-version")
 EXCLUDED_PREFIXES = ("src/zero_field_refusal/analysis/",)
 KEPT_IN_EXCLUDED = ("src/zero_field_refusal/analysis/stage_a.py",)  # imported by the launcher
+DIAGNOSTICS_PREFIX = "scripts/diagnostics/"  # by location: nothing traces what such a file imports
 # Scripts that read records, plan campaigns or write reports; none runs on a GPU
 ANALYSIS_SCRIPTS = frozenset(
     f"scripts/{name}"
@@ -67,7 +69,7 @@ def is_gpu_path(path: str) -> bool:
     """Whether a repository-relative path belongs to the code a GPU run executes."""
     if path in KEPT_IN_EXCLUDED:
         return True
-    if path in ANALYSIS_SCRIPTS or path.startswith(EXCLUDED_PREFIXES):
+    if path in ANALYSIS_SCRIPTS or path.startswith((*EXCLUDED_PREFIXES, DIAGNOSTICS_PREFIX)):
         return False
     if "/__pycache__/" in path or path.endswith(".pyc"):
         return False

@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import PreTrainedModel
 
 from .batches import chunks, collate
@@ -41,6 +42,7 @@ from .prechecks import check_run_chi_square, check_teacher_gap, require_path_che
 from .refusal import is_keyword_refusal
 from .runtime import (
     REPLAY_MAX_ABS,
+    V0_SDPA_BACKENDS,
     Environment,
     ReplayedSoftTargets,
     StreamPrefix,
@@ -489,7 +491,13 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
 def _theta0_second_moment(
     cfg: DictConfig, env: Environment, student: PreTrainedModel, params: list, run: Run
 ) -> list[torch.Tensor]:
-    """The θ₀ estimate of Adam's second moment from the separate preconditioner stream (H2a)."""
+    """The θ₀ estimate of Adam's second moment from the separate preconditioner stream (H2a).
+
+    The whole estimate, every micro-batch's forward and backward, runs under the attention
+    backends ``runtime.V0_SDPA_BACKENDS``, so that the launcher run and the harness's parts compute
+    one v₀ (docs/study3-preregistration.md, "The bridge's conditions"). Training stays on the
+    production backend: the flags in force before are in force after, also after an exception.
+    """
     stream, manifest = load_stream_for(cfg, env, "preconditioner", cfg.seed)
     run.summarize({"stream/preconditioner": manifest["sha256"]})
     run.record_inputs({"streams": {"preconditioner": _identity(manifest)}})
@@ -497,9 +505,10 @@ def _theta0_second_moment(
     batches = list(chunks(stream, pre.batch_size))
     if len(batches) != pre.batches or any(len(b) != pre.batch_size for b in batches):
         raise ValueError(f"The preconditioner stream must hold {pre.batches} full batches")
-    return estimate_second_moment(
-        params, lambda i: accumulate_gradient(student, batches[i], cfg, env), pre.batches
-    )
+    with sdpa_kernel([getattr(SDPBackend, name) for name in V0_SDPA_BACKENDS]):
+        return estimate_second_moment(
+            params, lambda i: accumulate_gradient(student, batches[i], cfg, env), pre.batches
+        )
 
 
 def _controls(

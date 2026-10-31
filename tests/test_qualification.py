@@ -403,6 +403,37 @@ def test_the_launcher_run_must_have_this_processs_numerics(world, tmp_path) -> N
         assert kind == "technical" and "is not this process's" in reasons[0], source
 
 
+def test_a_launcher_run_without_the_v0_backends_is_refused_and_not_bridged(world, tmp_path) -> None:
+    """Old code's run, whose numerics setup lacks the v₀ policy, against a part with it: the
+    launcher check refuses it, and the bridge's own equality compares the key."""
+    _, runs = world
+    setup = runtime.configure_numerics(fcd.run_config(runs["fa"]), CPU)
+    old = edited(runs["fa"], tmp_path / "old", "meta.json",
+                 lambda meta: meta["inputs"]["numerics_setup"].pop("v0_sdpa_backends"))  # fmt: skip
+    kind, reasons = q.launcher_problems(old, FA, numerics=setup)
+    assert kind == "technical" and "is not this process's" in reasons[0]
+    rows = [{"step": t, "tokens": 1, "denominator": 1} for t in range(25)]
+    facts = {"rows": rows, "training_stream": {"path": "p"}, "v0_sha256": None,
+             "theta0_trainable_sha256": "t", "names_sha256": "n", "optimizer": {"o": 1},
+             "numerics_setup": setup}  # fmt: skip
+    harness = {k: v for k, v in facts.items() if k != "rows"}
+    assert q.bridge_checks(facts, rows, harness)["numerics_setup"] is True
+    before = {k: v for k, v in setup.items() if k != "v0_sdpa_backends"}
+    assert q.bridge_checks({**facts, "numerics_setup": before}, rows, harness)[
+        "numerics_setup"] is False  # fmt: skip
+
+
+def test_the_v0_hash_is_one_across_the_launcher_and_the_harness(world) -> None:
+    """The hash ``schedule``'s path recorded in the launcher run against the harness's estimate."""
+    env, runs = world
+    cfg = fcd.run_config(runs["fa"])
+    model, trainable = fcd._model(env, cfg)
+    names, params = [n for n, _ in trainable], [p for _, p in trainable]
+    v0, _ = fcd.second_moment(cfg, env, model, params)
+    recorded = json.loads((runs["fa"] / "meta.json").read_text())["inputs"]["v0_sha256"]
+    assert fcd.tensors_sha256(list(zip(names, v0, strict=True))) == recorded
+
+
 def test_the_public_names_keep_their_private_aliases() -> None:
     assert config._apply_override is config.apply_override
     assert schedule._publish is schedule.publish

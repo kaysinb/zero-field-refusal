@@ -15,6 +15,7 @@ import pytest
 from zero_field_refusal.launch import (
     CampaignError,
     StopRequest,
+    _numerics_problem,
     campaign_header,
     expected_numerics,
     hold,
@@ -518,6 +519,25 @@ def test_a_missing_checkpoint_conflict_points_to_the_lost_checkpoint_procedure(t
     assert "possible loss" not in str(mismatch.value) and "A lost checkpoint" not in str(
         mismatch.value
     )
+
+
+def test_expected_numerics_is_unchanged_by_the_v0_policy(tmp_path) -> None:
+    """A run of code older than the v₀ policy does not depart from what it was issued: judged
+    against the key, its declared stop, a scientific failure, would be superseded instead of kept
+    whole (``qualify.py``, ``resolve_launcher_run``). The harness's own check compares the key."""
+    from omegaconf import OmegaConf
+
+    _, runs = load_campaign(campaign(tmp_path))
+    run = runs[1]
+    run_dir = checkpointed_run_dir(tmp_path / "runs", run, tmp_path)
+    cfg = OmegaConf.load(run_dir / "config.yaml")
+    assert set(expected_numerics(cfg)) == {"deterministic", "tf32_matmul", "tf32_cudnn",
+                                           "matmul_precision", "memory_limit_gb"}  # fmt: skip
+    meta = json.loads((run_dir / "meta.json").read_text())
+    assert "v0_sdpa_backends" not in meta["inputs"]["numerics_setup"]
+    assert _numerics_problem(run, cfg, meta) is None
+    meta["inputs"]["numerics_setup"]["v0_sdpa_backends"] = ["MATH"]  # new code's record too
+    assert _numerics_problem(run, cfg, meta) is None
 
 
 @pytest.mark.parametrize(
