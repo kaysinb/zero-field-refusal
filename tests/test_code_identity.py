@@ -48,6 +48,11 @@ def test_gpu_paths(path: str, expected: bool) -> None:
     assert is_gpu_path(path) is expected
 
 
+def test_a_diagnostic_script_is_no_gpu_path() -> None:
+    assert not is_gpu_path("scripts/diagnostics/v0_backends.py")
+    assert is_gpu_path("scripts/v0_backends.py")
+
+
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True,
                           check=True).stdout.strip()  # fmt: skip

@@ -816,6 +816,8 @@ only; judge labels are read by the looks, the final analyses and the audit alone
   `docker/`, and `Dockerfile`, `.dockerignore`, `.python-version`, `pyproject.toml` and `uv.lock`;
   the analysis-only scripts (`study2_short_campaigns.py`, `study2_short_summary.py`,
   `study2_short_simulate.py` and the others listed in `code_identity.ANALYSIS_SCRIPTS`) are not.
+  Neither is any file under `scripts/diagnostics/`, stand-alone diagnostics that no run executes
+  (amendment 7 of study 3's registration).
   Gate C also leaves alone the modules the launcher and the GPU tools load: `analysis/__init__.py`
   and its imports, and `analysis/stage_a.py`. `tests/test_gate_c.py` checks both against the
   gate-B record; a gate-C change that fails it would void S2's qualification.
