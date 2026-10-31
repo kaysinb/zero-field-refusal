@@ -2105,15 +2105,12 @@ def test_a_cycle_during_the_confirmation_succeeds_on_files(confirming_route):
     assert next_block(r) == (10402, ["A", "F", "P"])
 
 
-def test_a_technical_failure_of_p_alone_in_the_confirmation_leaves_a_and_f_going(
+def test_a_technical_failure_of_p_alone_in_the_confirmation_pauses_and_closes_nothing(
     confirming_route,
 ):
     """Once the confirmation has started, on the route's files: the cycle, its repair, and P's
-    re-qualification ending technical (unresolved after the cycle): P alone is closed and only
-    P–F ends. The successors follow: the validation fixation's leaves P out (A's and F's rates
-    kept), the n record's keeps the frozen design (A's and F's rates, N, the cap, the cohort,
-    and P's rates and P–F as N was decided), and the supplement's names them. A–F goes on: the
-    reissued blocks hold A and F alone, and the next block too; P's earlier records stay."""
+    re-qualification ending technical: a pause (amendment 7). P stays active, nothing is closed,
+    no block of A and F alone is issued, and the validation fixation has no successor to write."""
     r = confirming_route
     r.commit_fix()
     ran = r.claims(search="reuse", qualification="rerun", validation="reuse",
@@ -2121,23 +2118,13 @@ def test_a_technical_failure_of_p_alone_in_the_confirmation_leaves_a_and_f_going
     assert ran.code == 0, ran.error
     r.repair()
     r.requalify(technical=("P",))
-    n_before = json.loads(decision_path(r.root, "n-c1").read_text())
-    first = json.loads((r.repo / "docs/study3-fixation-validation-c1.json").read_text())
-    state = successors_in_the_confirmation(r)
-    assert closed_at_requalification(state), state["route"]
-    successor = json.loads((r.repo / VALIDATION_C1_2).read_text())
-    assert successor["rates"] == {arm: first["rates"][arm] for arm in ("A", "F")}
-    n_after = json.loads(decision_path(r.root, "n-c1-2").read_text())
-    assert {k: n_after[k] for k in ("rates", "active", "cohort", "N", "cap")} == {
-        k: n_before[k] for k in ("rates", "active", "cohort", "N", "cap")}  # fmt: skip
-    assert n_after["active"] == ["A-F", "P-F"] and "P" in n_after["rates"]
-    supplement = json.loads((r.repo / CONFIRMATION_C1_2).read_text())
-    assert supplement["n"]["path"] == "study3/decisions/n-c1-2.json"
-    p_runs = [e for e in r.endpoints("confirmation") if e.arm == "P"]
-    assert p_runs and {e.seed for e in p_runs} == {10400, 10401}  # P's evidence stays
-    blocks, _ = reissued_blocks(r)
-    assert blocks == {10400: ["A", "F"], 10401: ["A", "F"]}
-    assert next_block(r) == (10402, ["A", "F"])
+    state = r.state()
+    step = state["step"]
+    assert (step["kind"], step["technical"], step["reason"]) == (
+        "blocked", True, "unresolved_after_cycle"), step  # fmt: skip
+    assert "cells" not in step and state["active"]["arms"] == ["A", "F", "P"]
+    assert not closed_at_requalification(state), state["route"]
+    assert r.write("fixation", "validation").code != 0
 
 
 # ------------------------------------------------------------------ P closed at its repaired rate
@@ -2291,42 +2278,25 @@ def test_p_failing_at_its_repaired_rate_before_the_confirmation_leaves_a_and_f_g
     assert {arm for arm, _, _ in state["step"]["cells"]} == {"A", "F"}
 
 
-def test_p_technical_at_its_repaired_rate_in_the_confirmation_leaves_a_and_f_going(
+def test_p_technical_at_its_repaired_rate_in_the_confirmation_pauses_and_closes_nothing(
     repaired_p_confirming,
 ):
     """Once the confirmation has started, on the route's files: the cycle, its repair, P's
-    starting rates re-qualified and its repaired lower rate (the one the validation fixation
-    fixes) ending technical, unresolved after the cycle. P alone is closed at the repair, and
-    only P–F ends; with the validation fixation's successor in force (P left out), the walk reads
-    P's closure from the rates the record before it fixed, and the successors follow: the n
-    record's keeps the frozen design (A's and F's rates, N, the cap, the cohort, and P's rates
-    with P–F as N was decided), the supplement's names it, and the reissued blocks and the next
-    block hold A and F alone."""
+    starting rates re-qualified and its repaired lower rate ending technical: a pause at the
+    repair (amendment 7). P stays active and nothing is closed."""
     r = repaired_p_confirming
     r.commit_fix()
     ran = r.claims(search="reuse", qualification="rerun", validation="reuse",
                    confirmation="rerun")  # fmt: skip
     assert ran.code == 0, ran.error
     r.repair()
-    repaired = r.p_repaired()
-    r.requalify(technical=[("P", repaired)])
-    n_before = json.loads(decision_path(r.root, "n-c1").read_text())
-    assert n_before["active"] == ["A-F", "P-F"] and n_before["rates"]["P"]["lr_l"] == repaired
-    first = json.loads((r.repo / "docs/study3-fixation-validation-c1.json").read_text())
-    state = successors_in_the_confirmation(r)
-    assert closed_at_repair(state), state["route"]
-    successor = json.loads((r.repo / VALIDATION_C1_2).read_text())
-    assert successor["rates"] == {arm: first["rates"][arm] for arm in ("A", "F")}
-    n_after = json.loads(decision_path(r.root, "n-c1-2").read_text())
-    assert {k: n_after[k] for k in ("rates", "active", "cohort", "N", "cap")} == {
-        k: n_before[k] for k in ("rates", "active", "cohort", "N", "cap")}  # fmt: skip
-    supplement = json.loads((r.repo / CONFIRMATION_C1_2).read_text())
-    assert supplement["n"]["path"] == "study3/decisions/n-c1-2.json"
-    blocks, _ = reissued_blocks(r)
-    assert blocks == {10400: ["A", "F"], 10401: ["A", "F"]}
-    assert next_block(r) == (10402, ["A", "F"])
+    r.requalify(technical=[("P", r.p_repaired())])
     state = r.state()
-    assert state["problems"] == [] and closed_at_repair(state), state["step"]
+    step = state["step"]
+    assert (state["stage"], step["kind"], step["reason"]) == (
+        "repair", "blocked", "unresolved_after_cycle"), step  # fmt: skip
+    assert "cells" not in step and state["active"]["arms"] == ["A", "F", "P"]
+    assert not closed_at_repair(state), state["route"]
 
 
 def test_a_successor_cannot_leave_out_a_qualified_or_waiting_p(repaired_p_requalified):

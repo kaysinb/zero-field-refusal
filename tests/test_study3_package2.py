@@ -2,8 +2,8 @@
 ``analysis/qualification_records.py`` and ``analysis/campaign_prep.py``, and the scripts
 ``scripts/study3_campaigns.py`` and ``scripts/study3_summary.py``): its boundaries.
 
-- No GPU path has changed since the GPU code study 3 qualifies, as of package 1d
-  (``QUALIFIED_GPU_CODE``, ``code_identity.reuse_check``).
+- No GPU path has changed since the GPU code study 3 qualifies (``QUALIFIED_GPU_CODE``,
+  ``code_identity.reuse_check``).
 - No module of the package or script imports a GPU module directly or loads a script (read as
   code).
 - No label is read: the label readers' entry points raise wherever they are bound, before the
@@ -146,14 +146,10 @@ SCRIPTS = (
 SUMMARY = SCRIPTS[1]
 LABEL_MODULES = ("zero_field_refusal.analysis.study2_labels", "zero_field_refusal.labeling",
                  "zero_field_refusal.run_judging")  # fmt: skip
-# The GPU code study 3 qualifies, as of package 1d: its last commit that changed a GPU path, the
-# launcher's further recovery rounds, the driver's control-only path, the export of a technical
-# case's checkpoints, restart-case's refusals of a control-alone state, of departing numerics and
-# of a binding refusal, an established technical case's early export, a scientific case whose
-# same-path control failed (it counts as scientific, its evidence kept while the driver goes on),
-# control-only's quiet answer, a present checkpoint hashed once, the launch journal read once per
-# engineering cycle and the record that names an interrupted attempt
-QUALIFIED_GPU_CODE = "14c131f"
+# The GPU code study 3 qualifies: its last commit that changed a GPU path, on the fix of case 17 of
+# the engineering stage (v₀ estimated under the math attention backend, recorded in the numerics
+# setup) and with scripts/diagnostics/ outside the identity (amendment 7)
+QUALIFIED_GPU_CODE = "2bb9c45"
 REAL_IDENTITY = code_identity.gpu_code_identity
 REAL_READING = qualification_records.read_qualification  # the route replaces it
 # The route: A's lower rate kept by the search on these offsets in ln K, then repaired; N = 99
@@ -729,9 +725,8 @@ def test_a_sealed_launch_log_is_named_in_the_decision_records(tmp_path, monkeypa
 
 
 def test_the_package_changes_no_gpu_path(monkeypatch) -> None:
-    """No GPU path has changed since the GPU code study 3 qualifies, as of package 1d
-    (``QUALIFIED_GPU_CODE``): the qualification made under that GPU code holds at HEAD
-    (``code_identity.reuse_check``)."""
+    """No GPU path has changed since the GPU code study 3 qualifies (``QUALIFIED_GPU_CODE``): the
+    qualification made under that GPU code holds at HEAD (``code_identity.reuse_check``)."""
     try:
         known = subprocess.run(["git", "merge-base", "--is-ancestor", QUALIFIED_GPU_CODE, "HEAD"],
                                cwd=REPO_ROOT, capture_output=True).returncode == 0  # fmt: skip
@@ -1043,7 +1038,7 @@ class Route(CampaignWorld):
         """Candidate 1 from its engineering campaign to its confirmation's fourth block: every
         campaign kind, every summary command; the search's two rounds, a repair, the staged
         fixation and two versions records, N = 99 with its budget record, a P run under another
-        commit (a dirty checkout) that P's closure record closes."""
+        commit (a dirty checkout) that pauses the confirmation."""
         self.build_to("done")
 
     BUILD = ("fixation", "validation", "choice", "supplement", "confirming", "done")
@@ -1066,17 +1061,26 @@ class Route(CampaignWorld):
             if name == stage:
                 return
 
-    def to_fixation(self) -> None:
-        """From the engineering campaign through the repair, then the validation fixation and the
-        first versions record, each committed alone."""
-        root, theta0 = self.root, self.runs.theta0
+    def to_search(self) -> None:
+        """The engineering campaign, then the engineering and simulation records."""
         assert self.step()["record"] == "engineering"
         self.engineering = self.campaign("engineering")
         self.launch(self.engineering)
         self.record("engineering", self.records.engineering(code=self.code))
         self.record("simulation", self.records.simulation(code=self.code))
+
+    def to_fixation(self) -> None:
+        """From the engineering campaign (``to_search``) through the search's round 0, then
+        ``after_round0``."""
+        self.to_search()
         assert self.step()["campaign"] == "search-round0"
         self.launch(self.campaign("search-round0"), self.ROUND0)
+        self.after_round0()
+
+    def after_round0(self) -> None:
+        """From the search's round 1 through the repair, the validation fixation and the first
+        versions record, each committed alone."""
+        root, theta0 = self.root, self.runs.theta0
         assert self.step()["campaign"] == "search-round1"
         self.launch(self.campaign("search-round1"))
         assert self.step()["campaign"] == "numerical"
@@ -1145,8 +1149,8 @@ class Route(CampaignWorld):
         self.launch(self.blocks[10400])
 
     def finish(self) -> None:
-        """The second and third blocks, a P run of the third under a dirty checkout closed by
-        P's closure record, the fourth block with A and F alone, and the prep script."""
+        """The second and third blocks, a P run of the third under a dirty checkout: a pause, no
+        closure and no block of A and F alone; and the prep script."""
         root = self.root
         assert self.guarded(10401, self.blocks[10401]).code == 0
         self.launch(self.blocks[10401])
@@ -1157,20 +1161,12 @@ class Route(CampaignWorld):
         assert self.guarded(10402, self.blocks[10402]).code != 0  # the mark holds it
         self.refused("campaigns", "confirmation", "--runs-root", root, "--candidate", 1, "--out",
                      self.out / "blocked")  # fmt: skip
-        self.refused("summary", "closure", "--runs-root", root, "--candidate", 1, "--arm", "A")
-        self.ok("summary", "closure", "--runs-root", root, "--candidate", 1, "--arm", "P")
-        # P closed: the next block holds A and F
-        out = self.campaign("confirmation")
-        (block,) = out.glob("*.yaml")
-        assert campaign_of(block)["cells"][0]["seeds"] == [10403]
-        assert len(campaign_of(block)["cells"]) == 4
-        self.blocks[10403] = block
-        assert self.guarded(10403, block).code == 0
-        self.launch(block)
+        for arm in ("A", "P"):
+            self.refused("summary", "closure", "--runs-root", root, "--candidate", 1, "--arm", arm)
         assert self.ok("summary", "progress", "--runs-root", root).out
         state = self.state()
-        assert state["problems"] == [] and state["confirmation"]["started"] == [10400, 10401, 10402,
-                                                                              10403]  # fmt: skip
+        assert state["problems"] == [] and len(state["not_counted"]) == 1
+        assert state["active"]["comparisons"] == ["A-F", "P-F"]
         self.ok("campaigns", "prep", "--seeds", 10100, 10300, "--commit", self.code["commit"],
                 "--out", self.out / "prep.sh")  # fmt: skip
 
@@ -1232,9 +1228,8 @@ def test_the_route_runs_every_campaign_kind_and_summary_command_on_files(route) 
     assert {kind for script, kind in done if script == "summary"} == {
         "progress", "guard", "check", "versions", "fixation validation",
         "fixation confirmation", "record engineering", "record simulation", "record n-c1",
-        "record budget-c1", "closure"}  # fmt: skip
-    assert route.guards == [(10400, 0), (10401, 1), (10401, 0), (10402, 0), (10402, 1),
-                            (10403, 0)]  # fmt: skip
+        "record budget-c1"}  # fmt: skip
+    assert route.guards == [(10400, 0), (10401, 1), (10401, 0), (10402, 0), (10402, 1)]
     # the guard's state and versions check were the real ones, on the checkout's GPU code
     assert {code for _, code in route.readings} == {route.code["gpu_code_sha256"]}
     # the sentinel is in every sealed file and every judge output of the world
@@ -1327,9 +1322,9 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
         restart = f"{added['case-restart record']}: a case-restart record that {SEALED_WHY}"
         cycle = f"qualification/c1/supersede-1.json: a supersession record that {SEALED_WHY}"
         assert restart in state["problems"] and cycle in state["problems"]
-        assert route.guarded(10403, route.blocks[10403]).code != 0
+        assert route.guarded(10402, route.blocks[10402]).code != 0
         check = route.refused("summary", "check", "--runs-root", root, "--campaign",
-                              route.blocks[10403])  # fmt: skip
+                              route.blocks[10402])  # fmt: skip
         assert f"launch/linked.jsonl: a launch log that {SEALED_WHY}" in check.err
         for kind in KINDS:
             error = route.refused("campaigns", kind, "--runs-root", root, "--candidate", 1,

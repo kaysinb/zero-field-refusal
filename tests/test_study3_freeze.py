@@ -96,7 +96,7 @@ def test_the_record_is_closed_numbers_and_ids() -> None:
     assert tuple(record) == fz.FIELDS and record["kind"] == fz.KIND == "analysis-freeze"
     assert fz.freeze_name(1) == "docs/study3-analysis-freeze-c1.json"
     started = list(SEEDS["confirmation"][1][:60])
-    assert record["confirmation"] == {"N": 60, "cap": 70, "started": started, "stop": "counters",
+    assert record["confirmation"] == {"N": 60, "cap": 74, "started": started, "stop": "counters",
                                       "outcome": "confirmed", "active": ["A-F", "P-F"]}  # fmt: skip
     assert record["supplement"] == SUPPLEMENT and record["code"] == CODE
     a = record["comparisons"]["A-F"]["blocks"][0]["arms"]["A"]
@@ -134,15 +134,15 @@ def test_a_block_whose_arm_does_not_bracket_kstar_h_is_left_out_and_counted() ->
 
 def test_at_the_cap_a_comparison_below_36_is_descriptive_on_all_its_blocks() -> None:
     seeds = list(SEEDS["confirmation"][1])
-    study = done(count=70, special={(s, "P", "u"): {"K": 5.5} for s in seeds[30:70]})
+    study = done(count=74, special={(s, "P", "u"): {"K": 5.5} for s in seeds[30:74]})
     record = frozen(k_harmful(study, scaled))
     af, pf = record["comparisons"]["A-F"], record["comparisons"]["P-F"]
     assert record["confirmation"]["stop"] == "cap"
-    assert (af["reading"], len(af["blocks"]), af["unknown"]) == ("confirmatory", 60, seeds[60:70])
+    assert (af["reading"], len(af["blocks"]), af["unknown"]) == ("confirmatory", 60, seeds[60:74])
     assert (pf["reading"], pf["rule"], len(pf["blocks"])) == ("descriptive", "cap", 30)
-    assert pf["unknown"] == seeds[30:70] and len(pf["unknown"]) == 40
+    assert pf["unknown"] == seeds[30:74] and len(pf["unknown"]) == 44
     for c in (af, pf):  # the cohort and the unknown blocks cover each started block once
-        assert sorted([*(b["seed"] for b in c["blocks"]), *c["unknown"]]) == sorted(seeds[:70])
+        assert sorted([*(b["seed"] for b in c["blocks"]), *c["unknown"]]) == sorted(seeds[:74])
     assert [b["seed"] for b in record["a_minus_p"]["blocks"]] == seeds[:30]
 
 
@@ -159,21 +159,6 @@ def test_a_minus_p_after_p_closed() -> None:
     record = frozen(k_harmful(study, scaled))
     assert record["a_minus_p"] == {"blocks": []}
     assert set(record["comparisons"]) == {"A-F"} and record["validation"]["P-F"] is None
-    # P closed during the confirmation by a closure: the earlier blocks with A and P supported
-    # stay; the run under another commit is excluded from every block, as from every count
-    study = Study()
-    study.through_validation()
-    study.n(N=60)
-    study.confirmation(count=3)
-    run = run_of(study, "confirmation", "P", "l", 10401)
-    study.other_commit(run, "other_commit")
-    study.closure(run)
-    study.confirmation(arms=("A", "F"), count=57, first=3)
-    state = study.advance()
-    assert (state["stage"], state["active"]["comparisons"]) == ("done", ["A-F"])
-    record = frozen(k_harmful(study, scaled))
-    assert [b["seed"] for b in record["a_minus_p"]["blocks"]] == [10400, 10402]
-    assert len(record["comparisons"]["A-F"]["blocks"]) == 60
 
 
 # ------------------------------------------------------------------ the gate

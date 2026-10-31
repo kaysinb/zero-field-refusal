@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -20,11 +21,12 @@ import pytest
 from zero_field_refusal import launch
 from zero_field_refusal.analysis import study3_simulation as sim
 from zero_field_refusal.analysis.study3_decisions import (
+    CAP_ATTAINMENT,
+    CAP_SUPPORT,
     COVERAGE_RUNS,
     HOLD_REASONS,
     LEVELS,
     MIN_N,
-    NOT_ATTAINABLE,
     PLANNING_DIFFERENCE_PP,
     PLANNING_POWER,
     POWER_REPORT,
@@ -37,6 +39,7 @@ from zero_field_refusal.analysis.study3_decisions import (
     DecisionRefused,
     budget_needed,
     budget_reason,
+    cap_attainment,
     cap_of,
     chain,
     clopper_pearson,
@@ -71,13 +74,13 @@ SENTINEL = "SEALED-RESPONSE-5d1e0b"
 CODE = {"commit": "a" * 40, "gpu_code_sha256": "b" * 64}
 WHEN = "2026-10-26T12:00:00Z"
 SEALED = ("responses", "observations")
-# The fixture's simulation: the whole grid (the reader refuses any other), J = 1 785; C16 a
+# The fixture's simulation: the whole grid (the reader refuses any other), J = 2 856; C16 a
 # coverage scenario and P20 a power scenario that tests name
 COVER, POWER = "C16", "P20"
 COVERAGE = [s.name for s in sim.SCENARIOS if s.coverage]
 POWERS = [s.name for s in sim.SCENARIOS if s.power]
-GRID_J = len(test_identities(COVERAGE))  # 17 × 105
-LEVEL_TESTS = GRID_J // 5  # each level's calibration tests, and the verification's: 17 × 21
+GRID_J = len(test_identities(COVERAGE))  # 17 × 168
+LEVEL_TESTS = GRID_J // 8  # each level's tests on each stream: 17 × 21
 STREAMS = {"calibration": 11, "verification": 12}
 POLICY = {"path": "docs/study3-preregistration.md", "commit": "c" * 40, "sha256": "d" * 64,
           "amendments": [1, 2, 3, 4, 5, 6]}  # fmt: skip
@@ -158,7 +161,7 @@ class World:
         self.fixation_commit = git(self.repo, "rev-parse", "HEAD")
 
     def results(self, record: dict, *, mode: str | None = None, ran: str | None = None,
-                not_attainable: tuple | None = None) -> dict:  # fmt: skip
+                incomplete: tuple | None = None) -> dict:  # fmt: skip
         """``results.json`` consistent with ``record`` (its levels' counts, its verification and
         gates), then changed as ``mode`` says."""
         j = self.J
@@ -166,8 +169,9 @@ class World:
         rows_by_level = {row.get("level"): row for row in record.get("coverage") or []
                          if isinstance(row, dict)}  # fmt: skip
         level = record.get("level") if record.get("level") in LEVELS else None
-        verification = record.get("verification")
-        verified_ok = isinstance(verification, dict) and verification.get("passed") is True
+        found = record.get("levels_tried")
+        tried = {t["level"]: t for t in found} if isinstance(found, list) else {}
+        gate_level = found[-1]["level"] if tried else 0.975
         rows = []
         for identity in test_identities(COVERAGE):
             stream, _, _, slot, comparison = identity
@@ -178,17 +182,18 @@ class World:
                 if not (type(x) is int and 0 <= x <= M):
                     x = c[kind] - 20
                 rows.append(results_row(identity, float(slot), x, c[kind]))
-            elif level is None:
+            elif float(slot) not in tried:
                 rows.append(results_row(identity, None, None, None))
-            else:
-                x = c[kind] - 20 if verified_ok else c[kind] + 1
-                rows.append(results_row(identity, level, x, c[kind]))
-        if not_attainable is not None:
-            stream, slot = not_attainable
-            at = next(i for i, r in enumerate(rows) if r["test"][0] == stream
+            else:  # the tests of a level whose verification failed: A–F's
+                failed = tried[float(slot)]["verified"] is False and comparison == "A-F"
+                x = c[kind] + 1 if failed else c[kind] - 20
+                rows.append(results_row(identity, float(slot), x, c[kind], floors=(36,)))
+        if incomplete is not None:
+            stream, slot = incomplete
+            at = next(i for i, r in enumerate(rows) if r["test"][0] == stream and r["test"][2] == 60
                       and r["test"][3] == slot and r["test"][4] == "A-F")  # fmt: skip
-            rows[at] = {**rows[at], "studies": M - 7, "draws": 4 * M, "reason": NOT_ATTAINABLE,
-                        "X": None, "passed": False, "rate": None, "interval": None}  # fmt: skip
+            rows[at] = {**rows[at], "studies": M - 7, "draws": 4 * M, "reason": "incomplete",
+                        "X": None, "passed": None, "rate": None, "interval": None}  # fmt: skip
         gates = record.get("gates") if isinstance(record.get("gates"), dict) else {}
 
         def value(name: str, default: float) -> float:
@@ -220,11 +225,11 @@ class World:
                 "safe_pass_rate": {"passed": count(safe), "studies": M, "validation_blocks": 28},
                 "empirical_pass_rate": {"passed": count(value("empirical_pass_rate", 0.6)),
                                         "studies": M, "validation_blocks": 28},
-                **{name: {"level": level if level is not None else 0.975,
+                **{name: {"level": gate_level,
                           "by_scenario": {s: {"correct": count(value(name, default)),
                                               "studies": M, "draws": M} for s in POWERS}}
                    for name, default in (("power_af", 0.86), ("power_pf", 0.85))},
-                POWER_REPORT: {"level": level if level is not None else 0.975,
+                POWER_REPORT: {"level": gate_level,
                                "missing_rate": 0.01,
                                "by_scenario": {s: {"correct": count(value(POWER_REPORT, 0.7)),
                                                    "studies": M, "draws": M} for s in POWERS}},
@@ -232,6 +237,7 @@ class World:
                 "detection_power": detection_power(j, M),
             },
             "reported": {},
+            "verifications": [],
         }  # fmt: skip
         tests = results["tests"]
         first = next(i for i, r in enumerate(tests) if r["test"][0] == "calibration")
@@ -290,13 +296,16 @@ class World:
         ``omit``, ``extra``, ``flip_pass``, ``verification_not_due``, ``short_without_bound``:
         results that depart from the record), ``fixation`` as a word (``uncommitted``,
         ``with_another_file``, ``after_the_results``), ``fail_levels`` (those levels fail),
-        ``not_attainable`` ((stream, level slot): one A–F test short at the 4·M bound) and
-        ``gate_value_off`` (the record's pass rate at the safe alternative off its counts)."""
+        ``fail_verification`` (those levels' verifications fail, A–F's tests: L advances, and with
+        none left the record fails), ``incomplete`` ((stream, level slot): one A–F test short at
+        the 4·M bound) and ``gate_value_off`` (the record's pass rate at the safe alternative off
+        its counts)."""
         mode = over.pop("results", None)
         modes = ("uncommitted", "with_another_file", "after_the_results")
         how = over.pop("fixation") if over.get("fixation") in modes else None
         failing = set(over.pop("fail_levels", ()))
-        short = over.pop("not_attainable", None)
+        unverified = set(over.pop("fail_verification", ()))
+        short = over.pop("incomplete", None)
         off = over.pop("gate_value_off", None)
         if how in ("uncommitted", "with_another_file"):
             self.checkout(how)
@@ -304,9 +313,9 @@ class World:
             failing.add(float(short[1]))
         rows = [coverage_row(lv, passed=lv not in failing) for lv in LEVELS]
         if short is not None:
-            row = rows[LEVELS.index(float(short[1]))]
-            row["counts"] = {**row["counts"], "comparison": M}
-        level = next((r["level"] for r in rows if r["passed"]), None)
+            rows[LEVELS.index(float(short[1]))]["incomplete"] = 1
+        level = next((r["level"] for r in rows if r["passed"] and r["level"] not in unverified),
+                     None)  # fmt: skip
         record = {
             "kind": "simulation", "state": "passed" if level is not None else "failed",
             "written_at": WHEN, "code": CODE,
@@ -317,8 +326,23 @@ class World:
             "verification": verified(level, level is not None),
         }  # fmt: skip
         record.update(over)
+        if "reading" not in over:
+            passed = isinstance(record["verification"], dict) and record["verification"].get(
+                "passed") is True and record["level"] in LEVELS  # fmt: skip
+            record["reading"] = {"level": record["level"], "pf_confirmatory": True,
+                                 "floors": {"A-F": 36, "P-F": 36}} if passed else None  # fmt: skip
+        if "levels_tried" not in over:
+            record["levels_tried"] = []
+            for row in record["coverage"] if isinstance(record["coverage"], list) else []:
+                if isinstance(row, dict) and row.get("passed") is True:
+                    record["levels_tried"].append(
+                        tried_entry(row["level"], row["level"] not in unverified))  # fmt: skip
+                    if row["level"] not in unverified:
+                        break
+            if mode == "verification_not_due":
+                record["levels_tried"][0].update(verified=None, pf_confirmatory=False, failed=[])
         ran = self.first if how == "after_the_results" else None
-        results = self.results(record, mode=mode, ran=ran, not_attainable=short)
+        results = self.results(record, mode=mode, ran=ran, incomplete=short)
         path = self.runs / SIMULATION_RESULTS
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
@@ -350,7 +374,7 @@ class World:
                        "run_ids": [f"run-{s}-{k}" for s in seeds for k in range(4)]},
             "spread": {"script": self.ref("study3_spread.py", root="repo"),
                        "output": self.ref("spread-output.json")},
-            "spread_pp": 4.5, "N": N, "cap": CAPS.get(N),
+            "spread_pp": 4.5, "N": N, "cap": cap_or_none(N),
             "simulation": {"path": "study3/decisions/simulation.json",
                            "sha256": self.digest("simulation"), "root": "runs"},
         }  # fmt: skip
@@ -359,7 +383,7 @@ class World:
     def budget(self, candidate: int = 1, N: int = 99, **over) -> dict:
         record = {
             "kind": f"budget-c{candidate}", "state": "passed", "written_at": WHEN, "code": CODE,
-            "candidate": candidate, "N": N, "cap": CAPS.get(N), "decision": "proceed",
+            "candidate": candidate, "N": N, "cap": cap_or_none(N), "decision": "proceed",
             "answers": {"path": f"study3/decisions/n-c{candidate}.json",
                         "sha256": self.digest(f"n-c{candidate}")},
         }  # fmt: skip
@@ -432,9 +456,14 @@ class World:
         return digest
 
 
-# the cap N + max(10, ⌈0.12·N⌉) by hand
-CAPS = {60: 70, 75: 85, 83: 93, 84: 95, 90: 101, 99: 111, 100: 112, 120: 135, 178: 200,
-        179: 201}  # fmt: skip
+# the cap C(N), the registration's amendment 7 (60, 88, 93, 107) and an exact binomial
+CAPS = {60: 74, 75: 91, 83: 101, 84: 102, 88: 106, 90: 109, 93: 112, 99: 119, 100: 120, 107: 129,
+        120: 144, 168: 200, 169: 201}  # fmt: skip
+
+
+def cap_or_none(n) -> int | None:
+    """``cap_of(n)``; None for what is no N, as a record with no cap to compare."""
+    return cap_of(n) if type(n) is int and n >= MIN_N else None
 
 
 def power_gate(value: float, n_min: int | None = None) -> dict:
@@ -452,7 +481,7 @@ def reported(value: float) -> dict:
 def default_gates() -> dict:
     """The gates of a simulation that passed them all: a pass rate at the safe alternative of
     0.982, the power of 0.86, and, reported only, the pass rate at study 2's empirical point,
-    P–F's power and the detection powers at the fixture's J = 1 785."""
+    P–F's power and the detection powers at the fixture's J = 2 856."""
     detection = detection_power(GRID_J, M)
     return {"safe_pass_rate": {"value": 0.982, "requirement": 0.95, "passed": True},
             "power_af": power_gate(0.86),
@@ -462,17 +491,33 @@ def default_gates() -> dict:
             "detection_power_joint": reported(detection["joint"])}  # fmt: skip
 
 
-def results_row(identity: tuple, level: float | None, x: int | None, c: int | None) -> dict:
-    """A row of the results: a test of M studies with its X, or (``level`` None) a verification
-    test not due."""
+def tried_entry(level: float, verified: bool = True) -> dict:
+    """A level tried, as the J check recomputes it: floors 36, and when its verification failed,
+    A–F's tests above their c (the fixture's ``fail_verification``)."""
+    c = coverage_threshold(GRID_J, M, 0.025)
+    failed = [] if verified else [
+        {"test": list(i), "X": c + 1, "reason": None} for i in test_identities(COVERAGE)
+        if i[0] == "verification" and i[3] == level_slot(level) and i[4] == "A-F"]  # fmt: skip
+    return {"level": level, "floors": {"A-F": 36, "P-F": 36}, "verified": verified,
+            "pf_confirmatory": True, "failed": failed}  # fmt: skip
+
+
+def results_row(identity: tuple, level: float | None, x: int | None, c: int | None,
+                floors: tuple = (36, 45, 60)) -> dict:  # fmt: skip
+    """A row of the results: a test of M studies with its X (a cap test: at each of ``floors``), or
+    (``level`` None) a verification test not due."""
     p0 = 0.05 if identity[4] == "joint" else 0.025
     if level is None:
         return {"test": list(identity), "level": None, "due": False, "p0": p0, "studies": None,
                 "draws": None, "reason": None, "X": None, "c": None, "passed": None,
-                "rate": None, "interval": None}  # fmt: skip
-    return {"test": list(identity), "level": level, "due": True, "p0": p0, "studies": M,
-            "draws": M, "reason": None, "X": x, "c": c, "passed": x <= c, "rate": x / M,
-            "interval": clopper_pearson(x, M)}  # fmt: skip
+                "rate": None, "interval": None, "floor": None, "below": None}  # fmt: skip
+    count = {"studies": M, "draws": M, "reason": None, "X": x, "passed": x <= c, "rate": x / M,
+             "interval": clopper_pearson(x, M)}  # fmt: skip
+    cap = identity[2] == "cap"
+    return {"test": list(identity), "level": level, "due": True, "p0": p0, "c": c, **count,
+            "floor": max(floors) if cap else None,
+            "below": ({str(f): count for f in floors if f != max(floors)} or None) if cap
+            else None}  # fmt: skip
 
 
 def gates_with(**gates) -> dict:
@@ -492,7 +537,8 @@ def coverage_row(level: float, *, passed: bool = True, J: int = GRID_J, M: int =
     if not passed:
         counts["comparison"] = c + 1
     return {"level": level, "tests": tests, "J": J, "M": M, "counts": counts,
-            "thresholds": {"comparison": c, "joint": j}, "passed": passed}  # fmt: skip
+            "thresholds": {"comparison": c, "joint": j}, "passed": passed,
+            "incomplete": 0}  # fmt: skip
 
 
 @pytest.fixture
@@ -514,9 +560,9 @@ def refused(world: World, kind: str, record: dict, *words: str) -> None:
 
 
 def verified(level=0.975, passed=True, **kw) -> dict:
-    """A simulation's independent verification (the fixture's 357 verification tests and
-    streams)."""
-    return {"level": level, "passed": passed, "tests": LEVEL_TESTS, "calibration_stream": 11,
+    """A simulation's independent verification (the fixture's 1 428 possible verification tests
+    and streams)."""
+    return {"level": level, "passed": passed, "tests": 4 * LEVEL_TESTS, "calibration_stream": 11,
             "verification_stream": 12, **kw}  # fmt: skip
 
 
@@ -537,13 +583,14 @@ def test_the_kinds_and_their_files(world) -> None:
     assert decision_path(world.runs, "n-c2") == world.runs / "study3" / "decisions" / "n-c2.json"
 
 
-def test_the_cap_is_n_plus_the_larger_of_ten_and_twelve_percent_rounded_up() -> None:
+def test_the_cap_is_the_smallest_with_attainment_at_the_named_support() -> None:
+    assert (Fraction(88, 100), Fraction(95, 100)) == (CAP_SUPPORT, CAP_ATTAINMENT)
     for n, cap in CAPS.items():
-        assert cap_of(n) == cap
-    assert cap_of(83) == 83 + 10  # 0.12 * 83 = 9.96 -> 10
-    assert cap_of(84) == 84 + 11  # 10.08 -> 11
-    assert cap_of(75) == 75 + 10  # 9.0 exactly is not rounded up to 10: max(10, 9) = 10
-    assert cap_of(100) == 100 + 12 and cap_of(125) == 125 + 15  # 15.0 exactly, not 16
+        assert cap_of(n) == cap and type(cap_of(n)) is int
+        assert cap_attainment(cap - 1, n) < CAP_ATTAINMENT <= cap_attainment(cap, n)
+    # against an independent sum, in floats
+    total = sum(math.comb(74, k) * 0.88**k * 0.12 ** (74 - k) for k in range(60, 75))
+    assert float(cap_attainment(74, 60)) == pytest.approx(total)
 
 
 def test_a_budget_decision_is_needed_above_ninety() -> None:
@@ -571,7 +618,8 @@ def test_the_n_rule_gives_the_registered_examples(sd, m, level, n) -> None:
 
 
 def test_the_examples_caps() -> None:
-    assert [cap_of(n) for n in (60, 88, 92, 93)] == [70, 99, 104, 105]
+    assert [cap_of(n) for n in (60, 88, 93, 107)] == [74, 106, 112, 129]
+    assert cap_of(168) <= 200 < cap_of(169)
 
 
 def test_the_upper_sd_and_the_floor() -> None:
@@ -674,10 +722,45 @@ def test_a_simulation_where_no_level_passed_is_a_failed_record_with_a_null_level
     assert problems == [] and record["state"] == "failed" and record["level"] is None
 
 
-def test_a_failed_verification_is_a_failed_record(world) -> None:
-    verification = verified(passed=False)
-    world.write("simulation", world.simulation(state="failed", verification=verification))
-    assert world.read("simulation")[0]["state"] == "failed"
+def test_a_failed_verification_advances_l_and_keeps_every_result(world) -> None:
+    """Amendment 7, "A failure at L": a level's failed verification moves L to the next level that
+    passed its screen; the record keeps the failed level, and the n record follows the new L."""
+    rows = [coverage_row(0.975), coverage_row(0.98, passed=False), coverage_row(0.985),
+            coverage_row(0.99)]  # fmt: skip
+    world.write("simulation", world.simulation(
+        coverage=rows, fail_verification=(0.975,), level=0.985,
+        verification=verified(0.985)))  # fmt: skip
+    record, problems = world.read("simulation")
+    assert problems == [] and record["level"] == 0.985 and record["state"] == "passed"
+    assert record["reading"]["level"] == 0.985
+    assert [t["level"] for t in record["levels_tried"]] == [0.975, 0.985]  # 0.980 failed its screen
+    assert [t["verified"] for t in record["levels_tried"]] == [False, True]
+    assert len(record["levels_tried"][0]["failed"]) == 17 * 7
+    results = json.loads((world.runs / SIMULATION_RESULTS).read_text())
+    assert results["gates"]["power_af"]["level"] == 0.985
+    due = {r["test"][3] for r in results["tests"] if r["test"][0] == "verification" and r["due"]}
+    assert due == {"0.975", "0.985"}
+
+
+def test_a_level_verified_after_a_failure_is_the_only_l_the_reader_accepts(world) -> None:
+    """L cannot stay at the failed level, skip a level that passed its screen, or stop with a level
+    left."""
+    sim_refused(world, "level", "0.98", fail_verification=(0.975,), level=0.975,
+                verification=verified(0.975))  # fmt: skip
+    sim_refused(world, "level", "0.98", fail_verification=(0.975,), level=0.985,
+                verification=verified(0.985))  # fmt: skip
+    tried = [tried_entry(0.975, False)]
+    sim_refused(world, "level", "0.98", level=None, state="failed", levels_tried=tried,
+                verification=verified(None, False), fail_verification=(0.975,))  # fmt: skip
+
+
+def test_no_level_left_is_a_failed_record_with_every_level_kept(world) -> None:
+    world.write("simulation", world.simulation(fail_verification=LEVELS))
+    record, problems = world.read("simulation")
+    assert problems == [] and record["state"] == "failed" and record["level"] is None
+    assert record["reading"] is None
+    assert [t["verified"] for t in record["levels_tried"]] == [False] * 4
+    assert world.simulation(fail_verification=LEVELS)["verification"]["passed"] is False
 
 
 def test_the_n_record_is_accepted_with_and_without_p(world) -> None:
@@ -685,7 +768,7 @@ def test_the_n_record_is_accepted_with_and_without_p(world) -> None:
     world.write("simulation", world.simulation())
     world.write("n-c1", world.n(1, 75))
     record, problems = world.read("n-c1")
-    assert problems == [] and record["N"] == 75 and record["cap"] == 85
+    assert problems == [] and record["N"] == 75 and record["cap"] == 91
     only = world.n(2, 60, active=["A-F"])
     del only["rates"]["P"]
     world.write("n-c2", only)
@@ -696,7 +779,7 @@ def test_the_n_record_is_accepted_with_and_without_p(world) -> None:
 def test_the_budget_record_is_accepted_for_a_larger_n(world) -> None:
     world.chain(N=99, through="budget")
     record, problems = world.read("budget-c1")
-    assert problems == [] and record["decision"] == "proceed" and record["cap"] == 111
+    assert problems == [] and record["decision"] == "proceed" and record["cap"] == 119
 
 
 def test_a_stop_is_a_failed_budget_record(world) -> None:
@@ -716,7 +799,8 @@ def test_a_missing_engineering_field_is_refused(world, field) -> None:
 
 
 @pytest.mark.parametrize("field", ["fixation", "inputs", "gates", "coverage", "level",
-                                   "validation_blocks", "verification"])  # fmt: skip
+                                   "validation_blocks", "verification", "reading",
+                                   "levels_tried"])  # fmt: skip
 def test_a_missing_simulation_field_is_refused(world, field) -> None:
     record = world.simulation()
     del record[field]
@@ -857,8 +941,8 @@ def test_a_spread_rounded_to_half_a_point_is_accepted(world, spread) -> None:
 
 @pytest.mark.parametrize(
     ("n", "cap"),
-    # the cap N + max(10, ⌈0.12·N⌉) of each, where it is a number: only N is wrong
-    [(59, 69), (0, 10), (-60, -50), (60.0, 70), (61.5, 70), (True, 11), ("75", 85), (None, 70)],
+    # a cap the schema takes as a number: only N is wrong
+    [(59, 74), (0, 74), (-60, 74), (60.0, 74), (61.5, 74), (True, 74), ("75", 91), (None, 74)],
 )
 def test_an_n_below_sixty_or_not_an_integer_is_refused(world, n, cap) -> None:
     world.chain(through="simulation")
@@ -868,7 +952,7 @@ def test_an_n_below_sixty_or_not_an_integer_is_refused(world, n, cap) -> None:
 def test_n_of_sixty_is_the_smallest(world) -> None:
     world.chain(through="simulation")
     world.write("n-c1", world.n(N=60))
-    assert world.read("n-c1")[0]["cap"] == 70
+    assert world.read("n-c1")[0]["cap"] == 74
 
 
 @pytest.mark.parametrize(
@@ -886,11 +970,11 @@ def test_n_of_sixty_is_the_smallest(world) -> None:
         (75, "85"),
     ],
 )
-def test_a_cap_that_is_not_n_plus_the_larger_of_ten_and_twelve_percent_is_refused(
+def test_a_cap_that_is_not_c_of_n_is_refused(
     world, n, cap
 ) -> None:
     world.chain(through="simulation")
-    record = world.n(N=60, cap=70)
+    record = world.n(N=60, cap=74)
     record["N"], record["cap"] = n, cap
     refused(world, "n-c1", record, "cap")
 
@@ -899,32 +983,49 @@ def test_a_cap_that_is_not_n_plus_the_larger_of_ten_and_twelve_percent_is_refuse
 def test_the_registered_caps_are_accepted(world, n) -> None:
     world.chain(through="simulation")
     world.write("n-c1", world.n(N=n))
-    assert world.read("n-c1")[0]["cap"] == CAPS[n]
+    assert world.read("n-c1")[0]["cap"] == cap_of(n)
 
 
 def test_a_cap_within_the_reserved_confirmation_seeds_is_a_passed_record(world) -> None:
     world.chain(through="simulation")
-    # N = 178 -> cap 200: the last reserved seed is 10599, 200 seeds from 10400
-    world.write("n-c1", world.n(N=178))
+    # N = 168 -> cap 200: the last reserved seed is 10599, 200 seeds from 10400
+    world.write("n-c1", world.n(N=168))
     record, problems = world.read("n-c1")
     assert problems == [] and record["cap"] == 200 and record["state"] == "passed"
-    decision_path(world.runs, "n-c1").unlink()
-    refused(world, "n-c1", world.n(N=178, state="failed"), "state", "fits", "200")
 
 
 def test_a_cap_beyond_the_reserved_seeds_is_recorded_as_a_failed_record(world) -> None:
     world.chain(through="simulation")
-    # N = 179 -> cap 201: the confirmation cannot start within 10400-10599, and N is not cut
-    refused(world, "n-c1", world.n(N=179), "state", "exceeds", "201", "N is not cut")
-    world.write("n-c1", world.n(N=179, state="failed"))
+    # N = 169 -> cap 201: the confirmation cannot start within 10400-10599, and N is not cut
+    refused(world, "n-c1", world.n(N=169), "state", "exceeds", "201", "N is not cut")
+    world.write("n-c1", world.n(N=169, state="failed"))
     record, problems = world.read("n-c1")
-    assert problems == [] and record["N"] == 179 and record["cap"] == 201
+    assert problems == [] and record["N"] == 169 and record["cap"] == 201
     assert record["state"] == "failed"
+
+
+def test_a_failed_n_record_reads_as_passed_once_an_amendment_extends_the_seeds(
+    world, monkeypatch
+) -> None:
+    """Amendment 7, "The reserve": no new record; the file stays as it is, and the constant the
+    refusal reads decides. N is unchanged, and the budget decision is then needed."""
+    world.chain(through="simulation")
+    path = world.write("n-c1", world.n(N=169, state="failed"))
+    kept = path.read_bytes()
+    monkeypatch.setitem(SEEDS["confirmation"], 1, range(10400, 10700))
+    record, problems = world.read("n-c1")
+    assert problems == [] and (record["state"], record["N"], record["cap"]) == ("passed", 169, 201)
+    assert path.read_bytes() == kept
+    world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert found["n-c1"]["state"] == "passed" and "budget-c1" in found
+    world.write("budget-c1", world.budget(1, 169))
+    assert world.read("budget-c1")[0]["cap"] == 201
 
 
 def test_a_failed_n_record_needs_no_budget_entry(world) -> None:
     world.chain(through="simulation")
-    world.write("n-c1", world.n(N=179, state="failed"))
+    world.write("n-c1", world.n(N=169, state="failed"))
     world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
     found = decisions(world.runs, 1, repo=world.repo)
     assert found["n-c1"]["state"] == "failed" and found["n-c1"]["problems"] == []
@@ -1129,10 +1230,10 @@ def test_a_power_shortfall_is_recorded_and_the_record_still_passes(world) -> Non
 
 
 def test_a_power_short_beyond_the_reserved_seeds_skips_the_verification(world) -> None:
-    """n_min 179, its cap 201 beyond the 200 reserved seeds: no N is attainable, so the
+    """n_min 169, its cap 201 beyond the 200 reserved seeds: no N is attainable, so the
     verification is not run (its tests not due) and does not pass, and the record fails (the
-    design stop); due verification rows, or a passed verification, are refused."""
-    gates = gates_with(power_af=power_gate(0.74, 179))
+    pause for a decision); due verification rows, or a passed verification, are refused."""
+    gates = gates_with(power_af=power_gate(0.74, 169))
     sim_refused(world, "no attainable n", "not due", gates=gates, state="failed",
                 verification=verified(0.975, False))  # fmt: skip
     sim_refused(world, "verification.passed", gates=gates, results="verification_not_due")
@@ -1141,7 +1242,7 @@ def test_a_power_short_beyond_the_reserved_seeds_skips_the_verification(world) -
                                                results="verification_not_due"))  # fmt: skip
     record, problems = world.read("simulation")
     assert problems == [] and record["state"] == "failed" and record["level"] == 0.975
-    assert record["gates"]["power_af"]["n_min"] == 179
+    assert record["gates"]["power_af"]["n_min"] == 169
 
 
 @pytest.mark.parametrize(
@@ -1190,7 +1291,7 @@ def test_the_simulation_state_follows_the_coverage_screen_and_its_verification_o
                                                validation_blocks=None, verification=verified(
                                                    None, False)))  # fmt: skip
     decision_path(world.runs, "simulation").unlink()
-    world.write("simulation", world.simulation(state="failed", verification=verified(passed=False)))
+    world.write("simulation", world.simulation(fail_verification=LEVELS))
 
 
 def test_the_coverage_threshold_is_the_recomputed_one(world) -> None:
@@ -1261,12 +1362,13 @@ def test_the_tests_of_the_levels_and_the_verification_fit_within_the_frozen_j(wo
     rows = [coverage_row(level, passed=level == 0.990, tests=900, J=1000) for level in LEVELS]
     sim_refused(world, "coverage", "add up", "J = 1000", coverage=rows, level=0.99,
                 verification=verified(0.99))  # fmt: skip
-    # the sum equal to J is accepted (the fixation's J = 1 785: four levels of 357 tests and 357
-    # verification tests), one more is not
+    # the sum equal to J is accepted (the fixation's J = 2 856: four levels of 357 tests and 1 428
+    # possible verification tests), one more is not
     world.write("simulation", world.simulation())
     assert world.read("simulation")[1] == []
     decision_path(world.runs, "simulation").unlink()
-    sim_refused(world, "coverage", "1786", "J = 1785", verification=verified(tests=LEVEL_TESTS + 1))
+    sim_refused(world, "coverage", "2857", "J = 2856",
+                verification=verified(tests=4 * LEVEL_TESTS + 1))  # fmt: skip
     sim_refused(world, "verification.tests", verification=verified(tests=0))
     sim_refused(world, "verification.tests", verification=verified(tests=1.5))
     sim_refused(world, "verification", "tests",
@@ -1399,19 +1501,24 @@ def test_a_passed_simulation_has_a_level_a_size_and_inputs(world) -> None:
 # ------------------------------------------------------------------ the J check
 
 
-def test_the_proposed_grid_has_j_1785() -> None:
+def test_the_grid_has_j_2856_every_possible_verification_test_in_it() -> None:
+    """Amendment 7's J: 17 scenarios × 21 tests × 4 levels × 2 streams, its thresholds and
+    detection powers, and the identity list pinned by its count and sha256."""
     names = [s.name for s in sim.SCENARIOS if s.role.startswith("coverage")]
     ids = test_identities(names)
-    assert len(names) == 17 and len(ids) == len(set(ids)) == 1785
-    assert sum(i[0] == "verification" for i in ids) == 357
-    assert {i[3] for i in ids if i[0] == "verification"} == {"selected_calibration_level"}
-    assert (coverage_threshold(1785, 10_000, 0.025), coverage_threshold(1785, 10_000, 0.05)) == (
-        315,
-        590,
+    assert len(names) == 17 and len(ids) == len(set(ids)) == 2856 == 17 * 21 * 4 * 2
+    assert sum(i[0] == "verification" for i in ids) == 1428
+    slots = {level_slot(lv) for lv in LEVELS}
+    assert {i[3] for i in ids if i[0] == "verification"} == slots
+    assert (coverage_threshold(2856, 10_000, 0.025), coverage_threshold(2856, 10_000, 0.05)) == (
+        317,
+        593,
     )
-    # the coverage tests' identities as before the power's own scenarios (M6b): J, their order
+    assert detection_power(2856, 10_000) == pytest.approx(
+        {"comparison": 0.963, "joint": 0.990}, abs=5e-4
+    )
     assert identities_sha256(ids) == (
-        "934ff6355d03122e67e831a72168e71afacb3e6f04201eacbd4724170473671b"
+        "223fd0335b0aca06ae08d557284a4fdcaafa78008ae1936391b777d14271b664"
     )
 
 
@@ -1421,8 +1528,8 @@ def test_the_identities_are_in_enumeration_order_with_their_sha256() -> None:
     assert ids[:3] == [("calibration", "C01", 36, "0.975", c) for c in ("A-F", "P-F", "joint")]
     assert ids[3] == ("calibration", "C01", 36, "0.980", "A-F")
     assert ids[84] == ("calibration", "C02", 36, "0.975", "A-F")
-    assert ids[168] == ("verification", "C01", 36, SELECTED_LEVEL, "A-F")
-    assert ids[-1] == ("verification", "C02", "cap", SELECTED_LEVEL, "joint")
+    assert ids[168] == ("verification", "C01", 36, "0.975", "A-F")
+    assert ids[-1] == ("verification", "C02", "cap", "0.990", "joint")
     blob = json.dumps([list(i) for i in ids], separators=(",", ":")).encode()
     assert identities_sha256(ids) == hashlib.sha256(blob).hexdigest()
     assert [level_slot(lv) for lv in LEVELS] == ["0.975", "0.980", "0.985", "0.990"]
@@ -1431,9 +1538,6 @@ def test_the_identities_are_in_enumeration_order_with_their_sha256() -> None:
 def test_detection_power_reproduces_the_registered_example() -> None:
     assert detection_power(1000, 10_000) == pytest.approx(
         {"comparison": 0.978, "joint": 0.995}, abs=5e-4
-    )
-    assert detection_power(1785, 10_000) == pytest.approx(
-        {"comparison": 0.971, "joint": 0.993}, abs=5e-4
     )
 
 
@@ -1633,7 +1737,7 @@ def test_a_fixation_whose_scenarios_depart_from_the_grid_is_refused(world, name)
 
 def test_the_fixture_fixation_is_the_whole_grid(world) -> None:
     assert [s["name"] for s in world.fixation["scenarios"]] == [s.name for s in sim.SCENARIOS]
-    assert world.fixation["J"] == GRID_J == 1785 and LEVEL_TESTS == 357
+    assert world.fixation["J"] == GRID_J == 2856 and LEVEL_TESTS == 357
 
 
 def test_a_fixation_missing_p20_is_refused(world) -> None:
@@ -1687,7 +1791,7 @@ def test_the_power_at_1_percent_is_recomputed_from_its_counts(world) -> None:
 def test_the_fixation_must_be_unchanged_since_its_commit(world) -> None:
     record = world.simulation()
     path = world.repo / SIMULATION_FIXATION
-    path.write_text(path.read_text().replace('"J": 1785', '"J": 1785 '))
+    path.write_text(path.read_text().replace('"J": 2856', '"J": 2856 '))
     record["fixation"] = {**record["fixation"], "sha256": sha256(path)}
     refused(world, "simulation", record, "fixation", "changed since its commit")
 
@@ -1696,15 +1800,17 @@ def test_the_gates_are_recomputed_from_their_counts(world) -> None:
     refused(world, "simulation", world.simulation(gate_value_off=1e-3), "safe_pass_rate")
 
 
-def test_a_not_attainable_test_fails_its_level(world) -> None:
-    world.write("simulation", world.simulation(not_attainable=("calibration", "0.975")))
+def test_an_incomplete_a_f_test_at_a_level_read_refuses_the_record(world) -> None:
+    """Incomplete, not failed: no X = M stands in, and a level read past it is not read."""
+    refused(world, "simulation", world.simulation(incomplete=("calibration", "0.975")),
+            "incomplete", "same indexed stream")  # fmt: skip
+
+
+def test_an_incomplete_a_f_test_above_l_stops_nothing(world) -> None:
+    world.write("simulation", world.simulation(incomplete=("calibration", "0.990")))
     record, problems = world.read("simulation")
-    assert problems == [] and record["coverage"][0]["passed"] is False
-    assert (
-        record["coverage"][0]["counts"]["comparison"] == 10_000
-        or record["coverage"][0]["counts"]["joint"] == 10_000
-    )
-    assert record["level"] == 0.98 and record["state"] == "passed"
+    assert problems == [] and record["level"] == 0.975 and record["state"] == "passed"
+    assert record["coverage"][3]["incomplete"] == 1 and record["coverage"][3]["passed"] is False
 
 
 def test_a_short_row_below_the_draw_bound_is_refused(world) -> None:
@@ -1741,6 +1847,11 @@ def test_every_decision_is_recomputed_from_the_results(world) -> None:
     detection = dict(base["gates"]["detection_power_joint"], value=0.5)
     refused(world, "simulation", {**base, "gates": {**base["gates"],
             "detection_power_joint": detection}}, "detection_power_joint")  # fmt: skip
+    withheld = {"level": 0.975, "pf_confirmatory": False, "floors": {"A-F": 36, "P-F": None}}
+    refused(world, "simulation", {**world.simulation(), "reading": withheld}, "reading")
+    raised = {"level": 0.975, "pf_confirmatory": True, "floors": {"A-F": 60, "P-F": 36}}
+    refused(world, "simulation", {**world.simulation(), "reading": raised}, "reading")
+    refused(world, "simulation", {**world.simulation(), "levels_tried": []}, "levels_tried")
     short = gates_with(power_af=power_gate(0.74, 83))  # the scan reached 0.80 at 84
     world.simulation(gates=gates_with(power_af=power_gate(0.74, 84)))  # results: n_min 84
     refused(world, "simulation", {**world.simulation(gates=gates_with(
@@ -1761,8 +1872,7 @@ def test_an_n_record_needs_a_valid_passed_simulation_of_its_level(world) -> None
 
 
 def test_an_n_record_after_a_failed_simulation_is_refused(world) -> None:
-    verification = verified(passed=False)
-    world.write("simulation", world.simulation(state="failed", verification=verification))
+    world.write("simulation", world.simulation(fail_verification=LEVELS))
     refused(world, "n-c1", world.n(), "simulation record did not pass")
 
 
@@ -1795,7 +1905,7 @@ def test_a_budget_record_answers_the_n_and_cap_of_its_n_record(world) -> None:
         refused(world, "budget-c1", world.budget(**over), *words)
 
     budget_refused("N 100", "99", N=100)  # another N
-    budget_refused("cap 112", "111", N=99, cap=112)
+    budget_refused("cap 120", "119", N=99, cap=120)
     budget_refused("cap", N=99, cap=110)
     budget_refused("N", N=59, cap=69)
     budget_refused("candidate", candidate=2)
@@ -1825,7 +1935,7 @@ SHORT = gates_with(power_af=power_gate(0.74, 84))  # the power is short; N of 84
 def test_an_n_record_below_n_min_is_refused_and_one_at_or_above_it_is_accepted(world) -> None:
     world.write("simulation", world.simulation(gates=SHORT))
     refused(world, "n-c1", world.n(N=75), "N is 75", "n_min 84")
-    refused(world, "n-c1", world.n(N=83, cap=93), "N is 83", "n_min 84")
+    refused(world, "n-c1", world.n(N=83), "N is 83", "n_min 84")
     refused(world, "n-c1", world.n(N=60), "n_min 84")
     world.write("n-c1", world.n(N=84, cap=cap_of(84)))
     decision_path(world.runs, "n-c1").unlink()
@@ -3382,7 +3492,7 @@ def test_the_simulation_record_has_no_successor_and_stays_in_force_after_a_cycle
     published_cycle(world)
     stale = study3_cycle.stale_records(world.runs, 1, repo=world.repo, old_code=OLD_CODE)
     assert [s["path"] for s in stale] == ["study3/decisions/n-c1.json"]
-    assert world.fixation["J"] == GRID_J == 1785
+    assert world.fixation["J"] == GRID_J == 2856
     world.write("n-c1-2", world.n(code=FIXED, kind="n-c1-2", supersedes=supersedes(world, "n-c1")))
     found = decisions(world.runs, 1, repo=world.repo)
     assert found["simulation"]["state"] == "passed", found["simulation"]["problems"]
@@ -3492,7 +3602,7 @@ def test_after_the_confirmation_started_an_n_successor_changes_only_its_code(wor
                    supersedes=supersedes(world, "n-c1"))  # fmt: skip
     cohort = same["cohort"]
     reordered = {**cohort, "run_ids": list(reversed(cohort["run_ids"]))}
-    for change in ({"N": 83, "cap": 93}, {"spread_pp": 5.0}, {"cohort": reordered}):
+    for change in ({"N": 83, "cap": 101}, {"spread_pp": 5.0}, {"cohort": reordered}):
         with pytest.raises(DecisionRefused, match="prospective amendment"):
             world.write("n-c1-2", {**same, **change})
     assert world.write("n-c1-2", same).name == "n-c1-2.json"

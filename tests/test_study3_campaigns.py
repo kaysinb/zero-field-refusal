@@ -544,7 +544,7 @@ def test_the_route_from_engineering_to_confirmation_through_the_writer(world, mo
     fields = state["step"]["fields"]
     world.records.write("n-c1", world.records.n(1, 60, rates=fields["rates"],
                                                 active=fields["active"], cohort=fields["cohort"],
-                                                cap=70))  # fmt: skip
+                                                cap=74))  # fmt: skip
     state = world.state()
     assert (state["step"]["campaign"], state["problems"]) == ("confirmation", [])
     world.checked.clear()
@@ -732,12 +732,35 @@ def test_a_blocked_step_and_a_terminal_stage_are_refused(world) -> None:
         error = world.refused(kind)
         assert "the step is blocked" in error and '"kind": "blocked"' in error
         assert "a run with no start" in error
-    terminal = Study()
-    terminal.record("engineering", "failed")
-    world.core(terminal)
+    paused = Study()
+    paused.record("engineering", "failed")
+    world.core(paused)
     for kind in ("engineering", "search-round0"):
         error = world.refused(kind)
-        assert "technical_feasibility_report" in error and "terminal" in error
+        assert "engineering_failed" in error and "the step is blocked" in error
+    terminal = Study()
+    terminal.ready()
+    terminal.search(special={("F", "u", 10102): {"state": "scientific"}})
+    terminal.search(2, special={("F", "u", 10112): {"state": "scientific"}})
+    world.core(terminal)
+    error = world.refused("search-round0")
+    assert "scientific_feasibility_report" in error and "terminal" in error
+
+
+def test_the_writer_issues_ps_cells_at_candidate_2_after_a_scientific_closure(world) -> None:
+    """Amendment 7: P closed scientifically at candidate 1, candidate 2 reached by A–F's rule: its
+    search campaign holds P's cells on candidate 2's own seeds."""
+    study = Study()
+    study.ready()
+    study.search(special={("P", "u", 10102): {"state": "scientific"}})
+    study.numerical(arms=("A", "F"), states={"A": "failing"})
+    world.ready()
+    world.core(study)
+    _, runs = load_campaign(world.write("search-round0", candidate=2))
+    spec = CANDIDATES[2]["start"]
+    assert sorted(cells_of(runs)) == sorted(
+        (arm, spec[arm][label], seed)
+        for arm in OPT for label in LABELS for seed in SEEDS["search"][2])  # fmt: skip
 
 
 def test_no_block_is_written_while_a_technical_mark_outside_the_qualification_stands(world):
@@ -974,10 +997,10 @@ def test_the_confirmation_writes_one_file_per_block_and_names_its_records(world)
     assert (out / "run.sh").is_file()
     out = world.write("confirmation", "--seeds", "10400", "10401")
     assert len(list(out.glob("*.yaml"))) == 2
-    # the cap N + max(10, ⌈0.12·N⌉) = 85 blocks: 10400-10484
-    out = world.write("confirmation", "--blocks", "10400", "10484")
-    assert len(list(out.glob("*.yaml"))) == 85
-    assert "never adds" in world.refused("confirmation", "--blocks", "10400", "10485")
+    # the cap C(75) = 91 blocks: 10400-10490
+    out = world.write("confirmation", "--blocks", "10400", "10490")
+    assert len(list(out.glob("*.yaml"))) == 91
+    assert "never adds" in world.refused("confirmation", "--blocks", "10400", "10491")
     assert "skips" in world.refused("confirmation", "--blocks", "10401", "10402")
     assert "skips" in world.refused("confirmation", "--seeds", "10401")
     assert "never reorders" in world.refused("confirmation", "--seeds", "10401", "10400")
@@ -1025,6 +1048,30 @@ def test_the_headers_name_their_records_as_immutable_reads_them(world) -> None:
         entry = decisions(world.root, 1, repo=world.repo)[kind]
         assert entry["state"] == "invalid"
         assert any(campaign_of(path)["name"] in p and "sha256" in p for p in entry["problems"])
+
+
+def test_a_failed_n_record_is_issued_once_an_amendment_extends_the_seeds(world, monkeypatch):
+    """N = 169: the writer refuses at the pause. A later commit extends ``SEEDS`` (here patched),
+    no new record: the same file, the budget record, and the first block names them."""
+    world.records.write("engineering", world.records.engineering())
+    world.records.write("simulation", world.records.simulation())
+    world.records.write("n-c1", world.records.n(1, 169, state="failed"))
+    study = Study()
+    study.through_validation()
+    study.n(N=169)
+    world.versions()
+    world.core(study)
+    error = world.refused("confirmation")
+    assert "cap_beyond_reserved_seeds" in error and "the step is blocked" in error
+    monkeypatch.setitem(SEEDS["confirmation"], 1, range(10400, 10700))
+    world.records.write("budget-c1", world.records.budget(1, 169))
+    study.n(N=169, state="passed")  # as ``read_decision`` reads the file now
+    study.budget()
+    (only,) = world.write("confirmation").glob("*.yaml")
+    header = campaign_of(only)["header"]
+    assert header["n_record_sha256"] == world.records.digest("n-c1")
+    assert header["budget_record_sha256"] == world.records.digest("budget-c1")
+    assert campaign_of(only)["cells"][0]["seeds"] == [10400]
 
 
 def test_the_confirmation_names_its_budget_record_when_n_needs_one(world) -> None:

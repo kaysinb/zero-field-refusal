@@ -36,7 +36,7 @@ All of these must hold:
 - the state's step is candidate N's confirmation campaign, and S is the seed of cells in it. A
   block not yet started must be the next block the confirmation authorizes (``confirmation``'s
   ``may_start_next`` and ``next_seed``): not after the stop (every active counter at N, or the
-  cap N + max(10, ⌈0.12·N⌉) of blocks started), not while a technical mark in a started block
+  cap C(N) of blocks started), not while a technical mark in a started block
   waits for its way out, not while a run of a started block has not ended (pending, or recovered
   with no later attempt: the counters wait for it, and the refusal names its recovery round, the
   run's own at --max-attempts 1 with its incident), not
@@ -58,8 +58,7 @@ All of these must hold:
   own commit with the pinned one, which ``progress`` does (``study3_versions.uncounted_runs``):
   a run under another commit does not count, and the state blocks on it, technical, until its
   way out (a recovery round where the launcher would open one, the run's own at --max-attempts 1
-  with a reason no earlier round of its label gave and its incident, or its closure record): no
-  block starts meanwhile.
+  with a reason no earlier round of its label gave and its incident): no block starts meanwhile.
 
 **check** is the same check of the versions record before any other launch of a validation or
 confirmation campaign FILE (--campaign): the validation's launch and every resumption of it, and
@@ -70,7 +69,7 @@ of the checkout with that record's sha256 now, and ``versions_problems`` finds n
 record for the step and the candidate, the running checkout's HEAD included; otherwise it exits
 non-zero with the reason. Run it from the checkout (``$SRC``) the launch runs from. The launcher
 never reruns a completed run, so a run launched under another commit stays, does not count, and
-blocks the state until its closure record is written.
+pauses the state.
 
 **versions** writes a versions record (``study3_versions.versions_record``) at --out, a name the
 readers accept: docs/study3-versions.json, or docs/study3-versions-<k>.json (k = 2, 3, ...) for a
@@ -118,16 +117,8 @@ reopened (``cycle`` refuses validation=rerun and search=rerun) and the successor
 the cohort and the seeds.
 
 **closure** writes the closure record closure-c<N>-<ARM> with exactly the fields the state's step
-gives: a held run's decision step, the way out of a run under another commit (its last end
-line, or its start line, with its uncounted reason), or, once candidate N's engineering cycle is
-spent, the way out of a technical mark outside the qualification left unresolved after it (its
-last end line, or its start line, with the reason ``unresolved_after_cycle`` and the candidate's
-supersession record, ``qualification/c<N>/supersede-<n>.json``, by its sha256: "Failure routes").
-Before the cycle such a mark takes its engineering cycle (``engineering_cycle``, below): the step
-names no closure for it, and none is written. It refuses when the step names no closure of
-that candidate and arm, and, when the step names several (two runs of the arm), unless --run-id
-chooses the run. The record's state is ``failed`` (a terminal technical
-outcome) and its code HEAD's commit and that commit's GPU code.
+gives. No step names one now (amendment 7, "Technical causes": a technical mark is a pause, and a
+closure comes only by a recorded decision, with its writer then), so it refuses.
 
 **cycle** writes candidate N's engineering cycle for its technical marks outside the
 qualification ("Failure routes": one cycle per candidate, a diagnosis, a fix, re-qualification of
@@ -772,8 +763,8 @@ def write_closure(args: argparse.Namespace) -> None:
         named = [fields for fields in named if fields.get("run_id") == args.run_id]
     if not named:
         run = "" if args.run_id is None else f" for run {args.run_id}"
-        refuse("closure", f"the step names no closure record {kind}{run}: the state names "
-               f"{shown(state)}")  # fmt: skip
+        refuse("closure", f"the step names no closure record {kind}{run}: a closure needs a "
+               f"recorded decision; the state names {shown(state)}")  # fmt: skip
     if len(named) > 1:
         refuse(
             "closure",

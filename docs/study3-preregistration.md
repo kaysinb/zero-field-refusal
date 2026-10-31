@@ -211,7 +211,8 @@ veto.
 ### Choice of candidate
 
 - The primary comparison takes the **first candidate** whose A and F pass numerical
-  qualification and validation.
+  qualification and validation. *Candidate 2's utility failure:
+  [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - A failure of P alone never switches the candidate. P–F is computed at the candidate chosen for
   A–F.
 - The confirmation never triggers a new choice of candidate.
@@ -254,7 +255,8 @@ veto.
   candidate 2, and candidate 2 ends the study with a scientific feasibility report. Failure of
   the P–F gate, F's bound on the P–F cohort included, closes only P–F, and P with it. Unresolved
   technical failures retain the technical route and are not reclassified as scientific support
-  failures.
+  failures. *The technical route, candidate 2's utility failure and P's closure:
+  [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - **The 40-block fallback.** If the [simulation](#simulation-before-validation) requires it, the
   validation instead has 40 blocks and passes at 31 of 40 supported. This choice is made once,
   before any validation run, and is never a top-up after a failed 28-block validation.
@@ -287,21 +289,26 @@ Only validation's harm labels are opened, and only for the spread.
   N = 93.
 - **N > 90.** The confirmation does not start before the researcher decides on the extra blocks
   and their price. N is never cut, and the margins ±5 and ±2.5 are never widened to fit.
+  *Within the internal spending policy, no separate decision:
+  [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - P–F's power is reported, not targeted.
 
 ### Confirmation
 
 - **Seeds.** One campaign on seeds 10400, 10401, … in that order, up to 10599.
 - **Runs per block:** six while P is active, four (A and F only) once P is closed.
+  *Also when P is withheld: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - **Counters.** Support is counted separately for A–F and for P–F.
 - **Analysis cohorts.** Each comparison's analysis cohort is its first N supported blocks **by
   seed order**, not by order of completion. An unfinished earlier block is completed under the
   failure rules before a later one counts.
 - **Stop.** The confirmation stops when every active counter has reached N, or when
   N + max(10, ⌈0.12·N⌉) blocks have started. An inactive P never holds up A–F.
+  *The cap becomes C(N): [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - **At that cap,** a comparison whose counter is short of N is analyzed on all its supported
   blocks:
-  - with ≥ 36 of them, the reading is confirmatory;
+  - with ≥ 36 of them, the reading is confirmatory *(or the raised floor:
+    [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run))*;
   - with fewer, it is descriptive only.
 
   The cap does not guarantee N; the simulation gives the realized numbers.
@@ -400,6 +407,9 @@ The engineering stage comes before any scientific selection.
    - The run uses the Pod image and an uninstalled checkout, through `project-run`.
    - It covers the paths of failure, restart and the final report.
    - A short CUDA check on a GPU follows.
+
+   *Split by [amendment 4](#amendment-4-the-dry-run-in-two-parts) and
+   [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 3. **Engineering seeds 10000–10003.** For each arm, at its two starting rates:
    - a repeat in a fresh process;
    - the full battery of shifts at η_u;
@@ -412,6 +422,7 @@ The engineering stage comes before any scientific selection.
 5. **Rules recorded before qualification:**
    - **GPU-code identity** covers everything that affects execution: the optimizer, sampling, the
      preconditioner, the instrumentation, precision, the dependencies and the configs.
+     *`scripts/diagnostics/` is excluded: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
    - A purely analytic change (a comparator, a threshold in the fixation record) keeps the raw
      measurements. It voids the affected verdicts, which are recomputed from the same
      measurements.
@@ -419,7 +430,8 @@ The engineering stage comes before any scientific selection.
      included.
    - No threshold is changed in the direction of a weaker test.
    - A verdict superseded by an engineering cycle stops counting by an explicit record
-     ([voiding](#voiding-and-supersession)).
+     ([voiding](#voiding-and-supersession)). *For every cycle:
+     [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 
 ### Qualification
 
@@ -467,18 +479,25 @@ The engineering stage comes before any scientific selection.
 | **Technical** | reproducibility: the repeat beyond 0.01·K\*, a failed bridge or a failure only in comparisons with the launcher checkpoint, a failed survival, an incomplete case | one **engineering cycle** at once: diagnosis, fix, re-qualification of every affected case. The same path is not simply rerun. One cycle per candidate; it does not use the scientific repair. |
 | **Scientific** | a declared instability stop of a search, numerical or regular run; the reference or a shift beyond 0.01·K\* at step 25, harness baseline against it; a failed validation | no reruns to pass |
 
+*The limit of one cycle is removed by
+[amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
+
 **After a technical mark:**
 
 - Unresolved after its cycle, in A or F: the study ends with a **technical feasibility report**.
   The second candidate is not taken, since the failure lies in the code, not at K\*.
 - In P alone: P is closed, and only P–F ends.
 
+*Each only by a recorded decision: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
+
 **After a scientific failure** in search or qualification, or a failed aggregate validation gate
 (in validation and confirmation, an individual failed endpoint only removes support):
 
 - A or F at candidate 1: candidate 2.
 - A or F at candidate 2: the study ends with a **scientific feasibility report**.
+  *Candidate 2's utility failure is a pause: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - P: P is closed, with its runs and its counter.
+  *Per candidate: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 
 Every attempt is kept. A technical dead end and scientific infeasibility are reported separately.
 
@@ -491,7 +510,8 @@ Every attempt is kept. A technical dead end and scientific infeasibility are rep
     - **all missing harmful:** every missing label counted as harmful in both arms.
   - The strongest conclusion that holds in all three computations is reported.
   - Labeling follows study 2's receipts: up to three rounds per run, and a run without a
-    matching receipt is not yet labeled.
+    matching receipt is not yet labeled. *A round lost to a demonstrated fault is not charged:
+    [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - **The judge is frozen:** WildGuard (`configs/judge/wildguard.yaml`, label definitions v2, the
   two-class outcome), its weights, template, parser and decoding.
   - **Control items.** Every labeling batch includes 40 fixed control items: immutable archived
@@ -500,7 +520,8 @@ Every attempt is kept. A technical dead end and scientific infeasibility are rep
     prompt and of its response, and its expected label; an item whose content hash differs is
     refused, so no regenerated or changed input can stand in for it.
   - A changed control label leads to relabeling the batch. A repeated change is a technical mark
-    of the judge, and labeling stops until it is diagnosed.
+    of the judge, and labeling stops until it is diagnosed. *What follows the diagnosis:
+    [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - **Sealing.** Every label is sealed from the first run. Harm leaves sealed storage only at
   validation's spread step and, after the cohorts and K\*_h are frozen, at the final analysis.
 
@@ -531,7 +552,8 @@ The audit is descriptive.
   - The researcher resolves every disagreement and checks 10 % of the agreements, drawn with a
     recorded seed.
   - A failed or unresolved reference stays missing. Missing references are counted and reported,
-    never silently dropped.
+    never silently dropped. *Recovery after a technical fault, on the same draw:
+    [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - **Estimates.**
   - The implied bias of each Δ, B_E = Σ_i c_i^E·(reference_i − judge_i), by Hansen–Hurwitz: the
     mean over an arm's draws of c_i^E·(reference_i − judge_i)/p_i, summed over arms, with its
@@ -563,6 +585,7 @@ validation, N, confirmation and analysis. It runs before any validation run.
 - the rare-seed shape;
 - judge errors and missing labels;
 - the real cap N + max(10, ⌈0.12·N⌉) and the realized number of blocks.
+  *The cap becomes C(N): [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 
 **Requirements:**
 
@@ -581,7 +604,8 @@ validation, N, confirmation and analysis. It runs before any validation run.
   - **Frozen before the simulation:** the grid, the counts (M = 10 000 simulated studies per test,
     2 000 bootstrap resamples per interval in the screen), the RNG streams and J, the total
     number of coverage tests across the planned grid, levels and the calibration and
-    verification streams.
+    verification streams. *J and the ceiling on draws:
+    [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
   - **The test.** For M = 10 000 simulated studies, let X be the non-coverage count, with
     p₀ = 0.025 per comparison and 0.05 jointly. The threshold is
     c = BinomQuantile(1 − 0.05/J; M, p₀), and a test passes when X ≤ c. This limits the false
@@ -593,7 +617,8 @@ validation, N, confirmation and analysis. It runs before any validation run.
     exact coverage.
   - **The level.** L is the first level whose tests all pass, for both comparisons. It is then
     verified on an independent stream, which is never rerolled. It is recorded before
-    validation, and never lowered.
+    validation, and never lowered. *A–F's tests from N = 60 and at the cap, the floor and the
+    advance on failure: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
   - **Reported:** the observed non-coverage and its ordinary 95 % binomial interval, for every
     test.
   - **Fidelity.** The 2 000-resample simulation is a screening approximation. Binding
@@ -601,6 +626,8 @@ validation, N, confirmation and analysis. It runs before any validation run.
     approximation with its error quantified. Full-procedure verification uses the actual
     attained sample sizes and caps, including values beyond 99.
   - **If no level passes,** or the verification fails, the confirmation cannot start.
+    *The advance, the pause and the corrected successor:
+    [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 
 **If a requirement is not met:**
 
@@ -608,7 +635,8 @@ validation, N, confirmation and analysis. It runs before any validation run.
   and 10340–10379 (candidate 2). At support 0.90 its threshold of 31 of 40 passes about 99.5 %,
   against 98.2 % for 22 of 28. It is chosen once, from the simulation.
 - **Power short:** N and the cap are raised, with a decision on the money. A larger N helps only
-  the confirmation's power, not the validation gates.
+  the confirmation's power, not the validation gates. *A scan that reaches the reserve is a pause:
+  [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - No bound or threshold is changed in the direction of a weaker conclusion.
 
 **Not in the simulation.** The numerical gates are not in its pass probability: four engineering
@@ -626,9 +654,12 @@ Seeds are disjoint between stages and candidates. Each seed has its own fresh st
 | Validation | 10300–10327 (to 10339 with 40 blocks) | 10340–10367 (to 10379) |
 | Confirmation | 10400–10599, in order (reserve) | — |
 
+*C(N) beyond the reserve is a pause for a decision:
+[amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
+
 **Order:**
 
-1. engineering, the dry run included;
+1. engineering, the dry run included *(its pieces: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run))*;
 2. the simulation;
 3. the search;
 4. numerical qualification of A, F and P, with the bridge;
@@ -673,7 +704,8 @@ Seeds are disjoint between stages and candidates. Each seed has its own fresh st
 
   The old verdict is kept and reported.
 - **Versions.** A validation or confirmation run under a commit other than the pinned one does
-  not count. It is kept and reported.
+  not count. It is kept and reported. *Its reissue, and no forced closure:
+  [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - **Infrastructure.** An infrastructure-interrupted attempt is void and kept. Its rerun has a new
   attempt id.
 - **Thresholds and margins** are never loosened after any measurement they apply to.
@@ -681,6 +713,8 @@ Seeds are disjoint between stages and candidates. Each seed has its own fresh st
   stage it affected.
 
 ## Budget and timing
+
+*The spending rules' public form: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 
 | Stage | GPU-hours (central) |
 |---|---:|
@@ -727,14 +761,14 @@ Seeds are disjoint between stages and candidates. Each seed has its own fresh st
 | Item | Study 2 | What broke | Study 3 |
 |---|---|---|---|
 | Claims | A–F and a mechanism cohort with P, coupled in one selection | P's failure blocked the primary at U = 7 | two separate comparisons at L = 97.5 % each (or a higher L fixed by the coverage check), nested ±5 and ±2.5 from one interval |
-| Arm gates | three arms jointly | — | separate gates and counters; P's failure closes only P–F |
+| Arm gates | three arms jointly | — | separate gates and counters; P's failure closes only P–F *(per candidate: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run))* |
 | Targets | 5, √(5U), U with U = 8, 7, 6; three rates | at U = 6 the spacing 0.091 was below the seed spread | 6.0, then 5.0; two rates; width ≤ 0.60; spacing reported, not a veto |
 | Search and repairs | support on every discovery seed, coverage as a veto, several repair rounds | avoidable failures and logic defects | one round by a pure function; one repair, before validation, for a K miss only |
 | Utility | strict bound at every endpoint | U = 8 at K\* would have passed | at K\*; validation a spending gate at α = 0.05; the claim at α/8 in confirmation |
 | Execution path | launcher and a separate harness, unlinked | F blocked at the junction of the two paths | harness plus bridge: each end compared directly with the launcher's step-25 checkpoint |
 | Repeat | a fresh run against the archive on scalars, tolerance 10⁻⁴ | measured the difference of paths | D₂₅ ≤ 0.01·K\*; a calibrated τ as a warning |
 | Perturbation pairs | maximum over the path, only after twin A | P's spike counted as instability; F's case had no pairs | step 25 only, ≤ 0.01·K\*; spikes in engineering diagnostics; pairs always |
-| Technical failure | a dead end awaiting a decision | the pair at U = 7 blocked for good | an engineering cycle (not the scientific repair), else a technical report |
+| Technical failure | a dead end awaiting a decision | the pair at U = 7 blocked for good | an engineering cycle (not the scientific repair), else a technical report *(no limit on cycles, and a technical report only by a recorded decision: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run))* |
 | Tolerances and identity | a tolerance change voided a stage | the tolerance was counted as GPU code | raw measurements kept, verdicts recomputed; rules fixed beforehand |
 | Simulation | support only, normal tails | the utility risk was not modeled | bootstrap of seed vectors, tails, widths; ≥ 95 % at the alternative; the 40-block fallback |
 | Sample size | nominal | the needed blocks were unknown | the spread from study 1 and validation; an explicit N rule on an upper bound |
@@ -829,7 +863,8 @@ remain unchanged. Engineering seeds may run after Part I passes and before Part 
   - **What counts.** Only the dry-run reports support the dry-run check; experimental runs, streams,
     measurements and qualification verdicts from Part I never enter study evidence or selection.
     Part I is archived apart from the study's records.
-- **Part II, before the search.**
+- **Part II, before the search.** *Replaced by the pieces of
+  [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
   - **Scope.** Part II covers the simulation and the analysis drivers, end to end, on synthetic
     records, in the Pod image, from an uninstalled checkout, through `project-run`. It runs an
     unmocked successful route through the fixation, the guard, the analysis and the final report, as
@@ -837,7 +872,8 @@ remain unchanged. Engineering seeds may run after Part I passes and before Part 
   - **Before the scientific simulation.** Part II is a dry run of the code. The full
     [simulation](#simulation-before-validation) stays where the [order](#seeds-and-order) puts it:
     after the engineering stage, before the search.
-- **The record of the dry run.**
+- **The record of the dry run.** *`checks.dry_run`:
+  [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
   - The engineering decision record's dry-run check is not marked passed before both parts have
     passed.
   - One aggregate report references each part's report and archive inventory by path and sha256,
@@ -852,7 +888,7 @@ remain unchanged. Engineering seeds may run after Part I passes and before Part 
     [amendment 6](#amendment-6-replaying-orchestration-changes-on-cpu).*
   - **Analysis code.** A change to analysis code alone does not re-run GPU work. It does require the
     affected part of the dry run to be replayed on CPU, and Part II replayed in full if the change
-    falls after it.
+    falls after it. *The pieces it affects: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - **Disclosure.** The final report states:
   - that the dry run was done in two parts;
   - that the engineering seeds ran after Part I and before Part II;
@@ -891,7 +927,8 @@ remain unchanged.
   $0.3–1.2 per case-month. This is a running cost within "storage and idle time" above. It applies
   to technical cases only.
 - **Disclosure.** The final report states the money available, each stage's incidents with their
-  prices, and any stop this rule caused.
+  prices, and any stop this rule caused. *The public form:
+  [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - **What was known.** The registration, the code up to the dry run's Part I, and Part I's report
   with its measured GPU minutes. Only GPU minutes were read; no study-3 outcome.
 
@@ -918,3 +955,176 @@ changes.
 - **Disclosure.** The final report states this amendment and every replay made under it.
 - **What was known.** The registration, the code up to the merge of the fix for a scientific case
   whose same-path control failed, and Part I's reports with their repeat; no study-3 outcome.
+
+### Amendment 7: technical causes, the simulation's stops, and the order of the dry run
+
+Decided on 2026-10-31 by the researcher, before the simulation and before any outcome of the
+search, numerical qualification, validation or confirmation. It was decided after the engineering
+stage's first pass was known, and it is not wholly prospective relative to all evidence: see "What
+was known". The bound 0.01·K\*, the utility thresholds, the support gates, the rule for N, the
+registered seeds and the order of the scientific stages are unchanged. These rules change the real
+procedure and its records, and the simulation runs under them.
+
+- **Technical causes, for A, F and P.** A technical cause closes nothing by itself.
+  - **The route.** A technical mark pauses the work it affects, for a diagnosis and a fix, in any
+    stage, as often as genuine defects call for one. It does not by itself end the study, an arm
+    or a comparison. This replaces "One cycle per candidate" and the automatic outcomes of "After
+    a technical mark" in the [failure routes](#failure-routes). Scientific failures keep their
+    registered treatment, with no rerun to pass. Case 17's repair is the first cycle under it.
+  - **Before replacement runs,** these are recorded: the demonstrated defect, the correction and
+    its verification, and the complete affected set, derived from the defect, not from outcomes.
+  - **Every affected case is repeated,** the passed ones included. The fix is chosen on technical
+    correctness, not on improved utility, support, N or harm. Neither an unchanged rerun nor an
+    irrelevant code edit is a repair.
+  - **Evidence is kept.** Every earlier record, verdict, launcher run and journal line is kept and
+    reported. A replacement has a new attempt id. A case with a scientific failure keeps counting.
+  - **Closure** comes only by a recorded decision of the researcher, naming the mark, the repairs
+    tried and the ground: an unfixable defect, or resources, time included. In A or F the study then
+    ends with a technical feasibility report and the second candidate is not taken; in P alone, P
+    is closed and only P–F ends. Until a reader is changed, an automatic terminal outcome it shows
+    is read as a pause.
+  - **A second cycle.** A further cycle waits until its writer and readers exist; that is an
+    implementation pause, not a closure. The same holds for each repair below.
+  - **The post-unblinding boundary.** Once confirmation harm or results have been accessed, no
+    execution cycle gives a new chance for the original confirmatory claim. The mechanical point is
+    the candidate's analysis freeze ([the order](#seeds-and-order)) or any earlier trace of a
+    confirmation label. After it, analysis corrections recompute the same evidence, with disclosure,
+    and a replacement experiment is declared separately before it runs, reported apart, outside the
+    original claim. Labeling's repairs stay open while its labels stay sealed; once harm has been
+    opened, a label changes only by a recomputation from the same judge outputs, with disclosure.
+- **Labeling.** Valid labels are never rerolled.
+  - **Rounds.** The limit of three stays for rounds the judge answered. A round lost to a
+    demonstrated fault is counted and reported, and does not use one of the three; running out that
+    way is a pause and a repair. A diagnosis that demonstrates no fault gives back no round.
+  - **A demonstrated judge or parser defect** may invalidate accepted labels. Cached outputs are
+    corrected where possible; otherwise the defect-defined set is recovered, with its history kept.
+  - **The judge's technical mark.** The control gate stays. A diagnosis leads to a documented
+    repair that restores the frozen judge, never replaces it, and verifies the control items and
+    the affected batches again. Labeling ends for good only by a recorded decision.
+  - **Audit references.** A reference lost to a technical fault is recovered after the repair, on
+    the same frozen draw. No draw is replaced.
+- **Records, holds and foreign pins.**
+  - **A record computed by defective code** gets a corrected successor, for a demonstrated defect
+    only, naming the failed record and the defect. No record is rewritten. A genuine failure of
+    coverage or power stays failed and gives no leave to simulate until a run passes. A corrected
+    simulation reruns the frozen tests on their frozen streams, and once a validation run exists
+    it changes neither L nor validation's size.
+  - **A hold** keeps its quarantine until evidence or a recorded decision resolves it. No fresh
+    attempt is granted while an earlier scientific failure remains possible and unresolved.
+  - **A run under a foreign pin** stays excluded, kept and reported, and the work pauses. Its
+    provenance is restored where possible; otherwise it may be reissued as the same cell at the
+    same seed, and a reissue covers every run under that commit or code, whatever its outcome. A
+    foreign pin never erases a valid scientific failure: restored provenance keeps it, and a
+    reissue is reported beside it.
+- **The simulation's stops.**
+  - **Each comparison's checks.** A–F proceeds only after its own checks pass. P–F is confirmatory
+    only when its marginal and joint checks pass. "Not attainable" is not a pass. No α transfers
+    to A–F: L stays at least 0.975 when P–F is withheld. A withheld P does not run in the
+    confirmation and does not hold the stop; the stages before it keep P as registered.
+  - **The level.** L is the first level whose A–F tests at N ≥ 60 and at the cap all pass, in place
+    of "for both comparisons". P–F is read at that L or withheld: its failure never raises L.
+  - **A failure at L** advances only to a higher level that passes its calibration screen, and then
+    to that level's preassigned fresh verification stream. L is never lowered, no stream is
+    rerolled, and every failed result is kept. A failure of P–F alone advances nothing, and there
+    are no mixed levels. On an advance, the power and any required scan are computed again at the
+    new level, before its verification.
+  - **J.** Every possible verification test is in J before any draw: 17 scenarios × 21 tests × 4
+    levels, on the screen and in the verification. J = 2 856, and the registered formula gives
+    c = 317 per comparison and 593 jointly. True non-coverage of 3.5 % per comparison is detected
+    with probability 96.3 %, and of 6.5 % jointly with 99.0 %. These are frozen with the record.
+  - **No level passes:** a pause and a decision, which can be a redesign or a descriptive
+    continuation. Coverage is not waived.
+  - **The floor.** With L set, each comparison's confirmatory floor is the smallest grid size such
+    that all its applicable tests at and above that size, the capped procedure at that floor
+    included, pass at L. The verification verifies L and the floor together, and a failure there
+    is a failure at L. P–F's failure alone does not raise A–F's floor. "≥ 36" now reads "≥ 36 or
+    the raised floor".
+  - **Incomplete, not failed.** A test with fewer than M eligible studies within 4·M draws shows no
+    undercoverage. For A–F the same indexed stream is extended under a recorded computational
+    limit, and reaching that limit is a pause for a decision. For P–F it is reported as not
+    attainable. M, the thresholds and the tests' identities are unchanged.
+- **The cap and the reserve.**
+  - **The cap.** N + max(10, ⌈0.12·N⌉) is replaced by C(N), the smallest C with
+    P[Bin(C, 0.88) ≥ N] ≥ 0.95. In blocks: N 60 → 74, 88 → 106, 93 → 112, 107 → 129. This is
+    attainment per comparison at support 0.88, not a guarantee under unknown support or for both
+    comparisons together; joint attainment is reported. Seed order, N and thresholds are unchanged.
+  - **The reserve.** C(N) exceeding the reserve (N > 168), or a power scan that reaches that point,
+    is a pause for a decision and not a design stop. N is never cut. No seed is added here: further
+    seeds need their own amendment, on disjoint seeds, before any confirmation run.
+  - **N > 90** needs no separate decision while it fits the internal spending policy.
+- **Candidate 2 and P.**
+  - **Candidate 2's utility failure, in A or F,** with the support and numerical requirements
+    passed, is a pause and not the end of the study. The branch is simulated if it is reached, not
+    before, and a recorded decision follows. On a continuation, validation stays recorded as failed
+    and the utility-qualified reading is withdrawn: the claim "utility is preserved" is not made.
+    The 5 pp threshold and its bound are unchanged, and candidate 1 keeps its route to candidate 2.
+  - **P's closure.** Only a candidate-specific scientific closure reopens, and only when candidate
+    2 is reached by A–F's rule. P is then tested at candidate 2, on that candidate's own seeds,
+    under unchanged criteria, and candidate 1's failures stay recorded. It does not reopen for an
+    unresolved defect, a study-wide abandonment or a P–F withheld by the simulation.
+- **GPU-code identity.** `scripts/diagnostics/` is excluded explicitly, beside the listed analysis
+  scripts. There is no import tracing, the file hashes are kept, and all else stays in the identity.
+- **The order of the dry run.** This replaces "Part II, before the search" in
+  [amendment 4](#amendment-4-the-dry-run-in-two-parts). Each piece runs before its first
+  consequential use, under Part II's conditions: on synthetic records, in the Pod image, from an
+  uninstalled checkout, through `project-run`.
+  - Before the search, the integration replay: an engineering cycle, the decision, the simulation's
+    record, the first campaign and its readback, then on the same synthetic records through the
+    stop and the cohorts' freeze, an interruption and its readback included.
+  - Before validation, the guards.
+  - Before the validation fixation, the labels and the spread, finished and replayed. The fixation
+    pins the spread's code, so it runs from that frozen checkout.
+  - Before the confirmation's labels, the analysis and the audit.
+  - There are no reduced-size dry runs; failure, resumption and the container get targeted checks.
+  - `checks.dry_run` references Part I's report and the replay's, so the replay passes before the
+    engineering decision is recorded.
+  - A later change to analysis code replays the pieces it affects. The scientific rules stay frozen
+    from before the search; later pieces' code is written with earlier K and utility visible.
+- **The report.** A missing audit or billing field gives a pending section, not a blocked report.
+- **The spending rules in the public text.**
+  - **What stays in force:** the spending policy, its checkpoints and its stops, with their figures
+    in the researcher's internal records. The public text states none. No step is cut to fit. Each
+    cycle's replacement runs are a stage under this policy, and they start after a decision.
+  - **What changes publicly.** The stop at a stage's third infrastructure incident
+    ([amendment 5](#amendment-5-the-budget-after-the-dry-runs-part-i)) stays as stated, and its
+    other stop on incidents stays in force, with its figure in the internal records. The final
+    report states the actual spending by stage and per incident, in place of the first item of that
+    amendment's disclosure.
+  - **The internal policy** is versioned, with a date and an identifier, before each use. The
+    report names the version each stage ran under.
+- **Unchanged.**
+  - **One declared instability stop** in the search or the numerical qualification fails the rate
+    as registered. The 80 % power is conditional on passing, and the report states that attrition.
+  - **Also:** support ≥ 22 of 28 and 31 of 40; the three-computation reading; ≥ 36, or the raised
+    floor; D₂₅ ≤ 0.01·K\*; the exact v₀ hash, with its fix; the 5 pp threshold; the 24-case
+    engineering re-run; candidate 1's utility gate; the incident pause; the registered count of
+    labels still missing after repair; the audit's missing-reference bounds.
+- **What was known.** These rules were changed after the following were known:
+  - the registration, the code up to 8fd2df1 and the dry run's reports;
+  - the engineering stage's first pass: cases 1–17 of 24 ran and 16 passed. Case 17 (seed 10002, P
+    at 1.3·10⁻⁵) failed the bridge on v₀'s hash alone in its rest part;
+  - the K and utility of those engineering runs, read while these rules were being decided: support
+    at K\* = 6 in 8 of 8 arm-blocks, and a mean MMLU loss of about 2.4, 3.0 and 3.4 pp for A, F and
+    P. No harm label exists there;
+  - a diagnostic of v₀ on a GPU: 9 of 110 recomputations differed under the production attention
+    backend and 0 of 110 under the math backend, fresh processes included;
+  - the A case's silent v₀ outlier (seed 10001, A at 2.11·10⁻⁵, the baseline), which the bridge
+    does not compare and which was no mark. Its verdict is kept.
+
+  So the rules are not wholly prospective relative to all evidence. Engineering utility had been
+  seen when candidate 2's eligibility rule was changed and when the rule of one instability stop
+  was kept. No outcome of the simulation, search, numerical qualification, validation or
+  confirmation was known, and no label of study 3 existed.
+- **Disclosure.** The final report states:
+  - this amendment and how prospective it is, in the words above;
+  - every cycle in order, with its record, and every replacement beside the record it replaced;
+  - every closure with its ground, and each technical dead end apart from scientific infeasibility;
+  - every labeling round, those a fault took included, each repair of the judge, every recovered
+    batch and audit reference, and the labels still missing after repair;
+  - every reissued cell, resolved hold, corrected successor and extension of the simulation;
+  - every level tried with its failed results, each floor, whether P–F was withheld, the realized
+    attainment against C(N), and any decision at the reserve;
+  - any continuation under candidate 2's rule, and any reopening of P;
+  - case 17's cycle: the first pass's records, the v₀ hashes by seed before and after the fix, the
+    diagnostic and the A case's outlier;
+  - each dry-run piece's report, any correction after the boundary and any declared treatment.

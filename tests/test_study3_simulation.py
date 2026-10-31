@@ -266,7 +266,7 @@ def test_each_shape_has_mean_0_and_sd_1(shape) -> None:
 def test_no_quantile_is_taken_in_the_simulation_modules() -> None:
     """No call takes a quantile or a percentile in the simulation's modules (order statistics
     are type-1 ranks: ``study3_inference.tail_ranks``), and the module's rulings list every
-    decided value M1–M27 that it applies."""
+    decided value M1–M29 that it applies."""
     import ast
 
     from zero_field_refusal.paths import REPO_ROOT
@@ -283,7 +283,7 @@ def test_no_quantile_is_taken_in_the_simulation_modules() -> None:
                 assert not any(w in name.lower() for w in ("quantile", "percentile", "median")), (
                     path.name, name)  # fmt: skip
     rulings = sim.__doc__.split("**Rulings**", 1)[1]
-    for n in (*range(1, 9), *range(10, 28)):
+    for n in (*range(1, 9), *range(10, 30)):
         assert f"- M{n}," in rulings, n
 
 
@@ -689,7 +689,7 @@ def test_the_grid_is_the_registered_one() -> None:
     names = [s.name for s in sim.SCENARIOS]
     assert names == [f"C{i:02d}" for i in range(1, 18)] + ["P18", "P19", "P20", "P21", "G1", "G2"]
     coverage = [s for s in sim.SCENARIOS if s.coverage]
-    assert len(coverage) == 17 and {s.role for s in coverage} == {"coverage"}  # J = 17 × 105
+    assert len(coverage) == 17 and {s.role for s in coverage} == {"coverage"}  # J = 17 × 168
     assert [s.name for s in sim.SCENARIOS if s.power] == ["P18", "P19", "P20", "P21"]
     assert sim.ROLES == ("coverage", "power", "gate")
     assert not any(s.coverage and s.power for s in sim.SCENARIOS)
@@ -1059,12 +1059,12 @@ def test_procedure_mode_ends_in_the_scientific_report_when_candidate_2_fails(set
     assert o.candidate == 2 and o.why == {0.975: "scientific_report"} and not o.covered
 
 
-def test_a_pf_closed_at_candidate_1_stays_closed_at_candidate_2(setup) -> None:
-    """Both of candidate 1's gates fail: P–F is closed for the rest of the study, so at
-    candidate 2, whose own P–F gate passes, P–F counts nothing and the joint test is A–F's, as on
-    the real route. Candidate 1 with only its A–F gate failing (A's MMLU loss far above its bound)
-    leaves P–F open at candidate 2; A–F's results are the same in both: the streams stay paired."""
-    sc = replace(sim.SCENARIOS_BY_NAME["P21"], name="AFPF1")  # its coverage and direction
+def test_a_pf_closed_at_candidate_1_reopens_at_candidate_2(setup) -> None:
+    """Both of candidate 1's gates fail: P–F reopens at candidate 2 when A–F's rule reaches it
+    (amendment 7), under its own gate on its own seeds, exactly as when only candidate 1's A–F gate
+    failed (A's MMLU loss far above its bound): candidate 1's gates change no stream of candidate
+    2's. A candidate 2 whose P–F gate fails leaves P–F inactive, the joint test A–F's."""
+    sc = replace(sim.SCENARIOS_BY_NAME["C17"], name="AFPF1")
     a_far = {arm: {v.seed: (6.0 if arm == "A" else 0.0) for v in setup.vectors}
              for arm in ARM_ORDER}  # fmt: skip
     second = hand_calibration(2, 0.0, offset_a=0.04, offset_p=0.04)
@@ -1076,31 +1076,31 @@ def test_a_pf_closed_at_candidate_1_stays_closed_at_candidate_2(setup) -> None:
         first = sim.simulate_study(sc, s, 13, 0, resamples=200, levels=(0.975,),
                                    validation_only=True)  # fmt: skip
         assert first.candidate == 1 and dict(first.gates) == gates
-    closed, reopened = (sim.simulate_study(sc, s, 13, 0, mode="procedure", resamples=200,
-                                           levels=(0.975,)) for s in (both, only_af))  # fmt: skip
-    assert closed.candidate == reopened.candidate == 2 and closed.confirmed[0.975]
+    reopened, open_all_along = (sim.simulate_study(
+        sc, s, 13, 0, mode="procedure", resamples=200, levels=(0.975,))
+        for s in (both, only_af))  # fmt: skip
+    assert reopened.candidate == open_all_along.candidate == 2 and reopened.confirmed[0.975]
     assert reopened.active == ["A-F", "P-F"] and dict(reopened.gates) == {"AF": True, "PF": True}
-    assert closed.active == ["A-F"] and dict(closed.gates) == {"AF": True, "PF": None}
     assert any(v is not None for k, v in reopened.covered.items() if k[2] == "P-F")
-    for (point, level, comparison), value in closed.covered.items():
+    # the paired streams: candidate 2's rates, blocks, truths, intervals and readings, P's included
+    assert reopened == open_all_along
+    assert reopened.analysis == open_all_along.analysis
+    import json  # the row round-trips
+
+    text = json.dumps(sim.outcome_json(reopened), allow_nan=False, sort_keys=True)
+    assert sim.outcome_from_json(json.loads(text)) == reopened
+    # candidate 2's own P–F gate fails: P–F stays inactive at the end of the route
+    p_far = {arm: {v.seed: (6.0 if arm == "P" else 0.0) for v in setup.vectors}
+             for arm in ARM_ORDER}  # fmt: skip
+    closed = replace(both, calibrations={**both.calibrations, (sc, 2): replace(
+        second, mmlu_shift=p_far, factual_shift=dict.fromkeys(ARM_ORDER, 0.0))})  # fmt: skip
+    o = sim.simulate_study(sc, closed, 13, 0, mode="procedure", resamples=200, levels=(0.975,))
+    assert o.candidate == 2 and o.active == ["A-F"] and dict(o.gates) == {"AF": True, "PF": False}
+    for (point, level, comparison), value in o.covered.items():
         if comparison == "P-F":
             assert value is None
         elif comparison == "joint":
-            assert value == closed.covered[(point, level, "A-F")]
-    for name in ("direction", "readings", "utility_claim"):
-        assert getattr(closed, name)[(0.975, "P-F")] is None
-    # the paired streams: candidate 2's rates, blocks, truth, intervals and readings for A–F
-    assert closed.rates == reopened.rates and closed.truth["A-F"] == reopened.truth["A-F"]
-    key = (0.975, "A-F")
-    assert closed.analysis[key] == reopened.analysis[key]
-    assert closed.direction[key] == reopened.direction[key]
-    assert closed.readings[key] == reopened.readings[key]
-    assert {k: v for k, v in closed.covered.items() if k[2] == "A-F"} == {
-        k: v for k, v in reopened.covered.items() if k[2] == "A-F"}  # fmt: skip
-    import json  # the row round-trips with its closed gate
-
-    text = json.dumps(sim.outcome_json(closed), allow_nan=False, sort_keys=True)
-    assert sim.outcome_from_json(json.loads(text)) == closed
+            assert value == o.covered[(point, level, "A-F")]
     # P open at candidate 1 and both of candidate 2's gates failing: candidate 2's own P–F gate
     ended = replace(only_af, calibrations={**only_af.calibrations, (sc, 2): hand_calibration(
         2, 0.6)})  # fmt: skip
@@ -1223,7 +1223,8 @@ def test_a_descriptive_reading_detects_nothing() -> None:
                                 confirmed={0.975: True}, why={0.975: None}, N={0.975: 70},
                                 cap={0.975: 80}, blocks={0.975: 80}, covered={},
                                 direction={key: direction}, readings={key: reading},
-                                utility_claim={}, truth={})  # fmt: skip
+                                utility_claim={}, truth={},
+                                analyzed={key: 36})  # fmt: skip
 
     rows = [study(0, "descriptive", "positive"), study(1, "confirmatory", "positive"),
             study(2, "confirmatory", "negative"), study(3, "confirmatory", None)]  # fmt: skip
@@ -1557,7 +1558,7 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path, monkeypatch) ->
     fixation = sim.build_fixation(
         inputs, scenarios, calibrations, code=code, streams=sim.STREAMS, repo=repo
     )
-    assert fixation["J"] == 2 * 105 and fixation["tests"]["count"] == 210
+    assert fixation["J"] == 2 * 168 and fixation["tests"]["count"] == 336
     assert fixation["streams"] == {"calibration": 20261101, "verification": 20261102}
     assert fixation["policy"]["path"] == "docs/study3-preregistration.md"
     assert fixation["policy"]["amendments"] == [1, 2]
@@ -1571,7 +1572,8 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path, monkeypatch) ->
                 "cancellation between arms",
     }  # fmt: skip
     assert set(fixation["rules"]) == {"screen_simplifications", "pf_verification",
-                                      "joint_verification", "draw_bound"}  # fmt: skip
+                                      "level_and_floor", "joint_verification",
+                                      "verification_streams", "draw_bound"}  # fmt: skip
     assert fixation["rules"]["joint_verification"]["source"] == (
         "counted over the studies confirmed for A-F; a study misses jointly if A-F misses, or if "
         "P-F is active in it and misses; M27, decided"
@@ -1603,7 +1605,7 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path, monkeypatch) ->
     assert found["scenarios"] == scenarios
     assert found["calibrations"] == {(sc, c): cal for (sc, c), cal in calibrations.items()}
     # modified after its commit, or its tests edited: refused
-    path.write_text(text.replace('"J": 210', '"J": 211'))
+    path.write_text(text.replace('"J": 336', '"J": 337'))
     with pytest.raises(ValueError, match="changed since its commit"):
         sim.read_fixation(path, repo)
     path.write_text(text)
@@ -1684,7 +1686,7 @@ def test_the_fixations_schema_is_closed(tmp_path) -> None:
         ({"calibration": {**fixation["calibration"], "tolerances": {
             **fixation["calibration"]["tolerances"], "sigma": -1.0}}}, "calibration.tolerances"),
         ({"calibration": {"studies": 10_000}}, "calibration"),
-        ({"J": 1786}, "J"),
+        ({"J": 2857}, "J"),
         ({"thresholds": {"comparison": 300, "joint": 573}}, "thresholds"),
         ({"streams": {"calibration": 5, "verification": 5}}, "streams"),
         ({"max_draws_factor": 5}, "max_draws_factor"),
@@ -1707,9 +1709,9 @@ def test_the_grid_of_the_proposal_has_its_thresholds() -> None:
 
     names = [s.name for s in sim.SCENARIOS if s.coverage]
     j = len(decisions.test_identities(names))
-    assert j == 1785
+    assert j == 2856
     assert {n: decisions.coverage_threshold(j, 10_000, p) for n, p in
-            decisions.COVERAGE_P0.items()} == {"comparison": 315, "joint": 590}  # fmt: skip
+            decisions.COVERAGE_P0.items()} == {"comparison": 317, "joint": 593}  # fmt: skip
     assert sim.N_POINTS is decisions.N_POINTS and sim.TESTED is decisions.TESTED
     assert sim.MAX_DRAWS_FACTOR is decisions.MAX_DRAWS_FACTOR
 
@@ -1910,7 +1912,7 @@ def test_the_results_hold_every_identity_once(tiny, tmp_path) -> None:
     decided, problems = decisions.coverage_decisions(results, ctx.fixation)
     assert problems == [] and decided["level"] == results["selected_calibration_level"]
     assert decided["level"] is not None and decided["validation_blocks"] in (28, 40)
-    assert results["M"] == 6 and results["J"] == 105
+    assert results["M"] == 6 and results["J"] == 168
     assert all(r["studies"] == 6 for r in results["tests"] if r["due"])
     # beside the power, the power at 1 % at its level, the fixation's rate, a reported gate
     level = results["gates"]["power_af"]["level"]
@@ -1922,8 +1924,8 @@ def test_the_results_hold_every_identity_once(tiny, tmp_path) -> None:
         "value": min(c["correct"] for c in by.values()) / 6, "requirement": None,
         "passed": None}  # fmt: skip
     # the verification's rows are at L, and every comparison counts its own studies
-    due = [r for r in results["tests"] if r["test"][0] == "verification"]
-    assert {r["level"] for r in due} == {decided["level"]}
+    due = [r for r in results["tests"] if r["test"][0] == "verification" and r["due"]]
+    assert {r["level"] for r in due} == {decided["level"]} and len(due) == 21
     assert set(results["reported"]) == {"C02", "P20", "G1", "G2"}
     assert set(results["reported"]["C02"]["blocks"]["0.975"]) == {"q10", "q50", "q90"}
     # the verification does not depend on the workers either
@@ -1965,20 +1967,171 @@ def test_the_screen_reports_the_power_at_1_percent_over_the_powers_studies(tiny,
         assert found["correct"] == detected
 
 
-def test_a_scenario_that_never_confirms_stops_at_4m_and_is_not_attainable(
+def test_an_a_f_test_short_at_4m_stops_the_run_incomplete_not_failed(
     tiny, tmp_path, vectors
 ) -> None:
+    """Amendment 7: a scenario that never confirms draws 4·M and stops the run, naming the test and
+    the extension of the same indexed stream; nothing is written for a reader, no X stands in."""
     never = tiny_never_confirms(tiny, tmp_path / "never", vectors)
-    rows = run_screen(never, tmp_path, workers=2, unit=2)  # A–F gate never passes
-    test = rows_of(rows)[0]
-    assert test["test"][:2] == ["calibration", "NC"]
-    assert (test["draws"], test["studies"], test["reason"], test["passed"]) == \
-        (4 * 6, 0, "not_attainable", False)  # fmt: skip
-    import json
+    with pytest.raises(sim.SimulationError) as stop:
+        run_screen(never, tmp_path, workers=2, unit=2)  # A–F gate never passes
+    message = str(stop.value)
+    assert "['calibration', 'NC', 36, '0.975', 'A-F'] (0 studies)" in message
+    assert "incomplete, not failed" in message and "same indexed stream" in message
+    assert "computational limit" in message
+    folder = tmp_path / "study3" / "simulation"
+    assert not (folder / "screen.json").exists()
+    assert len(list((folder / "parts" / "screen" / "NC").glob("*.json"))) == 12  # 4·M, 2 by 2
 
-    screen = json.loads(rows.read_text())
-    assert screen["level"] is None  # every level fails: X = M counted
-    assert screen["reported"]["NC"]["unconfirmed"] == {"af_gate": 24}
+
+def test_a_short_test_has_its_reason_and_no_x() -> None:
+    """The reason by the comparison: an A–F test incomplete, P–F's and a joint one not attainable.
+    An incomplete test above the level read stops nothing; at or below it, the run stops."""
+    rows = [outcome(i, False) for i in range(24)]
+    cases = (("A-F", "incomplete", None), ("P-F", "not_attainable", False),
+             ("joint", "not_attainable", False))  # fmt: skip
+    for tested, reason, passed in cases:
+        row = sim._test_row(("calibration", "C", 60, "0.975", tested), 0.975, rows, 6, 24, 168,
+                            sim.FLOORS)  # fmt: skip
+        assert (row["reason"], row["passed"], row["X"]) == (reason, passed, None)
+    tests = stops_rows({"0.980": {(60, "A-F")}})
+    next(t for t in tests if t["test"][3] == "0.980" and t["test"][4] == "A-F").update(
+        reason="incomplete", X=None, passed=None, studies=2, draws=24)  # fmt: skip
+    assert sim._next_level(tests, 168, 6, 24) == 0.975
+    with pytest.raises(sim.SimulationError, match="incomplete"):
+        sim._next_level(tests, 168, 6, 24, above=0.975)
+
+
+def stops_rows(failing: dict[str, set] | None = None) -> list[dict]:
+    """A level's tests on the screen, one scenario, M = 6: X = 0, or 6 for the ``failing`` tests of
+    a level slot (N point, tested), the cap as ("cap", floor)."""
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    def count(x: int | None) -> dict:
+        return {"studies": 6, "draws": 6, "reason": None, "X": x, "passed": x == 0,
+                "rate": x / 6, "interval": None}  # fmt: skip
+
+    rows = []
+    for identity in decisions.test_identities(["C"]):
+        stream, _, point, slot, tested = identity
+        if stream != "calibration":
+            continue
+        bad = (failing or {}).get(slot, set())
+        row = {"test": list(identity), "floor": None, "below": None,
+               **count(6 if (point, tested) in bad else 0)}  # fmt: skip
+        if point == "cap":
+            row.update(count(6 if (("cap", 60), tested) in bad else 0), floor=60, below={
+                str(f): count(6 if (("cap", f), tested) in bad else 0)
+                for f in (36, 45)})  # fmt: skip
+        rows.append(row)
+    return rows
+
+
+def test_the_level_reads_a_fs_tests_from_60_and_the_cap_at_its_floor_alone() -> None:
+    """Amendment 7, "The level": A–F's tests at N ≥ 60 and at the cap decide L; its tests below 60,
+    P–F's and the joint tests do not."""
+    from zero_field_refusal.analysis.study3_decisions import selected_level
+
+    j, first = 168, "0.975"
+    for failing, level in (
+        ({}, 0.975),
+        ({first: {(36, "A-F"), (45, "A-F"), (("cap", 36), "A-F"), (("cap", 45), "A-F")}}, 0.975),
+        ({first: {(point, tested) for point in (36, 60, 99)
+                  for tested in ("P-F", "joint")}}, 0.975),
+        ({first: {(("cap", 60), "P-F"), (("cap", 60), "joint")}}, 0.975),
+        ({first: {(60, "A-F")}}, 0.98),
+        ({first: {(99, "A-F")}}, 0.98),
+        ({first: {(("cap", 60), "A-F")}}, 0.98),
+        ({first: {(60, "A-F")}, "0.980": {(75, "A-F")}, "0.985": {(90, "A-F")},
+          "0.990": {(("cap", 60), "A-F")}}, None),
+    ):  # fmt: skip
+        assert selected_level(stops_rows(failing), j, 6) == level, failing
+    above = {first: set(), "0.980": {(60, "A-F")}}
+    assert selected_level(stops_rows(above), j, 6) == 0.975
+
+
+@pytest.mark.parametrize(
+    "failing,af,pf",
+    [
+        (set(), 36, 36),
+        ({(36, "A-F")}, 45, 36),  # P–F's floor does not follow A–F's, nor its reading
+        ({(("cap", 36), "A-F")}, 45, 36),  # the capped procedure at that floor is included
+        ({(45, "A-F")}, 60, 36),
+        ({(("cap", 36), "A-F"), (("cap", 45), "A-F")}, 60, 36),
+        ({(("cap", 45), "A-F")}, 36, 36),  # the cap test read at that floor alone
+        ({(36, "P-F")}, 36, 45),  # P–F's failure alone raises no floor of A–F's
+        ({(36, "joint")}, 36, 45),
+        ({(("cap", 36), "joint")}, 36, 45),
+        ({(45, "joint")}, 36, 60),
+        ({(60, "P-F")}, 36, None),  # no floor: P–F is withheld
+        ({(99, "joint")}, 36, None),
+        ({(("cap", f), "P-F") for f in (36, 45, 60)}, 36, None),
+    ],
+)
+def test_each_comparison_has_its_own_floor(failing, af, pf) -> None:
+    """Amendment 7, "The floor": the smallest of 36, 45, 60 at which a comparison's own tests at and
+    above that size pass, the cap counted at that floor; P–F's are its marginal and joint tests."""
+    from zero_field_refusal.analysis.study3_decisions import confirmatory_floor, level_rows
+
+    rows = level_rows(stops_rows({"0.975": failing}), "calibration", 0.975)
+    assert confirmatory_floor(rows, "A-F", 168, 6) == af
+    assert confirmatory_floor(rows, "P-F", 168, 6) == pf
+
+
+def test_not_attainable_is_not_a_pass_of_the_floor() -> None:
+    from zero_field_refusal.analysis.study3_decisions import confirmatory_floor, level_rows
+
+    rows = level_rows(stops_rows(), "calibration", 0.975)
+    for row in rows:
+        if row["test"][4] == "P-F":
+            row.update(
+                studies=3, draws=24, reason="not_attainable", X=None, passed=False, rate=None
+            )
+    assert confirmatory_floor(rows, "P-F", 168, 6) is None
+    assert confirmatory_floor(rows, "A-F", 168, 6) == 36
+
+
+def test_a_cap_test_at_a_floor_counts_only_the_readings_confirmatory_there(tmp_path) -> None:
+    """M18: studies that miss the cap on fewer than 60 blocks fail the cap test at 36 and at 45, and
+    a raised floor rescues them: at floor 60 the first M studies confirmatory there all cover. So
+    L stands, at A–F's floor 60. The test's identity stays one, in J once."""
+    from zero_field_refusal.analysis.study3_decisions import confirmatory_floor, level_rows
+
+    level = 0.975
+
+    def study(index: int) -> sim.StudyOutcome:
+        few = index % 2 == 0  # 50 blocks in the analysis set, and a miss at the cap
+        covered = {(p, level, c): True for p in sim.N_POINTS for c in sim.TESTED}
+        covered |= {("cap", level, c): not few for c in sim.TESTED}
+        analyzed = {(level, c): 50 if few else 70 for c in sim.COMPARISONS}
+        return replace(outcome(index, True), covered=covered, analyzed=analyzed)
+
+    studies = [study(i) for i in range(24)]
+    identities = [("calibration", "C", p, "0.975", c) for p in sim.N_POINTS for c in sim.TESTED]
+    rows = [sim._test_row(i, level, studies, 6, 24, 168, sim.FLOORS) for i in identities]
+    cap = next(r for r in rows if r["test"][2] == "cap" and r["test"][4] == "A-F")
+    assert (cap["floor"], cap["X"], cap["studies"], cap["draws"]) == (60, 0, 6, 12)
+    assert {f: cap["below"][f]["X"] for f in ("36", "45")} == {"36": 3, "45": 3}
+    assert all(r["floor"] is None and r["below"] is None for r in rows if r["test"][2] != "cap")
+    assert sim.selected_level(rows, 168, 6) == level
+    mine = level_rows(rows, "calibration", level)
+    c = sim.coverage_threshold(168, 6, 0.025)
+    assert c < 3, "the misses at floors 36 and 45 must fail"
+    assert confirmatory_floor(mine, "A-F", 168, 6) == 60
+    # the power reads the same floor: a study on 50 blocks is descriptive there
+    sc = sim.SCENARIOS_BY_NAME["P20"]
+    detecting = [replace(o, readings={(level, "A-F"): "confirmatory"},
+                         direction={(level, "A-F"): "positive"}) for o in studies]  # fmt: skip
+    assert sim._direction_counts(detecting, sc, "A-F", level, 6, 24)["correct"] == 6
+    assert sim._direction_counts(detecting, sc, "A-F", level, 6, 24, 60)["correct"] == 3
+    # and so does the power reported at the denser mask, on its own analysis sets
+    slot = level_slot(level)
+    reported = [replace(o, report={"confirmed": {slot: True}, "readings": {slot: "confirmatory"},
+                                   "direction": {slot: "positive"},
+                                   "analyzed": {slot: o.analyzed[(level, "A-F")]}})
+                for o in studies]  # fmt: skip
+    assert sim._report_counts(reported, sc, level, 6, 24)["correct"] == 6
+    assert sim._report_counts(reported, sc, level, 6, 24, 60)["correct"] == 3
 
 
 def test_the_scan_stops_at_the_first_n_with_the_power(tiny, tmp_path) -> None:
@@ -2007,7 +2160,7 @@ def test_the_scan_stops_at_the_first_n_with_the_power(tiny, tmp_path) -> None:
     assert [min(c["correct"] for c in e["by_scenario"].values()) for e in scan][-1] == 6
     assert all(min(c["correct"] for c in e["by_scenario"].values()) < 5 for e in scan[:-1])
     assert decisions._n_min(scan, True, ["P20"]) == (63, [])
-    scanned = tmp_path / "study3" / "simulation" / "parts" / "scan-60" / "P20"
+    scanned = tmp_path / "study3" / "simulation" / "parts" / "scan-0.975-60" / "P20"
     assert all(
         row["report"] is None
         for p in scanned.glob("*.json")

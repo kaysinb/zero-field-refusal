@@ -10,7 +10,7 @@ verification and the decision record.
 The rules are docs/study3-preregistration.md's "Simulation before validation" (the grid, the
 coverage screen, the level L, the gates, the verification) and "Seeds and order" (after the
 engineering stage, before the search); the models and the values the researcher decided are
-``analysis.study3_simulation``'s (its rulings, M1–M27), the record's checks
+``analysis.study3_simulation``'s (its rulings, M1–M29), the record's checks
 ``analysis.study3_decisions``' (the J check). The order:
 
 1. **inputs** writes study 2's whole seed vectors (``analysis.study3_seed_vectors``) to --out
@@ -36,26 +36,29 @@ engineering stage, before the search); the models and the values the researcher 
    the calibration recomputes (integers, flags and identities exactly, floats within a relative
    1e-9 or their solver's precision, ``study3_simulation.CALIBRATION_FLOORS``; a different
    machine is printed, not refused). It then runs the gates, the screen and the n_min scan
-   (``run_screen``) and writes ``screen.json``; it prints L (or "no level passed"), the
-   validation size and the gates' values, with the power at 1 % MCAR beside the power (reported
-   only, ``power_af_1pct_missing``: at the N the rule chose, before any n_min increase, not the
-   power of the final increased design). Interrupted, it resumes from its finished parts on the
-   same streams, to the same bytes.
+   (``run_screen``) and writes ``screen.json``; it prints L (or "no level passed"), each
+   comparison's floor at L, the validation size and the gates' values, with the power at 1 % MCAR
+   beside the power (reported only, ``power_af_1pct_missing``: at the N the rule chose, before any
+   n_min increase, not the power of the final increased design). Interrupted, it resumes from its
+   finished parts on the same streams, to the same bytes. An A–F test short of M eligible studies
+   within 4·M draws stops it by name (amendment 7: incomplete, not failed).
 4. **verify** refuses without ``screen.json``, with one of another commit than the clean HEAD,
    without a recomputed L (the verification is not due), when the n_min scan stopped at an n
-   whose cap exceeds the 200 reserved seeds (no attainable n, the design stop: the verification
-   is not run, ``study3_simulation.unattainable_n``), or with ``verification.json`` present (it
-   is never rerolled); it runs the binding verification at L (``run_verification``) and writes
-   ``verification.json``.
+   whose cap exceeds the 200 reserved seeds (no attainable n, a pause for a decision: the
+   verification is not run, ``study3_simulation.unattainable_n``), or with ``verification.json``
+   present (it is never rerolled); it runs the binding verification from L (``run_verification``,
+   each level on its own stream: a failure of A–F's tests advances L, with that level's power and
+   any scan first, amendment 7) and writes ``verification.json``; it prints every level tried,
+   then L or "no level left".
 5. **record** needs ``screen.json`` (and ``verification.json`` when L exists and an n is
    attainable) of the clean HEAD; it writes ``results.json`` (``results_record``: its time is
    the code commit's, so a resumed run's results are an uninterrupted one's, byte for byte)
    after the J check of the results (``study3_decisions.results_problems``), then the decision
    record ``study3/decisions/simulation.json`` through ``write_decision`` (its ``inputs``: the
    results and the seed vectors, each by sha256; the J check runs again in its reader); it
-   prints the record's path, its state, L and the size, and, without an attainable n, that the
-   verification was not run. A second record is refused, as ``scripts/study3_summary.py record
-   simulation`` refuses it.
+   prints the record's path, its state, L, the ``reading`` and the size, and, without an attainable
+   n, that the verification was not run. A second record is refused, as
+   ``scripts/study3_summary.py record simulation`` refuses it.
 
 The files of the run lie under ``RUNS_DIR/study3/simulation/`` (reserved: no run directory):
 ``parts/<phase>/<scenario>/<first>.json``, ``screen.json``, ``verification.json`` and
@@ -249,6 +252,10 @@ def run(args: argparse.Namespace) -> None:
     level = screen["level"]
     print("no level passed" if level is None else f"level {level}")
     print(f"validation_blocks {screen['validation_blocks']}")
+    if level is not None:
+        for comparison, floor in sim._floors_at(screen["tests"], level, found.fixation["J"],
+                                                screen["M"]).items():  # fmt: skip
+            print(f"floor {comparison} {floor}")
     m, gates = screen["M"], screen["gates"]
     for name in ("safe_pass_rate", "empirical_pass_rate"):
         print(f"{name} {gates[name]['passed'] / m}")
@@ -274,10 +281,13 @@ def verify(args: argparse.Namespace) -> None:
     except sim.SimulationError as exc:
         refuse("verify", str(exc))
     verification = json.loads(path.read_text(encoding="utf-8"))
-    tests = verification["tests"]
     print(f"{path} {sha256(path)}")
-    print(f"level {verification['level']}")
-    print(f"tests {len(tests)} passed {sum(t['passed'] is True for t in tests)}")
+    for entry in verification["levels"]:
+        tests = [t for t in entry["tests"] if t["due"]]
+        print(f"tried {entry['level']} verified {json.dumps(entry['verified'])} pf_confirmatory "
+              f"{json.dumps(entry['pf_confirmatory'])} n_floor {json.dumps(entry['n_floor'])} "
+              f"tests {len(tests)} passed {sum(t['passed'] is True for t in tests)}")  # fmt: skip
+    print("no level left" if verification["level"] is None else f"level {verification['level']}")
 
 
 def commit_time(commit: str) -> str:
@@ -335,6 +345,8 @@ def record(args: argparse.Namespace) -> None:
         "level": decided["level"],
         "validation_blocks": decided["validation_blocks"],
         "verification": decided["verification"],
+        "reading": decided["reading"],
+        "levels_tried": decided["levels_tried"],
     }  # fmt: skip
     try:
         written = write_decision(root, "simulation", entry, repo=REPO)
@@ -344,7 +356,13 @@ def record(args: argparse.Namespace) -> None:
     print(f"{written} {sha256(written)}")
     print(f"state {entry['state']}")
     print(f"level {'null' if entry['level'] is None else entry['level']}")
+    if entry["reading"] is not None:
+        print(f"pf_confirmatory {json.dumps(entry['reading']['pf_confirmatory'])}")
+        for comparison, floor in entry["reading"]["floors"].items():
+            print(f"floor {comparison} {json.dumps(floor)}")
     print(f"validation_blocks {entry['validation_blocks']}")
+    if verification is not None and verification["levels"][-1]["verified"] is None:
+        skipped = verification["levels"][-1]["n_scan"][-1]["n"]
     if skipped is not None:
         print(f"verification not_run {sim.NO_ATTAINABLE_N} n {skipped} cap "
               f"{decisions.cap_of(skipped)}")  # fmt: skip
