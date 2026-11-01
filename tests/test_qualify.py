@@ -5189,7 +5189,7 @@ def verdict_world(qualify, tmp_path, monkeypatch, *, fa_control=True, failing=No
                                         f"r-{optimizer}-{seed}")  # fmt: skip
             baseline, rest = qualified_records(case, identity)
             if failing == (optimizer, seed):
-                rest["comparisons"]["baseline~s3"] = {"D_twin": 0.07}  # beyond 0.06
+                rest["comparisons"]["baseline~reference"] = {"D_twin": 0.07}  # beyond 0.06
             publish(out, case, "baseline", baseline)
             rest["baseline_record"]["sha256"] = q.record_sha256(baseline)
             publish(out, case, "rest", rest)

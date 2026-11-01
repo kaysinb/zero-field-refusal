@@ -16,12 +16,14 @@ kinds and states, ``record_sha256``) is ``qualification_constants``', inside the
 - Scientific: an instability of the launcher run (its declared stop) or of an unshifted harness
   trajectory, the baseline or the repeat (``instability``: the launcher's declared rules applied
   after the run: a non-finite loss, gradient or weight, the ×10 gradient rule, a monitor K above
-  its maximum); a non-finite loss, gradient or model in the reference or a shift (only that: the
-  ×10 rule and the monitor's bound are not theirs); ``baseline~reference`` or ``baseline~sK``
-  beyond the bound.
-- Technical: ``launcher~baseline``, ``launcher~repeat`` or ``baseline~repeat`` beyond the bound;
-  a launcher comparison beyond the bound whose baseline counterpart is not; a shift lost to fp32
-  rounding after its retry; a non-finite D between finite models; a failed bridge check; v₀
+  its maximum); a non-finite loss, gradient or model in the reference (only that: the ×10 rule
+  and the monitor's bound are not its); ``baseline~reference`` beyond the bound.
+- **The four shifts are descriptive** (amendment 8): their comparisons are measured and shown, each
+  with ``within``, and rejects nothing, neither does a shift's stop or its loss to fp32 rounding. A
+  rest record made under the old rule, ``decided`` on a shift, keeps its scientific reason.
+- Technical: ``launcher~baseline``, ``launcher~repeat``, ``baseline~repeat`` or
+  ``launcher~reference`` beyond the bound (the last when its baseline counterpart is not); a shift
+  that did not run; a non-finite D between finite models; a failed bridge check; v₀
   written; any exception or missing part; parts or a launcher run on more than one Pod (their
   recorded pod ids, where present: one Pod per case). A ``rest`` record that is not bound to the
   baseline given (another case, launcher run, settings or GPU code, or not built on that baseline
@@ -36,8 +38,8 @@ kinds and states, ``record_sha256``) is ``qualification_constants``', inside the
   nothing of the rest is read. A part that failed before establishing its bridge checks has no
   measurement read either.
 - A case with both kinds, on bound and verified records, is scientific (no rerun passes it), its
-  technical reasons kept. States: ``failing``, ``not_qualified``, ``qualified`` (all 13 within),
-  else ``incomplete``. ``warning`` when ``baseline~repeat`` exceeds τ = K*·max(0.001, 3·e_eng): a
+  technical reasons kept. States: ``failing``, ``not_qualified``, ``qualified`` (the 13 measured,
+  a stopped shift's excepted, and all but the shifts' within), else ``incomplete``. ``warning`` when ``baseline~repeat`` exceeds τ = K*·max(0.001, 3·e_eng): a
   prompt for diagnosis only. A case is named by ``record_sha256``, over its part records.
 
 **The same-path control** (``control_verdict``): accepted with finite records and K_scoring at
@@ -275,7 +277,7 @@ def case_verdict(
         target, trajectory = name.split("~")
         if c["D"] is not None and not fcd._number(c["D"]):
             technical.append(f"{name}: a non-finite D between finite models ({c['D']})")
-        elif c["within"] is not False:
+        elif c["within"] is not False or trajectory in SHIFTS:  # a shift: descriptive, amendment 8
             continue
         elif trajectory in UNSHIFTED:
             technical.append(f"{name}: D₂₅ {c['D']:.6g} beyond the bound {bound:.6g}")
@@ -284,9 +286,14 @@ def case_verdict(
         elif comparisons[f"baseline~{trajectory}"]["within"] is not False:
             technical.append(f"{name}: D₂₅ {c['D']:.6g} beyond the bound {bound:.6g}, its "
                              "baseline counterpart not")  # fmt: skip
-    complete = all(c["within"] is not None for c in comparisons.values())
+    stopped = {name for name, run in ((rest or {}).get("trajectories") or {}).items()
+               if name in SHIFTS and run.get("stop") is not None}  # fmt: skip
+    measured_all = [c["within"] is not None or name.split("~")[1] in stopped
+                    for name, c in comparisons.items()]  # fmt: skip
+    complete = all(measured_all)
     kind = SCIENTIFIC if science else TECHNICAL if technical else None
-    within = all(c["within"] for c in comparisons.values())
+    within = complete and all(c["within"] for name, c in comparisons.items()
+                              if name.split("~")[1] not in SHIFTS)  # fmt: skip
     state = (FAILING if science else NOT_QUALIFIED if technical
              else QUALIFIED if within else INCOMPLETE)  # fmt: skip
     tau = warning = None
@@ -348,10 +355,8 @@ def _rest_verdict(
             technical.append(f"{name}: {run.get('stop')}")
         elif name in UNSHIFTED:
             _unstable(name, run, science)
-        elif run.get("stop") is not None:  # the reference and the shifts: non-finite values only
+        elif name not in SHIFTS and run.get("stop") is not None:  # the reference: non-finite only
             science.append(f"a non-finite loss, gradient or model in the {name}: {run['stop']}")
-        if name in SHIFTS and "survived" in run and run["survived"] is not True:
-            technical.append(f"{name} was lost to fp32 rounding after its retry")
     for name, value in (rest.get("comparisons") or {}).items():
         if name in measured and name != "launcher~baseline":
             measured[name] = (value or {}).get("D_twin")

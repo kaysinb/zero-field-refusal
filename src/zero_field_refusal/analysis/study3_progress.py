@@ -795,8 +795,10 @@ def code_chain(
     runs (the chain's after its own cycle, or before it), and the breaks: a record whose old
     code is not the chain's, and more than one record for a candidate (one engineering cycle per
     candidate: ``qualify.py supersede`` writes ``c<N>/supersede-1.json`` and refuses a second).
-    An engineering-stage cycle whose fix is ``start``, the candidate's only record, is already
-    applied and moves no code: the engineering record is written after it, under the fix.
+    An engineering-stage cycle, the candidate's only record, is already applied and moves no code:
+    the engineering record is written after it, and its code starts the chain (amendment 8: a
+    change of orchestration may lie between the two). Its fix stays among the codes, so that the
+    simulation record, drawn under it, is on the chain.
     Without a start there is no chain: no code, and none in force."""
     if start is None:
         return [], {}, []
@@ -813,7 +815,9 @@ def code_chain(
             old, fix = cycle.get("old_gpu_code"), cycle.get("fix_gpu_code")
             cited = cycle.get("old_record")
             stage = cited.get("stage") if isinstance(cited, Mapping) else None
-            if len(found) == 1 and stage == "engineering" and fix == start:
+            if len(found) == 1 and stage == "engineering":
+                if fix != start:
+                    codes.insert(0, fix)
                 continue
             if old != current:
                 breaks.append(

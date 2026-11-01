@@ -71,15 +71,17 @@ is done, before the next one starts, atomically and durably (``publish``), bound
 the case, the attempt, the launcher run (identity and Pod), the baseline record's sha256, the
 baseline and launcher checkpoints' sha256, the numerics setup, the GPU code and the settings. An
 interruption keeps what was done. When the bridge checks hold and a result is a scientific
-failure (``scientific_result``: the declared rules on the repeat, a non-finite reference or
-shift, the baseline's D₂₅ against the reference or a shift beyond the bound), the part publishes
-its record at once, ``status: "decided"`` and kind scientific, and runs no further trajectory.
+failure (``scientific_result``: the declared rules on the repeat, a non-finite reference, the
+baseline's D₂₅ against the reference beyond the bound), the part publishes its record at once,
+``status: "decided"`` and kind scientific, and runs no further trajectory. The four shifts are
+descriptive (amendment 8): whatever they read, the battery goes on.
 
 **Instability of the unshifted trajectories** (``harness_instability``). The baseline and the
 repeat read the monitor at the launcher's cadence, and the launcher's declared rules are applied
 to their rows and readings after the run: a non-finite loss, gradient or weight, the ×10 gradient
 rule (``schedule.InstabilityGuard``), a monitor K above its maximum; the rule that fired, its
-step and values are recorded. The reference and the shifts are held to non-finite values alone.
+step and values are recorded. The reference is held to non-finite values alone; a shift's stop
+is recorded and decides nothing.
 
 **The bridge** (``bridge_checks``, each false one technical): each training row's ``tokens`` and
 ``denominator`` and the step indices exactly equal to the launcher run's (a trajectory a non-finite
@@ -809,10 +811,10 @@ def scientific_result(
 ) -> str | None:
     """The rest part's stopping rule on a completed trajectory (module docstring, "Trajectory
     results"): the declared instability rules on the repeat (``harness_instability``, or its
-    stop), a non-finite loss, gradient or model in the reference or a shift, or D₂₅ of the
-    harness baseline against the reference or a shift beyond 0.01·K*; why, or None. It applies
-    only once the bridge checks hold (``_rest``)."""
-    if run.get("not_run"):
+    stop), a non-finite loss, gradient or model in the reference, or D₂₅ of the harness baseline
+    against the reference beyond 0.01·K*; why, or None. A shift never stops the part (amendment
+    8). It applies only once the bridge checks hold (``_rest``)."""
+    if run.get("not_run") or name in SHIFTS:
         return None
     if name == "repeat":
         fired = run.get("instability")

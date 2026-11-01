@@ -518,7 +518,7 @@ def test_an_engineering_cycle_voids_old_code_and_keeps_a_scientific_case(
     under the fix, AdamW qualifies; FA keeps failing."""
     world = World(tmp_path)
     kept = qcase(10201, "adam_frozen", FA_LR)
-    world.full(skip=(ADAMW,), changes={kept: beyond("rest", "baseline~s3")})  # scientific
+    world.full(skip=(ADAMW,), changes={kept: beyond("rest", "baseline~reference")})  # scientific
     identity = world.launch(ADAMW)  # launcher~baseline beyond 0.06 (technical), the rest
     baseline, rest = world.records(ADAMW, identity, change=beyond("baseline", "launcher~baseline"))
     world.publish(ADAMW, "baseline", baseline)  # interrupted after its repeat
@@ -576,7 +576,7 @@ def technical_cycle(qualify, monkeypatch, tmp_path):
     cycle, written by the script from the technical baseline. Returns the world and the cycle's
     path and record."""
     world = World(tmp_path)
-    world.full(skip=(ADAMW,), changes={SCIENTIFIC_CASE: beyond("rest", "baseline~s3")})
+    world.full(skip=(ADAMW,), changes={SCIENTIFIC_CASE: beyond("rest", "baseline~reference")})
     world.qualified(ADAMW, world.launch(ADAMW), change=beyond("baseline", "launcher~baseline"))
     record = world.folder(ADAMW) / "baseline-attempt-1.json"
     monkeypatch.setattr(code_identity, "gpu_code_identity", codes)  # this checkout: the fix
@@ -788,12 +788,12 @@ def test_a_cycle_that_leaves_out_a_scientific_case_under_the_old_code_voids_noth
     folder = world.folder(ADAMW)
     identity = json.loads((folder / "baseline-attempt-1.json").read_text())["launcher"]["identity"]
     baseline, rest = world.records(ADAMW, identity, code=FIX,
-                                   change=beyond("rest", "baseline~s3"))  # fmt: skip
+                                   change=beyond("rest", "baseline~reference"))  # fmt: skip
     world.publish(ADAMW, "baseline", baseline, 2)
     world.publish(ADAMW, "rest", rest, 2)  # under the fix: the cycle stays valid
     assert world.read(expected_code=FIX["sha256"])["problems"] == []
     old_rest = json.loads((folder / "rest-attempt-1.json").read_text())
-    old_rest["comparisons"]["baseline~s3"]["D_twin"] = 0.07  # a shift beyond: scientific
+    old_rest["comparisons"]["baseline~reference"]["D_twin"] = 0.07  # the reference: scientific
     rewrite(folder / "rest-attempt-1.json", old_rest)
     reading = world.read(expected_code=FIX["sha256"])
     assert any(p.startswith(f"{path}: ") and "scientific failure" in p
