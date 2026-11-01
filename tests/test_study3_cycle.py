@@ -252,7 +252,7 @@ def engineering_and_numerical_world(tmp_path):
 def test_the_bridge_mirrors_supersede_and_keeps_a_scientific_case_whole(qualify, monkeypatch,
                                                                         tmp_path):  # fmt: skip
     world = QualificationWorld(tmp_path)
-    world.full(changes={SCIENTIFIC_CASE: beyond("rest", "baseline~s3")})  # old code, one scientific
+    world.full(changes={SCIENTIFIC_CASE: beyond("rest", "baseline~reference")})  # old code, one scientific
     entries = qr.cycle_entries(world.root, 1, old_code=CODE["sha256"], fix_code=FIX["sha256"],
                                settings=REGISTERED,
                                run_codes=all_runs(world, CODE["sha256"]))  # fmt: skip

@@ -1506,7 +1506,7 @@ def test_a_failing_rate_of_a_real_qualification_refuses_the_fixation(
 
     kept = qcase(10201, "adam_frozen", RATES["F"]["lr_u"])
     study, _, _ = real_qualification(qualify, monkeypatch, tmp_path,
-                                     {kept: beyond("rest", "baseline~s3")})  # fmt: skip
+                                     {kept: beyond("rest", "baseline~reference")})  # fmt: skip
     with pytest.raises(sv.RecordRefused, match="1.83e-05 is failing"):
         study.fixation()
 
@@ -1567,7 +1567,7 @@ def test_a_record_added_to_an_unfixed_rates_case_leaves_the_fixation_valid(
     p_rate = RATES["P"]["lr_u"]
     failing = qcase(10201, "adamw_prewarmed", p_rate)
     study, world, rates = real_qualification(qualify, monkeypatch, tmp_path,
-                                             {failing: beyond("rest", "baseline~s3")},
+                                             {failing: beyond("rest", "baseline~reference")},
                                              closed=(("adamw_prewarmed", p_rate),))  # fmt: skip
     record = study.fixation()
     assert set(record["rates"]) == {"A", "F"}

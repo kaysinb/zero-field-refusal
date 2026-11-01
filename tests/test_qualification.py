@@ -503,6 +503,28 @@ def rest_copy(fa_parts, tmp_path):
     return tmp_path / "out", ckpt, baseline
 
 
+def test_a_shift_beyond_the_bound_does_not_stop_the_rest(world, fa_parts, tmp_path,
+                                                         monkeypatch) -> None:  # fmt: skip
+    """Amendment 8: the battery goes on past a shift's result, so all four are measured."""
+    env, runs = world
+    out, ckpt, _ = rest_copy(fa_parts, tmp_path)
+    real, ran = q.run_trajectory, []
+
+    def trajectory(name, *args, **kwargs):
+        ran.append(name)
+        run, endpoint = real(name, *args, **kwargs)
+        if name == "s1":
+            endpoint = {label: {**m, "D_twin": 0.5} for label, m in endpoint.items()}
+        return run, endpoint
+
+    monkeypatch.setattr(q, "run_trajectory", trajectory)
+    record = part(env, runs["fa"], out, ckpt, "rest", attempt=2)
+    assert ran == list(q.REST)
+    assert (record["status"], record.get("kind")) == ("complete", None)
+    assert record["comparisons"]["baseline~s1"]["D_twin"] == 0.5
+    assert set(record["trajectories"]) == set(q.REST)
+
+
 def test_a_scientific_trajectory_result_stops_the_rest_at_once(world, fa_parts, tmp_path,
                                                               monkeypatch) -> None:  # fmt: skip
     """Each trajectory's result is published, bound to its inputs, before the next starts; a
@@ -879,11 +901,9 @@ SCIENTIFIC_RULES = {
     "the repeat's instability stop": (stopped("repeat"), "instability: the harness repeat"),
     "a non-finite reference": (stopped("reference"), "a non-finite loss, gradient or model in "
                                "the reference"),
-    "a non-finite shift": (stopped("s3"), "a non-finite loss, gradient or model in the s3"),
     "baseline~reference beyond": (beyond("baseline~reference"), "baseline~reference: D₂₅ 0.07"),
-    "baseline~s2 beyond": (beyond("baseline~s2"), "baseline~s2: D₂₅ 0.07"),
-    "scientific over technical": (both(beyond("baseline~s4"), beyond("launcher~repeat")),
-                                  "baseline~s4: D₂₅ 0.07"),
+    "scientific over technical": (both(beyond("baseline~reference"), beyond("launcher~repeat")),
+                                  "baseline~reference: D₂₅ 0.07"),
     "an instability stop before an error": (both(stopped("baseline"), baseline_error),
                                             "instability: the harness baseline"),
 }  # fmt: skip
@@ -897,15 +917,71 @@ def test_each_scientific_rule(rule) -> None:
     assert any(r.startswith(reason) or r.startswith(f"baseline: {reason}") for r in v["reasons"])
 
 
+def stopped_shift(baseline, rest):
+    rest["trajectories"]["s3"]["stop"] = "non-finite loss or gradient at step 7"
+    for target in ("launcher", "baseline"):
+        del rest["comparisons"][f"{target}~s3"]
+
+
+@pytest.mark.parametrize("change", [
+    beyond("baseline~s2"), beyond("launcher~s3"),
+    both(beyond("baseline~s4"), beyond("launcher~s4")), stopped_shift,
+], ids=["against the baseline", "against the launcher alone", "both", "a non-finite shift"])  # fmt: skip
+def test_a_shift_rejects_nothing_and_stays_shown(change) -> None:
+    """Amendment 8: the four shifts are measured and reported; none of their results is a reason."""
+    baseline, rest = synthetic()
+    change(baseline, rest)
+    bind(rest, baseline)
+    v = q.case_verdict(baseline, rest, SCOPE)
+    assert (v["state"], v["kind"], v["reasons"]) == ("qualified", None, [])
+    assert v["complete"] is True
+    assert v["comparisons"]["baseline~s2"]["D"] == rest["comparisons"]["baseline~s2"]["D_twin"]
+
+
+def lost(baseline, rest):
+    rest["trajectories"]["s1"]["survived"] = False
+
+
+def test_a_shift_lost_to_rounding_rejects_nothing() -> None:
+    v = verdict_of(lost)
+    assert (v["state"], v["kind"], v["reasons"]) == ("qualified", None, [])
+
+
+def test_a_rest_decided_on_a_shift_under_the_old_rule_keeps_its_verdict() -> None:
+    """The engineering stage's four cases: the record's scientific kind stands, and the shifts it
+    did not run stay unmeasured."""
+    baseline, rest = synthetic()
+    reason = "baseline~s2: D₂₅ 0.07 beyond the bound 0.06"
+    rest.update(status="decided", kind="scientific", reasons=[reason])
+    rest["comparisons"]["baseline~s2"]["D_twin"] = 0.07
+    for name in ("s3", "s4"):
+        del rest["trajectories"][name]
+        for target in ("launcher", "baseline"):
+            del rest["comparisons"][f"{target}~{name}"]
+    bind(rest, baseline)
+    v = q.case_verdict(baseline, rest, SCOPE)
+    assert (v["state"], v["kind"]) == ("failing", "scientific")
+    assert v["reasons"] == [f"rest: {reason}"] and v["complete"] is False
+    assert v["comparisons"]["baseline~s3"] == {"D": None, "within": None}
+
+
+def test_a_rest_interrupted_before_a_shift_ran_stays_incomplete() -> None:
+    """A shift missing without a stop of its own is not measured: execution, not a result."""
+    baseline, rest = synthetic()
+    rest["status"] = "interrupted"
+    del rest["trajectories"]["s4"]
+    for target in ("launcher", "baseline"):
+        del rest["comparisons"][f"{target}~s4"]
+    bind(rest, baseline)
+    v = q.case_verdict(baseline, rest, SCOPE)
+    assert v["state"] != "qualified" and v["complete"] is False
+
+
 def failed_bridge(where):
     def change(baseline, rest):
         (baseline if where == "baseline" else rest)["bridge"]["tokens"] = False
 
     return change
-
-
-def lost(baseline, rest):
-    rest["trajectories"]["s1"]["survived"] = False
 
 
 def nonfinite_d(baseline, rest):
@@ -932,7 +1008,6 @@ TECHNICAL_RULES = {
     "a launcher comparison alone beyond": (beyond("launcher~reference"),
                                            "launcher~reference: D₂₅ 0.07 beyond the bound 0.06, "
                                            "its baseline counterpart not"),
-    "a shift lost to rounding": (lost, "s1 was lost to fp32 rounding after its retry"),
     "a non-finite D between finite models": (nonfinite_d, "launcher~s2: a non-finite D"),
     "a failed bridge check": (failed_bridge("baseline"), "the bridge failed: ['tokens']"),
     "a failed bridge check of the rest": (failed_bridge("rest"), "the bridge failed in the rest"),

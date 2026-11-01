@@ -2192,24 +2192,27 @@ def engineering_cycle(old="e" * 64, fix="f" * 64, stage="engineering") -> dict:
             "old_record": {"stage": stage}, "old_gpu_code": old, "fix_gpu_code": fix}  # fmt: skip
 
 
-def test_an_engineering_stage_cycle_whose_fix_starts_the_chain_is_already_applied() -> None:
-    """The engineering record is written after the stage's cycle, under the fix: the cycle moves
-    no code. Another fix, a later stage's cycle whose old code is not the chain's, and a second
-    record stay breaks."""
-    assert study3_progress.code_chain("f" * 64, {1: [engineering_cycle()]}) == (
-        ["f" * 64], {1: "f" * 64, 2: "f" * 64}, [])  # fmt: skip
-    for cycle in (engineering_cycle(fix="8" * 64), engineering_cycle(stage="numerical")):
-        assert len(study3_progress.code_chain("f" * 64, {1: [cycle]})[2]) == 1
+def test_an_engineering_stage_cycle_is_already_applied_whatever_code_the_record_has() -> None:
+    """The engineering record is written after the stage's cycle: the cycle moves no code, under
+    the fix or under a later change of orchestration (amendment 8). A later stage's cycle whose old
+    code is not the chain's and a second record stay breaks."""
+    for cycle in (engineering_cycle(), engineering_cycle(fix="8" * 64)):
+        assert study3_progress.code_chain("f" * 64, {1: [cycle]}) == (
+            ["f" * 64], {1: "f" * 64, 2: "f" * 64}, [])  # fmt: skip
+    later = engineering_cycle(stage="numerical")
+    assert len(study3_progress.code_chain("f" * 64, {1: [later]})[2]) == 1
     second = {**engineering_cycle(old="f" * 64, fix="8" * 64), "path": "supersede-2.json"}
     assert study3_progress.code_chain("f" * 64, {1: [engineering_cycle(), second]})[2]
 
 
-def test_the_search_is_admitted_after_the_engineering_cycle_and_its_record_under_the_fix(
-    worlds, qualify, monkeypatch, tmp_path
+@pytest.mark.parametrize("sha", [None, "b" * 64], ids=["under the fix", "under a later code"])
+def test_the_search_is_admitted_after_the_engineering_cycle_and_its_record(
+    sha, worlds, qualify, monkeypatch, tmp_path
 ) -> None:
     """The real order: the engineering stage's technical failure, ``qualify.py supersede
-    --engineering``, the engineering and simulation records under the fix: the chain starts at
-    the fix, nothing breaks it, and the search's first campaign is the step."""
+    --engineering``, the engineering and simulation records under the fix or under a later change
+    of orchestration (amendment 8): the chain starts at the record's code, nothing breaks it, and
+    the search's first campaign is the step."""
     from test_qualification_records import ENGINEERING, ENGINEERING_HEADER, FIX, beyond, codes
     from test_qualification_records import World as QualificationWorld
 
@@ -2225,10 +2228,11 @@ def test_the_search_is_admitted_after_the_engineering_cycle_and_its_record_under
                   "--diagnosis", "d", "--fix", "f")  # fmt: skip
     (cycle,) = qualification_records.supersessions(runs.root, 1)
     assert cycle["old_record"]["stage"] == "engineering"
-    code = {"commit": "a" * 40, "gpu_code_sha256": FIX["sha256"]}
+    sha = sha or FIX["sha256"]
+    code = {"commit": "a" * 40, "gpu_code_sha256": sha}
     records.write("engineering", records.engineering(code=code))
     records.write("simulation", records.simulation(code=code))
-    result = read(records, runs, expected_code=FIX["sha256"])
+    result = read(records, runs, expected_code=sha)
     assert result["problems"] == [], result["problems"]
     assert (result["stage"], result["step"]["campaign"]) == ("search", "search-round0")
 
@@ -3534,7 +3538,7 @@ def test_the_reader_reads_a_real_qualification_through_its_engineering_cycle(
     world = QualificationWorld(tmp_path, QUALIFIED)
     kept = qcase(10201, "adam_frozen", START["F"]["u"])
     broken = qcase(10200, "adamw", START["A"]["l"])
-    world.full(QUALIFIED, skip=(broken,), changes={kept: beyond("rest", "baseline~s3")},
+    world.full(QUALIFIED, skip=(broken,), changes={kept: beyond("rest", "baseline~reference")},
                code=old)  # a scientific case  # fmt: skip
     world.qualified(broken, world.launch(broken), code=old,
                     change=beyond("baseline", "launcher~baseline"))  # technical  # fmt: skip
