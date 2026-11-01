@@ -797,7 +797,8 @@ def code_chain(
     candidate: ``qualify.py supersede`` writes ``c<N>/supersede-1.json`` and refuses a second).
     An engineering-stage cycle, the candidate's only record, is already applied and moves no code:
     the engineering record is written after it, and its code starts the chain (amendment 8: a
-    change of orchestration may lie between the two).
+    change of orchestration may lie between the two). Its fix stays among the codes, so that the
+    simulation record, drawn under it, is on the chain.
     Without a start there is no chain: no code, and none in force."""
     if start is None:
         return [], {}, []
@@ -815,6 +816,8 @@ def code_chain(
             cited = cycle.get("old_record")
             stage = cited.get("stage") if isinstance(cited, Mapping) else None
             if len(found) == 1 and stage == "engineering":
+                if fix != start:
+                    codes.insert(0, fix)
                 continue
             if old != current:
                 breaks.append(

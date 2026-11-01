@@ -2196,9 +2196,10 @@ def test_an_engineering_stage_cycle_is_already_applied_whatever_code_the_record_
     """The engineering record is written after the stage's cycle: the cycle moves no code, under
     the fix or under a later change of orchestration (amendment 8). A later stage's cycle whose old
     code is not the chain's and a second record stay breaks."""
-    for cycle in (engineering_cycle(), engineering_cycle(fix="8" * 64)):
-        assert study3_progress.code_chain("f" * 64, {1: [cycle]}) == (
-            ["f" * 64], {1: "f" * 64, 2: "f" * 64}, [])  # fmt: skip
+    assert study3_progress.code_chain("f" * 64, {1: [engineering_cycle()]}) == (
+        ["f" * 64], {1: "f" * 64, 2: "f" * 64}, [])  # fmt: skip
+    assert study3_progress.code_chain("f" * 64, {1: [engineering_cycle(fix="8" * 64)]}) == (
+        ["8" * 64, "f" * 64], {1: "f" * 64, 2: "f" * 64}, [])  # fmt: skip
     later = engineering_cycle(stage="numerical")
     assert len(study3_progress.code_chain("f" * 64, {1: [later]})[2]) == 1
     second = {**engineering_cycle(old="f" * 64, fix="8" * 64), "path": "supersede-2.json"}
@@ -2231,7 +2232,8 @@ def test_the_search_is_admitted_after_the_engineering_cycle_and_its_record(
     sha = sha or FIX["sha256"]
     code = {"commit": "a" * 40, "gpu_code_sha256": sha}
     records.write("engineering", records.engineering(code=code))
-    records.write("simulation", records.simulation(code=code))
+    drawn = {"commit": "b" * 40, "gpu_code_sha256": FIX["sha256"]}  # the simulation, under the fix
+    records.write("simulation", records.simulation(code=drawn))
     result = read(records, runs, expected_code=sha)
     assert result["problems"] == [], result["problems"]
     assert (result["stage"], result["step"]["campaign"]) == ("search", "search-round0")

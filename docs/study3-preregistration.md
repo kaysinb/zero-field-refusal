@@ -1197,7 +1197,8 @@ search, numerical qualification, validation or confirmation run exists, and no h
   amendment 6, and reported as such. The rest battery past an exceedance first runs on a GPU in the
   numerical qualification.
 - **The simulation.** Numerical qualification is assumed passed there, so its results stand. Its L
-  is 0.985. This does not certify unconditional power.
+  is 0.985. This does not certify unconditional power. Its record carries the code it was drawn
+  under, the fix of case 17; the simulation runs no GPU code, and that code stays on the chain.
 - **What was known.**
   - The 24 engineering cases: 20 qualified and 4 with a shift beyond the bound of 0.06 against the
     harness baseline: seed 10000, A at 2.11·10⁻⁵, 0.0769 (s2, old-policy evidence); seed 10003, F at
