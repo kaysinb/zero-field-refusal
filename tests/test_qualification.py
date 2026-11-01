@@ -505,7 +505,7 @@ def rest_copy(fa_parts, tmp_path):
 
 def test_a_shift_beyond_the_bound_does_not_stop_the_rest(world, fa_parts, tmp_path,
                                                          monkeypatch) -> None:  # fmt: skip
-    """Amendment 8: the battery goes on past a shift's result, so all four are measured."""
+    """Amendment 8: the battery goes on past a shift's result, so all four are attempted."""
     env, runs = world
     out, ckpt, _ = rest_copy(fa_parts, tmp_path)
     real, ran = q.run_trajectory, []
@@ -523,6 +523,30 @@ def test_a_shift_beyond_the_bound_does_not_stop_the_rest(world, fa_parts, tmp_pa
     assert (record["status"], record.get("kind")) == ("complete", None)
     assert record["comparisons"]["baseline~s1"]["D_twin"] == 0.5
     assert set(record["trajectories"]) == set(q.REST)
+
+
+def test_a_non_finite_shift_leaves_the_next_shift_as_it_was(world, fa_parts, tmp_path,
+                                                            monkeypatch) -> None:  # fmt: skip
+    """A shift that ends non-finite: the next one starts from θ₀ and ends as it would have."""
+    env, runs = world
+    _, _, _, rest = fa_parts
+    out, ckpt, _ = rest_copy(fa_parts, tmp_path)
+    real = q.run_trajectory
+
+    def trajectory(name, cfg, twins, *args, **kwargs):
+        run, endpoint = real(name, cfg, twins, *args, **kwargs)
+        if name == "s1":
+            for _, parameter in twins.trainable:
+                parameter.data.fill_(math.nan)
+            return {**run, "stop": "non-finite loss or gradient at step 3"}, {}
+        return run, endpoint
+
+    monkeypatch.setattr(q, "run_trajectory", trajectory)
+    record = part(env, runs["fa"], out, ckpt, "rest", attempt=2)
+    assert (record["status"], record.get("kind")) == ("complete", None), record.get("reasons")
+    for name in ("s2", "s3", "s4"):
+        assert (record["trajectories"][name]["endpoint_sha256"]
+                == rest["trajectories"][name]["endpoint_sha256"]), name  # fmt: skip
 
 
 def test_a_scientific_trajectory_result_stops_the_rest_at_once(world, fa_parts, tmp_path,

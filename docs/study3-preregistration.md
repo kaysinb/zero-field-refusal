@@ -206,7 +206,8 @@ veto.
 - **When it is impossible.** If the repaired rate differs from the old one by less than 2 %, the
   repair is impossible and the old rate stays. Validation then decides.
 - **What it cannot repair.** A failed reference, a failed shift or a failed bridge at step 25 is
-  never repaired this way. Each has its [failure route](#failure-routes).
+  never repaired this way. Each has its [failure route](#failure-routes). *A shift no longer fails
+  a rate: [amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive).*
 
 ### Choice of candidate
 
@@ -436,7 +437,8 @@ qualification stages.*
      measurements.
    - A change of trajectory requires every affected case to be re-qualified, the passed ones
      included.
-   - No threshold is changed in the direction of a weaker test.
+   - No threshold is changed in the direction of a weaker test. *The shift bound's change is
+     [amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive).*
    - A verdict superseded by an engineering cycle stops counting by an explicit record
      ([voiding](#voiding-and-supersession)). *For every cycle:
      [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
@@ -1183,7 +1185,7 @@ search, numerical qualification, validation or confirmation run exists, and no h
     the harness baseline nor as a technical failure against the launcher checkpoint alone.
   - A non-finite value or a failed survival in a shifted trajectory alone is reported. A shift that
     could not run, a non-finite D between finite models, and any exception remain technical.
-  - The battery continues past a shift's result, so all four are measured.
+  - The battery continues past a shift's result, so all four are attempted; a stop is reported.
   - Candidate 2 remains for every other registered failure. Every other bound, route and threshold is
     unchanged, the repeat, the bridge, the float64 reference and the same-path control among them.
 - **What is kept.** The engineering records and verdicts stand as they are: the four cases keep their
