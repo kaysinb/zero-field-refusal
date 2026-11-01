@@ -337,7 +337,8 @@ Only validation's harm labels are opened, and only for the spread.
 - **Direct comparisons.** For each selected arm and rate on the numerical seeds, **every harness
   endpoint is compared directly with the launcher checkpoint:**
   - the baseline, the repeat, the reference and the four shifts: 7 comparisons;
-  - each must have D₂₅ ≤ 0.01·K\*.
+  - each must have D₂₅ ≤ 0.01·K\*. *The four shifts' comparisons are measured and reported, and
+    reject nothing: [amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive).*
 
   The comparisons with the harness baseline (the repeat, the reference and the shifts: 6) are
   computed as well. Two passing links never stand in for a direct comparison, since KL has no
@@ -376,6 +377,9 @@ stated shifts and the harness's reference. It does not show equivalence of the i
 of the trajectories or of behavior off the panel. Agreement of the unshifted endpoints does not
 prove that a shifted launcher run would follow the shifted harness run. The direct comparisons
 narrow that gap but do not close it.
+
+*Under [amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive) a pass shows that agreement under the harness's reference
+only. It asserts no robustness to the imposed shifts, whose results are reported.*
 
 ### The comparison measure and storage
 
@@ -446,7 +450,8 @@ qualification stages.*
   - The warning threshold τ = K\*·max(0.001, 3·e_eng) is only a prompt for diagnosis.
   - The pairs are always measured, even after a warning.
 - **The reference and the shifts:** D₂₅ ≤ 0.01·K\*, harness baseline against each, and launcher
-  checkpoint against each.
+  checkpoint against each. *The bound now binds the reference alone; the shifts are measured against
+  it and reported: [amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive).*
   - **The reference** is the unshifted run with a float64 loss, gradient accumulation and
     optimizer arithmetic, fp32 parameters and TF32 off. P's second moment is float64 too.
   - **The fallback** is FLOAT64_ACCUMULATION: a float64 loss and accumulation only, with the
@@ -461,7 +466,8 @@ qualification stages.*
     - s3 and s4 are fixed-seed Gaussian directions over the trainable parameters (seeds 3 and 4).
   - **Survival.** The realized norm and the initial functional difference are recorded. A
     realized norm below half the intended one is retried once at 10 times the intended norm; a
-    second shortfall leaves the case incomplete (technical).
+    second shortfall leaves the case incomplete (technical). *A shift's shortfall is now reported
+    and leaves the case as it is: [amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive).*
 - **Path spikes** are not measured in qualification. Study 2's known case, P at 1.83·10⁻⁵, which
   read 0.151 at step 10 and 0.034 at step 25 against its bound 0.059, is re-measured along its
   path in the engineering stage.
@@ -469,6 +475,7 @@ qualification stages.*
   in a shifted or reference trajectory it is a scientific failure of the rate, as an exceeding
   comparison; in an unshifted one, as above. A non-finite D between finite models is a
   measurement failure and technical. An undefined diagnostic at a zero step is not a failure.
+  *A non-finite value in a shifted trajectory is now reported and decides nothing: [amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive).*
 - **Checks kept from study 2:**
   - the executable checks of the teacher path and the same-path control (its rule:
     [amendment 2](#amendment-2-the-same-path-control));
@@ -484,7 +491,9 @@ qualification stages.*
 | **Scientific** | a declared instability stop of a search, numerical or regular run; the reference or a shift beyond 0.01·K\* at step 25, harness baseline against it; a failed validation | no reruns to pass |
 
 *The limit of one cycle is removed by
-[amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
+[amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).
+A shift's result, launcher-only or against the harness baseline, is in neither row:
+[amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive).*
 
 **After a technical mark:**
 
@@ -641,7 +650,8 @@ validation, N, confirmation and analysis. It runs before any validation run.
 - **Power short:** N and the cap are raised, with a decision on the money. A larger N helps only
   the confirmation's power, not the validation gates. *A scan that reaches the reserve is a pause:
   [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
-- No bound or threshold is changed in the direction of a weaker conclusion.
+- No bound or threshold is changed in the direction of a weaker conclusion. *This concerns the
+  simulation's requirements. The shift bound's change is [amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive).*
 
 **Not in the simulation.** The numerical gates are not in its pass probability: four engineering
 seeds cannot estimate it. The engineering stage's measured margins report them instead.
@@ -965,7 +975,7 @@ changes.
 Decided on 2026-10-31 by the researcher, before the simulation and before any outcome of the
 search, numerical qualification, validation or confirmation. It was decided after the engineering
 stage's first pass was known, and it is not wholly prospective relative to all evidence: see "What
-was known". The bound 0.01·K\*, the utility thresholds, the support gates, the rule for N, the
+was known". The bound 0.01·K\* (for the shifts, until amendment 8), the utility thresholds, the support gates, the rule for N, the
 registered seeds and the order of the scientific stages are unchanged. These rules change the real
 procedure and its records, and the simulation runs under them.
 
@@ -1100,7 +1110,7 @@ procedure and its records, and the simulation runs under them.
   - **One declared instability stop** in the search or the numerical qualification fails the rate
     as registered. The 80 % power is conditional on passing, and the report states that attrition.
   - **Also:** support ≥ 22 of 28 and 31 of 40; the three-computation reading; ≥ 36, or the raised
-    floor; D₂₅ ≤ 0.01·K\*; the exact v₀ hash, with its fix; the 5 pp threshold; the
+    floor; D₂₅ ≤ 0.01·K\* (for the shifts, until amendment 8); the exact v₀ hash, with its fix; the 5 pp threshold; the
     engineering re-run (the defect's potential scope is all 24 cases; a scientific failure is
     preserved, so the re-run is 16 replacements, one preserved scientific case and seven first
     executions); candidate 1's utility gate; the incident pause; the registered count of
@@ -1138,3 +1148,63 @@ procedure and its records, and the simulation runs under them.
   - case 17's cycle: the first pass's records, the v₀ hashes by seed before and after the fix, the
     diagnostic and the A case's outlier;
   - each dry-run piece's report, any correction after the boundary and any declared treatment.
+
+### Amendment 8: the four imposed shifts become descriptive
+
+Decided on 2026-11-01 by the researcher, after the engineering stage's results were known. No
+search, numerical qualification, validation or confirmation run exists, and no harm label of study
+3 exists.
+
+> After observing the engineering results, before search or qualification outcomes and before any
+> harm labels, the four imposed shifts become descriptive robustness measurements. Their exceedances
+> do not reject rates or candidates; the repeat, bridge, reference and same-path-control requirements
+> remain unchanged. Original measurements and verdicts are retained, and the confirmatory claim
+> concerns the frozen implemented procedure, without asserting robustness to imposed initialization
+> shifts.
+
+- **Why.**
+  - The estimand concerns fresh supported seeds under the implemented, frozen procedure. A
+    difference between arms in sensitivity to an imposed shift is a property of that implementation,
+    not a confounder of the estimand.
+  - The bound 0.01·K\* has no derivation or calibration in the study's documents, and no record
+    links D to harm: shifted and reference runs generate no harmful responses.
+  - Extrapolating from the four engineering seeds suggested that the gate would reject most
+    candidates, on either target. This is an illustration from four seeds, not a measurement, and
+    candidate 2 was never measured.
+  - A higher bound or a tolerated fraction of failures was not adopted: either would be chosen around
+    the observed failures, and neither would show relevance to the claim. A measurement of harm on
+    shifted runs was not made a condition: with 521 paired responses and 10 % discordance its 95 %
+    half-width is about 2.7 pp.
+- **What it costs.** No claim is made that a difference between arms persists under small
+  initialization changes or under different arithmetic. Sensitivity to unobserved shifts need not
+  enter the spread of d_AF, and imposed shifts are not draws from the distribution of training seeds.
+- **The rules.**
+  - A shift beyond the bound rejects no rate or candidate, neither as a scientific failure against
+    the harness baseline nor as a technical failure against the launcher checkpoint alone.
+  - A non-finite value or a failed survival in a shifted trajectory alone is reported. A shift that
+    could not run, a non-finite D between finite models, and any exception remain technical.
+  - The battery continues past a shift's result, so all four are measured.
+  - Candidate 2 remains for every other registered failure. Every other bound, route and threshold is
+    unchanged, the repeat, the bridge, the float64 reference and the same-path control among them.
+- **What is kept.** The engineering records and verdicts stand as they are: the four cases keep their
+  scientific kind, and comparisons they did not measure stay unmeasured. No engineering case is rerun
+  for this change, under amendment 6's reading: the change lies in a GPU path, so the GPU-code identity
+  moves, but the measured trajectories' execution does not. The engineering record's code starts the
+  chain of engineering cycles, with the engineering-stage cycle for case 17 already applied.
+- **The replay.** The changed stopping and reading paths are replayed on CPU in the Pod image, under
+  amendment 6, and reported as such. The rest battery past an exceedance first runs on a GPU in the
+  numerical qualification.
+- **The simulation.** Numerical qualification is assumed passed there, so its results stand. Its L
+  is 0.985. This does not certify unconditional power.
+- **What was known.**
+  - The 24 engineering cases: 20 qualified and 4 with a shift beyond the bound of 0.06 against the
+    harness baseline: seed 10000, A at 2.11·10⁻⁵, 0.0769 (s2, old-policy evidence); seed 10003, F at
+    1.3·10⁻⁵, 0.0851 (s2); seed 10003, A at 1.45·10⁻⁵, 0.0997 (s4); seed 10003, P at 1.3·10⁻⁵, 0.0703
+    (s2). No technical case. The repeats reached at most 1.3·10⁻⁹, the reference at most 0.0297.
+  - The K and utility of those engineering runs, and the distribution of D by seed, rate and shift.
+  - The simulation's level, 0.985, and its power.
+  - No outcome of the search, numerical qualification, validation or confirmation, and no label.
+- **Disclosure.** The final report states this amendment and how it was reached, and:
+
+  > Four of 24 engineering cases exceeded the former shift bound; this informed the disclosed
+  > pre-search amendment, and all measured shift results and unmeasured comparisons are reported.
