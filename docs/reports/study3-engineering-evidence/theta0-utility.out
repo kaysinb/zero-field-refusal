@@ -1,0 +1,3 @@
+benchmark_accuracy: new=0.568 reference=0.568
+factual_accuracy: new=0.9954954954954955 reference=0.9954954954954955
+equal

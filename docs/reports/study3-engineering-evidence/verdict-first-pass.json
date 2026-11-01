@@ -1,0 +1,2963 @@
+{
+ "candidate": 1,
+ "stage": "engineering",
+ "campaign": {
+  "path": "/workspace/runs/zero-field-refusal/campaigns/c1-engineering.yaml",
+  "sha256": "c2870cb85ba0a7456ee86f00163b3404fede3dd98faaec50b1b344f4abcbb6b7"
+ },
+ "e_eng": null,
+ "cases": [
+  {
+   "case": {
+    "name": "s10000/adam_frozen-1.3e-05",
+    "seed": 10000,
+    "optimizer": "adam_frozen",
+    "lr": 1.3e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 3.5029802351646835e-09,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 3.5029802351646835e-09,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.008255838994751193,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.008255838994751193,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.03790567844605661,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.03790567844605661,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 2.4835462071239324e-08,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 2.4835462071239324e-08,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 2.0317366800891627e-07,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 2.0317366800891627e-07,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T125538Z-c1-engineering-adam_frozen-1-s10000-715a73ca-a1",
+    "run_id": "20261030T125538Z-c1-engineering-adam_frozen-1-s10000-715a73ca-a1",
+    "config_hash": "715a73cad41b",
+    "sha256": "4a0f2f3b58b89fc1a73a6913183593f8df0fe279c5edc5999514fc2a33bd2b2f",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T125538Z-c1-engineering-adam_frozen-1-s10000-715a73ca-a1.pt",
+     "sha256": "9096206ace1b545fdd89c9e54f6a34aaf953be2709ad5663ad3925c0a0df6337",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "56dd9f06945d8a7c59779a1aebe5bea903935812f01ba3a02ad59c429859564b",
+    "rest": "19488e8590a04a169af4331c272db082ea6745fb86cb50994b518ae52fe1ee87"
+   },
+   "record_sha256": "a62af752ffcb462f5b078495743cde0b6fe46a84a97608ae70ed900e0825ee6a"
+  },
+  {
+   "case": {
+    "name": "s10000/adam_frozen-1.83e-05",
+    "seed": 10000,
+    "optimizer": "adam_frozen",
+    "lr": 1.83e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 1.7699957754450043e-09,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 1.7699957754450043e-09,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 7.593901809510931e-09,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 7.835827509283457e-09,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.021984701213386068,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.02198337494043207,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.03071325748714067,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.030714814137028763,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 2.4873442851508837e-08,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 2.4421008535450958e-08,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 9.984206557159656e-08,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 9.744536342080211e-08,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T133744Z-c1-engineering-adam_frozen-1-s10000-729e0edd-a1",
+    "run_id": "20261030T133744Z-c1-engineering-adam_frozen-1-s10000-729e0edd-a1",
+    "config_hash": "729e0edd258d",
+    "sha256": "05fea542c9badfb03b25bd661fa6b56c799de617ac1b185c0a2bf186fdaef92c",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T133744Z-c1-engineering-adam_frozen-1-s10000-729e0edd-a1.pt",
+     "sha256": "c9338095e7a35538568d1dff383f8e0a5d406218e0822b607acb37b81d563ea0",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "f769d2e44b26a76f51fcf60b30c5b9332130768dd2f64274cc3b1f969ea94370",
+    "rest": "970e8951099eaec5498aaee6e472d25aee268abbe559762440da021cfcaa3778"
+   },
+   "record_sha256": "62b13e9876a11f9c2c4455d72fc2777733be8ac8be48d13824af7df54bef8e3e"
+  },
+  {
+   "case": {
+    "name": "s10000/adamw-1.45e-05",
+    "seed": 10000,
+    "optimizer": "adamw",
+    "lr": 1.45e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 1.86991153044508e-07,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 1.86991153044508e-07,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.028916440388696552,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.028916440388696552,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.02633752906611922,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.02633752906611922,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 2.16878132078273e-07,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 2.16878132078273e-07,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 2.815732548509974e-06,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 2.815732548509974e-06,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T114134Z-c1-engineering-adamw-1.45e-0-s10000-0833b690-a1",
+    "run_id": "20261030T114134Z-c1-engineering-adamw-1.45e-0-s10000-0833b690-a1",
+    "config_hash": "0833b6901d77",
+    "sha256": "d276e7ef40e53eea327ff5327942e806eb09b8a7f2f57415e49d6c9905e07e26",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T114134Z-c1-engineering-adamw-1.45e-0-s10000-0833b690-a1.pt",
+     "sha256": "9f599b9079a6f15ed00f88f3259d5dd477f7cc52e8a28b0c541c86d816081ff2",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "7f1b73edc12b3ad387ce32d3e3f30755158d8cd319c7ae32eb9e04e99052c32d",
+    "rest": "5d811e0b8ff7149627093a47f17e370ec6760cb020a88ecbf67b9ec22628c92a"
+   },
+   "record_sha256": "4fd33c5e926012639f217058d167e7c66428ef1e56026e587777f74ded8a3101"
+  },
+  {
+   "case": {
+    "name": "s10000/adamw-2.11e-05",
+    "seed": 10000,
+    "optimizer": "adamw",
+    "lr": 2.11e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "failing",
+   "kind": "scientific",
+   "reasons": [
+    "rest: baseline~s2: D\u2082\u2085 0.0769198 beyond the bound 0.06",
+    "baseline~s2: D\u2082\u2085 0.0769198 beyond the bound 0.06"
+   ],
+   "complete": false,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 9.830362764063642e-10,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 9.830362764063642e-10,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 2.296991553136742e-08,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 2.2855561999624495e-08,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.04001690588657,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.04001695366628015,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.076919995148151,
+     "within": false
+    },
+    "baseline~s2": {
+     "D": 0.07691976488517321,
+     "within": false
+    },
+    "launcher~s3": {
+     "D": null,
+     "within": null
+    },
+    "baseline~s3": {
+     "D": null,
+     "within": null
+    },
+    "launcher~s4": {
+     "D": null,
+     "within": null
+    },
+    "baseline~s4": {
+     "D": null,
+     "within": null
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T122306Z-c1-engineering-adamw-2.11e-0-s10000-2e3ddc37-a1",
+    "run_id": "20261030T122306Z-c1-engineering-adamw-2.11e-0-s10000-2e3ddc37-a1",
+    "config_hash": "2e3ddc3747d3",
+    "sha256": "47de037669fe0a39da4d153e65fcd86d4b40234beee339b06c732e6e6b94d8d9",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T122306Z-c1-engineering-adamw-2.11e-0-s10000-2e3ddc37-a1.pt",
+     "sha256": "9bf03d8c13de9f707de4da0813653e9831d14f345f1a94d70ddf8db8c69184ad",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "c86acf5ed1c9482fb651ee286ef3bae57281c2610249a9a6f55b5d7314e46cd2",
+    "rest": "a5d139dfc874d839c396fb758acd8f455118836162b9bcec9b1fd8669555ccb9"
+   },
+   "record_sha256": "8507cabd4d055f03468ddc38f7d7af90c3a2c0cfb26afbe0c0578ba3f88b5b07"
+  },
+  {
+   "case": {
+    "name": "s10000/adamw_prewarmed-1.3e-05",
+    "seed": 10000,
+    "optimizer": "adamw_prewarmed",
+    "lr": 1.3e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 1.1805884682185234e-09,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 1.1805884682185234e-09,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 2.9097681300400636e-08,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 2.897524328464032e-08,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.008195166989047487,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.008195138819246061,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.03766993463853971,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.03767016926627846,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 1.996940983630671e-08,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 1.9863211840816968e-08,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 1.6840578310932065e-07,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 1.6805580443039505e-07,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T141934Z-c1-engineering-adamw_prewarm-s10000-22cd9b9f-a1",
+    "run_id": "20261030T141934Z-c1-engineering-adamw_prewarm-s10000-22cd9b9f-a1",
+    "config_hash": "22cd9b9f4962",
+    "sha256": "ef1fc5a38ac2ac16b9b908a40fdf0c723c6dc9d00c01c7767350934a44972342",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T141934Z-c1-engineering-adamw_prewarm-s10000-22cd9b9f-a1.pt",
+     "sha256": "2fd6f3cb62ec8fa745f953cb62fea6011a395519af4f583d0e79b384d724e17e",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "ae85125bd21fbdd589be702fbc1cc9632c62fd7c71cb7f6980c861f63ff997aa",
+    "rest": "862981f7f6d758e9804a0be60c7f428366ec13f628e9a83fa69e2c0a4d0176d7"
+   },
+   "record_sha256": "cf629e8a178e79dddbfa1c5389160f9cdd3edba63dc833daadb7201d62bcbd5c"
+  },
+  {
+   "case": {
+    "name": "s10000/adamw_prewarmed-1.85e-05",
+    "seed": 10000,
+    "optimizer": "adamw_prewarmed",
+    "lr": 1.85e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 8.238588553669432e-09,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 8.238588553669432e-09,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.021274658132911774,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.021274658132911774,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.03458946385589308,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.03458946385589308,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 3.42726157059617e-08,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 3.42726157059617e-08,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 1.2703853952091796e-07,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 1.2703853952091796e-07,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T150120Z-c1-engineering-adamw_prewarm-s10000-b6a6165c-a1",
+    "run_id": "20261030T150120Z-c1-engineering-adamw_prewarm-s10000-b6a6165c-a1",
+    "config_hash": "b6a6165c8a89",
+    "sha256": "227c8e6b959e60f249dfd4587fdb7eadf06e619ebf4007800a10d238ddda64bd",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T150120Z-c1-engineering-adamw_prewarm-s10000-b6a6165c-a1.pt",
+     "sha256": "7d902dfeb725edcaa73707b42a8c2a77a39e982edb04f24012f3262ad3216850",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "191a04640abf66bf6e1f59a0b238ee0470c5328bbd585f70a9a19fd32cb721c6",
+    "rest": "2bb2ce260b4ee3f6d7c2f97b79b78a40aba3dfb985678a3790ed4f57cb5e7942"
+   },
+   "record_sha256": "945807faed7e6198ab9b8e69474a5c7ed9d90e4ea2607558cbc289f2d4449e1d"
+  },
+  {
+   "case": {
+    "name": "s10001/adam_frozen-1.3e-05",
+    "seed": 10001,
+    "optimizer": "adam_frozen",
+    "lr": 1.3e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 4.094650299899358e-09,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 4.094650299899358e-09,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.0011586997889370323,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.0011586997889370323,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.0011661679278205665,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.0011661679278205665,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 4.489005526965941e-09,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 4.489005526965941e-09,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 6.33667835180007e-09,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 6.33667835180007e-09,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T170226Z-c1-engineering-adam_frozen-1-s10001-6756a3be-a1",
+    "run_id": "20261030T170226Z-c1-engineering-adam_frozen-1-s10001-6756a3be-a1",
+    "config_hash": "6756a3be133a",
+    "sha256": "46f5cef4c570be47de1f19986a0d4994dbbfa4b5d671d6f4c783a448bdbd764e",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T170226Z-c1-engineering-adam_frozen-1-s10001-6756a3be-a1.pt",
+     "sha256": "cb7691cd6ea0de54faeacb579c88d034943e99029a4c044226e74dde142f14ec",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "2add5af2d5e09f0793865ef74425acbf7c63a257590bf233af688b893ac29aa2",
+    "rest": "83a7a2fb79d49995a26e8bff4bc872baab82a79928477f39a794ca46722d587e"
+   },
+   "record_sha256": "b40cd9b50bc6cd48d9d535ff5fea94aa23bd681962f230d170bd8f13efb6a70e"
+  },
+  {
+   "case": {
+    "name": "s10001/adam_frozen-1.83e-05",
+    "seed": 10001,
+    "optimizer": "adam_frozen",
+    "lr": 1.83e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 7.444481199375034e-09,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 7.444481199375034e-09,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.0025371237196994655,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.0025371237196994655,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.0033439058467446808,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.0033439058467446808,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 1.0924357083941008e-08,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 1.0924357083941008e-08,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 1.1954494490757694e-08,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 1.1954494490757694e-08,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T174333Z-c1-engineering-adam_frozen-1-s10001-a4109788-a1",
+    "run_id": "20261030T174333Z-c1-engineering-adam_frozen-1-s10001-a4109788-a1",
+    "config_hash": "a4109788fd7b",
+    "sha256": "096dc8c1d13693a2938cba3789a8766323a0ac3a28fd73bc229874ba83a2d7d4",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T174333Z-c1-engineering-adam_frozen-1-s10001-a4109788-a1.pt",
+     "sha256": "197a85869a7f2fc87c7651f1b416bd49bf6785ae44edc431d1ef4044e9f15e99",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "eb9a7f06266bd5960746076a73231ee88a5cead87a87f869529d6e5c2747fb60",
+    "rest": "03b17bac186ede596e7b26bd4a014667b5eb66e719d024eec7c9a38d0f05631d"
+   },
+   "record_sha256": "7ddc812c0e7fb596c5706678d6ea046e367894bc64532442e0cbb5cebcc73e4f"
+  },
+  {
+   "case": {
+    "name": "s10001/adamw-1.45e-05",
+    "seed": 10001,
+    "optimizer": "adamw",
+    "lr": 1.45e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 3.1872170877931646e-09,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 3.1872170877931646e-09,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.00087452421184739,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.00087452421184739,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.0010319962752447245,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.0010319962752447245,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 2.9532199747104325e-09,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 2.9532199747104325e-09,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 5.141853013343703e-09,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 5.141853013343703e-09,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T154230Z-c1-engineering-adamw-1.45e-0-s10001-b28f1866-a1",
+    "run_id": "20261030T154230Z-c1-engineering-adamw-1.45e-0-s10001-b28f1866-a1",
+    "config_hash": "b28f1866ac2e",
+    "sha256": "304690fa41006ce6e68a56f676ef0efd807fb416b2aadb147526c2c5b4a1b6cc",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T154230Z-c1-engineering-adamw-1.45e-0-s10001-b28f1866-a1.pt",
+     "sha256": "1764b97bf54c3d404dad52d62469266a0a6cd281866b187827237788b7ccff8b",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "ba421d105d58f7f8215401b41bd7a90ffef0313d08cae4345fe4d7fd85817c3b",
+    "rest": "734286da23dfe73d35d75be4f48ae406edf766ccc9f6c19861756d305a720819"
+   },
+   "record_sha256": "379f6862549a06a002e180dbf5fcd41733261a6d5134b1bc573d799814f545b8"
+  },
+  {
+   "case": {
+    "name": "s10001/adamw-2.11e-05",
+    "seed": 10001,
+    "optimizer": "adamw",
+    "lr": 2.11e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 1.5489865422238903e-09,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 1.5489865422238903e-09,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 3.4035688441792005e-09,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 3.365175545596009e-09,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.0007579915302759784,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.0007581665329054213,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.0009552214449213539,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.0009549841625096093,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 5.200465718280456e-09,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 4.873481440678789e-09,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 5.368224271816625e-09,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 5.2141084748690795e-09,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T162214Z-c1-engineering-adamw-2.11e-0-s10001-407d6e2d-a1",
+    "run_id": "20261030T162214Z-c1-engineering-adamw-2.11e-0-s10001-407d6e2d-a1",
+    "config_hash": "407d6e2d6815",
+    "sha256": "cb1bc1e5e2eb9967c098e290127eff7d6dc0b935cca6ffc46e6de5b9ead17eda",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T162214Z-c1-engineering-adamw-2.11e-0-s10001-407d6e2d-a1.pt",
+     "sha256": "5b048d78763e60968ee299bedfda237198f87d1efa48eb637b942e4eb4c2eeaf",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "84f5a98a7b1aa093fa7968d2e94f7130befbe7f4053c7f4dad0c8d4c9dfee9b4",
+    "rest": "a0540eae8e156e48cd749a2a5bd9c6d922351f95490d72d86e78b22de6804036"
+   },
+   "record_sha256": "f0ed548c97b463ab5d101fbbfdca0b158f199a3273a2c77dcd5d8538f298c1f4"
+  },
+  {
+   "case": {
+    "name": "s10001/adamw_prewarmed-1.3e-05",
+    "seed": 10001,
+    "optimizer": "adamw_prewarmed",
+    "lr": 1.3e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 9.68158266560377e-10,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 9.68158266560377e-10,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 3.5545509508818872e-09,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 3.5545509508818872e-09,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.0011174645339177562,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.0011174645339177562,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.0011225456344222358,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.0011225456344222358,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 5.158566228048494e-09,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 5.158566228048494e-09,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 5.539899229068989e-09,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 5.539899229068989e-09,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T182506Z-c1-engineering-adamw_prewarm-s10001-249aaace-a1",
+    "run_id": "20261030T182506Z-c1-engineering-adamw_prewarm-s10001-249aaace-a1",
+    "config_hash": "249aaaceeede",
+    "sha256": "fd9a587cb59a941408f5716754c760cdfdc4ac59aa8194b5d6721d117f98dfb4",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T182506Z-c1-engineering-adamw_prewarm-s10001-249aaace-a1.pt",
+     "sha256": "fafa7415b824a0ca691d93f8c52e16dd8aca9a69c7c6f97057f6139f909f7aae",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "e44dfaeadcbfb364edf49e00e0d17adc13a0b8fb0a359ece9a693fb544955865",
+    "rest": "af79ef127a6954469c0d9ffe6b75b3dc0581aa62d7c9ece4ab714c83d77f4af8"
+   },
+   "record_sha256": "3f8d9ebfa3765f695c08ab43c6fd1c3503023f2f61fef184dc17e111ff724656"
+  },
+  {
+   "case": {
+    "name": "s10001/adamw_prewarmed-1.85e-05",
+    "seed": 10001,
+    "optimizer": "adamw_prewarmed",
+    "lr": 1.85e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 1.0381041177003232e-09,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 1.0381041177003232e-09,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 5.901830489426399e-09,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 5.901667796793923e-09,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.0022181834557019058,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.0022181588379604476,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.0030200329996225863,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.0030200615056250185,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 6.196643916504767e-09,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 6.09097610722186e-09,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 1.1932808423169294e-08,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 1.1846836461365265e-08,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T190708Z-c1-engineering-adamw_prewarm-s10001-f5334339-a1",
+    "run_id": "20261030T190708Z-c1-engineering-adamw_prewarm-s10001-f5334339-a1",
+    "config_hash": "f53343393ef1",
+    "sha256": "b0bb0cf2fa68f5a052e3ad0a196ba4df8e7b82616ac0c88918fa3090a8c67249",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T190708Z-c1-engineering-adamw_prewarm-s10001-f5334339-a1.pt",
+     "sha256": "fe1a796b6bbe2aa2739b3910aeac3c12eda6df8c2b29324e9b8ef3f63e58e303",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "7172f903c00b7b691b19e46647ff8c29d7cf0d87bba28590c5f64f6c714fe7c6",
+    "rest": "f7b4b187a8a712eafaf4cf9e3daf663530886f6b2977aab26166a888c8b13930"
+   },
+   "record_sha256": "c0bb771639f311c968037ae5ee6f517cf10bfb3783f4c064304d42f17d3d26f9"
+  },
+  {
+   "case": {
+    "name": "s10002/adam_frozen-1.3e-05",
+    "seed": 10002,
+    "optimizer": "adam_frozen",
+    "lr": 1.3e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 3.3238078160711677e-09,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 3.3238078160711677e-09,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 5.859895019883706e-05,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 5.859895019883706e-05,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 4.910399932965458e-05,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 4.910399932965458e-05,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 4.367865584317409e-09,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 4.367865584317409e-09,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 5.4087565514226456e-09,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 5.4087565514226456e-09,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T210812Z-c1-engineering-adam_frozen-1-s10002-addbde95-a1",
+    "run_id": "20261030T210812Z-c1-engineering-adam_frozen-1-s10002-addbde95-a1",
+    "config_hash": "addbde955059",
+    "sha256": "9bd019eceeb207854bf99da0d16092c8dd6fd417cd241eb8c5a3e2299318e403",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T210812Z-c1-engineering-adam_frozen-1-s10002-addbde95-a1.pt",
+     "sha256": "80936f5c7e86f5bd6ce5404ee995b7b6366cf113a1b23b12a19a77cab5788963",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "32936de382159ba25c2b2507301d44c19249bcbb7f6a5929c0b09deabad6c389",
+    "rest": "cb1b31c6c27ea11f4553f846852dd38a27da546e006559c919fe253a660ab775"
+   },
+   "record_sha256": "43f9de53a1ac1908a2f4e709d436290a72c9db84341e2826123358eb06e6b9b7"
+  },
+  {
+   "case": {
+    "name": "s10002/adam_frozen-1.83e-05",
+    "seed": 10002,
+    "optimizer": "adam_frozen",
+    "lr": 1.83e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 1.6825076881866034e-08,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 1.6825076881866034e-08,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.004608256185577932,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.004608256185577932,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.001396989514644038,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.001396989514644038,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 8.051874965739552e-09,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 8.051874965739552e-09,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 3.913981060927074e-09,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 3.913981060927074e-09,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T215007Z-c1-engineering-adam_frozen-1-s10002-aa2946db-a1",
+    "run_id": "20261030T215007Z-c1-engineering-adam_frozen-1-s10002-aa2946db-a1",
+    "config_hash": "aa2946db1bd8",
+    "sha256": "2d19b8707fd6fc87289d1b08cb3674e8be64f379c07f5e7f4f0b0418aee6be36",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T215007Z-c1-engineering-adam_frozen-1-s10002-aa2946db-a1.pt",
+     "sha256": "b655fa353c5a28f65785422180b7486279df0b9547f194f159eebd9aa210d518",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "e1804bff8730d6c62d2064e67ff263609a8042aa7be05a49a0f466e94d2d4403",
+    "rest": "97e8ad11331f5fdec0bdb8391f8bc60031fed81c5a39ddf255c57a18762eb9b2"
+   },
+   "record_sha256": "f1fb78167150a31aa2aa28dc06828e1f9d0f5c168495fdb8ba0841316f22317a"
+  },
+  {
+   "case": {
+    "name": "s10002/adamw-1.45e-05",
+    "seed": 10002,
+    "optimizer": "adamw",
+    "lr": 1.45e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 1.3116200660778546e-09,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 1.3116200660778546e-09,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 2.739136609459795e-09,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 2.7811533389174365e-09,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 1.6385208707890122e-05,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 1.6403987264302037e-05,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 1.6315676966314354e-05,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 1.629619225671184e-05,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 3.1253528710417826e-09,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 2.921922783194269e-09,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 3.6908561638508306e-09,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 3.926520470069566e-09,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T194835Z-c1-engineering-adamw-1.45e-0-s10002-074b6d5f-a1",
+    "run_id": "20261030T194835Z-c1-engineering-adamw-1.45e-0-s10002-074b6d5f-a1",
+    "config_hash": "074b6d5f748c",
+    "sha256": "306bdf53d49e27f87938727634f4e12a85f172e8fb767e44d1d28dded672e1a8",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T194835Z-c1-engineering-adamw-1.45e-0-s10002-074b6d5f-a1.pt",
+     "sha256": "0d44ce8901cc499162b9d9ec4c4dfecf4c6d84ef5952b9dd8d5eab01503913b0",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "0ee7085779f8bf5e91ced73450ae92b86e7e079006a81fdb42c2e23781e99569",
+    "rest": "4ff38ad9141b9f018912111d4389ed090d525c8dac7ed18374e8c75b0cb4a8d9"
+   },
+   "record_sha256": "196612d1db8f010c00cc451cd064288e2e7b217d5993efabd003d8a682a04bb2"
+  },
+  {
+   "case": {
+    "name": "s10002/adamw-2.11e-05",
+    "seed": 10002,
+    "optimizer": "adamw",
+    "lr": 2.11e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "qualified",
+   "kind": null,
+   "reasons": [],
+   "complete": true,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "baseline~repeat": {
+     "D": 0.0,
+     "within": true
+    },
+    "launcher~reference": {
+     "D": 1.1796042018289754e-08,
+     "within": true
+    },
+    "baseline~reference": {
+     "D": 1.1796042018289754e-08,
+     "within": true
+    },
+    "launcher~s1": {
+     "D": 0.0011460125016564725,
+     "within": true
+    },
+    "baseline~s1": {
+     "D": 0.0011460125016564725,
+     "within": true
+    },
+    "launcher~s2": {
+     "D": 0.0009077175017185937,
+     "within": true
+    },
+    "baseline~s2": {
+     "D": 0.0009077175017185937,
+     "within": true
+    },
+    "launcher~s3": {
+     "D": 3.9761624079968634e-08,
+     "within": true
+    },
+    "baseline~s3": {
+     "D": 3.9761624079968634e-08,
+     "within": true
+    },
+    "launcher~s4": {
+     "D": 5.8523541885979077e-08,
+     "within": true
+    },
+    "baseline~s4": {
+     "D": 5.8523541885979077e-08,
+     "within": true
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T202808Z-c1-engineering-adamw-2.11e-0-s10002-6a3a04be-a1",
+    "run_id": "20261030T202808Z-c1-engineering-adamw-2.11e-0-s10002-6a3a04be-a1",
+    "config_hash": "6a3a04bedc11",
+    "sha256": "579997bb8eb1899f7dbccb9a63909fa24d468e2d72fac6c3eba2d59568f4c8a2",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T202808Z-c1-engineering-adamw-2.11e-0-s10002-6a3a04be-a1.pt",
+     "sha256": "bd8cc7f08cef37616db930ede1da1b24455a606210b1c2cb8946bfd97a7ad6b8",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "634c728c56d52bca7e6b753fad7889658beff50ff7d559ebb82f747393d365a8",
+    "rest": "08cfc8f9ce112052a3c1e1ad33ab03ff784017a0bb3ad9bdec1926372971c2e2"
+   },
+   "record_sha256": "c908ddf168c88f2293ac778a7d3da2079c30a7b8aeb80d4cc263c1abc2ac7ec5"
+  },
+  {
+   "case": {
+    "name": "s10002/adamw_prewarmed-1.3e-05",
+    "seed": 10002,
+    "optimizer": "adamw_prewarmed",
+    "lr": 1.3e-05,
+    "candidate": 1,
+    "engineering": true,
+    "batch": 20,
+    "steps": 25
+   },
+   "state": "not_qualified",
+   "kind": "technical",
+   "reasons": [
+    "the bridge failed in the rest part: ['v0_sha256']"
+   ],
+   "complete": false,
+   "comparisons": {
+    "launcher~baseline": {
+     "D": null,
+     "within": null
+    },
+    "launcher~repeat": {
+     "D": null,
+     "within": null
+    },
+    "baseline~repeat": {
+     "D": null,
+     "within": null
+    },
+    "launcher~reference": {
+     "D": null,
+     "within": null
+    },
+    "baseline~reference": {
+     "D": null,
+     "within": null
+    },
+    "launcher~s1": {
+     "D": null,
+     "within": null
+    },
+    "baseline~s1": {
+     "D": null,
+     "within": null
+    },
+    "launcher~s2": {
+     "D": null,
+     "within": null
+    },
+    "baseline~s2": {
+     "D": null,
+     "within": null
+    },
+    "launcher~s3": {
+     "D": null,
+     "within": null
+    },
+    "baseline~s3": {
+     "D": null,
+     "within": null
+    },
+    "launcher~s4": {
+     "D": null,
+     "within": null
+    },
+    "baseline~s4": {
+     "D": null,
+     "within": null
+    }
+   },
+   "bound": 0.06,
+   "tau": null,
+   "warning": null,
+   "reference_mode": "float64 loss, accumulation and optimizer arithmetic",
+   "fallback": false,
+   "launcher": {
+    "run": "study3/20261030T223129Z-c1-engineering-adamw_prewarm-s10002-19661603-a1",
+    "run_id": "20261030T223129Z-c1-engineering-adamw_prewarm-s10002-19661603-a1",
+    "config_hash": "19661603140f",
+    "sha256": "6d2e69543c61027c1607d55d8ef038a0f610234d151dc69bf81edaf1851f6703",
+    "checkpoint": {
+     "path": "/root/ckpt/20261030T223129Z-c1-engineering-adamw_prewarm-s10002-19661603-a1.pt",
+     "sha256": "5f278e740771b0d40c4746329b3130299135c62f3a04891499e5365c76a27dfd",
+     "step": 25,
+     "names_sha256": "b374f41184a55eca0f0864e0b9ef060f7e4b5d0556f0d74f293cb3632a409005"
+    }
+   },
+   "gpu_code": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9",
+   "settings": {
+    "experiment": "qualification",
+    "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+    "bound_fraction": 0.01,
+    "k_star": {
+     "1": 6.0,
+     "2": 5.0
+    },
+    "norm": 5e-05,
+    "gaussian": {
+     "s3": 3,
+     "s4": 4
+    },
+    "survival_share": 0.5,
+    "rounding_scale": 10,
+    "warning": {
+     "floor": 0.001,
+     "factor": 3
+    },
+    "seeds": {
+     "engineering": [
+      10000,
+      10001,
+      10002,
+      10003
+     ],
+     "numerical": {
+      "1": [
+       10200,
+       10201,
+       10202
+      ],
+      "2": [
+       10210,
+       10211,
+       10212
+      ]
+     }
+    },
+    "control": {
+     "arm": "adam_frozen",
+     "steps": 25,
+     "bound_fraction": 0.01
+    },
+    "checkpoint_gb": 6.5,
+    "disk_margin_gb": 4,
+    "host_memory_gb": 60
+   },
+   "records": {
+    "baseline": "90494ef7b101d957b616fe3c5afaf051e8520d7732b3b75924f159949e5e96d3",
+    "rest": "b695f67b87b6d69f3d4151f0486dfb7d022973c3e7100cee72cc55c56112a3ba"
+   },
+   "record_sha256": "7245676cebbb8534aebfcc809482de6efa6a59a45a2d79c7388be1c84f8f3bbd"
+  }
+ ],
+ "attempts": {
+  "s10000/adam_frozen-1.3e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adam_frozen-1.3e-05/baseline-attempt-1.json",
+     "sha256": "56dd9f06945d8a7c59779a1aebe5bea903935812f01ba3a02ad59c429859564b",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adam_frozen-1.3e-05/rest-attempt-1.json",
+     "sha256": "19488e8590a04a169af4331c272db082ea6745fb86cb50994b518ae52fe1ee87",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10000/adam_frozen-1.83e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adam_frozen-1.83e-05/baseline-attempt-1.json",
+     "sha256": "f769d2e44b26a76f51fcf60b30c5b9332130768dd2f64274cc3b1f969ea94370",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adam_frozen-1.83e-05/rest-attempt-1.json",
+     "sha256": "970e8951099eaec5498aaee6e472d25aee268abbe559762440da021cfcaa3778",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10000/adamw-1.45e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adamw-1.45e-05/baseline-attempt-1.json",
+     "sha256": "7f1b73edc12b3ad387ce32d3e3f30755158d8cd319c7ae32eb9e04e99052c32d",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adamw-1.45e-05/rest-attempt-1.json",
+     "sha256": "5d811e0b8ff7149627093a47f17e370ec6760cb020a88ecbf67b9ec22628c92a",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10000/adamw-2.11e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adamw-2.11e-05/baseline-attempt-1.json",
+     "sha256": "c86acf5ed1c9482fb651ee286ef3bae57281c2610249a9a6f55b5d7314e46cd2",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adamw-2.11e-05/rest-attempt-1.json",
+     "sha256": "a5d139dfc874d839c396fb758acd8f455118836162b9bcec9b1fd8669555ccb9",
+     "status": "decided",
+     "kind": "scientific",
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10000/adamw_prewarmed-1.3e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adamw_prewarmed-1.3e-05/baseline-attempt-1.json",
+     "sha256": "ae85125bd21fbdd589be702fbc1cc9632c62fd7c71cb7f6980c861f63ff997aa",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adamw_prewarmed-1.3e-05/rest-attempt-1.json",
+     "sha256": "862981f7f6d758e9804a0be60c7f428366ec13f628e9a83fa69e2c0a4d0176d7",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10000/adamw_prewarmed-1.85e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adamw_prewarmed-1.85e-05/baseline-attempt-1.json",
+     "sha256": "191a04640abf66bf6e1f59a0b238ee0470c5328bbd585f70a9a19fd32cb721c6",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10000/adamw_prewarmed-1.85e-05/rest-attempt-1.json",
+     "sha256": "2bb2ce260b4ee3f6d7c2f97b79b78a40aba3dfb985678a3790ed4f57cb5e7942",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10001/adam_frozen-1.3e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adam_frozen-1.3e-05/baseline-attempt-1.json",
+     "sha256": "2add5af2d5e09f0793865ef74425acbf7c63a257590bf233af688b893ac29aa2",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adam_frozen-1.3e-05/rest-attempt-1.json",
+     "sha256": "83a7a2fb79d49995a26e8bff4bc872baab82a79928477f39a794ca46722d587e",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10001/adam_frozen-1.83e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adam_frozen-1.83e-05/baseline-attempt-1.json",
+     "sha256": "eb9a7f06266bd5960746076a73231ee88a5cead87a87f869529d6e5c2747fb60",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adam_frozen-1.83e-05/rest-attempt-1.json",
+     "sha256": "03b17bac186ede596e7b26bd4a014667b5eb66e719d024eec7c9a38d0f05631d",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10001/adamw-1.45e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adamw-1.45e-05/baseline-attempt-1.json",
+     "sha256": "ba421d105d58f7f8215401b41bd7a90ffef0313d08cae4345fe4d7fd85817c3b",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adamw-1.45e-05/rest-attempt-1.json",
+     "sha256": "734286da23dfe73d35d75be4f48ae406edf766ccc9f6c19861756d305a720819",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10001/adamw-2.11e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adamw-2.11e-05/baseline-attempt-1.json",
+     "sha256": "84f5a98a7b1aa093fa7968d2e94f7130befbe7f4053c7f4dad0c8d4c9dfee9b4",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adamw-2.11e-05/rest-attempt-1.json",
+     "sha256": "a0540eae8e156e48cd749a2a5bd9c6d922351f95490d72d86e78b22de6804036",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10001/adamw_prewarmed-1.3e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adamw_prewarmed-1.3e-05/baseline-attempt-1.json",
+     "sha256": "e44dfaeadcbfb364edf49e00e0d17adc13a0b8fb0a359ece9a693fb544955865",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adamw_prewarmed-1.3e-05/rest-attempt-1.json",
+     "sha256": "af79ef127a6954469c0d9ffe6b75b3dc0581aa62d7c9ece4ab714c83d77f4af8",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10001/adamw_prewarmed-1.85e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adamw_prewarmed-1.85e-05/baseline-attempt-1.json",
+     "sha256": "7172f903c00b7b691b19e46647ff8c29d7cf0d87bba28590c5f64f6c714fe7c6",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10001/adamw_prewarmed-1.85e-05/rest-attempt-1.json",
+     "sha256": "f7b4b187a8a712eafaf4cf9e3daf663530886f6b2977aab26166a888c8b13930",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10002/adam_frozen-1.3e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10002/adam_frozen-1.3e-05/baseline-attempt-1.json",
+     "sha256": "32936de382159ba25c2b2507301d44c19249bcbb7f6a5929c0b09deabad6c389",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10002/adam_frozen-1.3e-05/rest-attempt-1.json",
+     "sha256": "cb1b31c6c27ea11f4553f846852dd38a27da546e006559c919fe253a660ab775",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10002/adam_frozen-1.83e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10002/adam_frozen-1.83e-05/baseline-attempt-1.json",
+     "sha256": "e1804bff8730d6c62d2064e67ff263609a8042aa7be05a49a0f466e94d2d4403",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10002/adam_frozen-1.83e-05/rest-attempt-1.json",
+     "sha256": "97e8ad11331f5fdec0bdb8391f8bc60031fed81c5a39ddf255c57a18762eb9b2",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10002/adamw-1.45e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10002/adamw-1.45e-05/baseline-attempt-1.json",
+     "sha256": "0ee7085779f8bf5e91ced73450ae92b86e7e079006a81fdb42c2e23781e99569",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10002/adamw-1.45e-05/rest-attempt-1.json",
+     "sha256": "4ff38ad9141b9f018912111d4389ed090d525c8dac7ed18374e8c75b0cb4a8d9",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10002/adamw-2.11e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10002/adamw-2.11e-05/baseline-attempt-1.json",
+     "sha256": "634c728c56d52bca7e6b753fad7889658beff50ff7d559ebb82f747393d365a8",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10002/adamw-2.11e-05/rest-attempt-1.json",
+     "sha256": "08cfc8f9ce112052a3c1e1ad33ab03ff784017a0bb3ad9bdec1926372971c2e2",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  },
+  "s10002/adamw_prewarmed-1.3e-05": {
+   "baseline": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10002/adamw_prewarmed-1.3e-05/baseline-attempt-1.json",
+     "sha256": "90494ef7b101d957b616fe3c5afaf051e8520d7732b3b75924f159949e5e96d3",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ],
+   "rest": [
+    {
+     "attempt": 1,
+     "state": "recorded",
+     "path": "/workspace/runs/zero-field-refusal/qualification/c1/engineering/s10002/adamw_prewarmed-1.3e-05/rest-attempt-1.json",
+     "sha256": "b695f67b87b6d69f3d4151f0486dfb7d022973c3e7100cee72cc55c56112a3ba",
+     "status": "complete",
+     "kind": null,
+     "restart": null,
+     "supersession": null
+    }
+   ]
+  }
+ },
+ "superseded": [],
+ "summary": {
+  "e_eng": 4.921235920603188e-10,
+  "repeats": 17,
+  "path_maxima": {
+   "repeat": 4.5797878337488185e-10,
+   "reference": 1.075866123934341e-07,
+   "shift": 0.020713413286897898
+  },
+  "margins": {
+   "launcher~baseline": 33898385.99186208,
+   "launcher~repeat": 20320098.774647474,
+   "baseline~repeat": 20320098.774647474,
+   "launcher~reference": 320870.79534569575,
+   "baseline~reference": 320870.79534569575,
+   "launcher~shift": 0.780031250449738,
+   "baseline~shift": 0.7800335855104179
+  }
+ },
+ "warnings": [],
+ "provenance": {
+  "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+  "settings": {
+   "experiment": "qualification",
+   "spec": "study 3, numerical qualification (docs/study3-preregistration.md)",
+   "bound_fraction": 0.01,
+   "k_star": {
+    "1": 6.0,
+    "2": 5.0
+   },
+   "norm": 5e-05,
+   "gaussian": {
+    "s3": 3,
+    "s4": 4
+   },
+   "survival_share": 0.5,
+   "rounding_scale": 10,
+   "warning": {
+    "floor": 0.001,
+    "factor": 3
+   },
+   "seeds": {
+    "engineering": [
+     10000,
+     10001,
+     10002,
+     10003
+    ],
+    "numerical": {
+     "1": [
+      10200,
+      10201,
+      10202
+     ],
+     "2": [
+      10210,
+      10211,
+      10212
+     ]
+    }
+   },
+   "control": {
+    "arm": "adam_frozen",
+    "steps": 25,
+    "bound_fraction": 0.01
+   },
+   "checkpoint_gb": 6.5,
+   "disk_margin_gb": 4,
+   "host_memory_gb": 60
+  },
+  "gpu_code": {
+   "commit": "38e3a14f8cf2cf6337bc826aabbf801c5e1912db",
+   "files": 126,
+   "sha256": "5c58451a647e2a145eca68979cc77ae1d1bac35cce9f9caeeeb6122bc3a51fb9"
+  },
+  "code": {
+   "commit": "38e3a14f8cf2cf6337bc826aabbf801c5e1912db",
+   "dirty": false
+  },
+  "written_at": "2026-10-30T23:20:45+00:00",
+  "hardware": {
+   "gpus": [
+    "NVIDIA L40S"
+   ],
+   "driver": "595.91.07",
+   "torch_cuda": "13.0",
+   "cuda_visible_devices": null,
+   "world_size": 1
+  },
+  "packages": {
+   "torch": "2.14.1",
+   "transformers": "5.18.0",
+   "peft": "0.21.2",
+   "datasets": "5.1.0",
+   "accelerate": "1.15.0",
+   "numpy": "2.5.3",
+   "wandb": "0.30.0"
+  },
+  "host_memory": {
+   "peak_rss_gb": 0.886,
+   "available_gb": 186.93060608,
+   "meminfo_gb": 1559.4299392,
+   "cgroup_gb": 186.93060608
+  },
+  "pod_id": "iu69haoozd6ued"
+ }
+}
