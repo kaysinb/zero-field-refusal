@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
-"""Study 3, candidate 1's numerical qualification: is a gradient jump a computed fact of the
-production attention backend alone?
+"""Study 3, candidate 1's numerical qualification: do the production attention backend and MATH
+agree at a recorded gradient jump?
 
 One target is one recorded trajectory of one launcher run: its prefix is replayed from θ₀ as
 ``fa_control_diagnostic.run_twin`` trains (fp32, or the float64 reference's arithmetic), each step
 held to the recorded row. A departure ends the target (``state: not_reproduced``, exit 3) with
 nothing compared. At each step of ``--measure``, on the same parameters, batch, v₀ and optimizer
-state, this records:
+state, and in the trajectory's arithmetic, this records:
 
 - the batch gradient under the production backend (as training runs it) and under MATH, each
   twice: their difference as a vector (relative to the production gradient, cosine, largest entry,
   the kinds of module holding it), and each backend against its own second pass;
 - the update each gradient would make, by the optimizer's own step, then undone: its norm and the
   two updates' difference;
-- the gradient norm of each micro-batch and of each response alone, under both backends;
-- for the largest response, its gradient in float64 throughout (a float64 copy of the model under
-  MATH), against each backend's fp32 gradient of that response.
+- the gradient vector of each micro-batch, as training composes them, under both backends, and how
+  their sum stands to the batch gradient;
+- the gradient norm of each response alone, under both backends (a different shape from training's:
+  a description, compared by norm only).
 
 The trajectory then goes on with the production gradient, so its later rows test that nothing here
 disturbed it. Nothing is written but ``--out``; no run, campaign or qualification record is made.
-The output holds numbers, ids and hashes, no text of a prompt or a response.
+The output holds numbers, ids and hashes, no text of a prompt or a response. These are comparisons
+of two fp32 forward and backward computations: they do not establish which is right.
 
 Usage (through ``project-run``): ``study3_spike_backend.py --run-dir RUN --rows launcher|FILE:KEY
 --measure 2,3,4 --end 5 --precision fp32|float64 --out FILE``.
@@ -29,12 +31,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import copy
 import gc
 import hashlib
 import json
 import math
 import os
+import resource
 import socket
 import sys
 import time
@@ -43,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from zero_field_refusal import code_identity, runtime
@@ -173,75 +176,75 @@ def compare(
 
 
 def _term_gradient(
-    twins: fcd.Twins, samples: Sequence[Any], denominator: float, cfg: Any
+    twins: fcd.Twins, samples: Sequence[Any], denominator: float, cfg: Any, precision: str
 ) -> tuple[float, int, list[torch.Tensor]]:
-    """(its loss term, its tokens, its gradient of term / denominator) in fp32."""
+    """(its loss term, its tokens, its gradient of term / denominator) on the device, in the
+    trajectory's arithmetic, as ``accumulate_gradient`` or ``nll_loss_float64`` compute a
+    micro-batch."""
     params = twins.params
     for p in params:
         p.grad = None
     cap = cfg.train.max_response_tokens
     rows = collate(samples, pad_id=twins.env.pad_id, max_response_tokens=cap,
                    device=twins.env.device)  # fmt: skip
-    term = summed_nll(twins.student, rows)
-    (term / denominator).backward()
-    return term.item(), rows.num_tokens, fcd.take_gradients(params)
-
-
-def parts(twins: fcd.Twins, batch: Sequence[Any], cfg: Any, name: str) -> dict[str, Any]:
-    """Each micro-batch's gradient norm, as training composes them, and each response's alone,
-    under one backend."""
-    denominator = loss_denominator(cfg.train.loss, batch, cfg.train.max_response_tokens)
-    micro = int(cfg.execution.micro_batch_size)
-    with backend(name):
-        micro_batches = []
-        for index, chunk in enumerate(chunks(batch, micro)):
-            term, tokens, grads = _term_gradient(twins, chunk, denominator, cfg)
-            micro_batches.append({"index": index, "term": term, "tokens": tokens,
-                                  "grad_norm": grad_norm(grads)})  # fmt: skip
-        responses = []
-        for index, sample in enumerate(batch):
-            term, tokens, grads = _term_gradient(twins, [sample], denominator, cfg)
-            responses.append({"index": index, "term": term, "tokens": tokens,
-                              "grad_norm": grad_norm(grads)})  # fmt: skip
-    return {"micro_batches": micro_batches, "responses": responses}
-
-
-def float64_arbiter(twins: fcd.Twins, batch: Sequence[Any], index: int, cfg: Any) -> dict[str, Any]:
-    """The largest response at the current parameters: its gradient in float64 throughout, a
-    float64 copy of the model under MATH, against each backend's fp32 gradient of it."""
-    denominator = loss_denominator(cfg.train.loss, batch, cfg.train.max_response_tokens)
-    sample = [batch[index]]
-    fp32 = {}
-    for name in (PRODUCTION, MATH):
-        with backend(name):
-            fp32[name] = _cpu(_term_gradient(twins, sample, denominator, cfg)[2])
-    wide = copy.deepcopy(twins.other).to("cpu").double()
-    by_name = dict(wide.named_parameters())
-    for p in wide.parameters():
-        p.requires_grad_(False)
-    params = []
-    for name, p in twins.trainable:
-        by_name[name].data.copy_(p.detach().double().cpu())
-        by_name[name].requires_grad_(True)
-        params.append(by_name[name])
-    wide.to(twins.env.device)
-    cap = cfg.train.max_response_tokens
-    rows = collate(sample, pad_id=twins.env.pad_id, max_response_tokens=cap,
-                   device=twins.env.device)  # fmt: skip
-    with backend(MATH):
-        term = torch.nn.functional.cross_entropy(
-            response_logits(wide, rows), target_ids(rows), reduction="sum"
-        )  # fmt: skip
+    if precision == "fp32":
+        term = summed_nll(twins.student, rows)
         (term / denominator).backward()
-    exact = [p.grad.detach().cpu() for p in params]
-    out = {"index": index, "term": term.item(), "grad_norm": grad_norm(exact),
-           PRODUCTION: compare(twins.names, exact, fp32[PRODUCTION]),
-           MATH: compare(twins.names, exact, fp32[MATH])}  # fmt: skip
-    del wide, by_name, params, exact, fp32, term
-    gc.collect()
-    if twins.env.device.type == "cuda":
-        torch.cuda.empty_cache()
-    return out
+        return term.item(), rows.num_tokens, fcd.take_gradients(params)
+    with fcd.Float64Gradients(params) as sums:
+        term = F.cross_entropy(response_logits(twins.student, rows).double(), target_ids(rows),
+                               reduction="sum")  # fmt: skip
+        (term / denominator).backward()
+    return term.item(), rows.num_tokens, sums.take()
+
+
+def parts(
+    twins: fcd.Twins, batch: Sequence[Any], cfg: Any, precision: str,
+    production: Sequence[torch.Tensor],
+) -> dict[str, Any]:  # fmt: skip
+    """The micro-batches' gradient vectors under both backends, compared; their sum under
+    production against the batch gradient ``production``; each response's gradient norm alone."""
+    names = twins.names
+    cap = cfg.train.max_response_tokens
+    denominator = loss_denominator(cfg.train.loss, batch, cap)
+    micro = int(cfg.execution.micro_batch_size)
+    micro_batches = []
+    total: list[torch.Tensor] | None = None
+    for index, chunk in enumerate(chunks(batch, micro)):
+        terms, vectors = {}, {}
+        for name in (PRODUCTION, MATH):
+            with backend(name):
+                term, tokens, grads = _term_gradient(twins, chunk, denominator, cfg, precision)
+            terms[name] = term
+            vectors[name] = _cpu(grads)
+            del grads
+        if total is None:
+            total = [g.double() for g in vectors[PRODUCTION]]
+        else:
+            for sum_, g in zip(total, vectors[PRODUCTION], strict=True):
+                sum_.add_(g.double())
+        micro_batches.append({"index": index, "tokens": tokens,
+                              "term": terms[PRODUCTION], "math_term": terms[MATH],
+                              **compare(names, vectors[PRODUCTION], vectors[MATH])})  # fmt: skip
+        del vectors
+    assert total is not None
+    of_batch = compare(names, production, total)
+    del total
+    responses = []
+    for index, sample in enumerate(batch):
+        entry: dict[str, Any] = {"index": index}
+        for name in (PRODUCTION, MATH):
+            with backend(name):
+                term, tokens, grads = _term_gradient(twins, [sample], denominator, cfg, precision)
+            entry[name] = {"term": term, "grad_norm": grad_norm(grads)}
+            entry["tokens"] = tokens
+            del grads
+        responses.append(entry)
+    return {"micro_batches": micro_batches, "sum_against_batch": of_batch, "responses": responses}
+
+
+def _rss_gb() -> float:
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6  # kilobytes on Linux
 
 
 def measure(
@@ -249,55 +252,57 @@ def measure(
     production: Sequence[torch.Tensor],
 ) -> dict[str, Any]:  # fmt: skip
     """What this file records at one step; ``production`` is the step's own gradient on the host,
-    and the parameters and the optimizer are as they were afterwards (hashes in the record)."""
+    kept by the caller. The parameters and the optimizer are as they were afterwards (the hash in
+    the record). What is compared is reduced to numbers and released before the next phase: the
+    memory budget is the runbook's."""
     names, params = twins.names, twins.params
     before = tensors_sha256(twins.trainable)
-    kept_theta = _cpu(params)
-    kept_state = optimizer_state(optimizer, precision)
-    p_first = list(production)
 
     with backend(MATH):
         math_stats, grads = batch_gradient(twins, batch, cfg, precision)
     m_first = _cpu(grads)
     del grads
+    gradient = compare(names, production, m_first)
     _, grads = batch_gradient(twins, batch, cfg, precision)
-    p_second = compare(names, p_first, _cpu(grads))
+    production_again = compare(names, production, _cpu(grads))
     del grads
     with backend(MATH):
         _, grads = batch_gradient(twins, batch, cfg, precision)
-    m_second = compare(names, m_first, _cpu(grads))
+    math_again = compare(names, m_first, _cpu(grads))
     del grads
 
-    updates: dict[str, list[torch.Tensor]] = {}
-    for name, vector in ((PRODUCTION, p_first), (MATH, m_first)):
+    theta = _cpu(params)
+    state = optimizer_state(optimizer, precision)
+    after: dict[str, list[torch.Tensor]] = {}
+    for name, vector in ((PRODUCTION, production), (MATH, m_first)):
         take_step(optimizer, params, [g.to(p.device) for g, p in zip(vector, params, strict=True)],
                   precision)  # fmt: skip
-        updates[name] = [p.detach().cpu().double() - t.double()
-                         for p, t in zip(params, kept_theta, strict=True)]  # fmt: skip
-        for p, t in zip(params, kept_theta, strict=True):
+        after[name] = _cpu(params)
+        for p, t in zip(params, theta, strict=True):
             p.data.copy_(t)
-        restore_optimizer(optimizer, kept_state, precision)
+        restore_optimizer(optimizer, state, precision)
+    del state, m_first
+    update = compare(
+        names,
+        (a.double() - t.double() for a, t in zip(after[PRODUCTION], theta, strict=True)),
+        (a.double() - t.double() for a, t in zip(after[MATH], theta, strict=True)),
+    )  # fmt: skip
+    del after, theta
+    gc.collect()
 
-    by_part = {name: parts(twins, batch, cfg, name) for name in (PRODUCTION, MATH)}
-    largest = max(by_part[PRODUCTION]["responses"], key=lambda r: r["grad_norm"])["index"]
-    try:
-        arbiter = float64_arbiter(twins, batch, largest, cfg)
-    except torch.OutOfMemoryError as error:  # the batch's comparison stands without it
-        arbiter = {"index": largest, "error": type(error).__name__}
-        torch.cuda.empty_cache()
+    by_part = parts(twins, batch, cfg, precision, production)
     for p in params:
         p.grad = None
-    out = {
+    return {
         "math_row": math_stats,
-        "gradient": compare(names, p_first, m_first),
-        "production_again": p_second,
-        "math_again": m_second,
-        "update": compare(names, updates[PRODUCTION], updates[MATH]),
+        "gradient": gradient,
+        "production_again": production_again,
+        "math_again": math_again,
+        "update": update,
         "parts": by_part,
-        "float64": arbiter,
         "parameters_unchanged": tensors_sha256(twins.trainable) == before,
+        "peak_rss_gb": _rss_gb(),
     }
-    return out
 
 
 def departure(row: Mapping[str, Any], recorded: Mapping[str, Any]) -> float:
@@ -335,7 +340,7 @@ def replay(
             return record
         if step in measure_at:
             started = time.perf_counter()
-            host = _cpu(grads)  # room on the device for the float64 model
+            host = _cpu(grads)  # room on the device while the comparison runs
             device = [g.device for g in grads]
             del grads
             record["measured"][str(step)] = measure(twins, batch, cfg, optimizer, precision, host)
@@ -403,6 +408,8 @@ def run(args: argparse.Namespace) -> int:
     rows = recorded_rows(run_dir, args.rows)
     head: dict[str, Any] = {"provenance": provenance(run_dir, args), "numerics_setup": numerics}
     with fcd.twin_setup(env, cfg, cfg, k_star=KEEP_K_STAR) as (twins, shared):
+        del shared["residual"]  # its one reference: nothing here reads it
+        gc.collect()
         inputs = meta.get("inputs", {})
         head["inputs"] = {
             "v0_sha256": shared["v0_sha256"],
@@ -427,18 +434,15 @@ def summary(record: Mapping[str, Any]) -> None:
     """The console line of each measured step: numbers only."""
     print(f"STATE {record['state']} at {record.get('at')}")
     for step, m in record["measured"].items():
-        g, u, wide = m["gradient"], m["update"], m["float64"]
+        g, u = m["gradient"], m["update"]
         own = f"{m['production_again']['relative']:.3e} {m['math_again']['relative']:.3e}"
         print(f"STEP {step} production {g['norm_a']:.4f} MATH {g['norm_b']:.4f} relative "
               f"{g['relative']:.3e} cosine {g['cosine']:.6f} own {own}")  # fmt: skip
         print(f"STEP {step} update {u['norm_a']:.4f} {u['norm_b']:.4f} relative "
-              f"{u['relative']:.3e}")  # fmt: skip
-        if "error" in wide:
-            print(f"STEP {step} float64 {wide['error']}")
-        else:
-            print(f"STEP {step} float64 {wide['grad_norm']:.4f} against production "
-                  f"{wide[PRODUCTION]['relative']:.3e} MATH "
-                  f"{wide[MATH]['relative']:.3e}")  # fmt: skip
+              f"{u['relative']:.3e} peak_rss {m['peak_rss_gb']:.1f}")  # fmt: skip
+        micro = " ".join(f"{p['norm_a']:.3f}/{p['norm_b']:.3f}/{p['relative']:.2e}"
+                         for p in m["parts"]["micro_batches"])  # fmt: skip
+        print(f"STEP {step} micro {micro}")
 
 
 def main() -> None:
