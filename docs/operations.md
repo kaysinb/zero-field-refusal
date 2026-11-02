@@ -1999,8 +1999,10 @@ docstring holds the rules, and "A case restart" below has the complete list of t
   case's whose control failed, `kept-checkpoints-<n>.json` and `kept-check-<n>.json` in its folder,
   and the driver's logs.
   Download and archive them with an inventory before the Pod stops. The kept checkpoints
-  themselves stay on the volume under `/workspace/kept-checkpoints/qualification/` and go to the
-  bucket from the Pod (above), never through this machine.
+  themselves are written on the volume under `/workspace/kept-checkpoints/qualification/` and go to
+  the bucket from the Pod (above), never through this machine. Until the study's report they stay in
+  the bucket, and on a volume only while the current stage reads them
+  ([amendment 9](study3-preregistration.md#amendment-9-where-a-technical-cases-checkpoints-are-kept)).
 
 ## Study 3: campaigns
 

@@ -941,7 +941,8 @@ remain unchanged.
 - **Storage.** A technical case's checkpoints are kept on the volume and in the bucket until the
   study's report: about 46 GB per technical engineering case and 13 GB per numerical one, about
   $0.3–1.2 per case-month. This is a running cost within "storage and idle time" above. It applies
-  to technical cases only.
+  to technical cases only. *Until the report they stay in the bucket, and on a volume only while the
+  current stage reads them: [amendment 9](#amendment-9-where-a-technical-cases-checkpoints-are-kept).*
 - **Disclosure.** The final report states the money available, each stage's incidents with their
   prices, and any stop this rule caused. *The public form:
   [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
@@ -1211,3 +1212,22 @@ search, numerical qualification, validation or confirmation run exists, and no h
 
   > Four of 24 engineering cases exceeded the former shift bound; this informed the disclosed
   > pre-search amendment, and all measured shift results and unmeasured comparisons are reported.
+
+### Amendment 9: where a technical case's checkpoints are kept
+
+Decided on 2026-11-02 by the researcher, after the search of candidate 1 closed. It concerns storage
+alone: no bound, route, threshold or record changes. No numerical qualification, validation or
+confirmation run exists, and no harm label of study 3 exists.
+
+- **The rule.** A technical case's checkpoints are kept until the study's report in the bucket, each
+  file verified by its sha256, size and MD5. They stay on a volume only while the current stage reads
+  them. The export itself is unchanged: `finish` writes and verifies the copy on the volume, the
+  driver uploads it, and `kept-check` verifies both.
+- **Why.** The copy in the bucket is verified, no later stage reads these files once the case's
+  diagnosis is closed, and a stage can move to another host, where the earlier volume is not
+  attached.
+- **The one case so far.** Case 17, `s10002/adamw_prewarmed-1.3e-05`, `kept-1`: all 9 files were in
+  the bucket on 2026-11-02 with the size and MD5 of their inventory, whose sha256 are those of the
+  volume's last inventory. The search ran on another host. The volume holding the second copy is
+  deleted after this amendment.
+- **Disclosure.** The search's report states that deletion.
