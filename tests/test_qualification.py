@@ -383,8 +383,9 @@ def test_the_launcher_run_needs_the_harness_code_and_environment(world, tmp_path
     other = with_meta("other-packages", packages=packages)
     assert any(p.startswith("environment: packages.torch") for p in CODE_ENVIRONMENT(other))
     image = with_meta("other-image", launch={"container_image": "another:image"})
-    monkeypatch.delenv("CONTAINER_IMAGE", raising=False)
-    assert any("container_image" in p for p in CODE_ENVIRONMENT(image))
+    with monkeypatch.context() as unset:  # the fixtures recorded whatever image this process has
+        unset.delenv("CONTAINER_IMAGE", raising=False)
+        assert any("container_image" in p for p in CODE_ENVIRONMENT(image))
     monkeypatch.setattr(q, "code_environment_problems", CODE_ENVIRONMENT)
     kind, reasons = q.launcher_problems(old_code, FA)  # stopped by its instability rule
     assert kind == "technical" and any("code: " in r for r in reasons), reasons
