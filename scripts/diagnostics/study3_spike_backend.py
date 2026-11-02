@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Study 3, candidate 1's numerical qualification: do the production attention backend and MATH
-agree at a recorded gradient jump?
+agree at a recorded gradient jump, and does the jump repeat on another host?
 
 One target is one recorded trajectory of one launcher run: its prefix is replayed from θ₀ as
 ``fa_control_diagnostic.run_twin`` trains (fp32, or the float64 reference's arithmetic), each step
 held to the recorded row. A departure ends the target (``state: not_reproduced``, exit 3) with
-nothing compared. At each step of ``--measure``, on the same parameters, batch, v₀ and optimizer
-state, and in the trajectory's arithmetic, this records:
+nothing compared. With ``--no-gate``, as on another host, every row is taken whatever the record
+says, a departure is only recorded (``first_departure``, ``largest_departure``, exit 3 at the end),
+and inputs other than recorded do not stop it. At each step of ``--measure``, on the same
+parameters, batch, v₀ and optimizer state, and in the trajectory's arithmetic, this records:
 
 - the batch gradient under the production backend (as training runs it) and under MATH, each
   twice: their difference as a vector (relative to the production gradient, cosine, largest entry,
@@ -23,8 +25,13 @@ disturbed it. Nothing is written but ``--out``; no run, campaign or qualificatio
 The output holds numbers, ids and hashes, no text of a prompt or a response. These are comparisons
 of two fp32 forward and backward computations: they do not establish which is right.
 
+``--full LAUNCHER_DIR`` replays one case on another host instead: from a launcher run made there, it
+runs the harness's baseline with its monitor to step 25 and, with ``--reference-rows``, the
+reference, and records the rows, K, the endpoint hashes and D₂₅ among them, each against the record.
+
 Usage (through ``project-run``): ``study3_spike_backend.py --run-dir RUN --rows launcher|FILE:KEY
---measure 2,3,4 --end 5 --precision fp32|float64 --out FILE``.
+--measure 2,3,4 --end 5 --precision fp32|float64 --out FILE [--no-gate]``; ``--measure ""`` compares
+nothing and records the rows alone.
 """
 
 from __future__ import annotations
@@ -50,6 +57,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from zero_field_refusal import code_identity, runtime
 from zero_field_refusal import fa_control_diagnostic as fcd
+from zero_field_refusal import qualification as q
 from zero_field_refusal.batches import chunks, collate
 from zero_field_refusal.losses import loss_denominator, response_logits, summed_nll
 from zero_field_refusal.losses import targets as target_ids
@@ -313,7 +321,7 @@ def departure(row: Mapping[str, Any], recorded: Mapping[str, Any]) -> float:
 
 def replay(
     cfg: Any, twins: fcd.Twins, recorded: Sequence[Mapping[str, Any]], *, measure_at: Sequence[int],
-    end: int, precision: str, publish: Any = lambda record: None,
+    end: int, precision: str, publish: Any = lambda record: None, gate: bool = True,
 ) -> dict[str, Any]:  # fmt: skip
     """Steps 0 … ``end`` − 1 from θ₀, as ``run_twin`` trains. See the module's docstring."""
     env, params, size = twins.env, twins.params, int(cfg.train.batch_size)
@@ -326,7 +334,8 @@ def replay(
         optimizer = fcd.Float64Adam(params, cfg.optimizer, v0)
     else:
         optimizer = build_optimizer(cfg.optimizer, params, second_moment=v0)
-    record: dict[str, Any] = {"state": "running", "rows": [], "measured": {}}
+    record: dict[str, Any] = {"state": "running", "rows": [], "measured": {},
+                              "first_departure": None, "largest_departure": 0.0}  # fmt: skip
     by_step = {int(r["step"]): r for r in recorded}
     for step in range(end):
         batch = twins.prefix.take(step * size, (step + 1) * size)
@@ -334,7 +343,10 @@ def replay(
         off = departure(stats, by_step[step])
         record["rows"].append({"step": step, **stats, "departure": off,
                                "recorded_grad_norm": by_step[step]["grad_norm"]})  # fmt: skip
-        if off > ROW_TOLERANCE or not math.isfinite(stats["grad_norm"]):
+        record["largest_departure"] = max(record["largest_departure"], off)
+        if off > ROW_TOLERANCE and record["first_departure"] is None:
+            record["first_departure"] = step
+        if (gate and off > ROW_TOLERANCE) or not math.isfinite(stats["grad_norm"]):
             record.update(state="not_reproduced", at=step)
             publish(record)
             return record
@@ -357,6 +369,98 @@ def replay(
     return record
 
 
+def _departures(rows: Sequence[Mapping[str, Any]], recorded: Sequence[Mapping[str, Any]]) -> dict:
+    """Each row against the record, over the steps both hold."""
+    by_step = {int(r["step"]): r for r in recorded}
+    off = {int(r["step"]): departure(r, by_step[int(r["step"])]) for r in rows
+           if int(r["step"]) in by_step and math.isfinite(r["grad_norm"])}  # fmt: skip
+    first = next((s for s in sorted(off) if off[s] > ROW_TOLERANCE), None)
+    return {"first_departure": first, "largest_departure": max(off.values(), default=None),
+            "steps_compared": len(off)}  # fmt: skip
+
+
+def full_case(
+    cfg: Any, twins: fcd.Twins, shared: Mapping[str, Any], *, recorded: Sequence[Mapping[str, Any]],
+    checkpoints: Path, launcher_checkpoint: Path | None = None,
+    reference_rows: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:  # fmt: skip
+    """One case: the baseline with its monitor, as ``qualification._baseline`` runs it; its declared
+    instability, which ``run_twin`` does not stop at; and, given ``reference_rows``, the reference
+    as ``qualification.run_trajectory`` runs it. D₂₅ among whichever ended at step 25."""
+    twins.reset()
+    run = fcd.run_twin(cfg, twins, eval_at=[], monitor=shared["monitor"])
+    run["instability"] = q.harness_instability(cfg, run)
+    run["against_record"] = _departures(run["rows"], recorded)
+    out: dict[str, Any] = {"baseline": run, "comparisons": {}}
+    targets: dict[str, Path] = {}
+    if launcher_checkpoint is not None:
+        targets["launcher"] = launcher_checkpoint
+    if run["stop"] is None and int(run["steps"]) == int(cfg.train.steps):
+        run["endpoint_sha256"] = tensors_sha256(twins.trainable)
+        if launcher_checkpoint is not None:
+            out["comparisons"]["launcher~baseline"] = twins.divergence(launcher_checkpoint, cfg)
+        if reference_rows is not None:
+            targets["baseline"] = checkpoints / "baseline.pt"
+            fcd.save_trainable(twins.trainable, targets["baseline"])
+    if reference_rows is not None:
+        reference, endpoint = q.run_trajectory("reference", cfg, twins, shared, None, targets)
+        reference["against_record"] = _departures(reference["rows"], reference_rows)
+        out["reference"] = reference
+        out["comparisons"].update({f"{k}~reference": v for k, v in endpoint.items()})
+    twins.reset()
+    return out
+
+
+def run_full(args: argparse.Namespace) -> int:
+    """``--full``: one case's baseline and reference on this host, against the record."""
+    if args.out.exists():
+        sys.exit(f"{args.out} exists")
+    launcher = args.full
+    cfg = fcd.run_config(launcher)
+    numerics = runtime.configure_numerics(cfg, args.device)  # first: before any CUDA work
+    env = fcd.guarded_prompt_sets(runtime.environment(cfg, args.device), "harmful",
+                                  "The spike check")  # fmt: skip
+    meta = json.loads((launcher / "meta.json").read_text())
+    original = json.loads((args.run_dir / "meta.json").read_text())
+    recorded = recorded_rows(args.run_dir, "launcher")
+    here = recorded_rows(launcher, "launcher")
+    kept = (meta.get("inputs") or {}).get("endpoint_checkpoint")
+    head: dict[str, Any] = {
+        "provenance": provenance(args.run_dir, args), "numerics_setup": numerics,
+        "launcher": {"run_id": meta.get("run_id"), "config_hash": meta.get("config_hash"),
+                     "config_as_recorded": meta.get("config_hash") == original.get("config_hash"),
+                     "v0_as_recorded": (meta.get("inputs") or {}).get("v0_sha256")
+                     == (original.get("inputs") or {}).get("v0_sha256"),
+                     "checkpoint": kept,
+                     "against_record": _departures(here, recorded)},
+    }  # fmt: skip
+    checkpoint = Path(kept["path"]) if isinstance(kept, Mapping) else None
+    reference = recorded_rows(args.run_dir, args.reference_rows) if args.reference_rows else None
+    args.checkpoints.mkdir(parents=True, exist_ok=True)
+    with fcd.twin_setup(env, cfg, cfg, k_star=KEEP_K_STAR) as (twins, shared):
+        shared.pop("residual", None)
+        gc.collect()
+        head["v0_sha256"] = shared["v0_sha256"]
+        write(args.out, {**head, "state": "set up"})
+        result = full_case(cfg, twins, shared, recorded=recorded, checkpoints=args.checkpoints,
+                           launcher_checkpoint=checkpoint, reference_rows=reference)  # fmt: skip
+    write(args.out, {**head, **result, "state": "measured", "peak_rss_gb": _rss_gb()})
+    base = result["baseline"]
+    first = [head["launcher"]["against_record"]["first_departure"],
+             base["against_record"]["first_departure"]]  # fmt: skip
+    if "reference" in result:
+        first.append(result["reference"]["against_record"]["first_departure"])
+    d = {k: v.get("D_twin") for k, v in result["comparisons"].items()}
+    print(f"STATE measured first_departures {first} D {d} instability "
+          f"{(base.get('instability') or {}).get('reason')} K "
+          f"{[round(r['K_monitor'], 3) for r in base.get('monitor') or []]}")  # fmt: skip
+    print("STEP rows " + " ".join(f"{r['grad_norm']:.4f}" for r in base["rows"]))
+    if "reference" in result:
+        print("STEP reference " + " ".join(f"{r['grad_norm']:.4f}"
+                                           for r in result["reference"]["rows"]))  # fmt: skip
+    return NOT_REPRODUCED if any(f is not None for f in first) else 0
+
+
 def recorded_rows(run_dir: Path, source: str) -> list[dict[str, Any]]:
     """The rows the replay is held to: the launcher's metrics, or ``FILE:a.b.c`` in a JSON file."""
     if source == "launcher":
@@ -369,7 +473,7 @@ def recorded_rows(run_dir: Path, source: str) -> list[dict[str, Any]]:
 
 
 def steps_of(text: str) -> list[int]:
-    return [int(t) for t in text.split(",")]
+    return [int(t) for t in text.split(",") if t]
 
 
 def provenance(run_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
@@ -379,6 +483,7 @@ def provenance(run_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
         "measure": steps_of(args.measure),
         "end": args.end,
         "precision": args.precision,
+        "gate": not args.no_gate,
         "tolerance": ROW_TOLERANCE,
         "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "code": git_state(),
@@ -419,20 +524,26 @@ def run(args: argparse.Namespace) -> int:
             "numerics_as_recorded": numerics == inputs.get("numerics_setup"),
         }
         write(args.out, {**head, "state": "set up"})
-        if not all(v for k, v in head["inputs"].items() if k.endswith("_as_recorded")):
-            write(args.out, {**head, "state": "not_reproduced", "at": "inputs"})
+        as_recorded = all(v for k, v in head["inputs"].items() if k.endswith("_as_recorded"))
+        if not as_recorded:
             print(f"NOT_REPRODUCED inputs {head['inputs']}")
-            return NOT_REPRODUCED
+            if not args.no_gate:
+                write(args.out, {**head, "state": "not_reproduced", "at": "inputs"})
+                return NOT_REPRODUCED
         record = replay(cfg, twins, rows, measure_at=steps_of(args.measure), end=args.end,
-                        precision=args.precision,
+                        precision=args.precision, gate=not args.no_gate,
                         publish=lambda r: write(args.out, {**head, **r}))  # fmt: skip
     summary(record)
-    return NOT_REPRODUCED if record["state"] == "not_reproduced" else 0
+    departed = record["state"] == "not_reproduced" or record["first_departure"] is not None
+    return NOT_REPRODUCED if departed or not as_recorded else 0
 
 
 def summary(record: Mapping[str, Any]) -> None:
     """The console line of each measured step: numbers only."""
-    print(f"STATE {record['state']} at {record.get('at')}")
+    print(f"STATE {record['state']} at {record.get('at')} first_departure "
+          f"{record['first_departure']} largest {record['largest_departure']:.3e}")  # fmt: skip
+    norms = " ".join(f"{r['grad_norm']:.4f}" for r in record["rows"])
+    print(f"STEP rows {norms}")
     for step, m in record["measured"].items():
         g, u = m["gradient"], m["update"]
         own = f"{m['production_again']['relative']:.3e} {m['math_again']['relative']:.3e}"
@@ -448,13 +559,20 @@ def summary(record: Mapping[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run-dir", type=Path, required=True)
-    parser.add_argument("--rows", required=True, help="launcher, or FILE:a.b.c")
-    parser.add_argument("--measure", required=True, help="steps, comma-separated")
-    parser.add_argument("--end", type=int, required=True, help="the replay's number of steps")
-    parser.add_argument("--precision", choices=("fp32", "float64"), required=True)
+    parser.add_argument("--rows", default="launcher", help="launcher, or FILE:a.b.c")
+    parser.add_argument("--measure", default="", help="steps, comma-separated, or empty")
+    parser.add_argument("--full", type=Path, help="this host's launcher run of the case")
+    parser.add_argument(
+        "--reference-rows", help="FILE:a.b.c, the recorded reference: --full runs it"
+    )
+    parser.add_argument("--checkpoints", type=Path, default=Path("/root/ckpt/spike-check"))
+    parser.add_argument("--no-gate", action="store_true", help="take every row whatever the record")
+    parser.add_argument("--end", type=int, default=25, help="the replay's number of steps")
+    parser.add_argument("--precision", choices=("fp32", "float64"), default="fp32")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
-    sys.exit(run(parser.parse_args()))
+    args = parser.parse_args()
+    sys.exit(run_full(args) if args.full else run(args))
 
 
 if __name__ == "__main__":

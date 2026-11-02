@@ -120,6 +120,67 @@ def test_the_records_of_one_step_hold_what_the_runbook_reads(setup, precision) -
     twins.reset()
 
 
+def test_without_the_gate_every_row_is_taken_and_a_departure_recorded(setup) -> None:
+    """On another host: rows only, the trajectory as it runs, the departure named."""
+    cfg, twins, _ = setup
+    twins.reset()
+    plain = fcd.run_twin(cfg, twins, eval_at=[])
+    end = tensors_sha256(twins.trainable)
+    rows = [dict(r) for r in plain["rows"]]
+    rows[1]["grad_norm"] *= 1.01
+    record = check.replay(cfg, twins, rows, measure_at=[], end=plain["steps"], precision="fp32",
+                          gate=False)  # fmt: skip
+    assert record["state"] == "measured"
+    assert record["first_departure"] == 1
+    assert record["largest_departure"] > 0.009
+    assert record["measured"] == {}
+    assert len(record["rows"]) == plain["steps"]
+    assert record["endpoint_sha256"] == end
+
+
+def test_a_full_case_holds_the_baseline_the_reference_and_their_d(setup, tmp_path) -> None:
+    """As the harness runs them: its rows, its K, its D against the same trajectories run alone."""
+    cfg, twins, shared = setup
+    twins.reset()
+    base = fcd.run_twin(cfg, twins, eval_at=[], monitor=shared["monitor"])
+    launcher = tmp_path / "launcher.pt"
+    fcd.save_trainable(twins.trainable, launcher)
+    twins.reset()
+    ref = fcd.run_twin(cfg, twins, eval_at=[], precision="float64")
+    twins.reset()
+    out = check.full_case(cfg, twins, shared, recorded=base["rows"], checkpoints=tmp_path,
+                          launcher_checkpoint=launcher, reference_rows=ref["rows"])  # fmt: skip
+    assert [r["grad_norm"] for r in out["baseline"]["rows"]] == [
+        r["grad_norm"] for r in base["rows"]
+    ]
+    assert out["baseline"]["monitor"] == base["monitor"]
+    assert out["baseline"]["against_record"]["first_departure"] is None
+    assert out["reference"]["against_record"]["first_departure"] is None
+    assert out["comparisons"]["launcher~baseline"]["D_twin"] == 0.0
+    assert set(out["comparisons"]) == {"launcher~baseline", "baseline~reference",
+                                       "launcher~reference"}  # fmt: skip
+    assert (out["comparisons"]["baseline~reference"]["D_twin"]
+            == out["comparisons"]["launcher~reference"]["D_twin"])  # fmt: skip
+    assert out["baseline"]["instability"] is None
+    assert tensors_sha256(twins.trainable) == tensors_sha256(
+        [(n, twins.theta0[n]) for n in twins.names]
+    )
+
+
+def test_a_full_case_without_a_reference_or_a_launcher_checkpoint(setup, tmp_path) -> None:
+    """A stopped launcher run has no checkpoint: the baseline's rows alone, a departure named."""
+    cfg, twins, shared = setup
+    twins.reset()
+    base = fcd.run_twin(cfg, twins, eval_at=[])
+    rows = [dict(r) for r in base["rows"]]
+    rows[2]["loss"] *= 1.01
+    twins.reset()
+    out = check.full_case(cfg, twins, shared, recorded=rows, checkpoints=tmp_path)
+    assert "reference" not in out
+    assert out["comparisons"] == {}
+    assert out["baseline"]["against_record"]["first_departure"] == 2
+
+
 def test_the_script_is_outside_the_gpu_path() -> None:
     from zero_field_refusal.code_identity import is_gpu_path
 
