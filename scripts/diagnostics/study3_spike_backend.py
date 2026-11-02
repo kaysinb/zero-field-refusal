@@ -27,7 +27,9 @@ of two fp32 forward and backward computations: they do not establish which is ri
 
 ``--full LAUNCHER_DIR`` replays one case on another host instead: from a launcher run made there, it
 runs the harness's baseline with its monitor to step 25 and, with ``--reference-rows``, the
-reference, and records the rows, K, the endpoint hashes and D₂₅ among them, each against the record.
+reference. It checks that the launcher run, the record and the harness have the same inputs and
+environment, and records the rows, K, the stop, the endpoint hashes and D₂₅ against the record;
+``differences`` names what does not agree, and exit 3 follows from any.
 
 Usage (through ``project-run``): ``study3_spike_backend.py --run-dir RUN --rows launcher|FILE:KEY
 --measure 2,3,4 --end 5 --precision fp32|float64 --out FILE [--no-gate]``; ``--measure ""`` compares
@@ -370,13 +372,107 @@ def replay(
 
 
 def _departures(rows: Sequence[Mapping[str, Any]], recorded: Sequence[Mapping[str, Any]]) -> dict:
-    """Each row against the record, over the steps both hold."""
-    by_step = {int(r["step"]): r for r in recorded}
-    off = {int(r["step"]): departure(r, by_step[int(r["step"])]) for r in rows
-           if int(r["step"]) in by_step and math.isfinite(r["grad_norm"])}  # fmt: skip
+    """Each row against the record: every recorded step must be there and finite as the record is.
+    A row past the record's end is not compared (a baseline continues past a declared stop)."""
+    by_step = {int(r["step"]): r for r in rows}
+    off: dict[int, float] = {}
+    missing, nonfinite = [], []
+    for wanted in recorded:
+        step = int(wanted["step"])
+        row = by_step.get(step)
+        if row is None:
+            missing.append(step)
+        elif not all(math.isfinite(row[k]) for k in ("loss", "grad_norm")):
+            nonfinite.append(step)
+        else:
+            off[step] = departure(row, wanted)
     first = next((s for s in sorted(off) if off[s] > ROW_TOLERANCE), None)
     return {"first_departure": first, "largest_departure": max(off.values(), default=None),
-            "steps_compared": len(off)}  # fmt: skip
+            "steps_compared": len(off), "missing_steps": missing, "nonfinite_steps": nonfinite,
+            "differs": first is not None or bool(missing) or bool(nonfinite)}  # fmt: skip
+
+
+def _close(a: Any, b: Any) -> bool:
+    """Equal, or both finite numbers within the rows' tolerance."""
+    if a == b:
+        return True
+    if not all(isinstance(v, int | float) and math.isfinite(v) for v in (a, b)):
+        return False
+    return abs(a - b) <= ROW_TOLERANCE * max(abs(b), 1e-30)
+
+
+def _lines(path: Path) -> list[dict[str, Any]]:
+    return fcd.read_jsonl(path) if path.is_file() else []
+
+
+def run_outcome(run_dir: Path) -> dict[str, Any]:
+    """A launcher run's end: its reason and step, its K readings, K at step 25, its checkpoint."""
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    inputs = json.loads((run_dir / "meta.json").read_text()).get("inputs") or {}
+    checkpoint = inputs.get("endpoint_checkpoint")
+    evaluations = _lines(run_dir / "evaluations.jsonl")
+    return {"reason": terminal["stop"]["reason"], "steps": terminal["steps"],
+            "monitor": {int(r["step"]): r["K_monitor"] for r in _lines(run_dir / "monitor.jsonl")},
+            "k_25": evaluations[-1].get("K_benign") if evaluations else None,
+            "checkpoint_sha256": checkpoint.get("sha256") if isinstance(checkpoint, Mapping)
+            else None}  # fmt: skip
+
+
+def outcome_differences(here: Mapping[str, Any], recorded: Mapping[str, Any]) -> list[str]:
+    """Where a launcher run's end differs from the record's."""
+    out = [f"{key}: {here[key]} against {recorded[key]}" for key in ("reason", "steps")
+           if here[key] != recorded[key]]  # fmt: skip
+    if set(here["monitor"]) != set(recorded["monitor"]):
+        out.append(f"K's steps: {sorted(here['monitor'])} against {sorted(recorded['monitor'])}")
+    out += [f"K at step {s}: {here['monitor'][s]} against {v}"
+            for s, v in recorded["monitor"].items()
+            if s in here["monitor"] and not _close(here["monitor"][s], v)]  # fmt: skip
+    if not _close(here["k_25"], recorded["k_25"]):
+        out.append(f"K at step 25: {here['k_25']} against {recorded['k_25']}")
+    return out
+
+
+IDENTITY_INPUTS = (
+    "prompt_manifest_sha256",
+    "theta0_trainable_sha256",
+    "v0_sha256",
+    "numerics_setup",
+)
+ENVIRONMENT = ("hardware", "packages", "uv_lock_sha256", "python")
+
+
+def identity_problems(
+    meta: Mapping[str, Any], original: Mapping[str, Any], harness: Mapping[str, Any],
+) -> list[str]:  # fmt: skip
+    """Where this host's launcher run, the recorded one and this harness's setup are not the same
+    computation or environment: the config, the inputs, the streams, the numerics, the code's
+    identity, the driver, the libraries. ``harness``: its ``theta0_trainable_sha256``,
+    ``v0_sha256``, ``numerics_setup`` and the ``training`` stream's identity recomputed for each
+    run's count (``stream_here``, ``stream_recorded``)."""
+    out = []
+    if meta.get("config_hash") != original.get("config_hash"):
+        out.append("config hash")
+    ours, theirs = meta.get("inputs") or {}, original.get("inputs") or {}
+    out += [f"launcher {key}" for key in IDENTITY_INPUTS if ours.get(key) != theirs.get(key)]
+    out += [f"harness {key}" for key in ("theta0_trainable_sha256", "v0_sha256", "numerics_setup")
+            if harness.get(key) != theirs.get(key)]  # fmt: skip
+    a, b = ours.get("streams") or {}, theirs.get("streams") or {}
+    for name in sorted(set(a) | set(b)):
+        if name == "training":  # a stopped run's prefix: the same hash at its own count, below
+            continue
+        if (a.get(name) or {}).get("sha256") != (b.get(name) or {}).get("sha256"):
+            out.append(f"stream {name}")
+    if harness.get("stream_here") != (a.get("training") or {}).get("sha256"):
+        out.append("harness training stream against this launcher's")
+    if harness.get("stream_recorded") != (b.get("training") or {}).get("sha256"):
+        out.append("harness training stream against the recorded launcher's")
+    out += [f"environment {key}" for key in ENVIRONMENT if meta.get(key) != original.get(key)]
+    if (meta.get("git") or {}).get("commit") != (original.get("git") or {}).get("commit"):
+        out.append("environment commit")
+    image = [(m.get("launch") or {}).get("container_image") for m in (meta, original)]
+    if image[0] != image[1]:
+        out.append("environment image")
+    return out
 
 
 def full_case(
@@ -411,54 +507,127 @@ def full_case(
     return out
 
 
-def run_full(args: argparse.Namespace) -> int:
-    """``--full``: one case's baseline and reference on this host, against the record."""
-    if args.out.exists():
-        sys.exit(f"{args.out} exists")
-    launcher = args.full
-    cfg = fcd.run_config(launcher)
-    numerics = runtime.configure_numerics(cfg, args.device)  # first: before any CUDA work
-    env = fcd.guarded_prompt_sets(runtime.environment(cfg, args.device), "harmful",
-                                  "The spike check")  # fmt: skip
+def full_report(
+    env: Any, cfg: Any, numerics: Any, *, launcher: Path, original: Path, checkpoints: Path,
+    reference_rows: Sequence[Mapping[str, Any]] | None = None,
+    recorded_baseline: Mapping[str, Any] | None = None,
+    recorded_reference: Mapping[str, Any] | None = None,
+    recorded_rest: Mapping[str, Any] | None = None,
+    publish: Any = lambda record: None,
+) -> dict[str, Any]:  # fmt: skip
+    """One case against its record: the identity checks, the launcher run's end, the baseline and
+    the reference; ``differences`` names everything that does not agree (the exit's ground)."""
     meta = json.loads((launcher / "meta.json").read_text())
-    original = json.loads((args.run_dir / "meta.json").read_text())
-    recorded = recorded_rows(args.run_dir, "launcher")
-    here = recorded_rows(launcher, "launcher")
-    kept = (meta.get("inputs") or {}).get("endpoint_checkpoint")
+    kept = json.loads((original / "meta.json").read_text())
+    recorded = recorded_rows(original, "launcher")
+    here_end, kept_end = run_outcome(launcher), run_outcome(original)
+    inputs = meta.get("inputs") or {}
+    point = inputs.get("endpoint_checkpoint")
+    checkpoint = Path(point["path"]) if isinstance(point, Mapping) else None
     head: dict[str, Any] = {
-        "provenance": provenance(args.run_dir, args), "numerics_setup": numerics,
+        "numerics_setup": numerics,
         "launcher": {"run_id": meta.get("run_id"), "config_hash": meta.get("config_hash"),
-                     "config_as_recorded": meta.get("config_hash") == original.get("config_hash"),
-                     "v0_as_recorded": (meta.get("inputs") or {}).get("v0_sha256")
-                     == (original.get("inputs") or {}).get("v0_sha256"),
-                     "checkpoint": kept,
-                     "against_record": _departures(here, recorded)},
+                     "end": here_end, "recorded_end": kept_end,
+                     "against_record": _departures(recorded_rows(launcher, "launcher"), recorded)},
+        "environment": {key: meta.get(key) for key in ENVIRONMENT},
+        "recorded_environment": {key: kept.get(key) for key in ENVIRONMENT},
     }  # fmt: skip
-    checkpoint = Path(kept["path"]) if isinstance(kept, Mapping) else None
-    reference = recorded_rows(args.run_dir, args.reference_rows) if args.reference_rows else None
-    args.checkpoints.mkdir(parents=True, exist_ok=True)
+    size = int(cfg.train.batch_size)
+    checkpoints.mkdir(parents=True, exist_ok=True)
     with fcd.twin_setup(env, cfg, cfg, k_star=KEEP_K_STAR) as (twins, shared):
         shared.pop("residual", None)
         gc.collect()
-        head["v0_sha256"] = shared["v0_sha256"]
-        write(args.out, {**head, "state": "set up"})
-        result = full_case(cfg, twins, shared, recorded=recorded, checkpoints=args.checkpoints,
-                           launcher_checkpoint=checkpoint, reference_rows=reference)  # fmt: skip
-    write(args.out, {**head, **result, "state": "measured", "peak_rss_gb": _rss_gb()})
+        publish({**head, "state": "set up"})
+        result = full_case(cfg, twins, shared, recorded=recorded, checkpoints=checkpoints,
+                           launcher_checkpoint=checkpoint,
+                           reference_rows=reference_rows)  # fmt: skip
+        count = {name: ((m.get("inputs") or {}).get("streams") or {}).get("training", {})
+                 .get("count", size)
+                 for name, m in (("here", meta), ("recorded", kept))}  # fmt: skip
+        harness = {"theta0_trainable_sha256": tensors_sha256([(n, twins.theta0[n])
+                                                              for n in twins.names]),
+                   "v0_sha256": shared["v0_sha256"], "numerics_setup": numerics,
+                   "stream_here": twins.prefix.identity(count["here"])["sha256"],
+                   "stream_recorded": twins.prefix.identity(count["recorded"])["sha256"],
+                   "scoring_panel": shared["scoring_panel"]}  # fmt: skip
+    head["harness"] = harness
+    head["identity_problems"] = identity_problems(meta, kept, harness)
     base = result["baseline"]
-    first = [head["launcher"]["against_record"]["first_departure"],
-             base["against_record"]["first_departure"]]  # fmt: skip
+    found = [f"identity: {p}" for p in head["identity_problems"]]
+    if head["launcher"]["against_record"]["differs"]:
+        found.append("launcher rows")
+    found += [f"launcher {d}" for d in outcome_differences(here_end, kept_end)]
+    if base["against_record"]["differs"]:
+        found.append("baseline rows")
+    fired = base.get("instability") or {}
+    if kept_end["reason"] in fcd.RUN_INSTABILITY and fired.get("reason") != kept_end["reason"]:
+        found.append(f"baseline instability: {fired.get('reason')} against {kept_end['reason']}")
+    if kept_end["reason"] not in fcd.RUN_INSTABILITY and fired:
+        found.append(f"baseline instability: {fired.get('reason')}, the record has none")
+    readings = {int(r["step"]): r["K_monitor"] for r in base.get("monitor") or []}
+    found += [f"baseline K at step {s}: {readings.get(s)} against {v}"
+              for s, v in kept_end["monitor"].items()
+              if not _close(readings.get(s), v)]  # fmt: skip
+    checks: dict[str, Any] = {}
+    if recorded_baseline is not None:
+        wanted = (recorded_baseline.get("trajectories") or {}).get("baseline") or {}
+        checks["baseline_endpoint_equal"] = base.get("endpoint_sha256") == wanted.get(
+            "endpoint_sha256"
+        )
+        checks["launcher_checkpoint_equal"] = (here_end["checkpoint_sha256"]
+                                               == kept_end["checkpoint_sha256"])  # fmt: skip
     if "reference" in result:
-        first.append(result["reference"]["against_record"]["first_departure"])
-    d = {k: v.get("D_twin") for k, v in result["comparisons"].items()}
-    print(f"STATE measured first_departures {first} D {d} instability "
+        if result["reference"]["against_record"]["differs"]:
+            found.append("reference rows")
+        if recorded_reference is not None:
+            wanted = recorded_reference.get("run") or {}
+            checks["reference_endpoint_equal"] = (result["reference"].get("endpoint_sha256")
+                                                  == wanted.get("endpoint_sha256"))  # fmt: skip
+            measured = (result["comparisons"].get("baseline~reference") or {}).get("D_twin")
+            target = ((recorded_reference.get("comparisons") or {}).get("baseline~reference")
+                      or {}).get("D_twin")  # fmt: skip
+            checks["d_25"], checks["recorded_d_25"] = measured, target
+            if not _close(measured, target):
+                found.append(f"D₂₅ baseline~reference: {measured} against {target}")
+    if recorded_rest is not None:
+        panel = (recorded_rest.get("directions") or {}).get("scoring_panel")
+        checks["scoring_panel_equal"] = harness["scoring_panel"] == panel
+    return {**head, **result, "checks": checks, "differences": found, "state": "measured",
+            "peak_rss_gb": _rss_gb()}  # fmt: skip
+
+
+def run_full(args: argparse.Namespace) -> int:
+    """``--full``: one case's launcher end, baseline and reference here, against the record."""
+    if args.out.exists():
+        sys.exit(f"{args.out} exists")
+    cfg = fcd.run_config(args.full)
+    numerics = runtime.configure_numerics(cfg, args.device)  # first: before any CUDA work
+    env = fcd.guarded_prompt_sets(runtime.environment(cfg, args.device), "harmful",
+                                  "The spike check")  # fmt: skip
+    reference = recorded_rows(args.run_dir, args.reference_rows) if args.reference_rows else None
+    read = lambda path: json.loads(Path(path).read_text()) if path else None  # noqa: E731
+    reference_file = args.reference_rows.rsplit(":", 1)[0] if args.reference_rows else None
+    head = {"provenance": provenance(args.run_dir, args)}
+    record = full_report(
+        env, cfg, numerics, launcher=args.full, original=args.run_dir, checkpoints=args.checkpoints,
+        reference_rows=reference, recorded_baseline=read(args.recorded_baseline),
+        recorded_reference=read(reference_file),
+        recorded_rest=read(args.recorded_rest),
+        publish=lambda r: write(args.out, {**head, **r}),
+    )  # fmt: skip
+    write(args.out, {**head, **record})
+    base = record["baseline"]
+    d = {k: v.get("D_twin") for k, v in record["comparisons"].items()}
+    print(f"STATE measured differences {len(record['differences'])} D {d} instability "
           f"{(base.get('instability') or {}).get('reason')} K "
           f"{[round(r['K_monitor'], 3) for r in base.get('monitor') or []]}")  # fmt: skip
+    for line in record["differences"]:
+        print(f"STEP difference {line}")
     print("STEP rows " + " ".join(f"{r['grad_norm']:.4f}" for r in base["rows"]))
-    if "reference" in result:
+    if "reference" in record:
         print("STEP reference " + " ".join(f"{r['grad_norm']:.4f}"
-                                           for r in result["reference"]["rows"]))  # fmt: skip
-    return NOT_REPRODUCED if any(f is not None for f in first) else 0
+                                           for r in record["reference"]["rows"]))  # fmt: skip
+    return NOT_REPRODUCED if record["differences"] else 0
 
 
 def recorded_rows(run_dir: Path, source: str) -> list[dict[str, Any]]:
@@ -566,6 +735,8 @@ def main() -> None:
         "--reference-rows", help="FILE:a.b.c, the recorded reference: --full runs it"
     )
     parser.add_argument("--checkpoints", type=Path, default=Path("/root/ckpt/spike-check"))
+    parser.add_argument("--recorded-baseline", help="the case's baseline part record")
+    parser.add_argument("--recorded-rest", help="the case's rest part record")
     parser.add_argument("--no-gate", action="store_true", help="take every row whatever the record")
     parser.add_argument("--end", type=int, default=25, help="the replay's number of steps")
     parser.add_argument("--precision", choices=("fp32", "float64"), default="fp32")

@@ -2,6 +2,8 @@
 
 import copy
 import importlib.util
+import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ from omegaconf import OmegaConf
 from test_qualification import world as world  # noqa: F401  (the fixture)
 
 from zero_field_refusal import fa_control_diagnostic as fcd
+from zero_field_refusal import runtime
 from zero_field_refusal.config import apply_override
 from zero_field_refusal.tensor_hash import tensors_sha256
 
@@ -179,6 +182,67 @@ def test_a_full_case_without_a_reference_or_a_launcher_checkpoint(setup, tmp_pat
     assert "reference" not in out
     assert out["comparisons"] == {}
     assert out["baseline"]["against_record"]["first_departure"] == 2
+
+
+def test_departures_cover_what_the_rows_leave_out() -> None:
+    wanted = [{"step": s, "loss": 1.0, "grad_norm": 2.0} for s in range(3)]
+    assert not check._departures(wanted, wanted)["differs"]
+    truncated = check._departures(wanted[:2], wanted)
+    assert truncated["differs"] and truncated["missing_steps"] == [2]
+    nan = [dict(wanted[0]), dict(wanted[1]), {"step": 2, "loss": float("nan"), "grad_norm": 2.0}]
+    ended = check._departures(nan, wanted)
+    assert ended["differs"] and ended["nonfinite_steps"] == [2]
+    longer = [*wanted, {"step": 3, "loss": 9.0, "grad_norm": 90.0}]  # past a declared stop
+    assert not check._departures(longer, wanted)["differs"]
+
+
+def test_a_launcher_end_that_differs_is_named() -> None:
+    kept = {"reason": "k_above_max", "steps": 5, "monitor": {5: 837.96}, "k_25": None}
+    assert check.outcome_differences(kept, kept) == []
+    for change in ({"reason": "steps"}, {"steps": 25}, {"monitor": {5: 8.0}}, {"monitor": {}},
+                   {"k_25": 7.5}):  # fmt: skip
+        assert check.outcome_differences({**kept, **change}, kept)
+
+
+def test_an_identity_that_differs_is_named() -> None:
+    inputs = {"prompt_manifest_sha256": "p", "theta0_trainable_sha256": "t", "v0_sha256": "v",
+              "numerics_setup": {"a": 1},
+              "streams": {"training": {"sha256": "s", "count": 100},
+                          "kl_benign": {"sha256": "k"}}}  # fmt: skip
+    meta = {"config_hash": "c", "inputs": inputs, "hardware": {"driver": "1"}, "packages": {"t": 1},
+            "uv_lock_sha256": "u", "python": "3"}  # fmt: skip
+    harness = {"theta0_trainable_sha256": "t", "v0_sha256": "v", "numerics_setup": {"a": 1},
+               "stream_here": "s", "stream_recorded": "s"}  # fmt: skip
+    assert check.identity_problems(meta, meta, harness) == []
+    assert check.identity_problems({**meta, "hardware": {"driver": "2"}}, meta, harness) == [
+        "environment hardware"
+    ]
+    assert check.identity_problems(meta, meta, {**harness, "v0_sha256": "w"}) == [
+        "harness v0_sha256"
+    ]
+    assert check.identity_problems(meta, meta, {**harness, "stream_recorded": "x"})
+    other = {**inputs, "streams": {**inputs["streams"], "kl_benign": {"sha256": "z"}}}
+    assert check.identity_problems({**meta, "inputs": other}, meta, harness) == ["stream kl_benign"]
+
+
+def test_a_full_report_of_the_record_against_itself_finds_nothing(world, tmp_path) -> None:  # noqa: F811
+    """The real records' shape: the tiny launcher run stands for both hosts' runs. Its K changed in
+    a copy is named. A harness part under the same code agrees with its launcher run."""
+    env, runs = world
+    cfg = fcd.run_config(runs["fa"])
+    numerics = runtime.configure_numerics(cfg, env.device)
+    same = check.full_report(env, cfg, numerics, launcher=runs["fa"], original=runs["fa"],
+                             checkpoints=tmp_path / "a")  # fmt: skip
+    assert same["identity_problems"] == []
+    assert same["differences"] == []
+    copy_dir = tmp_path / "copy"
+    shutil.copytree(runs["fa"], copy_dir)
+    lines = [json.loads(line) for line in (copy_dir / "monitor.jsonl").read_text().splitlines()]
+    lines[0]["K_monitor"] *= 2
+    (copy_dir / "monitor.jsonl").write_text("".join(json.dumps(r) + "\n" for r in lines))
+    changed = check.full_report(env, cfg, numerics, launcher=copy_dir, original=runs["fa"],
+                                checkpoints=tmp_path / "b")  # fmt: skip
+    assert any(d.startswith("launcher K at step") for d in changed["differences"])
 
 
 def test_the_script_is_outside_the_gpu_path() -> None:
