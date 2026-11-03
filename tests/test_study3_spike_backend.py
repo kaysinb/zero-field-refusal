@@ -245,6 +245,78 @@ def test_a_full_report_of_the_record_against_itself_finds_nothing(world, tmp_pat
     assert any(d.startswith("launcher K at step") for d in changed["differences"])
 
 
+@pytest.mark.parametrize("precision", ["fp32", "float64"])
+def test_the_derivative_check_agrees_and_leaves_the_trajectory(setup, precision) -> None:
+    """On the tiny model, the gradient direction agrees with central differences in a band; the
+    loss evaluation matches the row's loss; the rows and endpoint equal an uninterrupted run."""
+    cfg, twins, _ = setup
+    twins.reset()
+    plain = fcd.run_twin(cfg, twins, eval_at=[], precision=precision)
+    end = tensors_sha256(twins.trainable)
+    record = check.replay(cfg, twins, plain["rows"], measure_at=[], derivative_at=[0, 1],
+                          end=plain["steps"], precision=precision)  # fmt: skip
+    assert [r["grad_norm"] for r in record["rows"]] == [r["grad_norm"] for r in plain["rows"]]
+    assert record["endpoint_sha256"] == end
+    for d in record["derivatives"].values():
+        assert d["parameters_unchanged"]
+        assert d["base_losses"][0] == pytest.approx(d["row_loss"], rel=1e-6)
+        gradient = d["directions"]["gradient"]
+        assert gradient["reading"] == "agreement"
+        assert gradient["slope"] == pytest.approx(gradient["norm_before_unit"], rel=1e-6)
+        assert len(gradient["points"]) == len(check.EPSILONS)
+        assert set(d["directions"]) == {"gradient", "independent"}
+
+
+@pytest.mark.parametrize("optimizer", ARMS)
+@pytest.mark.parametrize("precision", ["fp32", "float64"])
+def test_the_update_recomputed_by_the_formulas_matches(setup, precision, optimizer) -> None:
+    """F and P, both arithmetics: the float64 formula of the registration equals the update made
+    within rounding; the anatomy runs and leaves the trajectory as it was."""
+    cfg, twins, _ = setup
+    cfg = arm(cfg, optimizer)
+    twins.reset()
+    plain = fcd.run_twin(cfg, twins, eval_at=[], precision=precision)
+    end = tensors_sha256(twins.trainable)
+    record = check.replay(cfg, twins, plain["rows"], measure_at=[], optimizer_at=[0, 1, 2],
+                          anatomy_at=[1], end=plain["steps"], precision=precision)  # fmt: skip
+    assert record["endpoint_sha256"] == end
+    for o in record["optimizer"].values():
+        assert o["relative_difference"] < 1e-5
+        if precision == "float64":  # float64 arithmetic, rounded once into fp32 parameters
+            assert o["relative_to_rounded_formula"] < 1e-12
+        assert o["mode"] in ("frozen", "prewarmed")
+    a = record["anatomy"]["1"]
+    assert a["nonfinite"] == 0 and a["above_1e30"] == 0
+    assert len(a["responses"]) == int(cfg.train.batch_size)
+    assert sum(a["gradient_share_by_layer"].values()) <= 1 + 1e-9
+    assert a["intermediates"]
+    twins.reset()
+
+
+def test_the_census_of_a_seed_reproduces_its_recorded_v0(world) -> None:  # noqa: F811
+    env, runs = world
+    cfg = fcd.run_config(runs["fa"])
+    out = check.seed_census(env, cfg, runs["fa"])
+    assert out["as_recorded"]
+    assert out["census"]["groups"]["all"]["numel"] > 0
+
+
+def test_the_reading_follows_the_runbook() -> None:
+    def points(ratios, predicted=1.0):
+        return [{"predicted": predicted, "delta_loss": r * predicted} for r in ratios]
+
+    assert (
+        check.derivative_reading(points([1.2, 1.0, 1.01, 0.99, 3.0]), 1e-6)["reading"]
+        == "agreement"
+    )
+    assert check.derivative_reading(points([2.0, 2.1, 2.05, 1.0]), 1e-6)["reading"] == "mismatch"
+    assert check.derivative_reading(points([2.0, 0.5, 2.0, 0.5]), 1e-6)["reading"] == "inconclusive"
+    assert (
+        check.derivative_reading(points([1.0, 1.0, 1.0], 1e-5), 1e-6)["reading"] == "inconclusive"
+    )
+    assert check.derivative_reading(points([2.0, 3.0, 4.0]), 1e-6)["reading"] == "inconclusive"
+
+
 def test_the_script_is_outside_the_gpu_path() -> None:
     from zero_field_refusal.code_identity import is_gpu_path
 
