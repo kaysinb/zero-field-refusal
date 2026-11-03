@@ -1068,6 +1068,9 @@ class FixedRoute(CycleRoute):
                          NOT_QUALIFIED if named(getattr(self, "technical", ())) else
                          "qualified")  # fmt: skip
             rate["state"] = rate["verdict"]["state"] = out["states"][key] = state
+            # amendment 10: a failing re-qualification here fails by its reference or a stop
+            rate["eligibility"] = rate["verdict"]["eligibility"] = (
+                "qualified" if state == "failing" else state)  # fmt: skip
         return out
 
     def validation_mark(self, arm: str, seed: int) -> str:
@@ -1782,7 +1785,7 @@ def repaired_lines(root: Path, bridge: dict) -> None:
             "reason": "engineering cycle"})  # fmt: skip
 
 
-@pytest.mark.parametrize("closure", ["gate", "qualification"])
+@pytest.mark.parametrize("closure", ["gate"])  # amendment 10: P's qualification closes nothing
 @pytest.mark.parametrize("repaired", [False, True], ids=["published", "repaired"])
 def test_an_arm_the_route_alone_closed_keeps_a_cycle_that_reruns_the_qualification_valid(
     tmp_path, monkeypatch, closure, repaired
@@ -1907,14 +1910,11 @@ def closed_at_requalification(state: dict) -> bool:
         for e in state["route"])  # fmt: skip
 
 
-def test_a_requalification_closing_p_before_the_confirmation_leaves_a_and_f_going(fixed_route):
+def test_a_requalification_failing_by_its_reference_or_a_stop_closes_nothing(fixed_route):
     """Before the confirmation, on the route's files: a validation mark, the cycle rerunning the
-    qualification and the validation, its repair, and P's re-qualification failing
-    scientifically: the route closes P, and only P–F ends. The validation fixation's successor
-    leaves P out and keeps A's and F's rates; the record before it stays as it was, P's rates
-    and states in it, and P's records stay on disk. A–F goes on: the successor's versions record,
-    the validation rerun of A and F alone, the n record of A–F, its budget record, the supplement,
-    and the confirmation's first block of A and F."""
+    qualification and the validation, its repair, and P's re-qualification failing by its
+    reference or a stop: amendment 10 admits it. P is not closed, P–F stays active, and the
+    route names the admission."""
     r = fixed_route
     r.validation_mark("F", 10304)
     r.commit_fix()
@@ -1923,34 +1923,11 @@ def test_a_requalification_closing_p_before_the_confirmation_leaves_a_and_f_goin
     r.repair()
     r.requalify(failing=("P",))
     state = r.state()
-    assert state["step"]["record"] == "fixation-validation-c1-2" and closed_at_requalification(
-        state)  # fmt: skip
-    first = (r.repo / "docs/study3-fixation-validation-c1.json").read_bytes()
-    ran = r.write("fixation", "validation")  # (1)
-    assert ran.code == 0, ran.error
-    before = json.loads(first)
-    successor = json.loads((r.repo / "docs/study3-fixation-validation-c1-2.json").read_text())
-    assert successor["rates"] == {arm: before["rates"][arm] for arm in ("A", "F")}
-    assert successor["supersedes"]["sha256"] == sha(first)
-    assert set(before["rates"]) == {"A", "F", "P"} and set(before["qualification"]["states"]) == {
-        "A", "F", "P"}  # fmt: skip
-    assert (r.repo / "docs/study3-fixation-validation-c1.json").read_bytes() == first
-    p_records = sorted((r.root / "qualification" / "c1" / "numerical").glob(
-        f"s*/{OPT['P']}-*/baseline-attempt-*.json"))  # fmt: skip
-    assert {path.name for path in p_records} == {"baseline-attempt-1.json",
-                                                 "baseline-attempt-2.json"}  # fmt: skip
-    r.versions_successor()
-    campaign = yaml.safe_load(r.rerun_validation().read_text())  # (2) A and F alone
-    assert {ARM_OF[dict(o.split("=", 1) for o in cell["overrides"])["optimizer"]]
-            for cell in campaign["cells"]} == {"A", "F"}  # fmt: skip
-    assert r.write("record", "n-c1").code == 0  # (3)
-    n = json.loads(decision_path(r.root, "n-c1").read_text())
-    assert n["active"] == ["A-F"] and set(n["rates"]) == {"A", "F"}
-    assert r.write("record", "budget-c1").code == 0
-    assert r.write("fixation", "confirmation").code == 0  # (4)
-    state = r.state()
-    assert state["problems"] == [] and state["step"]["campaign"] == "confirmation"
-    assert {arm for arm, _, _ in state["step"]["cells"]} == {"A", "F"}
+    assert not closed_at_requalification(state), state["route"]
+    assert state["active"] == {"arms": ["A", "F", "P"], "comparisons": ["A-F", "P-F"]}
+    assert any(e["event"] == "admitted" and e["arms"] == ["P"] and e["candidate"] == 1
+               for e in state["route"]), state["route"]  # fmt: skip
+    assert not any(e["event"] in ("candidate", "close_pf") for e in state["route"])
 
 
 @pytest.fixture(scope="session")
@@ -1984,8 +1961,8 @@ def confirming_route(confirming_route_built, monkeypatch):
 def test_a_cycle_during_the_confirmation_cannot_reach_candidate_2_or_a_new_n(confirming_route):
     """Once the confirmation has started: a cycle that reruns the validation is refused (an
     explicit prospective amendment is needed); one that reuses it is written; its
-    re-qualification failing scientifically blocks the route (``confirmation_fixed``), never
-    moving the candidate; an n successor with another N is refused, one that changes the code
+    re-qualification failing by its reference or a stop is admitted (amendment 10), never moving
+    the candidate; an n successor with another N is refused, one that changes the code
     alone is a valid record, and the writer takes it only when the state's step names it."""
     r = confirming_route
     assert r.state()["step"]["reason"] == "engineering_cycle"
@@ -2000,11 +1977,11 @@ def test_a_cycle_during_the_confirmation_cannot_reach_candidate_2_or_a_new_n(con
     assert names == {"study3-fixation-validation-c1.json", "study3-fixation-confirmation-c1.json",
                      "n-c1.json", "budget-c1.json", "study3-versions-2.json"}  # fmt: skip
     r.repair()
-    r.requalify(failing=("F",))
+    r.requalify(failing=("F",))  # amendment 10: admitted, nothing moves
     state = r.state()
-    assert (state["candidate"], state["step"]["kind"], state["step"]["reason"]) == (
-        1, "blocked", "confirmation_fixed")  # fmt: skip
+    assert state["candidate"] == 1 and state["step"].get("reason") != "confirmation_fixed"
     assert all(event["event"] != "candidate" for event in state["route"])
+    assert any(e["event"] == "admitted" and e["arms"] == ["F"] for e in state["route"])
     n = json.loads(decision_path(r.root, "n-c1").read_text())
     successor = {**n, "kind": "n-c1-2", "code": r.fixed_code(), "supersedes": {
         "path": "study3/decisions/n-c1.json", "sha256": sha(decision_path(r.root, "n-c1")),
@@ -2239,43 +2216,21 @@ def closed_at_repair(state: dict) -> bool:
         for e in state["route"])  # fmt: skip
 
 
-def test_p_failing_at_its_repaired_rate_before_the_confirmation_leaves_a_and_f_going(
+def test_p_failing_at_its_repaired_rate_is_admitted_and_closes_nothing(
     repaired_p_requalified,
 ):
     """Before the confirmation, on the route's files: after the cycle, P's starting rates
-    re-qualified and its repaired lower rate (the one the validation fixation fixes) failing
-    scientifically. The route closes P at the repair and the validation fixation's successor
-    leaves P out; with the successor in force, the walk reads P's closure from the rates the
-    record before it fixed, so the repair does not block, and A–F goes on: the validation rerun
-    of A and F alone, the n record of A–F, its budget record, the supplement, and the
-    confirmation's first block of A and F."""
+    re-qualified and its repaired lower rate (the one the validation fixation fixes) failing by
+    its reference or a stop: amendment 10 admits it. P is not closed at the repair, and P–F
+    stays active."""
     r = repaired_p_requalified
     repaired = r.p_repaired()
     r.failing = {("P", repaired)}
     state = r.state()
-    assert state["step"].get("record") == "fixation-validation-c1-2", state["step"]
-    assert closed_at_repair(state), state["route"]
-    ran = r.write("fixation", "validation")
-    assert ran.code == 0, ran.error
-    first = json.loads((r.repo / "docs/study3-fixation-validation-c1.json").read_text())
-    successor = json.loads((r.repo / VALIDATION_C1_2).read_text())
-    assert successor["rates"] == {arm: first["rates"][arm] for arm in ("A", "F")}
-    r.versions_successor()
-    state = r.state()
-    assert state["problems"] == [] and closed_at_repair(state), state["step"]
-    assert (state["stage"], state["step"].get("campaign")) == ("validation", "validation"), (
-        state["step"])  # fmt: skip
-    campaign = yaml.safe_load(r.rerun_validation().read_text())  # A and F alone
-    assert {ARM_OF[dict(o.split("=", 1) for o in cell["overrides"])["optimizer"]]
-            for cell in campaign["cells"]} == {"A", "F"}  # fmt: skip
-    assert r.write("record", "n-c1").code == 0
-    n = json.loads(decision_path(r.root, "n-c1").read_text())
-    assert n["active"] == ["A-F"] and set(n["rates"]) == {"A", "F"}
-    assert r.write("record", "budget-c1").code == 0
-    assert r.write("fixation", "confirmation").code == 0
-    state = r.state()
-    assert state["problems"] == [] and state["step"]["campaign"] == "confirmation"
-    assert {arm for arm, _, _ in state["step"]["cells"]} == {"A", "F"}
+    assert not closed_at_repair(state), state["route"]
+    assert state["active"]["arms"] == ["A", "F", "P"]
+    assert any(e["event"] == "admitted" and e["arms"] == ["P"] for e in state["route"]), (
+        state["route"])  # fmt: skip
 
 
 def test_p_technical_at_its_repaired_rate_in_the_confirmation_pauses_and_closes_nothing(

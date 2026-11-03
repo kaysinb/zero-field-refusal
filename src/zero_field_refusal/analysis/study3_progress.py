@@ -1191,9 +1191,9 @@ class _Walk:
         if fixed is not None:
             return self._repair_fixed(candidate, selected, fixed, reading)
         # the repair's gate reads eligibility: a rate amendment 10 admits passes it
-        qualified = {arm: {selected[arm][label]: (_rate(reading, arm, selected[arm][label]) or {})
-                           .get("eligibility") or "not reported" for label in LABELS}
-                     for arm in self.arms}  # fmt: skip
+        qualified = {arm: {selected[arm][label]: eligibility_of(
+                               _rate(reading, arm, selected[arm][label]) or {}) or "not reported"
+                           for label in LABELS} for arm in self.arms}  # fmt: skip
         state = repair_state(self.endpoints, candidate, {a: selected[a] for a in self.arms},
                              qualified, problems=())  # fmt: skip
         if state["next"] == "blocked":
@@ -1257,9 +1257,9 @@ class _Walk:
         arm still active after that blocks."""
         stage, seeds = "repair", SEEDS["numerical"][candidate]
         # the repair's gate reads eligibility: a rate amendment 10 admits passes it
-        qualified = {arm: {selected[arm][label]: (_rate(reading, arm, selected[arm][label]) or {})
-                           .get("eligibility") or "not reported" for label in LABELS}
-                     for arm in self.arms}  # fmt: skip
+        qualified = {arm: {selected[arm][label]: eligibility_of(
+                               _rate(reading, arm, selected[arm][label]) or {}) or "not reported"
+                           for label in LABELS} for arm in self.arms}  # fmt: skip
         state = repair_state(self.endpoints, candidate, {a: selected[a] for a in self.arms},
                              qualified, problems=())  # fmt: skip
         unfixed = [arm for arm in self.arms if arm not in fixed]
@@ -2283,6 +2283,15 @@ def _rate(reading: Mapping[str, Any], arm: str, lr: float) -> Mapping[str, Any] 
     return None
 
 
+def eligibility_of(entry: Mapping[str, Any]) -> Any:
+    """A rate's ``eligibility`` (amendment 10). A reading's rates carry it; one that does not is
+    read as its state when that is not ``failing`` (eligibility is the state then, by definition),
+    and as unknown (None, technical to ``_condition``) when it is."""
+    if "eligibility" in entry or entry.get("state") == FAILING:
+        return entry.get("eligibility")
+    return entry.get("state")
+
+
 def _condition(entry: Mapping[str, Any], reading: Mapping[str, Any]) -> tuple[str, str]:
     """A rate's condition (``qualified``, ``admitted``, ``technical`` or ``waiting``) and why
     (module docstring, "The numerical qualification"). A ``failing`` rate is read by its
@@ -2292,7 +2301,7 @@ def _condition(entry: Mapping[str, Any], reading: Mapping[str, Any]) -> tuple[st
     if state == QUALIFIED:
         return "qualified", ""
     if state == FAILING:
-        eligibility = entry.get("eligibility")
+        eligibility = eligibility_of(entry)
         if eligibility == QUALIFIED:
             return "admitted", ""
         why = f" (amendment 10: its scientific reasons set aside, {eligibility})"

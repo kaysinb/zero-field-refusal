@@ -752,8 +752,9 @@ def test_the_writer_issues_ps_cells_at_candidate_2_after_a_scientific_closure(wo
     search campaign holds P's cells on candidate 2's own seeds."""
     study = Study()
     study.ready()
-    study.search(special={("P", "u", 10102): {"state": "scientific"}})
-    study.numerical(arms=("A", "F"), states={"A": "failing"})
+    # P and A stopped at the search (amendment 10: a qualification's failure moves nothing)
+    study.search(special={("P", "u", 10102): {"state": "scientific"},
+                          ("A", "u", 10103): {"state": "scientific"}})  # fmt: skip
     world.ready()
     world.core(study)
     _, runs = load_campaign(world.write("search-round0", candidate=2))

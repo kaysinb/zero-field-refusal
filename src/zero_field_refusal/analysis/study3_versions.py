@@ -1318,6 +1318,7 @@ def _states(reading: Mapping[str, Any], rates: Mapping[str, Mapping[str, float]]
     ``admitted`` for a ``failing`` rate whose eligibility is ``qualified`` (amendment 10), its
     state otherwise."""
     from . import qualification_records  # it loads torch (qualification_verdicts): here only
+    from .study3_progress import eligibility_of
 
     states: dict[str, dict[str, Any]] = {}
     for arm, pair in rates.items():
@@ -1325,7 +1326,7 @@ def _states(reading: Mapping[str, Any], rates: Mapping[str, Mapping[str, float]]
         for label in LABELS:
             rate = qualification_records.rate_of(reading, arm, float(pair[label]))
             states[arm][label] = None if rate is None else (
-                ADMITTED if rate["state"] == "failing" and rate.get("eligibility") == QUALIFIED
+                ADMITTED if rate["state"] == "failing" and eligibility_of(rate) == QUALIFIED
                 else rate["state"])  # fmt: skip
     return states
 
