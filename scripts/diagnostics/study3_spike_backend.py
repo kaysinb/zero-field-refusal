@@ -38,6 +38,8 @@ optimizer state by the registered formulas (m̂, v₀ or v, ε, the rate) and co
 update the optimizer made, with where the update's mass lies. ``--anatomy STEPS`` records where the
 gradient lies (by layer, by response, by token at the logits) and the extremes of intermediate
 values (hidden states, query and key projections, logits) under the production backend.
+``--monitor-after`` reads K at the replay's end, as the run read it and recomputed without the
+cache against the untouched θ₀, with its per-response values.
 ``--v0-census RUN_DIR …`` estimates v₀ for each run's seed as its launcher did and records its
 census, with no replay.
 
@@ -609,6 +611,7 @@ def anatomy(twins: fcd.Twins, batch: Sequence[Any], cfg: Any, precision: str,
             h.remove()
     mass = sum(t[0] ** 2 for t in tokens)
     tokens.sort(reverse=True)
+    passes = backward_anatomy(twins, batch, cfg, precision)
     responses = []
     for index, sample in enumerate(batch):
         _, n, grads = _term_gradient(twins, [sample], denominator, cfg, precision)
@@ -627,7 +630,112 @@ def anatomy(twins: fcd.Twins, batch: Sequence[Any], cfg: Any, precision: str,
         "nonfinite": sum(v["nonfinite"] for v in stats.values()),
         "above_1e30": sum(v["above_1e30"] for v in stats.values()),
         "logits": logit_extremes,
+        **passes,
     }  # fmt: skip
+
+
+def backward_anatomy(twins: fcd.Twins, batch: Sequence[Any], cfg: Any,
+                     precision: str) -> dict[str, Any]:  # fmt: skip
+    """One forward and backward per micro-batch as training takes them: the largest |∂L/∂z| of the
+    logits (bounded by 1/denominator for this NLL), each decoder layer's output norm and the norm of
+    the gradient flowing back into it, and the RMS of each normalization's input (largest and mean
+    over tokens). Nothing is kept of the parameters' gradients."""
+    model = twins.student
+    cap = cfg.train.max_response_tokens
+    denominator = loss_denominator(cfg.train.loss, batch, cap)
+    forward: dict[str, dict[str, float]] = {}
+    backward: dict[str, dict[str, float]] = {}
+    norms: dict[str, dict[str, float]] = {}
+
+    def keep(table: dict, label: str, x: torch.Tensor) -> None:
+        x = x.detach().float()
+        entry = table.setdefault(label, {"norm_sq": 0.0, "max_abs": 0.0, "nonfinite": 0})
+        entry["nonfinite"] += int((~torch.isfinite(x)).sum())
+        entry["norm_sq"] += x.pow(2).sum().item()
+        entry["max_abs"] = max(entry["max_abs"], x.abs().max().item())
+
+    def on_forward(label):
+        return lambda m, i, o: keep(forward, label, o[0] if isinstance(o, tuple) else o)
+
+    def on_backward(label):
+        return lambda m, gi, go: keep(backward, label, go[0]) if go and go[0] is not None else None
+
+    def on_norm(label):
+        def record(m, inputs):
+            x = inputs[0].detach().float()
+            rms = x.pow(2).mean(-1).sqrt()
+            entry = norms.setdefault(label, {"rms_max": 0.0, "rms_sum": 0.0, "count": 0})
+            entry["rms_max"] = max(entry["rms_max"], rms.max().item())
+            entry["rms_sum"] += rms.sum().item()
+            entry["count"] += rms.numel()
+
+        return record
+
+    handles = []
+    for name, module in model.named_modules():
+        last = name.rsplit(".", 1)[-1]
+        if last.isdigit() and ".layers." in f".{name}":
+            handles.append(module.register_forward_hook(on_forward(name)))
+            handles.append(module.register_full_backward_hook(on_backward(name)))
+        elif last.endswith("layernorm") or name.endswith(".norm") or last == "norm":
+            handles.append(module.register_forward_pre_hook(on_norm(name)))
+    largest_dz = 0.0
+    try:
+        for chunk in chunks(batch, int(cfg.execution.micro_batch_size)):
+            for p in twins.params:
+                p.grad = None
+            rows = collate(chunk, pad_id=twins.env.pad_id, max_response_tokens=cap,
+                           device=twins.env.device)  # fmt: skip
+            logits = response_logits(model, rows)
+            logits.retain_grad()
+            z = logits.double() if precision != "fp32" else logits
+            term = F.cross_entropy(z, target_ids(rows), reduction="sum")
+            (term / denominator).backward()
+            largest_dz = max(largest_dz, logits.grad.abs().max().item())
+            del logits, z, term
+    finally:
+        for h in handles:
+            h.remove()
+        for p in twins.params:
+            p.grad = None
+    for table in (forward, backward):
+        for entry in table.values():
+            entry["norm"] = math.sqrt(entry.pop("norm_sq"))
+    for entry in norms.values():
+        entry["rms_mean"] = entry.pop("rms_sum") / max(entry.pop("count"), 1)
+    return {"largest_logit_derivative": largest_dz, "logit_derivative_bound": 1 / denominator,
+            "layer_outputs": forward, "layer_backward": backward, "norm_inputs": norms}  # fmt: skip
+
+
+def monitor_after(twins: fcd.Twins, monitor: Any) -> dict[str, Any]:
+    """K at the current state on the monitor's panel, as the run reads it (cached θ₀ logits) and
+    recomputed without the cache against the untouched θ₀ model, with its per-response values."""
+    device = twins.env.device
+    cached = monitor(twins.student)
+    per_cached = monitor.last.clone()
+    fcd.set_trainable(twins.other, twins.theta0, twins.names)  # θ₀ itself, whatever it held
+    twins.other.to(device)
+    try:
+        per = monitor.uncached(twins.student, "primary")
+    finally:
+        twins.other.to("cpu")
+    ordered = sorted(per.tolist(), reverse=True)
+    q = lambda f: ordered[min(len(ordered) - 1, int(f * (len(ordered) - 1)))]  # noqa: E731
+    return {
+        "K_cached": cached,
+        "K_uncached": per.mean().item(),
+        "bitwise_equal": bool(torch.equal(per_cached, per)),
+        "responses": len(ordered),
+        "largest": ordered[:10],
+        "quantiles": {
+            "max": ordered[0],
+            "0.9": q(0.1),
+            "0.5": q(0.5),
+            "0.1": q(0.9),
+            "min": ordered[-1],
+        },
+        "share_of_largest_five": sum(ordered[:5]) / sum(ordered) if sum(ordered) else None,
+    }
 
 
 def seed_census(env: Any, cfg: Any, run_dir: Path) -> dict[str, Any]:
@@ -676,7 +784,7 @@ def replay(
     cfg: Any, twins: fcd.Twins, recorded: Sequence[Mapping[str, Any]], *, measure_at: Sequence[int],
     end: int, precision: str, publish: Any = lambda record: None, gate: bool = True,
     derivative_at: Sequence[int] = (), optimizer_at: Sequence[int] = (),
-    anatomy_at: Sequence[int] = (),
+    anatomy_at: Sequence[int] = (), monitor: Any = None,
 ) -> dict[str, Any]:  # fmt: skip
     """Steps 0 … ``end`` − 1 from θ₀, as ``run_twin`` trains. See the module's docstring."""
     env, params, size = twins.env, twins.params, int(cfg.train.batch_size)
@@ -747,6 +855,8 @@ def replay(
             del kept, theta, host_grads
             gc.collect()
             publish(record)
+    if monitor is not None:
+        record["monitor_after"] = {"updates": end, **monitor_after(twins, monitor)}
     record.update(state="measured", endpoint_sha256=tensors_sha256(twins.trainable),
                   **fcd.peak_memory(env.device))  # fmt: skip
     twins.reset()
@@ -1036,6 +1146,7 @@ def provenance(run_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
         "derivative": steps_of(args.derivative),
         "optimizer": steps_of(args.optimizer),
         "anatomy": steps_of(args.anatomy),
+        "monitor_after": bool(args.monitor_after),
         "end": args.end,
         "precision": args.precision,
         "gate": not args.no_gate,
@@ -1088,6 +1199,7 @@ def run(args: argparse.Namespace) -> int:
         record = replay(cfg, twins, rows, measure_at=steps_of(args.measure), end=args.end,
                         derivative_at=steps_of(args.derivative),
                         optimizer_at=steps_of(args.optimizer), anatomy_at=steps_of(args.anatomy),
+                        monitor=shared["monitor"] if args.monitor_after else None,
                         precision=args.precision, gate=not args.no_gate,
                         publish=lambda r: write(args.out, {**head, **r}))  # fmt: skip
     summary(record)
@@ -1137,6 +1249,11 @@ def main() -> None:
     parser.add_argument("--derivative", default="", help="steps of the derivative check, or empty")
     parser.add_argument("--optimizer", default="", help="steps of the update's recomputation")
     parser.add_argument("--anatomy", default="", help="steps of the gradient's anatomy")
+    parser.add_argument(
+        "--monitor-after",
+        action="store_true",
+        help="K after the replay's updates, cached and uncached",
+    )
     parser.add_argument("--v0-census", nargs="+", type=Path, help="run directories, one per seed")
     parser.add_argument("--full", type=Path, help="this host's launcher run of the case")
     parser.add_argument(

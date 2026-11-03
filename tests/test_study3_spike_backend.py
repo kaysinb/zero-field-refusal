@@ -295,6 +295,24 @@ def test_the_update_recomputed_by_the_formulas_matches(setup, precision, optimiz
     twins.reset()
 
 
+def test_the_backward_anatomy_and_the_monitor_after_the_updates(setup) -> None:
+    """The logits' derivative stays within 1/denominator; the backward hooks see the decoder layers;
+    K after the replay's updates equals the run's reading, cached and uncached."""
+    cfg, twins, shared = setup
+    twins.reset()
+    plain = fcd.run_twin(cfg, twins, eval_at=[], monitor=shared["monitor"])
+    record = check.replay(cfg, twins, plain["rows"], measure_at=[], anatomy_at=[0],
+                          end=int(cfg.eval.monitor.every), precision="fp32",
+                          monitor=shared["monitor"])  # fmt: skip
+    a = record["anatomy"]["0"]
+    assert 0 < a["largest_logit_derivative"] <= a["logit_derivative_bound"] * (1 + 1e-6)
+    assert a["layer_backward"] and a["norm_inputs"]
+    m = record["monitor_after"]
+    assert m["K_cached"] == pytest.approx(plain["monitor"][0]["K_monitor"], rel=1e-9)
+    assert m["K_uncached"] == pytest.approx(m["K_cached"], rel=1e-6)
+    twins.reset()
+
+
 def test_the_census_of_a_seed_reproduces_its_recorded_v0(world) -> None:  # noqa: F811
     env, runs = world
     cfg = fcd.run_config(runs["fa"])
