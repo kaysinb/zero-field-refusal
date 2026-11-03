@@ -108,6 +108,7 @@ class Study:
         self.code = self.now()
         self.states = {(arm, lr): "qualified" for arm, pair in RATES.items()
                        for lr in pair.values()}  # fmt: skip
+        self.eligibility: dict[tuple[str, float], str] = {}  # amendment 10: else the state
         self.reading_problems: list[str] = []
         self.inputs: dict[int, list[Path]] = {}  # per candidate, the qualification's records
         self.calls: list[tuple[int, str]] = []
@@ -165,18 +166,20 @@ class Study:
             key = f"{OPT[arm]}-{lr:g}"
             folders = sorted({str(p.parent) for p in self.inputs[candidate]
                               if p.parent.name == key})  # fmt: skip
+            eligible = self.eligibility.get((arm, lr), state)
             out["rates"][key] = {"key": key, "arm": arm, "optimizer": OPT[arm], "lr": lr,
-                                 "state": state, "runs": [], "held": [],
+                                 "state": state, "eligibility": eligible, "runs": [], "held": [],
                                  "cases": [{"folder": f, "key": key} for f in folders],
-                                 "verdict": {"state": state, "control": None,
-                                             "not_counted": []}}  # fmt: skip
+                                 "verdict": {"state": state, "eligibility": eligible,
+                                             "control": None, "not_counted": []}}  # fmt: skip
         out["states"] = {k: r["state"] for k, r in out["rates"].items()}
         return out
 
-    def qualified(self, candidate: int = 1) -> None:
-        """The candidate's numerical qualification: its launcher runs and their launch log, a
-        record of each rate's first case (the reading's inputs) and a verdict cache."""
-        numerical_runs(self.runs, candidate)
+    def qualified(self, candidate: int = 1, arms=tuple(RATES)) -> None:
+        """The candidate's numerical qualification: its launcher runs (of ``arms``) and their
+        launch log, a record of each rate's first case (the reading's inputs) and a verdict
+        cache."""
+        numerical_runs(self.runs, candidate, arms)
         folder = self.root / "qualification" / f"c{candidate}"
         self.inputs[candidate] = []
         for arm, pair in RATES.items():
@@ -192,13 +195,14 @@ class Study:
         self.records.write("engineering", self.records.engineering(code=self.code))
         self.records.write("simulation", self.records.simulation(code=self.code, **simulation))
 
-    def ready(self, *, real: bool = False, **simulation) -> None:
+    def ready(self, *, real: bool = False, stops=(), **simulation) -> None:
         """Candidate 1 at its validation: the decision records and the numerical qualification;
-        with ``real``, the search too, and the stage read by ``progress`` (otherwise given)."""
+        with ``real``, the search too (``stops``: its runs stopped, ``search_round0``'s), and the
+        stage read by ``progress`` (otherwise given)."""
         self.decided(**simulation)
         if real:
-            search_round0(self.records, self.runs, git=self.clean())
-        self.qualified()
+            search_round0(self.records, self.runs, git=self.clean(), stops=stops)
+        self.qualified(arms=tuple(a for a in RATES if a not in {s[0] for s in stops}))
         self.given = None if real else stage()
 
     # -- the records
@@ -305,10 +309,10 @@ def test_the_validation_fixation_is_built_and_read(study) -> None:
 
 
 def test_p_closed_before_validation_is_not_fixed(study) -> None:
-    """P failed at its numerical qualification: P–F closed, A–F went on to its validation; the
-    stage's arms are A and F, and a P run under the fixation is not one of its arms."""
-    study.states[("P", RATES["P"]["lr_l"])] = "failing"
-    study.ready(real=True)
+    """P failed at its search: P–F closed, A–F went on to its validation; the stage's arms are A
+    and F, and a P run under the fixation is not one of its arms. (A failure of its numerical
+    qualification no longer closes P: amendment 10.)"""
+    study.ready(real=True, stops={("P", "l", 10100)})
     record = study.fixation()
     assert set(record["rates"]) == set(record["qualification"]["states"]) == {"A", "F"}
     assert record["rates"] == {arm: RATES[arm] for arm in ("A", "F")}
@@ -1507,8 +1511,9 @@ def test_a_failing_rate_of_a_real_qualification_refuses_the_fixation(
     kept = qcase(10201, "adam_frozen", RATES["F"]["lr_u"])
     study, _, _ = real_qualification(qualify, monkeypatch, tmp_path,
                                      {kept: beyond("rest", "baseline~reference")})  # fmt: skip
-    with pytest.raises(sv.RecordRefused, match="1.83e-05 is failing"):
-        study.fixation()
+    record = study.fixation()  # amendment 10: failing by its reference alone, admitted
+    # one rate per arm here, fixed as both its lower and its upper rate
+    assert record["qualification"]["states"]["F"] == {"lr_l": "admitted", "lr_u": "admitted"}
 
 
 def test_the_ledger_pins_the_qualifications_inputs_and_not_its_cache(
@@ -1906,10 +1911,9 @@ def p_requalified(study, state: str) -> None:
 
 
 def test_a_successor_leaves_p_out_only_once_p_is_closed(study) -> None:
-    """Before the confirmation, after a cycle: the validation fixation's successor may leave P out,
-    A's and F's rates kept, only once P is closed (its re-qualification failing); while P's rates
-    stay qualified, or are technical (a mark closes nothing), it is refused. The record before it
-    keeps P's rates (``dropped_rates``); a successor that leaves A out is refused by the reader."""
+    """Before the confirmation, after a cycle: the validation fixation's successor may leave P out
+    only once P is closed; while P's rates stay qualified, are technical (a mark closes nothing)
+    or fail by their reference or a stop (amendment 10 admits them), it is refused."""
     study.validated()
     cycled(study, [VALIDATION_C1, FIRST])
     study.given = stage(arms=("A", "F"))  # P qualified, and left out
@@ -1918,15 +1922,9 @@ def test_a_successor_leaves_p_out_only_once_p_is_closed(study) -> None:
     p_requalified(study, NOT_QUALIFIED)
     with pytest.raises(sv.RecordRefused, match="P is left out, and P is not closed"):
         successor(study)
-    p_requalified(study, "failing")
-    record = successor(study)
-    assert record["rates"] == {arm: RATES[arm] for arm in ("A", "F")}
-    study.put(VALIDATION_C1_2, record)
-    assert study.read_validation() == (record, [])
-    assert sv.dropped_rates(1, study.repo) == {"P": RATES["P"]}
-    study.edit(VALIDATION_C1_2, rates={"F": RATES["F"]})
-    found, problems = study.read_validation()
-    assert found is None and has(problems, "rates", "A"), problems
+    p_requalified(study, "failing")  # amendment 10: admitted, so P is not closed either
+    with pytest.raises(sv.RecordRefused, match="P is left out, and P is not closed"):
+        successor(study)
 
 
 def test_once_the_confirmation_started_no_requalification_closes_p(study) -> None:

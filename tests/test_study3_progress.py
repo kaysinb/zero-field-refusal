@@ -243,19 +243,26 @@ class Study:
                     self.rate(candidate, arm, final[arm][label], state)
 
     def rate(self, candidate, arm, lr, state="qualified", *, control_missing=False,
-             technical=False) -> None:  # fmt: skip
+             technical=False, eligibility=None) -> None:  # fmt: skip
         """A rate of the qualification reading with its state; an FA rate's control accepted
-        (or without a record, ``control_missing``); a technical case when ``technical``."""
+        (or without a record, ``control_missing``); a technical case when ``technical``. Its
+        ``eligibility`` (amendment 10): as given, else its state, and for ``failing``
+        ``not_qualified`` with a technical case, ``qualified`` without."""
+        if eligibility is None:
+            eligibility = state if state != "failing" else (
+                "not_qualified" if technical else "qualified")  # fmt: skip
         key = f"{OPT[arm]}-{lr:g}"
         control = None
         if arm == "F":
             control = ({"state": "not_qualified", "kind": "technical", "record_sha256": None}
                        if control_missing else
                        {"state": "accepted", "kind": None, "record_sha256": "c" * 64})  # fmt: skip
-        verdict = {"state": state, "control": control, "not_counted": [], "reasons": []}
+        verdict = {"state": state, "eligibility": eligibility, "control": control,
+                   "not_counted": [], "reasons": []}  # fmt: skip
         reading_ = self.readings[candidate]
         reading_["rates"][key] = {"key": key, "arm": arm, "optimizer": OPT[arm], "lr": lr,
-                                  "state": state, "verdict": verdict, "runs": [],
+                                  "state": state, "eligibility": eligibility,
+                                  "verdict": verdict, "runs": [],
                                   "launchers": {}, "held": []}  # fmt: skip
         reading_["states"][key] = state
         if technical:
@@ -633,7 +640,15 @@ def fail_at(study: Study, stage: str, arm: str = "F", candidate: int = 1) -> Non
     study.validation(candidate, special={(s, arm, "u"): {"K": below} for s in seeds[:7]})
 
 
-@pytest.mark.parametrize("stage", ["search", "numerical", "validation"])
+def fail_validation(study: Study, arm: str = "A", candidate: int = 1, arms=ARMS) -> None:
+    """Candidate ``candidate``'s validation, ``arm``'s upper run below K* in 7 of 28 blocks: its
+    gate fails (amendment 10: a qualification's failure moves no candidate any more)."""
+    seeds = SEEDS["validation"][candidate][:28]
+    below = CANDIDATES[candidate]["targets"]["star"] * 0.9
+    study.validation(candidate, arms, special={(s, arm, "u"): {"K": below} for s in seeds[:7]})
+
+
+@pytest.mark.parametrize("stage", ["search", "validation"])
 def test_f_failing_scientifically_at_candidate_1_moves_to_candidate_2(stage) -> None:
     """P carries on to candidate 2. F's support is P–F's too, so F failing at validation fails the
     P–F gate as well, which closes P at candidate 1; candidate 2 tests it again (amendment 7)."""
@@ -653,7 +668,7 @@ def test_f_failing_scientifically_at_candidate_1_moves_to_candidate_2(stage) -> 
     assert "c2/search/r0" in result["prescribed"]
 
 
-@pytest.mark.parametrize("stage", ["search", "numerical", "validation"])
+@pytest.mark.parametrize("stage", ["search", "validation"])
 def test_candidate_2_failing_ends_with_the_scientific_feasibility_report(stage) -> None:
     study = Study()
     study.ready()
@@ -776,7 +791,8 @@ def test_p_closed_scientifically_is_tested_again_at_candidate_2() -> None:
     result = study.advance()
     assert (result["stage"], result["active"]["arms"]) == ("numerical", ["A", "F"])
     assert len(result["step"]["cells"]) == 12
-    study.numerical(arms=("A", "F"), states={"A": "failing"})
+    study.numerical(arms=("A", "F"))
+    fail_validation(study, arms=("A", "F"))
     result = study.advance()
     assert (result["stage"], result["candidate"]) == ("search", 2)
     assert {c[0] for c in result["step"]["cells"]} == set(ARMS)
@@ -790,7 +806,8 @@ def test_p_failing_again_at_candidate_2_closes_it_there() -> None:
     study = Study()
     study.ready()
     study.search(special={("P", "u", 10102): {"state": "scientific"}})
-    study.numerical(arms=("A", "F"), states={"A": "failing"})
+    study.numerical(arms=("A", "F"))
+    fail_validation(study, arms=("A", "F"))
     study.search(2, special={("P", "u", 10112): {"state": "scientific"}})
     result = study.advance()
     assert (result["stage"], result["candidate"]) == ("numerical", 2)
@@ -807,7 +824,8 @@ def test_p_does_not_reopen_for_a_withheld_p_f() -> None:
     study.record("engineering")
     study.simulation(pf_confirmatory=False)
     study.search(special={("P", "u", 10102): {"state": "scientific"}})
-    study.numerical(arms=("A", "F"), states={"A": "failing"})
+    study.numerical(arms=("A", "F"))
+    fail_validation(study, arms=("A", "F"))
     result = study.advance()
     assert (result["stage"], result["candidate"]) == ("search", 2)
     assert {c[0] for c in result["step"]["cells"]} == {"A", "F"}
@@ -816,7 +834,8 @@ def test_p_does_not_reopen_for_a_withheld_p_f() -> None:
     study.record("engineering")
     study.simulation(pf_confirmatory=False)
     study.search()
-    study.numerical(states={"A": "failing"})
+    study.numerical()
+    fail_validation(study)
     result = study.advance()
     assert (result["candidate"], {c[0] for c in result["step"]["cells"]}) == (2, set(ARMS))
 
@@ -1317,7 +1336,7 @@ def failing_reading(arm: str, candidate: int = 1) -> dict:
 def post_fixation_cycle(candidate: int = 1, *, reissued_validation: dict | None = None,
                         requalified_K_miss: tuple[str, str] | None = None,
                         confirming: bool = False) -> Study:  # fmt: skip
-    """Candidate N (candidate 1 failed at its numerical qualification first, for N = 2) through
+    """Candidate N (candidate 1 failed at its validation first, for N = 2) through
     its validation fixation (``fixed``: its first link, the old code) and its validation, and a
     valid cycle record after the fixation through the re-qualification (its reading qualified):
     a validation mark, the search reused, the qualification and the validation rerun (its runs
@@ -1332,7 +1351,8 @@ def post_fixation_cycle(candidate: int = 1, *, reissued_validation: dict | None 
     offsets = None if requalified_K_miss is None else {requalified_K_miss: [0.0, 0.03, 0.06, 0.3]}
     if candidate == 2:
         study.search(1)
-        study.numerical(1, states={"A": "failing"})
+        study.numerical(1)
+        fail_validation(study, candidate=1)
     study.search(candidate, offsets=offsets)
     study.numerical(candidate)
     study.validation(candidate)
@@ -1392,20 +1412,20 @@ def post_fixation_cycle(candidate: int = 1, *, reissued_validation: dict | None 
     return study
 
 
-def test_requalification_failing_before_the_confirmation_takes_the_registered_route() -> None:
-    """After the validation fixation, before the confirmation has started: a fixed rate's
-    re-qualification failing scientifically takes the registered route (A or F at candidate 1:
-    candidate 2; at candidate 2: the scientific feasibility report; P: P–F closes)."""
-    study = post_fixation_cycle(candidate=1)
-    study.readings[1] = failing_reading("F")
-    assert study.advance()["route"][-1]["event"] == "candidate"
-    study2 = post_fixation_cycle(candidate=2)
-    study2.readings[2] = failing_reading("A", 2)
-    assert study2.advance()["outcome"] == "scientific_feasibility_report"
-    study3 = post_fixation_cycle(candidate=1)
-    study3.readings[1] = failing_reading("P")
-    result = study3.advance()
-    assert "P-F" not in result["active"]["comparisons"] and result["candidate"] == 1
+def test_a_requalification_failing_by_its_reference_or_a_stop_is_admitted() -> None:
+    """Amendment 10, after the validation fixation and before the confirmation: a fixed rate's
+    re-qualification failing by its reference or a declared stop alone moves no candidate and
+    closes no arm (F, A at candidate 2, P); it is admitted, and its technical reasons would keep
+    their route."""
+    for candidate, arm in ((1, "F"), (2, "A"), (1, "P")):
+        study = post_fixation_cycle(candidate=candidate)
+        study.readings[candidate] = failing_reading(arm, candidate)
+        result = study.advance()
+        assert (result["candidate"], result["outcome"]) == (candidate, None)
+        assert result["active"]["comparisons"] == ["A-F", "P-F"]
+        events = [(e["candidate"], e["event"], e["arms"]) for e in result["route"]]
+        assert (candidate, "admitted", [arm]) in events
+        assert not any(c == candidate and e in ("candidate", "close_pf") for c, e, _ in events)
 
 
 def test_a_rerun_validation_failing_its_gate_before_the_confirmation_takes_the_registered_route(
@@ -1526,27 +1546,28 @@ def test_an_old_code_record_the_cycle_does_not_list_is_not_stale() -> None:
 
 
 def test_once_the_confirmation_started_a_failing_requalification_moves_nothing() -> None:
-    """The confirmation has started: a fixed rate's re-qualification failing scientifically
-    blocks the route (``confirmation_fixed``); the candidate is not moved, no arm is closed."""
+    """The confirmation has started: a fixed rate's re-qualification failing by its reference or
+    a stop is admitted (amendment 10): the candidate is not moved, no arm is closed."""
     for arm in ("F", "P"):
         study = post_fixation_cycle(candidate=1, confirming=True)
         study.readings[1] = failing_reading(arm)
         result = study.advance()
-        step = result["step"]
-        assert (result["candidate"], step["kind"], step["reason"]) == (
-            1, "blocked", "confirmation_fixed")  # fmt: skip
+        assert (result["candidate"], result["outcome"]) == (1, None)
+        assert result["step"].get("reason") != "confirmation_fixed"
         assert result["active"]["arms"] == ["A", "F", "P"]
         assert all(event["event"] not in ("candidate", "close_pf") for event in result["route"])
+        assert (1, "admitted", [arm]) in [(e["candidate"], e["event"], e["arms"])
+                                          for e in result["route"]]  # fmt: skip
 
 
 def test_an_arm_closed_before_the_confirmation_started_keeps_its_route() -> None:
-    """P failed at its qualification and P–F closed before the confirmation started (its n record
-    of A–F): with blocks started, the walk closes P as before and reaches the confirmation; no
+    """P failed at its search and P–F closed before the confirmation started (its n record of
+    A–F): with blocks started, the walk closes P as before and reaches the confirmation; no
     ``confirmation_fixed``."""
     study = Study()
     study.ready()
-    study.search()
-    study.numerical(states={("P", "u"): "failing"})
+    study.search(special={("P", "u", 10102): {"state": "scientific"}})
+    study.numerical(arms=("A", "F"))
     study.validation(arms=("A", "F"))
     study.n(N=60, arms=("A", "F"))
     study.confirmation(count=3, arms=("A", "F"))
@@ -2943,24 +2964,27 @@ def named(records, round_=0, candidate=1) -> dict:
             "engineering_record_sha256": records.digest("engineering")}  # fmt: skip
 
 
-def search_round0(records, runs, offsets=None, candidate=1, git=None) -> None:
+def search_round0(records, runs, offsets=None, candidate=1, git=None, stops=()) -> None:
     """The candidate's search round 0 at the start rates (K at the targets times e^offset), the
-    runs' ``meta.json`` recording ``git`` (the world's by default)."""
+    runs' ``meta.json`` recording ``git`` (the world's by default); each (arm, label, seed) of
+    ``stops`` stopped by the gradient rule after 12 steps (a scientific failure)."""
     spec = CANDIDATES[candidate]
     for arm in ARMS:
         for label in LABELS:
             for seed in SEEDS["search"][candidate]:
                 k = spec["targets"][label] * math.exp((offsets or {}).get((arm, label), 0.0))
+                stop = ({"stop": "gradient_spike", "steps": 12}
+                        if (arm, label, seed) in stops else {})  # fmt: skip
                 runs.run(arm, spec["start"][arm][label], seed, role="search", round_=0, k=k,
                          prescribe=False, campaign=f"study3-c{candidate}-search-r0",
                          candidate=candidate, head=named(records, 0, candidate),
-                         git=git or runs.git)  # fmt: skip
+                         git=git or runs.git, **stop)  # fmt: skip
 
 
-def numerical_runs(runs, candidate=1) -> None:
+def numerical_runs(runs, candidate=1, arms=ARMS) -> None:
     """The launcher runs of the candidate's numerical qualification, at its starting rates."""
     spec = CANDIDATES[candidate]
-    for arm in ARMS:
+    for arm in arms:
         for label in LABELS:
             for seed in SEEDS["numerical"][candidate]:
                 runs.run(arm, spec["start"][arm][label], seed, role="numerical",
@@ -3453,23 +3477,24 @@ def rates_reading(candidate, states=None) -> dict:
             key = f"{OPT[arm]}-{lr:g}"
             state = (states or {}).get(arm, "qualified")
             out["rates"][key] = {"key": key, "arm": arm, "optimizer": OPT[arm], "lr": lr,
-                                 "state": state, "runs": [], "held": [],
-                                 "verdict": {"state": state, "control": None,
-                                             "not_counted": []}}  # fmt: skip
+                                 "state": state, "eligibility": state, "runs": [], "held": [],
+                                 "verdict": {"state": state, "eligibility": state,
+                                             "control": None, "not_counted": []}}  # fmt: skip
     return out
 
 
 def test_each_candidates_qualification_is_read_under_its_own_code(worlds, monkeypatch) -> None:
     """A cycle at candidate 2 (Y → Z): candidate 1's qualification stays read under Y, its own
     runs' code, and candidate 2's under Z; the route reaches candidate 2's numerical stage, then
-    its validation."""
+    its validation. Candidate 1 leaves at its search (amendment 10: its qualification's failure
+    would not move it)."""
     from zero_field_refusal.analysis import qualification_records
 
     records, runs = worlds
     records.write("engineering", records.engineering())
     records.write("simulation", records.simulation())
     old, fix = CODE["gpu_code_sha256"], "9" * 64
-    search_round0(records, runs)
+    search_round0(records, runs, stops={("F", "u", SEEDS["search"][1][0])})
     search_round0(records, runs, candidate=2)
     cycle = runs.root / "qualification" / "c2" / "supersede-1.json"
     cycle.parent.mkdir(parents=True)
@@ -3515,7 +3540,8 @@ def test_the_reader_reads_a_real_qualification_through_its_engineering_cycle(
     reading not replaced, one selected rate per arm (the others not yet issued): AdamW's lower
     rate technical (its cycle in progress), F's upper rate failing on a scientific case. The
     cycle moves the code; under the fix the re-qualified cases pass, and the case it kept whole
-    still fails F's rate, as the script's verdict has it: F fails, and candidate 2 follows."""
+    still fails F's rate, as the script's verdict has it; amendment 10 admits F, its case
+    failing by its reference alone, and candidate 1 goes on."""
     from test_qualification import CODE as RECORDS_CODE
     from test_qualification_records import World as QualificationWorld
     from test_qualification_records import beyond, qcase
@@ -3561,10 +3587,13 @@ def test_the_reader_reads_a_real_qualification_through_its_engineering_cycle(
     assert cached["states"][f_key] == "failing" and cached["states"][a_key] == "qualified"
     result = read(records, runs, expected_code=fix["sha256"])
     assert result["problems"] == []
-    (move,) = [e for e in result["route"] if e["event"] == "candidate"]
-    assert (move["candidate"], move["stage"], move["arms"]) == (1, "numerical", ["F"])
-    assert f"{f_key}: failing" in move["why"]
-    assert (result["stage"], result["candidate"]) == ("search", 2)
+    (admitted,) = [e for e in result["route"] if e["event"] == "admitted"]
+    assert (admitted["candidate"], admitted["stage"], admitted["arms"]) == (1, "numerical", ["F"])
+    assert f"{f_key}: failing" in admitted["why"]  # amendment 10: kept by the cycle, admitted
+    assert not any(e["event"] == "candidate" for e in result["route"])
+    # the rates not yet issued come next, at candidate 1
+    assert (result["stage"], result["candidate"], result["step"]["kind"]) == (
+        "numerical", 1, "campaign")  # fmt: skip
     stale = read(records, runs, expected_code=old["sha256"])  # not the chain's end
     assert stale["step"]["kind"] == "blocked"
     assert any("chain" in p for p in stale["problems"])
@@ -3626,8 +3655,10 @@ def test_the_reader_never_opens_responses_or_observations(worlds, monkeypatch) -
                     lr = START[arm][label]
                     key = f"{OPT[arm]}-{lr:g}"
                     out["rates"][key] = {"key": key, "arm": arm, "optimizer": OPT[arm], "lr": lr,
-                                         "state": "qualified", "runs": [], "held": [],
-                                         "verdict": {"state": "qualified", "control": None,
+                                         "state": "qualified", "eligibility": "qualified",
+                                         "runs": [], "held": [],
+                                         "verdict": {"state": "qualified",
+                                                     "eligibility": "qualified", "control": None,
                                                      "not_counted": []}}  # fmt: skip
         return out
 

@@ -67,7 +67,11 @@ rate by less than 2 % the repair is impossible and the old rate stays, for valid
   by the numerical qualification (``qualification_verdicts``' rate state, the FA arm's same-path
   control included, passed in as ``qualified``: arm → rate → state). An arm with any rate
   ``failing``, ``not_qualified``, ``incomplete`` or not reported gets no repair, and says why: a
-  numerical failure has its failure route and is never repaired this way.
+  numerical failure has its failure route and is never repaired this way. The route passes the
+  rate's ``eligibility`` (amendment 10), so a rate admitted to validation passes the gate.
+- *No K, no repair* (amendment 10). A rate whose search is usable and whose numerical runs include
+  a declared stop has no step-25 K there: its action is ``none``, with ``no_k``, and the old rate
+  stays.
 - *One repair per arm.* The repair of an arm is one round that adjusts every one of its selected
   rates that misses (an arm has two rates, and the registration allows one repair of the arm,
   not of a rate). It is decided only when the medians of both rates exist (``incomplete``
@@ -364,7 +368,10 @@ def _repair_rate(mine: Sequence[Endpoint], candidate: int, spec: Mapping[str, An
     out: dict[str, Any] = {"rate": rate, "target": target, "slope": slope, "search": search,
                            "numerical": numerical, "median_ln_k": None, "miss": None,
                            "missed": None, "repaired_rate": None, "change": None,
-                           "impossible": None, "action": "incomplete", "second": None}  # fmt: skip
+                           "impossible": None, "action": "incomplete", "second": None,
+                           "no_k": False}  # fmt: skip
+    if search["state"] == "usable" and numerical["state"] == "scientific":
+        return {**out, "action": "none", "no_k": True}  # amendment 10: a stopped run, no repair
     if search["state"] != "usable" or numerical["state"] != "usable":
         return out
     median = statistics.median([*search["ln_k"], *numerical["ln_k"]])

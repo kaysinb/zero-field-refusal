@@ -58,6 +58,13 @@ accepted, an unresolved record) > ``qualified`` (exactly the prescribed seeds, o
 qualified, with the checkpoint, every seed's launcher run located when they are checked) >
 ``incomplete``. The FA control is held to the same GPU code, settings and launcher run as the
 first seed's case. ``engineering_summary``: e_eng, the path maxima, the margins.
+
+**Eligibility** (amendment 10). A rate's ``eligibility`` is its state, except for a ``failing``
+rate: its state with the scientific reasons set aside (``_eligibility``). A reference beyond the
+bound or non-finite and a declared instability stop no longer reject a rate by themselves, and its
+technical reasons keep their route: ``qualified`` (the route admits the rate to validation),
+``not_qualified`` or ``incomplete``. The ``state`` stays as the rules above give it. A case's
+``technical_reasons`` are the technical part of its ``reasons``.
 """
 
 from __future__ import annotations
@@ -305,7 +312,8 @@ def case_verdict(
     reference = ((rest or {}).get("trajectories") or {}).get("reference") or {}
     parts = {"baseline": record_sha256(baseline), "rest": record_sha256(rest)}
     return {"case": case, "state": state, "kind": kind, "reasons": science + technical,
-            "complete": complete, "comparisons": comparisons, "bound": bound, "tau": tau,
+            "technical_reasons": list(technical), "complete": complete,
+            "comparisons": comparisons, "bound": bound, "tau": tau,
             "warning": warning, "reference_mode": reference.get("mode"),
             "fallback": reference.get("mode") == fcd.FLOAT64_ACCUMULATION,
             "launcher": _identity(head), "gpu_code": code, "settings": settings,
@@ -543,15 +551,22 @@ def rate_verdict(
             counted.append(verdict)
             continue
         same = why != "another candidate, arm, rate or seed"
-        not_counted.append({"case": name, "record_sha256": key, "why": why,
-                            "kind": verdict.get("kind") if same else None})  # fmt: skip
+        technical_reasons = verdict.get("technical_reasons")
+        if technical_reasons is None and verdict.get("resolution") is not None:
+            technical_reasons = []  # a resolved declared stop (``resolved_verdict``): no other
+        entry = {"case": name, "record_sha256": key, "why": why,
+                 "kind": verdict.get("kind") if same else None}  # fmt: skip
+        if same:  # what amendment 10 reads of it (``_eligibility``)
+            entry |= {"seed": (verdict.get("case") or {}).get("seed"),
+                      "technical_reasons": technical_reasons}  # fmt: skip
+        not_counted.append(entry)
         reasons.append(f"{name}: not counted and not voided: {why}")
     for verdict in counted:
         reasons += [f"{verdict['case']['name']}: {r}" for r in verdict.get("reasons") or []]
     found = [verdict["case"]["seed"] for verdict in counted]
     kinds = {verdict.get("kind") for verdict in counted}
     stale_science = any(entry["kind"] == SCIENTIFIC for entry in not_counted)
-    checked = None
+    checked, stale_control = None, False
     if optimizer == scope.control_arm:
         checked = dict(control or control_verdict(None, scope, candidate))
         if checked.get("record_sha256") is not None and checked["record_sha256"] in voided:
@@ -566,7 +581,7 @@ def rate_verdict(
                 # this rate's scientific control record, under other code or settings or of
                 # another launcher run, holds until it is voided; another rate's never is this
                 # rate's scientific evidence
-                stale_science = True
+                stale_science = stale_control = True
                 checked.setdefault("reasons", []).append(problem)
             elif problem is not None:
                 checked.update(state=NOT_QUALIFIED, kind=TECHNICAL,
@@ -604,11 +619,50 @@ def rate_verdict(
         reasons += [f"no counted case of seed {s}" for s in missing]
         reasons += [f"more than one case of seed {s}" for s in duplicated]
         reasons += [f"the launcher run of seed {s} is not located" for s in unlocated]
+    eligibility = state if state != FAILING else _eligibility(
+        counted, not_counted, checked, seeds=seeds, unlocated=unlocated,
+        stale_control=stale_control)  # fmt: skip
     return {"candidate": candidate, "optimizer": optimizer, "lr": lr, "state": state,
+            "eligibility": eligibility,
             "seeds": seeds, "counted": sorted(found), "not_counted": not_counted,
             "voided": void, "reasons": reasons, "control": checked,
             "warnings": [v["case"]["name"] for v in counted if v.get("warning")],
             "fallbacks": [v["case"]["name"] for v in counted if v.get("fallback")]}  # fmt: skip
+
+
+def _eligibility(
+    counted: Sequence[Mapping[str, Any]], not_counted: Sequence[Mapping[str, Any]],
+    checked: Mapping[str, Any] | None, *, seeds: Sequence[int], unlocated: Sequence[int],
+    stale_control: bool,
+) -> str:  # fmt: skip
+    """A ``failing`` rate's state under amendment 10, its scientific reasons set aside: a
+    scientific case with no technical reason (its reference beyond the bound or non-finite, a
+    declared instability stop) and a control whose launcher run an instability rule stopped
+    count as passed. So does such a case of this rate not counted only for its other GPU code
+    (a case an engineering cycle keeps whole, or a resolved declared stop): it stands for its
+    seed. ``not_qualified`` for any technical case or reason, any other record not counted and
+    not voided, a control neither accepted nor stopped, or this rate's stopped control under
+    other code, settings or launcher run (``stale_control``); ``incomplete`` for a missing,
+    doubled or unlocated seed or a case neither passed nor so admitted; else ``qualified``: the
+    rate goes to validation, its verdict ``failing`` as recorded."""
+    kept = [e for e in not_counted
+            if e.get("kind") == SCIENTIFIC and e.get("why") == "other GPU code"
+            and e.get("technical_reasons") == [] and e.get("seed") in seeds]  # fmt: skip
+    if (len(kept) < len(not_counted) or stale_control
+            or any(v.get("kind") == TECHNICAL or (v.get("kind") == SCIENTIFIC
+                                                  and v.get("technical_reasons") != [])
+                   for v in counted)
+            or (checked is not None
+                and checked.get("state") not in (ACCEPTED, FAILING))):  # fmt: skip
+        return NOT_QUALIFIED
+    found = [v["case"]["seed"] for v in counted] + [e["seed"] for e in kept]
+    complete = not unlocated and sorted(found) == sorted(seeds)
+    if complete and all(v.get("kind") == SCIENTIFIC or (
+            v.get("state") == QUALIFIED and v.get("complete")
+            and ((v.get("launcher") or {}).get("checkpoint") or {}).get("sha256"))
+            for v in counted):  # fmt: skip
+        return QUALIFIED
+    return INCOMPLETE
 
 
 def engineering_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

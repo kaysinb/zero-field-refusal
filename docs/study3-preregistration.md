@@ -207,7 +207,9 @@ veto.
   repair is impossible and the old rate stays. Validation then decides.
 - **What it cannot repair.** A failed reference, a failed shift or a failed bridge at step 25 is
   never repaired this way. Each has its [failure route](#failure-routes). *A shift no longer fails
-  a rate: [amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive).*
+  a rate: [amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive). A rate with a
+  stopped numerical run has no K to repair on:
+  [amendment 10](#amendment-10-numerical-eligibility-after-candidate-1s-qualification).*
 
 ### Choice of candidate
 
@@ -495,7 +497,9 @@ qualification stages.*
 *The limit of one cycle is removed by
 [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).
 A shift's result, launcher-only or against the harness baseline, is in neither row:
-[amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive).*
+[amendment 8](#amendment-8-the-four-imposed-shifts-become-descriptive). In the numerical
+qualification, a reference beyond the bound and a declared instability stop no longer reject a rate
+by themselves: [amendment 10](#amendment-10-numerical-eligibility-after-candidate-1s-qualification).*
 
 **After a technical mark:**
 
@@ -1231,3 +1235,72 @@ confirmation run exists, and no harm label of study 3 exists.
   volume's last inventory. The search ran on another host. The volume holding the second copy is
   deleted after this amendment.
 - **Disclosure.** The search's report states that deletion.
+
+### Amendment 10: numerical eligibility after candidate 1's qualification
+
+Decided on 2026-11-03, after candidate 1's numerical qualification and the diagnosis of its four
+failing cases were known. No validation or confirmation run exists, and no harm label of study 3
+exists.
+
+> After observing candidate 1's numerical results, and before any study-3 harm labels were opened,
+> numerical eligibility was revised. A reference exceedance requires a documented integrity
+> diagnosis but does not itself reject a rate; the diagnosis found no fixable defect. A declared
+> instability stop in the numerical qualification is kept as recorded but does not itself exclude a
+> rate; validation's unchanged thresholds decide. Missing numerical K values cause no repair. A–F and
+> P–F remain separately subject to their unchanged validation gates. All original failures and
+> diagnostic results are retained and reported.
+
+- **The rules.** They hold for the numerical qualification of both candidates, a repaired rate's
+  included.
+  - **The reference.** D₂₅ of the harness baseline against the reference beyond 0.01·K\*, or a
+    non-finite loss, gradient or model in the reference, requires an integrity diagnosis, documented
+    before the rate's validation runs. It does not itself reject the rate.
+  - **Instability stops.** A declared instability stop of the launcher run, of an unshifted harness
+    trajectory or of the same-path control's launcher run is kept as recorded. It does not itself
+    exclude the rate.
+  - **The rate.** A rate whose cases fail for these reasons alone goes to validation at its
+    selected rate. Its case and rate verdicts stay `failing` as recorded. The route reads such a
+    rate as admitted and reports both.
+  - **Technical reasons keep their route.** The repeat, the bridge, the comparisons with the
+    launcher checkpoint, an incomplete case and the same-path control's bound are technical as
+    before, also in a case that has a scientific reason too.
+  - **No K, no repair.** A stopped numerical run has no K at step 25. A rate with such a run is not
+    repaired ([amendment 3](#amendment-3-one-repair-round-per-arm) needs all seven values) and goes
+    to validation at its selected rate. A rate whose seven values exist is repaired as before.
+  - **Validation and confirmation are unchanged.** A–F and P–F pass separately at 22 of 28 blocks
+    supported (31 of 40) with their utility bounds. A stop in a validation or confirmation run
+    removes its arm's support in that block. Every other bound, route and threshold stands.
+- **The diagnosis.** Before this amendment, on candidate 1's four failing cases:
+  - **Repetition.** On one or two further L40S hosts per case, from the same inputs and code, the
+    launcher runs gave the recorded rows, K values and stops exactly.
+  - **Attention backends.** At the jump steps, the production and math backends differ by at most
+    1.7·10⁻⁴ of the gradient's norm, as at the control steps. At the reference's jump they were not
+    compared.
+  - **The gradient and the update.** At the production jumps (F 1.83·10⁻⁵ and P 1.85·10⁻⁵, seed
+    10201, step 3) and at the step before each, central differences of the loss agree with the
+    computed gradient along its own direction. A random direction stayed unresolved. The updates at
+    those jumps follow the registered F and P formulas, as does F's float64 update at the
+    reference's jump below.
+  - **The loss and K.** The largest derivative of the loss by a logit is 1/1920, the registered
+    normalization, within rounding. K 837.96 after five updates is reproduced with and without the
+    cached θ₀ logits.
+  - **v₀.** On the seven search and numerical seeds, no seed is an outlier on the summaries checked:
+    the fractions of √v₀ below ε and 10ε, its smallest positive value and the number of zeros.
+  - **The references.** F 1.3·10⁻⁵, seed 10200, repeats exactly on another host (0.744). Its jump at
+    step 19 is localized: 58.5 % of the gradient's squared norm lies in layer 0's value projection.
+    The derivative check there is inconclusive, agreeing only at the two smallest displacements. P
+    1.85·10⁻⁵, seed 10200, does not repeat run to run: 1.945 on the original host, 3.826 on two
+    others; every value lies beyond 0.06.
+  - **The reading.** No fixable defect was found. These checks do not prove the code free of
+    errors, and they do not show that the reference measures fp32 error.
+- **What was known.**
+  - Candidate 1's qualification: 14 of 18 cases within every binding bound. F 1.3·10⁻⁵ and P
+    1.85·10⁻⁵ at seed 10200: the reference beyond the bound (0.744, 1.945). F 1.83·10⁻⁵ and P
+    1.85·10⁻⁵ at seed 10201: the launcher run stopped by `k_above_max` after 5 updates (K 837.96,
+    27.42). The same-path controls held.
+  - The search's K and the qualification's K at step 25, and the results of the diagnosis above.
+  - No outcome of validation or confirmation, and no label.
+- **What is kept.** Every case and rate verdict, every diagnostic record and the original failures,
+  unchanged. No case is rerun.
+- **Disclosure.** The final report gives the validation's result in its main text, and names this
+  amendment in its appendix in one line.

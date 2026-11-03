@@ -63,7 +63,8 @@ study 2's records give them, equal to this checkout's configs (``experiments/stu
    attempt records, the trajectory results, the case restart and supersession records; never the
    verdict cache, which package 1 rewrites, nor a ``checkpoints-removed`` record), both in the
    order of their paths, and the ``states`` of the fixed rates (per arm, ``lr_l`` and ``lr_u``),
-   each ``qualified``; ``simulation`` and ``engineering``: the evidence of the decision records
+   each ``qualified`` or ``admitted`` (a failing rate amendment 10 admits); ``simulation`` and
+   ``engineering``: the evidence of the decision records
    ``study3/decisions/simulation.json`` and ``study3/decisions/engineering.json``;
    ``validation_blocks`` (28 or 40) and ``level`` (L), the simulation record's; ``model``,
    ``judge`` and ``code``.
@@ -286,6 +287,7 @@ JUDGE_CONFIG = "judge/wildguard"  # "The judge is frozen"
 WHAT = ("The versions of study 3's validation and confirmation runs: the commit, the model, the "
         "judge and the fixation they run under.")  # fmt: skip
 QUALIFIED = "qualified"
+ADMITTED = "admitted"  # a failing rate amendment 10 admits to validation (its eligibility)
 LABELS = ("lr_l", "lr_u")
 ARMS = ("A", "F", "P")
 # A launch log that holds a torn line the launcher refuses: the fixation pins none (``Rulings``).
@@ -768,9 +770,10 @@ class _Check(_Schema):
         for arm in arms if states is not None else ():
             pair = self.object(f"qualification.states.{arm}", states[arm], LABELS)
             for label in LABELS if pair is not None else ():
-                if pair[label] != QUALIFIED:
+                if pair[label] not in (QUALIFIED, ADMITTED):
                     self.add(f"qualification.states.{arm}.{label}", f"is {pair[label]!r}, not "
-                             f"{QUALIFIED!r}: a validation runs qualified rates only")  # fmt: skip
+                             f"{QUALIFIED!r} or {ADMITTED!r}: a validation runs qualified rates "
+                             "and those amendment 10 admits only")  # fmt: skip
 
     # -- the confirmation supplement
 
@@ -1311,7 +1314,9 @@ def _reading(root: Path, candidate: int, expected_code: str,
 
 
 def _states(reading: Mapping[str, Any], rates: Mapping[str, Mapping[str, float]]) -> dict:
-    """The fixed rates' states in a qualification reading (None for a rate it does not name)."""
+    """The fixed rates' states in a qualification reading (None for a rate it does not name):
+    ``admitted`` for a ``failing`` rate whose eligibility is ``qualified`` (amendment 10), its
+    state otherwise."""
     from . import qualification_records  # it loads torch (qualification_verdicts): here only
 
     states: dict[str, dict[str, Any]] = {}
@@ -1319,7 +1324,9 @@ def _states(reading: Mapping[str, Any], rates: Mapping[str, Mapping[str, float]]
         states[arm] = {}
         for label in LABELS:
             rate = qualification_records.rate_of(reading, arm, float(pair[label]))
-            states[arm][label] = None if rate is None else rate["state"]
+            states[arm][label] = None if rate is None else (
+                ADMITTED if rate["state"] == "failing" and rate.get("eligibility") == QUALIFIED
+                else rate["state"])  # fmt: skip
     return states
 
 
@@ -1514,9 +1521,10 @@ def validation_fixation(
         if reading is not None:
             states = _states(reading, rates)
             problems += [f"qualification: {arm}'s {label} {rates[arm][label]:g} is "
-                         f"{state or 'not in the qualification'}, not qualified"
+                         f"{state or 'not in the qualification'}, neither qualified nor "
+                         "admitted (amendment 10)"
                          for arm, pair in states.items() for label, state in pair.items()
-                         if state != QUALIFIED]  # fmt: skip
+                         if state not in (QUALIFIED, ADMITTED)]  # fmt: skip
             ledger, found = _ledger(reading, root)
             problems += found
             if not ledger:

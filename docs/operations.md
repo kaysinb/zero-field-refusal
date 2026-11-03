@@ -2058,7 +2058,10 @@ before each command below.
   3. **The search.** `search-round0`, then `search-round1` where a median missed.
   4. **The numerical qualification.** `numerical`, run through its printed `qualify.py driver`;
      then `repair` (one round per arm, amendment 3) for an arm whose K misses by more than 0.05
-     over its 4 + 3 seeds once its qualification passed, run the same way.
+     over its 4 + 3 seeds once its qualification passed, run the same way. A rate whose cases
+     fail only by the reference or by a declared instability stop keeps its `failing` verdict and
+     goes on as `admitted`; with a stopped run it has no K and gets no repair ([amendment
+     10](study3-preregistration.md#amendment-10-numerical-eligibility-after-candidate-1s-qualification)).
   5. **The validation.** The validation fixation and the first versions record, each committed
      alone; then `validation`, 28 whole blocks (40 when the simulation record says so), run
      after its printed `check` (below, "A run's own commit").

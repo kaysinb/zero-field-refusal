@@ -82,7 +82,8 @@ taken only on settled evidence, so that no later record of the stage can reverse
 2. A run that has not ended (``pending``, or ``recovered`` with no later attempt), or a rate whose
    qualification has no record yet: the step waits.
 3. A or F failed scientifically: candidate 1 moves to candidate 2, candidate 2 ends the study
-   with the scientific feasibility report. P failed at the same stage closes with it.
+   with the scientific feasibility report. P failed at the same stage closes with it. (A
+   numerical qualification's failure admitted by amendment 10 is no failure here.)
 4. P failed scientifically: P–F closes, and A–F goes on.
 5. Cells to issue: the campaign that issues them (round 0 before round 1).
 
@@ -96,7 +97,10 @@ a failed endpoint in a block removes only its arm's support (``study3_blocks``).
 changed hashed key locates nothing) and under the GPU code in force for the candidate's runs
 (below, "Code agreement": the chain's code after the candidate's own cycle, or before it), so
 that a later candidate's cycle leaves an earlier candidate's reading as it was. ``qualified``
-passes; ``failing`` is a scientific failure; ``incomplete`` waits; ``not_qualified`` is
+passes; ``failing`` is read by its ``eligibility`` (amendment 10): a reference beyond the bound
+or a declared instability stop alone is ``admitted`` (it passes, its verdict kept, and the route
+lists an ``admitted`` event), and a technical reason beside them is technical, a case still open
+waiting; ``incomplete`` waits; ``not_qualified`` is
 technical, except an FA rate whose same-path control has no record yet and that has no other
 technical mark (it waits for its control). Technical before the candidate's supersession record
 (``c<N>/supersede-<n>.json``, the engineering cycle; one per candidate) is an engineering cycle in
@@ -895,6 +899,7 @@ class _Arm:
     technical: list[str] = field(default_factory=list)  # awaiting its diagnosis
     pending: list[str] = field(default_factory=list)
     scientific: list[str] = field(default_factory=list)
+    admitted: list[str] = field(default_factory=list)  # failing, admitted by amendment 10
     issue: list[tuple[str, str, int | None, tuple[str, float, int]]] = field(default_factory=list)
     marks: list[dict[str, Any]] = field(default_factory=list)  # technical outside the qual.
 
@@ -1185,8 +1190,9 @@ class _Walk:
         fixed = self._fixed_rates(candidate)
         if fixed is not None:
             return self._repair_fixed(candidate, selected, fixed, reading)
+        # the repair's gate reads eligibility: a rate amendment 10 admits passes it
         qualified = {arm: {selected[arm][label]: (_rate(reading, arm, selected[arm][label]) or {})
-                           .get("state") or "not reported" for label in LABELS}
+                           .get("eligibility") or "not reported" for label in LABELS}
                      for arm in self.arms}  # fmt: skip
         state = repair_state(self.endpoints, candidate, {a: selected[a] for a in self.arms},
                              qualified, problems=())  # fmt: skip
@@ -1250,8 +1256,9 @@ class _Walk:
         a repaired one included, and its closure replayed from them first (``_replayed``); an
         arm still active after that blocks."""
         stage, seeds = "repair", SEEDS["numerical"][candidate]
+        # the repair's gate reads eligibility: a rate amendment 10 admits passes it
         qualified = {arm: {selected[arm][label]: (_rate(reading, arm, selected[arm][label]) or {})
-                           .get("state") or "not reported" for label in LABELS}
+                           .get("eligibility") or "not reported" for label in LABELS}
                      for arm in self.arms}  # fmt: skip
         state = repair_state(self.endpoints, candidate, {a: selected[a] for a in self.arms},
                              qualified, problems=())  # fmt: skip
@@ -1354,6 +1361,8 @@ class _Walk:
         label = f"{entry.get('key') or name}: {entry.get('state')}{why}"
         if condition == "failing":
             c.scientific.append(label)
+        elif condition == "admitted":
+            c.admitted.append(label)
         elif condition == "technical":
             (c.unresolved if self.records.cycles.get(candidate) else c.technical).append(label)
         elif condition == "waiting":
@@ -1825,6 +1834,10 @@ class _Walk:
         if failed:
             why = "; ".join(x for arm in failed for x in conditions[arm].scientific)
             raise _Move(self._event(stage, "candidate", failed, f"a scientific failure: {why}"))
+        for arm, c in conditions.items():  # amendment 10: kept on the route, never a failure
+            if c.admitted:
+                self.route.append(self._event(stage, "admitted", [arm], "amendment 10: "
+                                              + "; ".join(c.admitted)))  # fmt: skip
         issue = [x for c in conditions.values() for x in c.issue]
         if issue:
             raise _Stop(self._campaign(stage, issue))
@@ -2271,13 +2284,19 @@ def _rate(reading: Mapping[str, Any], arm: str, lr: float) -> Mapping[str, Any] 
 
 
 def _condition(entry: Mapping[str, Any], reading: Mapping[str, Any]) -> tuple[str, str]:
-    """A rate's condition (``qualified``, ``failing``, ``technical`` or ``waiting``) and why
-    (module docstring, "The numerical qualification")."""
+    """A rate's condition (``qualified``, ``admitted``, ``technical`` or ``waiting``) and why
+    (module docstring, "The numerical qualification"). A ``failing`` rate is read by its
+    ``eligibility`` (amendment 10): ``admitted`` when it is ``qualified``, its scientific reasons
+    set aside; ``failing`` is never returned."""
     state = entry.get("state")
     if state == QUALIFIED:
         return "qualified", ""
     if state == FAILING:
-        return "failing", ""
+        eligibility = entry.get("eligibility")
+        if eligibility == QUALIFIED:
+            return "admitted", ""
+        why = f" (amendment 10: its scientific reasons set aside, {eligibility})"
+        return ("waiting", why) if eligibility == INCOMPLETE else ("technical", why)
     if state == INCOMPLETE:
         return "waiting", ""
     if state != NOT_QUALIFIED:

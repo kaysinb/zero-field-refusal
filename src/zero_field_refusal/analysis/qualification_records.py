@@ -1947,9 +1947,10 @@ def read_qualification(
     restarts: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """The candidate's numerical qualification from its records (module docstring): per rate
-    (``rates``, keyed ``<optimizer>-<rate:g>``) its ``arm``, optimizer, ``lr``, ``state`` and
-    ``verdict`` (``rate_verdict``'s), its ``cases`` (each folder's ``parts`` with every attempt
-    and the one that ``counts``, its case ``verdict`` and its ``superseded`` records), its
+    (``rates``, keyed ``<optimizer>-<rate:g>``) its ``arm``, optimizer, ``lr``, ``state``,
+    ``eligibility`` (amendment 10) and ``verdict`` (``rate_verdict``'s), its ``cases`` (each
+    folder's ``parts`` with every attempt and the one that ``counts``, its case ``verdict`` and
+    its ``superseded`` records), its
     ``control`` (an FA rate's: the folder, the attempt and the verdict the rate read), each case's
     ``released`` records (``finish``'s, with the failed control they name), its ``kept`` exports
     (each manifest's path, sha256, number, ``verified``, ``technical_reasons``,
@@ -2092,7 +2093,8 @@ def _rate(
                                 f"{type(exc).__name__}: {exc}")  # fmt: skip
         verdict = None
     return {"key": key, "arm": ARMS.get(optimizer), "optimizer": optimizer, "lr": lr,
-            "state": None if verdict is None else verdict["state"], "verdict": verdict,
+            "state": None if verdict is None else verdict["state"],
+            "eligibility": None if verdict is None else verdict["eligibility"], "verdict": verdict,
             "cases": [f for f in reading.folders if f["key"] == key],
             "control": read_control, "runs": listed, "launchers": launchers,
             "held": [h for h in held if any(_holds(h, run) for run in runs)],
