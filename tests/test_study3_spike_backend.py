@@ -281,9 +281,11 @@ def test_the_update_recomputed_by_the_formulas_matches(setup, precision, optimiz
                           anatomy_at=[1], end=plain["steps"], precision=precision)  # fmt: skip
     assert record["endpoint_sha256"] == end
     for o in record["optimizer"].values():
-        assert o["relative_difference"] < 1e-5
-        if precision == "float64":  # float64 arithmetic, rounded once into fp32 parameters
-            assert o["relative_to_rounded_formula"] < 1e-12
+        bound = 1e-5 if precision == "fp32" else 1e-12  # float64: rounded once into fp32 params
+        assert o["relative_to_rounded_formula"] < bound
+        assert o["step_as_expected"] and o["settings_as_config"]
+        assert o.get("v_equals_v0", True)
+        assert ("v_equals_v0" in o) == (optimizer == "adam_frozen")
         assert o["mode"] in ("frozen", "prewarmed")
     a = record["anatomy"]["1"]
     assert a["nonfinite"] == 0 and a["above_1e30"] == 0

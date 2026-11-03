@@ -460,6 +460,22 @@ def optimizer_state_of(optimizer: Any, params: Sequence[torch.nn.Parameter]) -> 
                   for s, p in zip(state, params, strict=True)]}  # fmt: skip
 
 
+def state_checks(before: Mapping[str, Any], step: int, opt_cfg: Any,
+                 v0: Sequence[torch.Tensor] | None) -> dict[str, Any]:  # fmt: skip
+    """The supplied state against what it must be: the step count before the update, the rate, ε
+    and β from the config, and for frozen Adam its v equal to the saved v₀."""
+    betas = (float(opt_cfg.beta1), None) if before["mode"] == "frozen" else tuple(
+        float(b) for b in opt_cfg.betas)  # fmt: skip
+    out = {"step_as_expected": int(before["step"]) == step,
+           "settings_as_config": (before["lr"], before["eps"], before["beta1"])
+           == (float(opt_cfg.lr), float(opt_cfg.eps), betas[0])
+           and (before["mode"] == "frozen" or before["beta2"] == betas[1])}  # fmt: skip
+    if before["mode"] == "frozen" and v0 is not None:
+        out["v_equals_v0"] = all(torch.equal(v.float(), w.float())
+                                 for v, w in zip(before["v"], v0, strict=True))  # fmt: skip
+    return out
+
+
 def optimizer_check(
     names: Sequence[str], before: Mapping[str, Any], grads: Sequence[torch.Tensor],
     theta: Sequence[torch.Tensor], after: Sequence[torch.Tensor],
@@ -496,7 +512,7 @@ def optimizer_check(
         for label, factor in (("below_10eps", 10), ("below_100eps", 100), ("below_1000eps", 1000)):
             by_denominator[label] += mass[root < factor * eps].sum().item()
         flat = made.abs().reshape(-1)
-        k = min(5, flat.numel())
+        k = min(10, flat.numel())
         values, indices = torch.topk(flat, k)
         for value, index in zip(values.tolist(), indices.tolist(), strict=True):
             top.append((value, name, index, g64.reshape(-1)[index].item(),
@@ -568,11 +584,11 @@ def anatomy(twins: fcd.Twins, batch: Sequence[Any], cfg: Any, precision: str,
     denominator = loss_denominator(cfg.train.loss, batch, cap)
     tokens, logit_extremes = [], {"max": -math.inf, "min": math.inf}
     try:
-        with torch.no_grad():
+        with torch.enable_grad():  # as training runs the forward; only detached values are kept
             for c, chunk in enumerate(chunks(batch, int(cfg.execution.micro_batch_size))):
                 rows = collate(chunk, pad_id=twins.env.pad_id, max_response_tokens=cap,
                                device=twins.env.device)  # fmt: skip
-                logits = response_logits(model, rows)
+                logits = response_logits(model, rows).detach()
                 logit_extremes["max"] = max(logit_extremes["max"], logits.max().item())
                 logit_extremes["min"] = min(logit_extremes["min"], logits.min().item())
                 y = target_ids(rows)
@@ -724,8 +740,10 @@ def replay(
         take_step(optimizer, params, grads, precision)
         del grads
         if step in optimizer_at:
-            record["optimizer"][str(step)] = optimizer_check(twins.names, kept, host_grads, theta,
-                                                             _cpu(params))  # fmt: skip
+            record["optimizer"][str(step)] = {
+                **optimizer_check(twins.names, kept, host_grads, theta, _cpu(params)),
+                **state_checks(kept, step, cfg.optimizer, twins.v0 if v0 is not None else None),
+            }  # fmt: skip
             del kept, theta, host_grads
             gc.collect()
             publish(record)
@@ -1081,7 +1099,9 @@ def summary(record: Mapping[str, Any]) -> None:
     """The console lines of each measured step: numbers only."""
     for step, o in record.get("optimizer", {}).items():
         print(f"STEP {step} optimizer {o['mode']} update {o['update_norm']:.4f} relative "
-              f"{o['relative_difference']:.3e} root_v<10eps "
+              f"{o['relative_difference']:.3e} rounded {o['relative_to_rounded_formula']:.3e} "
+              f"state {o['step_as_expected']} {o['settings_as_config']} {o.get('v_equals_v0')} "
+              f"root_v<10eps "
               f"{o['share_by_root_v'].get('below_10eps', 0):.3f}")  # fmt: skip
     for step, a in record.get("anatomy", {}).items():
         print(f"STEP {step} anatomy layer {a['largest_layer_share']:.3f} token "
