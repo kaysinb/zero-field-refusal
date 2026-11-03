@@ -1274,8 +1274,9 @@ exists.
   - **Repetition.** On one or two further L40S hosts per case, from the same inputs and code, the
     launcher runs gave the recorded rows, K values and stops exactly.
   - **Attention backends.** At the jump steps, the production and math backends differ by at most
-    1.7·10⁻⁴ of the gradient's norm, as at the control steps. At the reference's jump they were not
-    compared.
+    1.7·10⁻⁴ of the gradient's norm, as at the control steps. At F's reference jump, the relative
+    gradient difference was 0.0070, versus 3.5·10⁻⁵ at the control step. It met the predeclared
+    agreement criterion but showed substantially greater backend sensitivity.
   - **The gradient and the update.** At the production jumps (F 1.83·10⁻⁵ and P 1.85·10⁻⁵, seed
     10201, step 3) and at the step before each, central differences of the loss agree with the
     computed gradient along its own direction. A random direction stayed unresolved. The updates at
@@ -1302,5 +1303,11 @@ exists.
   - No outcome of validation or confirmation, and no label.
 - **What is kept.** Every case and rate verdict, every diagnostic record and the original failures,
   unchanged. No case is rerun.
-- **Disclosure.** The final report gives the validation's result in its main text, and names this
-  amendment in its appendix in one line.
+- **The simulation.** It assumed the numerical qualification passed (amendment 8). Its level and
+  power are read conditionally on that assumption: candidate 1's validation runs at rates that did
+  not pass the original rule.
+- **Disclosure.** The final report gives the validation's result in its main text, with each
+  comparison's supported blocks out of 28, and names this amendment in its appendix in one line.
+  From the existing records it reports, per arm, rate and block: the largest gradient norm and its
+  step, the stop or completion, K at the end, and support or exclusion. A spike in a run that
+  completed creates no exclusion beyond the registered rules.
