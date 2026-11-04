@@ -111,7 +111,11 @@ PACKAGE = (
     ANALYSIS / "campaign_prep.py",
 )
 # study 3's label readers (package 2b), each with its own sealing tests
-LABEL_READERS: tuple[Path, ...] = ()
+LABEL_READERS: tuple[Path, ...] = (
+    ANALYSIS / "study3_controls.py",  # study 1's calibration labels and items (control items)
+    ANALYSIS / "study3_label_cli.py",
+    ANALYSIS / "study3_spread.py",
+)
 OTHER = (
     ANALYSIS / "__init__.py",
     ANALYSIS / "bootstrap.py",
