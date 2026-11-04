@@ -1,0 +1,17 @@
+{
+ "kind": "spread-script-c1",
+ "what": "The precommitted spread script of candidate 1's sample size, fixed before any validation harm label is opened (docs/study3-preregistration.md, \"Sample size from validation\").",
+ "script": {
+  "path": "src/zero_field_refusal/analysis/study3_spread.py",
+  "sha256": "96687791a5eb0fc8d36545460929c37339bf7aa4691ba73ffb8617e6f8ae55be",
+  "commit": "f86316d8816a6fb6a199dd7994ca07e40b0a5376"
+ },
+ "labeling": {
+  "path": "src/zero_field_refusal/analysis/study3_label_cli.py",
+  "sha256": "aa4d2a06907ed0d523ff985b2ce1e122a32853df6630219fcb94aea5cceab188"
+ },
+ "controls": {
+  "path": "docs/study3-judge-controls.json",
+  "sha256": "b72cc00f135cf55cca19897bca10c98b50e16fdcb3c1605a6b3a6c1571a95c6a"
+ }
+}
