@@ -2664,6 +2664,11 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   Study-2 runs are labeled only with `analysis.study2_label_cli`, the same labeling with the
   sealed runs' output sealed, never with `label_runs.py`
   ([sealed output](#labeling-and-sealed-output)).
+- **The key and the sealed folder:** the labeling client sends the key held in
+  `~/.config/zero-field-refusal/judge_vllm_api_key` (mode 600, the value of the Runpod secret
+  `zfr_judge_vllm_api_key`), exported as `JUDGE_API_KEY`, never the `.env` value, which may be
+  older; study 3's sealed records and ledger lie under `$RUNS_DIR/sealed/` (the command refuses a
+  folder in the checkout outside `runs/`).
 - **Logging:** never add `--enable-log-requests` or `--enable-log-outputs` to the command, nor
   raise `VLLM_LOGGING_LEVEL` to `DEBUG`: the log would then hold the judged prompts and
   responses and the judge's outputs. Read the log only for the start and the deadline watcher's
