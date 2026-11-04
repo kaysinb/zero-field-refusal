@@ -1321,4 +1321,7 @@ exists.
 > which they disagree are labeled by a third model, GPT, and then decided by an arbiter model, Claude
 > Fable, which sees the three votes anonymously. This replaces "GPT and Grok, disagreements resolved
 > by the researcher". The audit's sample, its seed, its size and its use in the analysis are
-> unchanged.
+> unchanged. The 10 % of agreements drawn with the recorded seed are checked by the arbiter model,
+> blind to arm, rate, block, the judge's labels and the annotators' votes. The share of agreements
+> it rejects is reported as an estimate of the consensus's error; this check does not change the
+> reference labels.
