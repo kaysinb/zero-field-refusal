@@ -23,8 +23,11 @@ by K and its weight w at K*.
 judging receipt for that file, every record checked against the response stored now), at its one
 evaluation, ``step-25``, over the 521 harmful prompts: n = 521, the harmful labels, and the
 missing ones (a missing or unparsed label is missing). A run without a matching completed receipt
-is not labeled: the script refuses, naming the run id only (no reader's message, which may hold a
-count).
+is not labeled, and its labels count only through the labeling's **acceptance**
+(``study3_label_cli``: written once the controls after its batch passed) that names the very label
+file and receipt read (their sha256, as the reader hashed what it parsed), from the ledger under
+``--sealed-dir`` (default ``RUNS_DIR/sealed``). Otherwise the script refuses, naming the run id
+only (no reader's message, which may hold a count).
 
 **The rule** (``spread_result``): d_AF per block, primary (``study3_estimates.block_differences``:
 A_low − F_low, a missing label not harmful); SD = 100·sd(d_AF), the sample SD (ddof 1) over the
@@ -66,7 +69,9 @@ from omegaconf import DictConfig, OmegaConf
 from ..config import load_config
 from ..judge import judge_identity
 from ..paths import REPO_ROOT
-from .study2_label_cli import harmful_prompts
+from ..run_judging import receipt_path
+from .evidence import label_path
+from .study2_label_cli import SEALED_DIR, harmful_prompts
 from .study3_blocks import SUPPORTED, block_state
 from .study3_decisions import (
     SPREAD_STEP_PP,
@@ -77,6 +82,7 @@ from .study3_decisions import (
     upper_sd,
 )
 from .study3_estimates import DENOMINATOR, block_differences
+from .study3_label_cli import LedgerError, acceptances
 from .study3_progress import read_state
 from .study3_records import SEEDS, Endpoint
 
@@ -112,17 +118,28 @@ def spread_pp(sd_pp: float) -> float:
 
 
 def harm_counts(run_dir: Path, identity: Mapping[str, Any], prompts: Mapping[str, str],
-                judge: str = JUDGE) -> Harm:  # fmt: skip
+                judge: str = JUDGE, *, accepted: Sequence[Mapping[str, Any]]) -> Harm:  # fmt: skip
     """A run's ``Harm`` from its labels (module docstring, "The harm"); ``SpreadRefused`` naming
-    the run id alone when it is not labeled or its labels do not read."""
+    the run id alone when it is not labeled, its labels do not read, or no acceptance of
+    ``accepted`` (the ledger's, ``study3_label_cli.acceptances``) names the label file and the
+    receipt that were read."""
     from .study2_labels import read_endpoint_labels  # it imports run_judging
 
-    run_id = Path(run_dir).name
+    run_dir = Path(run_dir)
+    run_id = run_dir.name
     try:
-        rows = read_endpoint_labels(Path(run_dir), judge, identity, prompts)
+        rows = read_endpoint_labels(run_dir, judge, identity, prompts)
     except Exception:  # its message may hold a count: not shown
         raise SpreadRefused(f"{run_id}: not labeled (no completed judging receipt matches its "
                             "label file) or its labels do not read") from None  # fmt: skip
+    files = rows[0]["files"] if rows else {}
+    read = {"labels_sha256": files.get(label_path(run_dir, judge).relative_to(run_dir).as_posix()),
+            "receipt_sha256": files.get(
+                receipt_path(run_dir, judge).relative_to(run_dir).as_posix())}  # fmt: skip
+    if not any(a.get("judge") == judge and (a.get("runs") or {}).get(run_id) == read
+               for a in accepted):  # fmt: skip
+        raise SpreadRefused(f"{run_id}: its labels are not those of an accepted batch (no "
+                            "acceptance names its label file and receipt as they are)")  # fmt: skip
     if [row["condition"] for row in rows] != [CONDITION] or rows[0]["prompts"] != DENOMINATOR:
         raise SpreadRefused(f"{run_id}: its labels are not of one {CONDITION} evaluation of the "
                             f"{DENOMINATOR} harmful prompts")  # fmt: skip
@@ -212,10 +229,12 @@ def spread(
     repo: str | Path = REPO_ROOT,
     harm_of: Callable[[Endpoint], Harm] | None = None,
     script: str | None = None,
+    sealed_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """The output from the records under ``runs_root`` (module docstring). ``harm_of``: a run's
-    ``Harm`` (by default its WildGuard labels, ``harm_counts``); ``script``: the script's sha256
-    (by default this file's)."""
+    ``Harm`` (by default its accepted WildGuard labels, ``harm_counts``, the acceptances from the
+    labeling's ledger under ``sealed_dir``, by default ``<runs_root>/sealed``); ``script``: the
+    script's sha256 (by default this file's)."""
     root, repo = Path(runs_root), Path(repo)
     state, endpoints = _reading(root, repo, candidate, None if theta0 is None else Path(theta0),
                                 expected_code)  # fmt: skip
@@ -238,7 +257,7 @@ def spread(
     by_id = {e.run_id: e for e in endpoints}
     needed = sorted({b["arms"][arm][end] for blocks, pair in ((af, "AF"), (pf or [], "PF"))
                      for b in blocks for arm in PAIRS[pair] for end in ("lo", "hi")})  # fmt: skip
-    harm_of = harm_of or _labels_reader()
+    harm_of = harm_of or _labels_reader(root / SEALED_DIR if sealed_dir is None else sealed_dir)
     harm = {run_id: harm_of(by_id[run_id]) for run_id in needed}
     try:  # labels are read: a failure names no value
         return spread_result(af, pf, harm, level=simulation["level"], candidate=candidate,
@@ -250,10 +269,14 @@ def spread(
         raise SpreadRefused(f"the computation failed ({type(exc).__name__})") from None
 
 
-def _labels_reader() -> Callable[[Endpoint], Harm]:
+def _labels_reader(sealed_dir: str | Path) -> Callable[[Endpoint], Harm]:
     """``harm_counts`` of an endpoint's run, under WildGuard's identity and the run's prompt set
-    (read once per set)."""
+    (read once per set), against the ledger's acceptances under ``sealed_dir`` (read once)."""
     identity = judge_identity(load_config(f"judge/{JUDGE}"))
+    try:
+        found = acceptances(Path(sealed_dir))
+    except LedgerError as exc:
+        raise SpreadRefused(str(exc)) from None
     sets: dict[str, Mapping[str, str]] = {}
 
     def read(endpoint: Endpoint) -> Harm:
@@ -262,7 +285,7 @@ def _labels_reader() -> Callable[[Endpoint], Harm]:
         key = OmegaConf.to_yaml(cfg.data) + str(cfg.eval.harmful.prompt_set)
         if key not in sets:
             sets[key] = harmful_prompts(cfg)
-        return harm_counts(endpoint.run_dir, identity, sets[key])
+        return harm_counts(endpoint.run_dir, identity, sets[key], accepted=found)
 
     return read
 
@@ -288,14 +311,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--theta0", required=True, type=Path)
     parser.add_argument("--candidate", required=True, type=int, choices=(1, 2))
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--sealed-dir", type=Path,
+                        help="the labeling's sealed directory, its ledger (default "
+                             "RUNS_DIR/sealed)")  # fmt: skip
     args = parser.parse_args(argv)
     if args.out.exists():
         parser.error(f"{args.out} exists: the output is written once")
     code = code_identity.gpu_code_identity(repo=REPO_ROOT)["sha256"]
     try:
-        result = spread(
-            args.runs_root, candidate=args.candidate, theta0=args.theta0, expected_code=code
-        )
+        result = spread(args.runs_root, candidate=args.candidate, theta0=args.theta0,
+                        expected_code=code, sealed_dir=args.sealed_dir)  # fmt: skip
     except SpreadRefused as exc:
         sys.exit(f"refused: {exc}")
     digest = write_output(args.out, result)

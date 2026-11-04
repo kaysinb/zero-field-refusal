@@ -1,13 +1,15 @@
 """Study 3's precommitted spread script (analysis/study3_spread.py): N from the sample SD of the
 A–F block differences through the one N rule, the rounding of the spread, the refusal of a run
-without a matching receipt, the route's cohort, and an output that holds nothing else and passes
-the n record's checks. Synthetic blocks, counts and harmless text only."""
+without a matching receipt or without its batch's acceptance, the route's cohort, and an output
+that holds nothing else and passes the n record's checks. Synthetic blocks, counts and harmless
+text only."""
 
 import hashlib
 import json
 import math
 import random
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -23,6 +25,7 @@ from zero_field_refusal.analysis.study3_decisions import (
     sample_size,
     upper_sd,
 )
+from zero_field_refusal.analysis.study3_label_cli import LEDGER, _write_whole, label_hashes
 from zero_field_refusal.analysis.study3_spread import (
     OUTPUT_FIELDS,
     Harm,
@@ -141,7 +144,7 @@ def labeled_run(root: Path, name: str, labels: list, *, receipt: bool = True) ->
     False."""
     run = root / name
     (run / "responses").mkdir(parents=True)
-    cfg = {"run_type": "train", "schedule": {"policy": "fixed"},
+    cfg = {"run_type": "train", "schedule": {"policy": "fixed"}, "data": {},
            "eval": {"harmful": {"prompt_set": "harmful_evaluation", "limit": None}}}  # fmt: skip
     OmegaConf.save(OmegaConf.create(cfg), run / "config.yaml")
     ids_hash = hashlib.sha256(json.dumps(IDS).encode()).hexdigest()
@@ -173,9 +176,42 @@ def labeled_run(root: Path, name: str, labels: list, *, receipt: bool = True) ->
 LABELS = ["harmful_compliance"] * 100 + ["refusal"] * 390 + ["safe_non_refusal"] * 10 + [None] * 21
 
 
-def test_a_runs_harm_is_counted_from_its_receipted_labels(tmp_path) -> None:
+def acceptance(*runs: Path, **change) -> dict:
+    """An acceptance of the labeling's ledger naming ``runs`` as their files are now."""
+    return {"kind": "study3-labeling-acceptance", "batch": "b", "attempt": 1, "judge": JUDGE,
+            "runs": {run.name: {**label_hashes(run, JUDGE), **change} for run in runs}}  # fmt: skip
+
+
+def test_a_runs_harm_is_counted_from_its_accepted_labels(tmp_path) -> None:
     run = labeled_run(tmp_path, "run-a", LABELS)
-    assert harm_counts(run, IDENTITY, PROMPTS) == Harm(521, 100, 21)
+    assert harm_counts(run, IDENTITY, PROMPTS, accepted=[acceptance(run)]) == Harm(521, 100, 21)
+
+
+@pytest.mark.parametrize("how", ["none", "another label file", "another receipt", "another judge"])
+def test_labels_without_their_batchs_acceptance_are_refused(tmp_path, how) -> None:
+    """A receipted run counts only through an acceptance naming its label file and receipt as
+    read, under this judge: otherwise refused, by its run id alone."""
+    run = labeled_run(tmp_path, "run-c", LABELS)
+    found = {"none": [], "another label file": [acceptance(run, labels_sha256="0" * 64)],
+             "another receipt": [acceptance(run, receipt_sha256="0" * 64)],
+             "another judge": [{**acceptance(run), "judge": "rubric_gemini"}]}[how]  # fmt: skip
+    with pytest.raises(SpreadRefused) as refused:
+        harm_counts(run, IDENTITY, PROMPTS, accepted=found)
+    message = str(refused.value)
+    assert message.startswith("run-c: its labels are not those of an accepted batch")
+    assert not any(c.isdigit() for c in message)
+
+
+def test_the_reader_reads_the_ledgers_acceptances(tmp_path, monkeypatch) -> None:
+    """The script's own reader takes the acceptances from the ledger under the sealed directory:
+    without one the run is refused, with one it is counted."""
+    run = labeled_run(tmp_path, "run-d", LABELS)
+    monkeypatch.setattr(study3_spread, "harmful_prompts", lambda cfg: PROMPTS)
+    endpoint = SimpleNamespace(run_id=run.name, run_dir=run)
+    with pytest.raises(SpreadRefused, match="run-d: its labels are not those of an accepted"):
+        study3_spread._labels_reader(tmp_path / "sealed")(endpoint)
+    _write_whole(tmp_path / "sealed" / LEDGER / "accepted-b-1.json", acceptance(run), once=True)
+    assert study3_spread._labels_reader(tmp_path / "sealed")(endpoint) == Harm(521, 100, 21)
 
 
 @pytest.mark.parametrize("how", ["no receipt", "label file changed"])
@@ -186,7 +222,7 @@ def test_a_run_without_a_matching_receipt_is_refused_by_its_id_alone(tmp_path, h
         with label_path(run, JUDGE).open("a") as f:
             f.write("\n")
     with pytest.raises(SpreadRefused) as refused:
-        harm_counts(run, IDENTITY, PROMPTS)
+        harm_counts(run, IDENTITY, PROMPTS, accepted=[acceptance(run)])
     message = str(refused.value)
     assert message.startswith("run-b: not labeled") and not any(c.isdigit() for c in message)
     assert refused.value.__cause__ is None and refused.value.__suppress_context__

@@ -30,9 +30,10 @@ records carry it), ``counts`` and ``items``, each ``item_id``, ``prompt_sha256``
 there (one of ``judge.LABELS``). No text, and no time stamp: the same archive gives the same bytes.
 
 **Rulings** where the registration leaves a detail open:
-- *The expected label is the label itself*, not only its two classes: a control whose label
-  moves between ``refusal`` and ``safe_non_refusal`` has changed too (the judge is frozen with
-  its template, parser and decoding, greedy).
+- *The expected label is the label itself*, recorded with its three classes; a labeling compares
+  it on the registered two-class outcome, harmful (``harmful_compliance``) or not
+  (``study3_label_cli.changed_controls``), and records the exact three-class agreement as a
+  diagnostic that gates nothing.
 - *What is verified at use* is each item's two sha256, as registered; the files' sha256 are
   recorded for provenance and not required, so that only a changed control item refuses.
 
