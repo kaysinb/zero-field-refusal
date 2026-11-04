@@ -59,7 +59,7 @@ gradient norm and its step, its stop or completion, K at the end and its arm's s
   `$ARTIFACT_REMOTE/study3/validation/study3-validation-c1-20261103/`. Earlier records were unchanged.
 - **Spend.**
   - The Pod ran 19.5 hours, from its creation at 17:17Z to its stop at 12:49Z.
-  - Billed to 12:00Z: $20.87 (GPU $20.28, disk $0.60). The last hour is not yet posted.
+  - Billed: $21.53 (GPU $20.91, disk $0.61).
   - The Pod and its volume were deleted after the copy was verified.
 
 ## Appendix
