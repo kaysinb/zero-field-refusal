@@ -1,0 +1,30 @@
+{
+  "kind": "fixation-confirmation",
+  "candidate": 1,
+  "written_at": "2026-11-04T20:41:59+00:00",
+  "validation_fixation": {
+    "path": "docs/study3-fixation-validation-c1.json",
+    "sha256": "d91ae420444ccbbcd5c34b67e5df95e186304dea1506466eb693b0bbc355962f",
+    "root": "repo"
+  },
+  "n": {
+    "path": "study3/decisions/n-c1.json",
+    "sha256": "e3d3bcc1315fa702fcb5778feee12883ff6d2d4071c7a39b82aa9e5d97948a7b"
+  },
+  "N": 60,
+  "cap": 74,
+  "budget": null,
+  "bootstrap": {
+    "seed": 20261105,
+    "resamples": 100000
+  },
+  "audit": {
+    "seed": 20261106,
+    "agreement_seed": 20261107,
+    "procedure": "pps-with-replacement-400-400-200"
+  },
+  "code": {
+    "commit": "0fcfaaf06f686d34d9339c52af0d56af5c2246e1",
+    "gpu_code_sha256": "717cd02317526179a821eb8eb57e85cefba9e49083108922013b2b353c45ebbc"
+  }
+}
