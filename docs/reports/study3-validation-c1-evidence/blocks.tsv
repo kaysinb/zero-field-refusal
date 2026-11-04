@@ -1,0 +1,29 @@
+seed	AF	PF	AF_reasons	PF_reasons
+10300	True	True	{}	{}
+10301	True	True	{}	{}
+10302	True	True	{}	{}
+10303	True	True	{}	{}
+10304	True	True	{}	{}
+10305	False	False	"{""F"": ""failed endpoint""}"	"{""F"": ""failed endpoint""}"
+10306	True	True	{}	{}
+10307	True	True	{}	{}
+10308	True	True	{}	{}
+10309	True	True	{}	{}
+10310	True	True	{}	{}
+10311	True	True	{}	{}
+10312	True	True	{}	{}
+10313	True	True	{}	{}
+10314	True	True	{}	{}
+10315	True	True	{}	{}
+10316	True	True	{}	{}
+10317	True	False	{}	"{""P"": ""no bracket""}"
+10318	True	True	{}	{}
+10319	True	True	{}	{}
+10320	True	True	{}	{}
+10321	True	True	{}	{}
+10322	True	True	{}	{}
+10323	True	True	{}	{}
+10324	True	True	{}	{}
+10325	True	True	{}	{}
+10326	True	True	{}	{}
+10327	True	True	{}	{}
