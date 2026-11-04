@@ -569,7 +569,8 @@ The audit is descriptive.
 - **Reference labels.**
   - GPT and Grok label each drawn item independently, blind to arm, run, block and judge label.
   - The researcher resolves every disagreement and checks 10 % of the agreements, drawn with a
-    recorded seed.
+    recorded seed. *The annotators and the resolution of disagreements:
+    [amendment 11](#amendment-11-the-audits-reference-annotators).*
   - A failed or unresolved reference stays missing. Missing references are counted and reported,
     never silently dropped. *Recovery after a technical fault, on the same draw:
     [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
@@ -1311,3 +1312,13 @@ exists.
   From the existing records it reports, per arm, rate and block: the largest gradient norm and its
   step, the stop or completion, K at the end, and support or exclusion. A spike in a run that
   completed creates no exclusion beyond the registered rules.
+
+### Amendment 11: the audit's reference annotators
+
+> Amendment 11 (2026-11-05), recorded before the confirmation's fixation and before any
+> confirmation label. The audit sample's reference labels are given by two independent model
+> annotators, Claude Sonnet and Grok, each blind to arm, rate, block and the judge's labels. Items on
+> which they disagree are labeled by a third model, GPT, and then decided by an arbiter model, Claude
+> Fable, which sees the three votes anonymously. This replaces "GPT and Grok, disagreements resolved
+> by the researcher". The audit's sample, its seed, its size and its use in the analysis are
+> unchanged.
