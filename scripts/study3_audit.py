@@ -1,7 +1,7 @@
 """Draw study 3's audit of the judge once the judge-based analysis is written, then take the
 reference labellers' agreements and estimate the judge's implied bias and error rates.
 
-    python scripts/study3_audit.py draw       --runs-root DIR --candidate N
+    python scripts/study3_audit.py draw       --runs-root DIR --candidate N [--sealed-dir DIR]
     python scripts/study3_audit.py agreements --runs-root DIR --candidate N --gpt FILE --grok FILE
     python scripts/study3_audit.py estimate   --runs-root DIR --candidate N --reference FILE
 
@@ -23,9 +23,11 @@ The audit's folder is RUNS_DIR/study3-final/c<N>/audit/, beside the analysis.
    (``study3_freeze.in_force_supplement``, by ``study3_versions.read_confirmation_fixation``):
    the seed, the agreement seed and the registered procedure;
 3. the per-item labels of every bracket run of the frozen comparisons (``study3_final.item_labels``,
-   their counts those of the runs' harm), the frame (``study3_audit.audit_frame``) and, per
-   estimable comparison, its judge point Σ c_i·y_J,i, which must be the analysis's primary mean to
-   1e-12 (a comparison without frame items: the analysis has no primary mean either);
+   the labels the labeling's ledger accepts, under ``--sealed-dir``, by default
+   ``<--runs-root>/sealed``; their counts those of the runs' harm), the frame
+   (``study3_audit.audit_frame``) and, per estimable comparison, its judge point Σ c_i·y_J,i,
+   which must be the analysis's primary mean to 1e-12 (a comparison without frame items: the
+   analysis has no primary mean either);
 4. the draw (``study3_audit.draw``) under the audit seed, and the blind texts of the distinct
    items drawn (``study3_final.blind_texts``: the prompt and the step-25 response), in the order
    of the stream ``stream(seed, "audit", "order")``, each with an opaque id from that stream;
@@ -249,15 +251,17 @@ def latest_analysis(root: Path, candidate: int,
     return path, record, data
 
 
-def frame_labels(freeze_: Mapping[str, Any], root: Path) -> dict[str, Any]:
+def frame_labels(freeze_: Mapping[str, Any], root: Path,
+                 sealed_dir: Path | None = None) -> dict[str, Any]:  # fmt: skip
     """The per-item labels of every bracket run of the frozen comparisons, through the final
-    reader; every refusal names ids and counts, or an error's type alone."""
+    reader, accepted by the ledger under ``sealed_dir``; every refusal names ids and counts, or
+    an error's type alone."""
     blocks = [b for entry in freeze_["comparisons"].values() for b in entry["blocks"]]
     experiment = root / EXPERIMENT
     runs = {run: experiment / run for run in study3_final.runs_of(blocks)}
     try:
         return study3_final.item_labels(runs, candidate=freeze_["candidate"], runs_root=root,
-                                        repo=REPO)  # fmt: skip
+                                        repo=REPO, sealed_dir=sealed_dir)  # fmt: skip
     except (study3_final.Pending, study3_final.ItemsRefused, SealedPoint) as exc:
         refuse("draw", str(exc))
     except (study2_labels.LabelsPending, LabelingProblem, LedgerError) as exc:
@@ -320,7 +324,7 @@ def draw(args: argparse.Namespace) -> None:
     audit, link = supplement("draw", root, candidate)
     # 3. the labels, the frame and its judge points
     try:
-        frame = study3_audit.audit_frame(freeze_, frame_labels(freeze_, root))
+        frame = study3_audit.audit_frame(freeze_, frame_labels(freeze_, root, args.sealed_dir))
     except ValueError as exc:  # the frame's refusals name run ids and counts
         refuse("draw", f"the audit's frame cannot be built: {exc}")
     points = judge_points(frame, analysis)
@@ -565,6 +569,9 @@ def main(argv: list[str] | None = None) -> None:
             help="RUNS_DIR: the run records, the labels and the analysis",
         )
         command.add_argument("--candidate", type=int, choices=(1, 2), required=True)
+    drawn.add_argument("--sealed-dir", type=Path,
+                       help="the labeling's sealed directory, its ledger in study3-ledger/ (by "
+                       "default <--runs-root>/sealed)")  # fmt: skip
     agreed.add_argument("--gpt", type=Path, required=True, help="GPT's labels (JSON)")
     agreed.add_argument("--grok", type=Path, required=True, help="Grok's labels (JSON)")
     estimated.add_argument("--reference", type=Path, required=True,

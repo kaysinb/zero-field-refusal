@@ -2,10 +2,15 @@
 the final report's facts.
 
     python scripts/study3_analysis.py freeze  --runs-root DIR --candidate N [--theta0 RUN_DIR]
+        [--sealed-dir DIR]
     python scripts/study3_analysis.py analyze --runs-root DIR --candidate N [--theta0 RUN_DIR]
-        [--supersedes-reason ID]
+        [--sealed-dir DIR] [--supersedes-reason ID]
     python scripts/study3_analysis.py report  --runs-root DIR --billing FILE --embargo FILE
-        [--theta0 RUN_DIR] [--out DIR]
+        [--theta0 RUN_DIR] [--sealed-dir DIR] [--out DIR]
+
+``--sealed-dir`` is the labeling's sealed directory (``study3_label_cli``'s ``--sealed-dir``), whose
+``study3-ledger/`` holds the labeling's batches and acceptances; by default
+``<--runs-root>/sealed``, the labeling's default when ``--runs-root`` is RUNS_DIR.
 
 docs/study3-preregistration.md: "Seeds and order" (order steps 9–11 and 13: the cohorts and K*_h
 frozen before any confirmation label is opened, the labeling of the confirmation, the judge-based
@@ -17,12 +22,13 @@ supersession", "Disclosure" and amendments 4–6 (what the final report states).
 
 **freeze** writes candidate N's analysis freeze (``study3_freeze.analysis_freeze``: the cohorts,
 A − P's blocks, K*_h and the matched blocks, validation's blocks, from the study's state at
-``done``, θ₀ from --theta0; the labeling ledger's run ids, ``study3_labels.ledger_runs``, for the
-check that no confirmation label exists yet) at docs/study3-analysis-freeze-c<N>.json, once. It
-needs a clean checkout of a known commit: the record's code is HEAD's commit and that commit's GPU
-code. It prints the record's path; the record is then committed alone, before any confirmation
-label. It reads no label: of the sealed folders it reads the labeling ledger's run ids alone
-(through ``ledger_runs``), and nothing of a run's.
+``done``, θ₀ from --theta0; the labeling ledger's run ids, ``study3_labels.ledger_runs``: every
+run a batch file names, for the check that no confirmation label exists yet) at
+docs/study3-analysis-freeze-c<N>.json, once. It needs a clean checkout of a known commit: the
+record's code is HEAD's commit and that commit's GPU code. It prints the record's path; the
+record is then committed alone, before any confirmation label. It reads no label: of the sealed
+folders it reads the labeling ledger's run ids alone (through ``ledger_runs``), and nothing of a
+run's.
 
 **analyze** runs the judge-based analysis on the frozen cohorts:
 1. the analysis freeze, read by the gate's own reading (``study3_freeze.read_freeze``), with no
@@ -64,8 +70,8 @@ researcher's. Its inputs, gathered label-free:
 3. the analysis freeze (``read_freeze``, no problem) when it is written;
 4. the labeling ledger's answers, through the label reader's ledger readers alone:
    ``labeling_problems`` (the runs with a technical labeling problem) and ``diagnoses`` (the
-   diagnosis records; one whose cause is ``judge`` makes the report the ``judge_technical``
-   variant, which states every such diagnosis);
+   diagnosis records, of which the labeling's ledger records none; one whose cause is ``judge``
+   would make the report the ``judge_technical`` variant, which states every such diagnosis);
 5. the latest analysis and its validation harm (each naming the committed freeze by its sha256,
    validation's harm naming the analysis by its sha256), and the audit's estimate (naming its
    selection and agreements by their sha256, the selection naming the freeze and an analysis of
@@ -175,7 +181,6 @@ from zero_field_refusal.analysis.study3_labels import (
     diagnoses,
     labeling_problems,
     ledger_runs,
-    record_path,
 )
 from zero_field_refusal.analysis.study3_progress import COMPARISONS, code_chain, read_state
 from zero_field_refusal.analysis.study3_records import EXPERIMENT
@@ -250,7 +255,7 @@ def freeze(args: argparse.Namespace) -> None:
         refuse("freeze", f"{name} is written once: it exists already")
     code = head_code("freeze")
     try:
-        ledger = ledger_runs(args.runs_root)
+        ledger = ledger_runs(args.runs_root, args.sealed_dir)
     except LedgerError as exc:
         refuse("freeze", f"the labeling ledger cannot be read: {exc}")
     try:
@@ -375,17 +380,19 @@ def predecessor(path: Path, frozen: Mapping[str, str], inputs: Mapping[str, Any]
 
 
 def labels(freeze_: Mapping[str, Any], endpoints: Sequence[Any], root: Path,
-           run_dirs: Mapping[str, Path] | None = None,
-           analysis: Path | None = None) -> tuple[dict, dict]:  # fmt: skip
+           run_dirs: Mapping[str, Path] | None = None, analysis: Path | None = None,
+           sealed_dir: Path | None = None) -> tuple[dict, dict]:  # fmt: skip
     """Step 4 (``study3_final.gather``), or, with ``run_dirs``, the harm of those runs alone
     (``study3_final.cohort_harm``: step 7's, validation's runs read under the written analysis
-    ``analysis``); every refusal names ids, counts and types only."""
+    ``analysis``), the labels accepted by the ledger under ``sealed_dir``; every refusal names
+    ids, counts and types only."""
     try:
         if run_dirs is not None:
             return study3_final.cohort_harm(run_dirs, candidate=freeze_["candidate"],
-                                            runs_root=root, repo=REPO,
-                                            analysis=analysis), {}  # fmt: skip
-        return study3_final.gather(freeze_, endpoints, runs_root=root, repo=REPO)
+                                            runs_root=root, repo=REPO, analysis=analysis,
+                                            sealed_dir=sealed_dir), {}  # fmt: skip
+        return study3_final.gather(freeze_, endpoints, runs_root=root, repo=REPO,
+                                   sealed_dir=sealed_dir)  # fmt: skip
     except study3_final.Pending as exc:
         refuse("analyze", str(exc))
     except (study3_final.SpreadRefused, SealedPoint) as exc:
@@ -476,7 +483,8 @@ def analyze(args: argparse.Namespace) -> None:
             if reason is not None:
                 refuse("analyze", f"{names(k)[0]} has no {names(k)[1]} yet: complete it without "
                        "--supersedes-reason first")  # fmt: skip
-            resume(root, candidate, code, frozen, inputs, freeze_, folder, k, data)
+            resume(root, candidate, code, frozen, inputs, freeze_, folder, k, data,
+                   args.sealed_dir)  # fmt: skip
             return
         if reason is None:
             refuse("analyze", f"{names(k)[0]} and {names(k)[1]} are written: a recomputation "
@@ -499,7 +507,7 @@ def analyze(args: argparse.Namespace) -> None:
     except (OSError, ValueError) as exc:
         refuse("analyze", f"the study's state cannot be read ({type(exc).__name__})")
     gates = utility_gates(freeze_, state, endpoints)
-    harm, spread = labels(freeze_, endpoints, root)
+    harm, spread = labels(freeze_, endpoints, root, sealed_dir=args.sealed_dir)
     # 5. the analysis
     bootstrap = inputs["bootstrap"]
     kappa = inputs["kappa"]
@@ -522,12 +530,12 @@ def analyze(args: argparse.Namespace) -> None:
     for key, entry in result["comparisons"].items():
         print(f"{key}: n {entry['n']}, {entry['wording']['row']}")
     # 7. only then validation's labels, and validation's harm
-    resume(root, candidate, code, frozen, inputs, freeze_, folder, k + 1, data)
+    resume(root, candidate, code, frozen, inputs, freeze_, folder, k + 1, data, args.sealed_dir)
 
 
 def resume(root: Path, candidate: int, code: Mapping[str, str], frozen: Mapping[str, str],
            inputs: Mapping[str, Any], freeze_: Mapping[str, Any], folder: Path, k: int,
-           data: bytes) -> None:  # fmt: skip
+           data: bytes, sealed_dir: Path | None = None) -> None:  # fmt: skip
     """Validation's harm, once the k-th analysis (its bytes ``data``) is written (step 7, and
     the restart of module docstring, "Restart and supersession"): the harm of validation's frozen
     runs, read through the final reader only now, then ``validation-harm.json`` naming the
@@ -537,7 +545,7 @@ def resume(root: Path, candidate: int, code: Mapping[str, str], frozen: Mapping[
     experiment = root / EXPERIMENT
     run_dirs = {run: experiment / run for run in study3_final.runs_of(blocks)}
     analysis, path = (folder / part for part in names(k))
-    harm, _ = labels(freeze_, (), root, run_dirs, analysis)
+    harm, _ = labels(freeze_, (), root, run_dirs, analysis, sealed_dir)
     validation = validation_record(candidate, code, frozen, inputs, freeze_, harm, analysis, data)
     publish("analyze", path, root, encoded(validation))
     print(path)
@@ -589,11 +597,11 @@ def report(args: argparse.Namespace) -> None:
     }  # fmt: skip
     # 4. the labeling ledger's answers: the runs with a technical problem, the diagnoses
     try:
-        problems = labeling_problems(root)
-        found = diagnoses(root)
+        problems = labeling_problems(root, args.sealed_dir)
+        found = diagnoses(root, args.sealed_dir)
     except LedgerError as exc:
         refuse("report", f"the labeling ledger cannot be read: {exc}")
-    judged = [{"path": record_path(d.batch), "sha256": d.sha256, "batch": d.batch,
+    judged = [{"path": d.path.relative_to(root).as_posix(), "sha256": d.sha256, "batch": d.batch,
                "cause": d.cause, "diagnosis": d.diagnosis,
                "evidence": [dict(e) for e in d.evidence]}
               for d in found if d.cause == "judge"]  # fmt: skip
@@ -791,6 +799,9 @@ def main(argv: list[str] | None = None) -> None:
         command.add_argument("--theta0", type=Path,
                              help="θ₀'s evaluation (by default study 2's under "
                              "RUNS_DIR)")  # fmt: skip
+        command.add_argument("--sealed-dir", type=Path,
+                             help="the labeling's sealed directory, its ledger in study3-ledger/ "
+                             "(by default <--runs-root>/sealed)")  # fmt: skip
     for command in (frozen, analyzed):
         command.add_argument("--candidate", type=int, choices=(1, 2), required=True)
     analyzed.add_argument("--supersedes-reason",

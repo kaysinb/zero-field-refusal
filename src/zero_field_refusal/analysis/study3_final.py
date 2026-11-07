@@ -30,12 +30,13 @@ is touched; the label reader's own functions (``study3_labels.harm_many``, ``run
   the analysis is written.
 - ``runs_of``: the run ids of frozen blocks.
 
-**Pending is never missing.** A run whose labels do not count yet (``LabelsPending``: not in a
-batch its controls accepted) or that is a technical labeling problem (``LabelingProblem``: its
-rounds spent after a rejected generation, or superseded under the judge's unresolved mark) holds
-the analysis up: ``cohort_harm`` raises ``Pending`` naming every such run of the cohort, and no
-count is returned. Neither state is ever read as 521 missing labels; missing labels count only
-under an accepted receipt, as the run's ``RunHarm`` gives them.
+**Pending is never missing.** A run whose labels do not count yet (``LabelsPending``: no
+acceptance of the labeling names its label file and receipt as they are) or that is a technical
+labeling problem (``LabelingProblem``: its batch under the judge's unresolved mark, or no
+labeling round left to it) holds the analysis up: ``cohort_harm`` raises ``Pending`` naming
+every such run of the cohort, and no count is returned. Neither state is ever read as 521
+missing labels; missing labels count only under an accepted receipt, as the run's ``RunHarm``
+gives them.
 
 **The spread of K.** A run's ``observations/measurements.jsonl`` is read as bytes. A line counts
 only when it fullmatches ``KL_ROW``, the bytes of a K row as the evaluation writes it
@@ -202,6 +203,7 @@ def cohort_harm(
     runs_root: Path,
     repo: Path,
     analysis: Path | None = None,
+    sealed_dir: Path | None = None,
 ) -> dict[str, RunHarm]:
     """The harm of each run of ``run_dirs`` (run id → its folder), by run id, from one
     ``harm_many`` call at the point ``final``, gated once (module docstring). A run of the
@@ -210,7 +212,8 @@ def cohort_harm(
     sha256 now (``SealedPoint`` otherwise, before any label; an ``analysis`` given is checked
     so in any case). ``Pending`` names every pending run and every technical labeling problem of
     the cohort when that reading raises for one; ``ValueError`` for a folder not named by its run
-    id or n ≠ 521."""
+    id or n ≠ 521. ``sealed_dir``: the labeling's sealed directory, whose ledger accepts the labels
+    (``study3_labels.sealed_dir_of``: ``<runs root>/sealed`` by default)."""
     _gate(candidate, runs_root, repo)
     runs_root, repo = Path(runs_root), Path(repo)
     validation = sorted(set(run_dirs) & _validation_runs(candidate, repo))
@@ -220,7 +223,7 @@ def cohort_harm(
                           "analysis given")  # fmt: skip
     if analysis is not None:
         _analysis_of(Path(analysis), candidate, runs_root, repo)
-    return _harm(run_dirs, candidate, runs_root, repo)
+    return _harm(run_dirs, candidate, runs_root, repo, sealed_dir)
 
 
 def _validation_runs(candidate: int, repo: Path) -> set[str]:
@@ -237,8 +240,8 @@ def _validation_runs(candidate: int, repo: Path) -> set[str]:
                           "nothing is read") from exc  # fmt: skip
 
 
-def _harm(run_dirs: Mapping[str, Path], candidate: int, runs_root: Path,
-          repo: Path) -> dict[str, RunHarm]:  # fmt: skip
+def _harm(run_dirs: Mapping[str, Path], candidate: int, runs_root: Path, repo: Path,
+          sealed_dir: Path | None = None) -> dict[str, RunHarm]:  # fmt: skip
     dirs: dict[str, Path] = {}
     for run_id, run_dir in run_dirs.items():
         if Path(run_dir).name != run_id:
@@ -247,9 +250,9 @@ def _harm(run_dirs: Mapping[str, Path], candidate: int, runs_root: Path,
     ids = list(dirs)
     try:
         found = harm_many([dirs[run] for run in ids], point=POINT, candidate=candidate,
-                          runs_root=runs_root, repo_root=repo)  # fmt: skip
+                          runs_root=runs_root, repo_root=repo, sealed_dir=sealed_dir)  # fmt: skip
     except (study2_labels.LabelsPending, LabelingProblem) as exc:  # the label reader's pending
-        pending = _culprits(dirs, exc, candidate, runs_root, repo)
+        pending = _culprits(dirs, exc, candidate, runs_root, repo, sealed_dir)
         if pending is None:
             raise
         raise pending from exc
@@ -262,24 +265,24 @@ def _harm(run_dirs: Mapping[str, Path], candidate: int, runs_root: Path,
 
 
 def _culprits(dirs: Mapping[str, Path], raised: Exception, candidate: int, runs_root: Path,
-              repo: Path) -> Pending | None:  # fmt: skip
+              repo: Path, sealed_dir: Path | None = None) -> Pending | None:  # fmt: skip
     """The cohort's technical labeling problems and its other runs that are pending, named without
     reading a label; None when no run is either.
 
     Each run is asked through ``study3_labels._gated``, the label reader's gate steps alone (the
-    point and its run set, the run's folder, its generation in the ledger, its acceptance with its
-    batch's controls and its receipt's sha256), which stop before ``_read_run`` opens a label:
+    point and its run set, the run's folder, its acceptance in the labeling's ledger, its label
+    file and receipt hashed, not parsed), which stop before ``_read_run`` opens a label:
     ``run_harm`` would read the labels of every countable run of a refused cohort. A pending
     reading the gates do not show (``raised``: one that arose while a run's labels were read, a
     ``study2_labels.LabelsPending`` of its receipt included) names the run its message names, as
     the label reader writes it (``<run id>: ...``, or the run's folder in a path)."""
-    problems = set(labeling_problems(runs_root)) & set(dirs)
+    problems = set(labeling_problems(runs_root, sealed_dir)) & set(dirs)
     pending = []
     for run, run_dir in dirs.items():
         if run in problems:
             continue
         try:
-            study3_labels._gated([run_dir], POINT, candidate, runs_root, repo)
+            study3_labels._gated([run_dir], POINT, candidate, runs_root, repo, sealed_dir)
         except study2_labels.LabelsPending:  # study3_labels.LabelsPending is one
             pending.append(run)
         except LabelingProblem:
@@ -294,7 +297,12 @@ def _culprits(dirs: Mapping[str, Path], raised: Exception, candidate: int, runs_
 
 
 def item_labels(
-    run_dirs: Mapping[str, Path], *, candidate: int, runs_root: Path, repo: Path
+    run_dirs: Mapping[str, Path],
+    *,
+    candidate: int,
+    runs_root: Path,
+    repo: Path,
+    sealed_dir: Path | None = None,
 ) -> dict[str, tuple[ItemLabel, ...]]:
     """Each run's items at the endpoint (``study3_labels.run_items`` at the point ``final``), by
     run id (run id → its folder), gated once: first the runs' harm, from one reading under
@@ -304,8 +312,9 @@ def item_labels(
     naming the run and the counts."""
     _gate(candidate, runs_root, repo)
     runs_root, repo = Path(runs_root), Path(repo)
-    harms = _harm(run_dirs, candidate, runs_root, repo)
-    given = {"point": POINT, "candidate": candidate, "runs_root": runs_root, "repo_root": repo}
+    harms = _harm(run_dirs, candidate, runs_root, repo, sealed_dir)
+    given = {"point": POINT, "candidate": candidate, "runs_root": runs_root, "repo_root": repo,
+             "sealed_dir": sealed_dir}  # fmt: skip
     out = {}
     for name, run_dir in run_dirs.items():
         items = tuple(run_items(Path(run_dir), **given))
@@ -484,7 +493,12 @@ def runs_of(blocks: Iterable[Mapping[str, Any]]) -> list[str]:
 
 
 def gather(
-    freeze: Mapping[str, Any], endpoints: Sequence[Endpoint], *, runs_root: Path, repo: Path
+    freeze: Mapping[str, Any],
+    endpoints: Sequence[Endpoint],
+    *,
+    runs_root: Path,
+    repo: Path,
+    sealed_dir: Path | None = None,
 ) -> tuple[dict[str, RunHarm], dict[str, list[float]]]:
     """For the analysis of the freeze ``freeze`` (``study3_freeze``'s record): first the spread of
     K of every bracket run of its comparisons, each checked against its endpoint's K
@@ -507,5 +521,5 @@ def gather(
               for run in brackets}  # fmt: skip
     named = runs_of([*comparisons, *freeze["a_minus_p"]["blocks"],
                      *freeze["k_harmful"]["blocks"]])  # fmt: skip
-    harm = _harm({run: experiment / run for run in named}, candidate, runs_root, repo)
+    harm = _harm({run: experiment / run for run in named}, candidate, runs_root, repo, sealed_dir)
     return harm, spread

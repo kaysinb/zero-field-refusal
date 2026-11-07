@@ -91,8 +91,8 @@ class World:
             if e.cell.step == "confirmation" and e.K is not None:
                 self.k_rows(e.run_id, e.K)
 
-    def ledger_runs(self, runs_root) -> frozenset[str]:
-        self.ledger.append(Path(runs_root))
+    def ledger_runs(self, runs_root, sealed_dir=None) -> frozenset[str]:
+        self.ledger.append((Path(runs_root), sealed_dir))
         return frozenset()
 
     def harm_many(self, dirs, **kw) -> list[RunHarm]:
@@ -102,12 +102,12 @@ class World:
         self.reads.append((written, sorted(Path(d).name for d in dirs)))
         return [self.harm(d) for d in dirs]
 
-    def gated(self, run_dirs, point, candidate, runs_root, repo_root) -> list:
+    def gated(self, run_dirs, point, candidate, runs_root, repo_root, sealed_dir=None) -> list:
         """The label reader's gate steps: ``raised`` for the culprit, the others passing."""
         for run_dir in run_dirs:
             if Path(run_dir).name == self.culprit:
                 raise self.raised(f"{self.culprit}: not countable")
-        return [(Path(run_dir), None, "f" * 64) for run_dir in run_dirs]
+        return [(Path(run_dir), None) for run_dir in run_dirs]
 
     def harm(self, run_dir) -> RunHarm:
         e = self.by_id[Path(run_dir).name]
@@ -117,7 +117,7 @@ class World:
                        missing=e.seed % 3,
                        receipt_sha256="f" * 64)  # fmt: skip
 
-    def problems(self, runs_root) -> tuple[str, ...]:
+    def problems(self, runs_root, sealed_dir=None) -> tuple[str, ...]:
         return (self.culprit,) if self.culprit and self.raised is LabelingProblem else ()
 
     def k_rows(self, run: str, k: float) -> None:
@@ -205,14 +205,15 @@ def test_freeze_is_refused_before_done_and_on_a_dirty_checkout(tmp_path, monkeyp
 def test_freeze_writes_the_record_once_and_reads_no_label(world, monkeypatch) -> None:
     calls = raisers(monkeypatch)
     guard = SealedGuard(monkeypatch, runs_root=world.root)
-    out = world.run("freeze", "--runs-root", world.root, "--candidate", "1")
+    sealed = world.root.parent / "sealed-elsewhere"  # the labeling's --sealed-dir, passed on
+    out = world.run("freeze", "--runs-root", world.root, "--candidate", "1", "--sealed-dir", sealed)
     assert freeze_name(1) in out and "commit it alone before any confirmation label" in out
     path = world.repo / freeze_name(1)
     record = json.loads(path.read_text())
     assert record["kind"] == "analysis-freeze" and record["candidate"] == 1
     assert record["code"] == {"commit": world.head, "gpu_code_sha256": EXPECTED}
     assert path.read_text() == json.dumps(record, indent=2, sort_keys=True) + "\n"
-    assert world.ledger == [world.root]
+    assert world.ledger == [(world.root, sealed)]
     assert "written once" in world.refused("freeze", "--runs-root", world.root, "--candidate", "1")
     assert json.loads(path.read_text()) == record
     assert guard.attempts == [] and calls == []

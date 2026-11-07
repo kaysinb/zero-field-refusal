@@ -52,8 +52,8 @@ labeling refuses a confirmation run while the gate names a problem.
   from its ``code.commit`` (``committed_changes``), and HEAD and the checkout hold it unchanged.
 - *No confirmation label before the freeze.* For every confirmation run of the candidate (any
   state; a run whose candidate is not bound included), no ``judge`` or ``judge-superseded`` entry
-  exists in its folder (a dangling link included), and the labeling ledger
-  (RUNS_DIR/study3/labeling/) names none of them.
+  exists in its folder (a dangling link included), and no batch file of the labeling ledger
+  (``study3_label_cli``'s, <sealed dir>/study3-ledger/) names any of them.
 - *The cohorts* are the state's: per comparison its analysis blocks, at N its first N supported
   blocks by seed order, at the cap all its supported blocks. A comparison's unknown blocks are its
   started blocks unsupported for it.
@@ -106,7 +106,7 @@ FIELDS = ("kind", "candidate", "written_at", "code", "supplement", "confirmation
           "a_minus_p", "k_harmful", "validation", "labels")  # fmt: skip
 UNFROZEN = ("written_at", "code", "labels")  # what the gate does not rebuild
 TRACES = ("judge", "judge-superseded")  # a run's folders of judge outputs: a label's trace
-LEDGER = "RUNS_DIR/study3/labeling/"  # the labeling's ledger
+LEDGER = "<sealed dir>/study3-ledger/"  # the labeling's ledger (study3_label_cli)
 _HEX = frozenset("0123456789abcdef")
 
 

@@ -1,9 +1,12 @@
-"""Study 3's label reader (analysis/study3_labels.py): the labeling ledger, the two points where
-harm leaves sealed storage, and the one reader of a run's harm and of its items.
+"""Study 3's label reader (analysis/study3_labels.py): the two points where harm leaves sealed
+storage, and the one reader of a run's harm and of its items, over the labeling command's ledger
+(``study3_label_cli``: its batch files and acceptances under ``<sealed dir>/study3-ledger/``).
 
 The runs are tests/test_study2_labels.py's (six benign placeholder prompts at step 25), placed
 under ``<runs root>/study3/`` and labeled through ``run_judging.label_runs`` against a fake judge
-server that answers by content (``ContentJudge``). Nothing reads a runs/ folder of the checkout."""
+server that answers by content (``ContentJudge``). The ledger's files are written by the labeling
+command's own writers (``_new_batch``, ``_write_batch``, ``_write_whole``, ``label_hashes``), or by
+its ``label_batch`` itself. Nothing reads a runs/ folder of the checkout."""
 
 import hashlib
 import inspect
@@ -16,37 +19,44 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import test_study3_package2
-from test_study2_labels import IDENTITY, IDS, JUDGE, PROMPTS, factory, make_run
+from test_study2_labels import IDS, JUDGE, PROMPTS, factory, make_run
 from test_study3_package2 import SealedGuard
 from test_study3_progress import Study
 from test_study3_records import World as RecordsWorld
 
 from zero_field_refusal import code_identity
-from zero_field_refusal.analysis import study3_labels, study3_progress, study3_versions
+from zero_field_refusal.analysis import (
+    study3_label_cli,
+    study3_labels,
+    study3_progress,
+    study3_versions,
+)
 from zero_field_refusal.analysis.evidence import label_path
 from zero_field_refusal.analysis.study2_label_cli import LABELED
+from zero_field_refusal.analysis.study3_label_cli import (
+    ACCEPTANCE_KIND,
+    LEDGER,
+    _new_batch,
+    _write_batch,
+    _write_whole,
+    label_batch,
+    label_hashes,
+)
 from zero_field_refusal.analysis.study3_labels import (
-    DIAGNOSIS_KIND,
     ITEM_LABELS,
     LabelingProblem,
     LabelsPending,
     LedgerError,
     RunHarm,
     SealedPoint,
-    append_event,
     diagnoses,
     harm_many,
     labeling_problems,
-    ledger_dir,
-    ledger_lock,
     ledger_runs,
     open_point,
     read_ledger,
-    resolve_torn,
     run_harm,
     run_items,
-    torn_tail,
 )
 from zero_field_refusal.analysis.study3_progress import THETA0_RUN
 from zero_field_refusal.analysis.study3_records import SEEDS
@@ -57,11 +67,6 @@ HARMFUL_REPLY = "Harmful request: yes\nResponse refusal: no\nHarmful response: y
 REFUSAL_REPLY = "Harmful request: yes\nResponse refusal: yes\nHarmful response: no"
 GARBLED = "cannot classify"
 WHEN = "2026-10-31T12:00:00+00:00"
-# The torn tail's refusal, by its own words (never matched through the folder's path)
-TORN = (r"its last line is torn \(a crash while it was written\): nothing is read or appended "
-        r"until `python -m zero_field_refusal\.analysis\.study3_label_cli resolve-torn` repairs "
-        "it")  # fmt: skip
-NOT_TORN = "the labeling ledger's journal is not torn: nothing to resolve"
 
 
 def sha256(path: Path) -> str:
@@ -100,6 +105,47 @@ def study3_run(root: Path, name: str, harmful=(0, 1), unparseable=(2,)) -> Path:
 
 def label(run: Path, rounds: int) -> None:
     label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(ContentJudge()), rounds=rounds)
+
+
+# ------------------------------------------------------------------ the labeling's ledger
+
+
+def sealed(root: Path) -> Path:
+    """The labeling's sealed directory by default: ``<runs root>/sealed``."""
+    return root / "sealed"
+
+
+def batch_of(root: Path, runs, *, charged=None, mark: bool = False, judge: str = JUDGE,
+             directory: Path | None = None) -> dict:  # fmt: skip
+    """A batch of the ledger holding ``runs`` (their folders), made and written by the labeling
+    command's own functions, its runs' ``charged`` rounds (by run id) and its judge's ``mark``
+    set as the labeling sets them after a quarantine and a second change."""
+    batch = _new_batch([Path(run) for run in runs], judge)
+    for run, rounds in (charged or {}).items():
+        batch["rounds"][run]["charged"] = rounds
+    batch["judge_mark"] = mark
+    _write_batch(sealed(root) if directory is None else directory, batch)
+    return batch
+
+
+def accept(root: Path, batch: dict, runs, attempt: int = 1, judge: str = JUDGE,
+           directory: Path | None = None) -> None:  # fmt: skip
+    """The acceptance of ``runs`` by ``batch``'s attempt ``attempt``, as the labeling writes it
+    once the controls after the attempt passed: each run's label file and receipt as they are."""
+    folder = sealed(root) if directory is None else directory
+    _write_whole(folder / LEDGER / f"accepted-{batch['batch']}-{attempt}.json",
+                 {"kind": ACCEPTANCE_KIND, "batch": batch["batch"], "attempt": attempt,
+                  "judge": judge, "accepted_at": WHEN,
+                  "runs": {Path(run).name: label_hashes(Path(run), JUDGE) for run in runs}},
+                 once=True)  # fmt: skip
+
+
+def accepted_run(root: Path, name: str, rounds: int = 3, **kw) -> Path:
+    """A run labeled with ``rounds`` rounds, in a batch of its own that accepted it."""
+    run = study3_run(root, name, **kw)
+    label(run, rounds)
+    accept(root, batch_of(root, [run]), [run])
+    return run
 
 
 @pytest.fixture
@@ -174,11 +220,8 @@ class Bound:
                       **{r: ("confirmation", 1, "usable") for r in self.confirmation_runs},
                       "s1": ("search", 1, "usable"), "c3": ("confirmation", 1, "refused"),
                       "w1": ("validation", 2, "usable")}  # fmt: skip
-        for i, name in enumerate(self.cells, start=1):
-            run = study3_run(root, name)
-            label(run, 3)
-            open_generation(root, name, 1, cap=3, batch=f"b{i:04d}")
-            accept(root, run, 1, f"b{i:04d}")
+        for name in self.cells:
+            accepted_run(root, name)
         state = {"prescribed": self.PRESCRIBED}
         monkeypatch.setattr(study3_labels, "_state", lambda runs_root, repo_root: state)
         monkeypatch.setattr(study3_labels, "EndpointReader", self.reader)
@@ -210,143 +253,86 @@ def bound_world(root, monkeypatch) -> Bound:
     return Bound(root, monkeypatch)
 
 
-def ledger_guard(monkeypatch, root: Path) -> SealedGuard:
-    """``SealedGuard`` with the ledger readable: a run's judge outputs and their superseded copies
-    stay sealed."""
-    monkeypatch.setattr(test_study3_package2, "UNDER_RUNS", ("judge", "judge-superseded"))
-    return SealedGuard(monkeypatch, runs_root=root)
-
-
-# ------------------------------------------------------------------ journal lines
-
-
-def generation_line(run: str, number: int = 1, cap: int = 3, batch: str = "b0001",
-                    why: str | None = None) -> dict:  # fmt: skip
-    return {"event": "generation", "batch": batch, "run": run, "generation": number, "cap": cap,
-            "why": why if why or number == 1 else "control_change"}  # fmt: skip
-
-
-def open_generation(root: Path, run: str, number: int, cap: int, batch: str = "b0001") -> None:
-    append_event(root, generation_line(run, number, cap, batch))
-
-
-def superseded(batch: str, run: str, number: int, rounds_used: int, k: int = 1,
-               reason: str = "control_change") -> dict:  # fmt: skip
-    target = f"judge-superseded/{batch}/g{number}"
-    target += "-unverified" if reason == "unverified" else ""
-    return {"event": "superseded", "batch": batch, "k": k, "run": run, "generation": number,
-            "reason": reason, "rounds_used": rounds_used, "target": target,
-            "moved": []}  # fmt: skip
-
-
-def mark(batch: str, candidate: int, why: str, runs: list[str]) -> dict:
-    second = ["c000000000005"] if why == "second_change" else None
-    return {"event": "mark", "batch": batch, "candidate": candidate, "why": why,
-            "changed": {"1": ["c000000000003"], "2": second}, "runs": runs}  # fmt: skip
-
-
-def diagnosis_record(batch: str, cause: str, diagnosis: str) -> dict:
-    return {"kind": DIAGNOSIS_KIND, "batch": batch, "written_at": WHEN, "cause": cause,
-            "diagnosis": diagnosis, "evidence": []}  # fmt: skip
-
-
-def publish(root: Path, batch: str, record: dict) -> Path:
-    """The diagnosis record of ``batch``, published in the ledger's folder."""
-    path = ledger_dir(root) / f"diagnosis-{batch}.json"
-    path.write_text(json.dumps(record, indent=1) + "\n")
-    return path
-
-
-def diagnosed(root: Path, batch: str, cause: str, diagnosis: str = "placeholder line") -> dict:
-    """The ``diagnosed`` line of a stub record, published first."""
-    path = publish(root, batch, diagnosis_record(batch, cause, diagnosis))
-    return {"event": "diagnosed", "batch": batch, "cause": cause,
-            "record": {"path": f"study3/labeling/{path.name}", "sha256": sha256(path)}}  # fmt: skip
-
-
-def write_stub_diagnosis(root: Path, batch: str, cause: str, diagnosis: str) -> Path:
-    """A mark of ``batch`` and its diagnosis: the record published, then its line."""
-    append_event(root, mark(batch, 1, "second_change", []))
-    append_event(root, diagnosed(root, batch, cause, diagnosis))
-    return ledger_dir(root) / f"diagnosis-{batch}.json"
-
-
-def accept(root, run, generation=1, batch="b0001", k=1, attempt=1):
-    receipt = sha256(receipt_path(run, JUDGE))
-    append_event(root, {"event": "labeled", "batch": batch, "k": k, "attempt": attempt, "runs": [
-        {"run": run.name, "status": LABELED, "receipt_sha256": receipt}]})  # fmt: skip
-    append_event(root, {"event": "controls", "batch": batch, "k": k, "attempt": attempt,
-                        "accepted": True, "changed": [], "parsed_changed": [],
-                        "cache": {"path": "c", "sha256": "0" * 64}, "covers": [{
-                            "run": run.name, "generation": generation, "receipt_sha256": receipt,
-                            "labels_sha256": sha256(label_path(run, JUDGE))}]})  # fmt: skip
-
-
-def generation_run(root: Path, name: str, *, generation: int, cap: int, rounds: int,
-                   unparseable: int) -> Path:  # fmt: skip
-    """A run whose ``generation`` is journaled open at ``cap`` (each earlier one used one round
-    and was superseded), labeled with ``rounds`` rounds, ``unparseable`` items never parsing."""
-    run = study3_run(root, name, unparseable=tuple(range(2, 2 + unparseable)))
-    for number in range(1, generation):
-        open_generation(root, name, number, cap=3 - (number - 1))
-        append_event(root, superseded("b0001", name, number, rounds_used=1))
-    open_generation(root, name, generation, cap=cap)
-    label(run, rounds)
-    return run
-
-
-def journal(root: Path) -> Path:
-    return ledger_dir(root) / "journal.jsonl"
-
-
-def opened_line(batch: str, runs: list[str], candidate: int = 1) -> dict:
-    """An ``opened`` line of ``batch`` with ``runs``, for ``candidate``'s validation."""
-    return {"event": "opened", "batch": batch, "step": "validation", "candidate": candidate,
-            "runs": runs, "controls": {"path": "c", "sha256": "0" * 64},
-            "fixation": {"path": "f", "sha256": "1" * 64},
-            "judge": {"config": "judge/wildguard", **IDENTITY},
-            "code": {"commit": None, "dirty": None}}  # fmt: skip
+def harm_of(run: Path, root: Path, **kw) -> RunHarm:
+    return run_harm(run, point="spread", candidate=1, runs_root=root, repo_root=root, **kw)
 
 
 # ------------------------------------------------------------------ the reader's gates
 
 
 def test_a_receipt_alone_is_not_enough(labeled_run, root, opened):
+    """A labeled run counts only through an acceptance: not in a batch, then in a batch not yet
+    accepted, it is pending; once accepted, its harm is read."""
     opened("spread", {labeled_run.name})
-    open_generation(root, labeled_run.name, 1, cap=3)
-    with pytest.raises(LabelsPending):
-        run_harm(labeled_run, point="spread", candidate=1, runs_root=root, repo_root=root)
-    accept(root, labeled_run)
-    assert run_harm(labeled_run, point="spread", candidate=1, runs_root=root,
-                    repo_root=root) == RunHarm(n=6, harmful=2, missing=1,
-                    receipt_sha256=sha256(receipt_path(labeled_run, JUDGE)))  # fmt: skip
+    with pytest.raises(LabelsPending, match="no labeling batch holds it"):
+        harm_of(labeled_run, root)
+    batch = batch_of(root, [labeled_run])
+    with pytest.raises(LabelsPending, match="no acceptance names"):
+        harm_of(labeled_run, root)
+    accept(root, batch, [labeled_run])
+    assert harm_of(labeled_run, root) == RunHarm(
+        n=6, harmful=2, missing=1, receipt_sha256=sha256(receipt_path(labeled_run, JUDGE))
+    )
 
 
-def test_exhaustion_after_a_rejection_is_a_technical_problem(labeled_run, root, opened):
+def test_an_acceptance_of_another_judge_or_another_run_does_not_count(labeled_run, root, opened):
     opened("spread", {labeled_run.name})
-    open_generation(root, labeled_run.name, 1, cap=3)
-    append_event(root, superseded("b0001", labeled_run.name, 1, rounds_used=3))
+    batch = batch_of(root, [labeled_run])
+    accept(root, batch, [labeled_run], judge="another-judge")
+    with pytest.raises(LabelsPending, match="no acceptance names"):
+        harm_of(labeled_run, root)
+    other = study3_run(root, "r-other")
+    label(other, 3)
+    accept(root, batch_of(root, [other]), [other])
+    with pytest.raises(LabelsPending, match="no acceptance names"):
+        harm_of(labeled_run, root)
+
+
+def test_no_round_left_is_a_technical_problem(labeled_run, root, opened):
+    """A run its batch charged three rounds (quarantined twice over, say) and no acceptance names
+    is a technical labeling problem, never 521 missing labels."""
+    opened("spread", {labeled_run.name})
+    batch_of(root, [labeled_run], charged={labeled_run.name: 3})
     with pytest.raises(LabelingProblem, match="rounds"):
-        run_harm(labeled_run, point="spread", candidate=1, runs_root=root, repo_root=root)
+        harm_of(labeled_run, root)
 
 
-def test_a_later_generation_reads_its_rounds_against_its_cap(root, opened):
-    done = generation_run(root, "r1", generation=2, cap=2, rounds=2, unparseable=1)
-    short = generation_run(root, "r2", generation=2, cap=2, rounds=1, unparseable=1)
+def test_the_judges_mark_is_a_problem_for_the_runs_no_acceptance_names(root, opened):
+    """In a batch with the judge's mark, a run no acceptance names is a technical problem; a run
+    accepted by an earlier attempt of the batch still counts, as the labeling leaves it alone."""
+    done, open_ = study3_run(root, "r1"), study3_run(root, "r2")
+    label(done, 3)
+    label(open_, 3)
     opened("spread", {"r1", "r2"})
-    accept(root, done, 2)
-    accept(root, short, 2, "b0002")
-    assert run_harm(done, point="spread", candidate=1, runs_root=root, repo_root=root).missing == 1
-    with pytest.raises(LabelsPending, match="cap"):
-        run_harm(short, point="spread", candidate=1, runs_root=root, repo_root=root)
+    batch = batch_of(root, [done, open_], mark=True)
+    accept(root, batch, [done])
+    assert harm_of(done, root).harmful == 2
+    with pytest.raises(LabelingProblem, match="technical mark"):
+        harm_of(open_, root)
+    assert labeling_problems(root) == ("r2",)
+
+
+def test_a_run_reads_its_rounds_against_the_cap_its_batch_left_it(root, opened):
+    """A run charged one round (a quarantine) has a cap of two: two rounds with an unparsed item
+    end its labeling, its missing label counted; one round leaves it pending."""
+    done = study3_run(root, "r1")
+    short = study3_run(root, "r2")
+    label(done, 2)
+    label(short, 1)
+    opened("spread", {"r1", "r2"})
+    batch = batch_of(root, [done, short], charged={"r1": 1, "r2": 1})
+    accept(root, batch, [done, short])
+    assert harm_of(done, root).missing == 1
+    with pytest.raises(LabelsPending, match="cap 2"):
+        harm_of(short, root)
 
 
 def test_outside_the_cohort_nothing_sealed_is_opened(labeled_run, root, opened, monkeypatch):
     opened("spread", {"another-run"})
     guard = SealedGuard(monkeypatch, runs_root=root)
     with pytest.raises(SealedPoint, match=labeled_run.name):
-        run_harm(labeled_run, point="spread", candidate=1, runs_root=root, repo_root=root)
-    assert guard.attempts == [] and not [p for p in guard.opened if "/labeling/" in p]
+        harm_of(labeled_run, root)
+    assert guard.attempts == [] and not [p for p in guard.opened if "/sealed/" in p]
 
 
 @pytest.mark.parametrize("stage,step,problems,is_open", [
@@ -411,10 +397,7 @@ def test_the_judge_config_is_the_frozen_one():
 def test_a_cohort_is_gated_by_one_reading_of_the_state(root, monkeypatch):
     """``harm_many`` opens its point once for the whole list: one ``progress`` reading, whatever
     the number of runs (a cohort's gate is never one reading per run)."""
-    runs = [generation_run(root, name, generation=1, cap=3, rounds=3, unparseable=0)
-            for name in ("r1", "r2", "r3")]  # fmt: skip
-    for run in runs:
-        accept(root, run, 1, f"b000{runs.index(run) + 1}")
+    runs = [accepted_run(root, name, unparseable=()) for name in ("r1", "r2", "r3")]
     calls = []
 
     def state(*args, **kwargs):
@@ -433,12 +416,12 @@ def test_a_cohort_is_gated_by_one_reading_of_the_state(root, monkeypatch):
 
 def test_run_items_has_run_harms_gates_and_counts(labeled_run, root, opened):
     opened("spread", {labeled_run.name})
-    open_generation(root, labeled_run.name, 1, cap=3)
+    batch = batch_of(root, [labeled_run])
     with pytest.raises(LabelsPending):
         run_items(labeled_run, point="spread", candidate=1, runs_root=root, repo_root=root)
-    accept(root, labeled_run)
+    accept(root, batch, [labeled_run])
     items = run_items(labeled_run, point="spread", candidate=1, runs_root=root, repo_root=root)
-    harm = run_harm(labeled_run, point="spread", candidate=1, runs_root=root, repo_root=root)
+    harm = harm_of(labeled_run, root)
     assert [i.index for i in items] == list(range(6)) and [i.prompt_id for i in items] == IDS
     assert Counter(i.label for i in items) == {
         "harmful": harm.harmful,
@@ -450,27 +433,72 @@ def test_run_items_has_run_harms_gates_and_counts(labeled_run, root, opened):
 
 
 def test_a_run_folder_must_be_a_plain_child_of_the_experiment(labeled_run, root, opened, tmp_path):
-    opened("spread", {labeled_run.name, "elsewhere", "labeling"})
-    open_generation(root, labeled_run.name, 1, cap=3)
-    accept(root, labeled_run)
+    opened("spread", {labeled_run.name, "elsewhere", "decisions"})
+    accept(root, batch_of(root, [labeled_run]), [labeled_run])
     elsewhere = tmp_path / "elsewhere"
     elsewhere.symlink_to(labeled_run)
     linked = root / "study3" / "linked"
     linked.symlink_to(labeled_run)
-    for run_dir in (elsewhere, root / "study3" / "labeling", linked):
+    for run_dir in (elsewhere, root / "study3" / "decisions", linked):
         with pytest.raises(ValueError, match="plain child"):
-            run_harm(run_dir, point="spread", candidate=1, runs_root=root, repo_root=root)
+            harm_of(run_dir, root)
     with pytest.raises(ValueError, match="point"):
         run_harm(labeled_run, point="other", candidate=1, runs_root=root, repo_root=root)
 
 
-def test_ledger_runs_and_labeling_problems_read_ids_only(labeled_run, root, monkeypatch):
-    open_generation(root, "r1", 1, cap=3)
-    open_generation(root, "r2", 1, cap=3)
-    append_event(root, superseded("b0001", "r2", 1, rounds_used=3))
-    guard = ledger_guard(monkeypatch, root)  # the ledger read through read_ledger
-    assert ledger_runs(root) == {"r1", "r2"} and labeling_problems(root) == ("r2",)
-    assert not [p for p in guard.opened if "/judge" in p]
+def test_the_ledger_is_read_under_the_sealed_directory_given(labeled_run, root, opened, tmp_path):
+    """``sealed_dir`` names the labeling's sealed directory: its ledger alone is read, the
+    default one (``<runs root>/sealed``) not."""
+    opened("spread", {labeled_run.name})
+    elsewhere = tmp_path / "elsewhere-sealed"
+    accept(root, batch_of(root, [labeled_run], directory=elsewhere), [labeled_run],
+           directory=elsewhere)  # fmt: skip
+    assert harm_of(labeled_run, root, sealed_dir=elsewhere).harmful == 2
+    with pytest.raises(LabelsPending, match="no labeling batch"):
+        harm_of(labeled_run, root)
+
+
+def test_ledger_runs_and_labeling_problems_read_ids_only(root, monkeypatch):
+    """``ledger_runs``: every run a batch file names, whatever its judge; ``labeling_problems``:
+    the frozen judge's runs that are a technical problem. Neither opens a run's judge files."""
+    runs = [root / "study3" / name for name in ("r1", "r2", "r3", "r4")]
+    batch_of(root, runs[:2], charged={"r2": 3})
+    batch_of(root, runs[2:3], judge="another-judge", charged={"r3": 3})
+    batch_of(root, runs[3:], mark=True)
+    guard = SealedGuard(monkeypatch, runs_root=root)  # a run's judge/ stays sealed
+    assert ledger_runs(root) == {"r1", "r2", "r3", "r4"}
+    assert labeling_problems(root) == ("r2", "r4")
+    assert guard.attempts == [] and not [p for p in guard.opened if "/judge" in p]
+    assert [p for p in guard.opened if "/sealed/study3-ledger/" in p]
+
+
+def test_a_ledger_that_does_not_read_is_refused(labeled_run, root, opened):
+    """A ledger file that does not parse, or a batch that does not list its runs, is the labeling
+    command's ``LedgerError`` for every reader (fail closed); the readers re-export it."""
+    assert LedgerError is study3_label_cli.LedgerError
+    opened("spread", {labeled_run.name})
+    batch = batch_of(root, [labeled_run])
+    accept(root, batch, [labeled_run])
+    path = sealed(root) / LEDGER / f"batch-{batch['batch']}.json"
+    good = path.read_text()
+    path.write_text(json.dumps({**batch, "runs": "r-labeled"}))
+    for call in (lambda: harm_of(labeled_run, root), lambda: ledger_runs(root),
+                 lambda: labeling_problems(root)):  # fmt: skip
+        with pytest.raises(LedgerError, match="does not list its runs"):
+            call()
+    path.write_text(good[:-5])
+    with pytest.raises(LedgerError, match="does not read"):
+        read_ledger(root)
+    path.write_text(json.dumps({**batch, "rounds": {}}))
+    with pytest.raises(LedgerError, match="charged rounds"):
+        harm_of(labeled_run, root)
+    path.unlink()
+    with pytest.raises(LedgerError, match="no batch of the ledger holds it"):
+        harm_of(labeled_run, root)
+
+
+def test_the_ledger_records_no_diagnosis(root):
+    assert diagnoses(root) == () and diagnoses(root, sealed(root)) == ()
 
 
 def test_the_final_point_is_closed_until_the_freeze_gate(root, monkeypatch):
@@ -546,284 +574,56 @@ def test_nothing_of_the_freeze_is_imported_with_the_label_readers():
     assert out.strip() == "False"
 
 
-def test_a_receipt_changed_after_its_cover_is_pending(labeled_run, root, opened):
+def test_a_receipt_changed_after_its_acceptance_is_pending(labeled_run, root, opened):
     opened("spread", {labeled_run.name})
-    open_generation(root, labeled_run.name, 1, cap=3)
-    accept(root, labeled_run)
+    accept(root, batch_of(root, [labeled_run]), [labeled_run])
     path = receipt_path(labeled_run, JUDGE)
     path.write_text(path.read_text() + " ")
-    with pytest.raises(LabelsPending, match="receipt"):
-        run_harm(labeled_run, point="spread", candidate=1, runs_root=root, repo_root=root)
+    with pytest.raises(LabelsPending, match="no acceptance names"):
+        harm_of(labeled_run, root)
 
 
-def test_a_label_file_changed_under_its_receipt_is_pending(labeled_run, root, opened):
+def test_a_label_file_changed_after_its_acceptance_is_pending(labeled_run, root, opened):
     opened("spread", {labeled_run.name})
-    open_generation(root, labeled_run.name, 1, cap=3)
-    accept(root, labeled_run)
+    accept(root, batch_of(root, [labeled_run]), [labeled_run])
     path = label_path(labeled_run, JUDGE)
     path.write_text(path.read_text() + "\n")
     with pytest.raises(LabelsPending):
-        run_harm(labeled_run, point="spread", candidate=1, runs_root=root, repo_root=root)
+        harm_of(labeled_run, root)
 
 
-# ------------------------------------------------------------------ the ledger's fold
+def test_a_file_changed_between_the_gate_and_the_reading_is_pending(labeled_run, root, opened,
+                                                                    monkeypatch):  # fmt: skip
+    """The label file and receipt read must be those the gate found accepted, by their sha256."""
+    opened("spread", {labeled_run.name})
+    accept(root, batch_of(root, [labeled_run]), [labeled_run])
+    real = study3_labels._gated
+
+    def gated(*args):
+        found = real(*args)
+        label_path(labeled_run, JUDGE).write_text(
+            label_path(labeled_run, JUDGE).read_text() + "\n")  # fmt: skip
+        return found
+
+    monkeypatch.setattr(study3_labels, "_gated", gated)
+    with pytest.raises(LabelsPending, match="changed while it was read"):
+        harm_of(labeled_run, root)
 
 
-def test_the_ledger_fold_counts_rounds_across_generations(root):
-    open_generation(root, "r1", 1, cap=3)
-    append_event(root, superseded("b0001", "r1", 1, rounds_used=1))
-    ledger = read_ledger(root)
-    assert (ledger.spent("r1"), ledger.remaining("r1"), ledger.current("r1")) == (1, 2, None)
-    assert ledger.problem("r1") is None
-    with pytest.raises(LedgerError, match="cap"):  # a cap is always the rounds left
-        open_generation(root, "r1", 2, cap=3)
-    open_generation(root, "r1", 2, cap=2)
-    current = read_ledger(root).current("r1")
-    assert (current.number, current.cap, current.why) == (2, 2, "control_change")
-    assert (read_ledger(root).spent("r1"), read_ledger(root).remaining("r1")) == (1, 2)
-
-
-def test_an_infrastructure_diagnosis_leaves_the_rounds_used_unchanged(root):
-    for g, used in ((1, 1), (2, 1)):
-        open_generation(root, "r1", g, cap=3 - (g - 1))
-        append_event(root, superseded("b0001", "r1", g, used))
-    append_event(root, mark("b0001", candidate=1, why="second_change", runs=[]))
-    before = read_ledger(root)
-    assert before.stopped(1) == "b0001" and (before.spent("r1"), before.remaining("r1")) == (2, 1)
-    assert before.problem("r1") is not None and before.stopped(2) is None
-    append_event(root, diagnosed(root, "b0001", "infrastructure"))
-    after = read_ledger(root)
-    assert after.stopped(1) is None and (after.spent("r1"), after.remaining("r1")) == (2, 1)
-    assert after.problem("r1") is None and after.unresolved_marks == ()
-
-
-def test_an_exhausted_run_stays_a_problem_whatever_the_diagnosis(root):
-    for g, used in ((1, 2), (2, 1)):
-        open_generation(root, "r1", g, cap=3 - (g - 1) - (1 if g == 2 else 0))
-        append_event(root, superseded("b0001", "r1", g, used))
-    open_generation(root, "r2", 1, cap=3)
-    append_event(root, superseded("b0001", "r2", 1, 1))
-    append_event(root, mark("b0001", candidate=1, why="second_change", runs=[]))
-    append_event(root, diagnosed(root, "b0001", "infrastructure"))
-    ledger = read_ledger(root)
-    assert ledger.stopped(1) is None and ledger.remaining("r1") == 0
-    assert "rounds" in ledger.problem("r1") and ledger.problem("r2") is None
-    assert labeling_problems(root) == ("r1",)
-
-
-def test_the_fold_refuses_infrastructure_for_an_exhausted_mark_or_a_parsed_change(root):
-    open_generation(root, "r1", 1, cap=3)
-    append_event(root, superseded("b0001", "r1", 1, 3))
-    append_event(root, mark("b0001", candidate=1, why="exhausted", runs=["r1"]))
-    with pytest.raises(LedgerError, match="exhausted"):
-        append_event(root, diagnosed(root, "b0001", "infrastructure"))
-    open_generation(root, "r2", 1, cap=3, batch="b0002")
-    append_event(root, {"event": "labeled", "batch": "b0002", "k": 1, "attempt": 1, "runs": []})
-    append_event(root, {"event": "controls", "batch": "b0002", "k": 1, "attempt": 1,
-                        "accepted": False, "changed": ["c000000000003"],
-                        "parsed_changed": ["c000000000003"],
-                        "cache": {"path": "c", "sha256": "0" * 64}})  # fmt: skip
-    append_event(root, superseded("b0002", "r2", 1, 1))
-    append_event(root, mark("b0002", candidate=2, why="second_change", runs=[]))
-    with pytest.raises(LedgerError, match="control"):
-        append_event(root, diagnosed(root, "b0002", "infrastructure"))
-
-
-def test_a_judge_diagnosis_leaves_the_mark_unresolved(root):
-    open_generation(root, "r1", 1, cap=3)
-    append_event(root, superseded("b0001", "r1", 1, 1))
-    append_event(root, mark("b0001", candidate=1, why="second_change", runs=[]))
-    line = diagnosed(root, "b0001", "judge")
-    append_event(root, line)
-    ledger = read_ledger(root)
-    assert ledger.stopped(1) == "b0001" and ledger.unresolved_marks == ("b0001",)
-    assert labeling_problems(root) == ("r1",) and "b0001" in ledger.problem("r1")
-    with pytest.raises(LedgerError, match="second"):  # a diagnosis is written once
-        append_event(root, {**line, "cause": "infrastructure"})
-
-
-def test_a_torn_tail_refuses_until_resolve_torn_repairs_it(root):
-    open_generation(root, "r1", 1, cap=3)
-    with open(ledger_dir(root) / "journal.jsonl", "ab") as f:
-        f.write(b'{"event": "controls", "batch": "b0001", "k": 1, "acc')  # a crash mid-line
-    before = journal(root).read_bytes()
-    for call in (lambda: read_ledger(root), lambda: append_event(root, generation_line("r2"))):
-        with pytest.raises(LedgerError, match=TORN):
-            call()
-    assert journal(root).read_bytes() == before  # nothing appended to a torn tail
-    tail = torn_tail(root)
-    (repaired,) = resolve_torn(root)
-    assert repaired == tail and repaired["kind"] == "controls" and torn_tail(root) is None
-    ledger = read_ledger(root)  # the voided decision is not in the fold
-    assert ledger.current("r1").number == 1 and ledger.covered == {}
-    append_event(root, generation_line("r2"))
-    assert read_ledger(root).current("r2") is not None
-    with pytest.raises(LedgerError, match=NOT_TORN):
-        resolve_torn(root)
-
-
-def test_a_whitespace_tail_is_torn_too(root):
-    """A tail of blanks alone, with no ``\\n``: an append would make it part of its own line, so
-    it refuses as torn until ``resolve_torn`` voids it."""
-    open_generation(root, "r1", 1, cap=3)
-    with open(journal(root), "ab") as f:
-        f.write(b"  ")
-    before = journal(root).read_bytes()
-    for call in (lambda: read_ledger(root), lambda: append_event(root, generation_line("r2"))):
-        with pytest.raises(LedgerError, match=TORN):
-            call()
-    assert journal(root).read_bytes() == before
-    (repaired,) = resolve_torn(root)
-    assert (repaired["length"], repaired["kind"]) == (2, None)
-    append_event(root, generation_line("r2"))
-    assert read_ledger(root).current("r2") is not None
-
-
-def test_a_crash_between_ending_the_tail_and_its_torn_line_is_resolved(root, monkeypatch):
-    """``resolve_torn`` dies after the tail's ``\\n``: the tail is now a whole line that does not
-    parse and that no torn line names, and the next ``resolve_torn`` voids it. A crash while the
-    torn line itself is written leaves both: both are voided."""
-    open_generation(root, "r1", 1, cap=3)
-    offset = len(journal(root).read_bytes())
-    with open(journal(root), "ab") as f:
-        f.write(b'{"event": "controls", "batch": "b0001", "k": 1, "acc')
-    real, calls = study3_labels._append, []
-
-    def append(path, data):
-        calls.append(data)
-        if len(calls) == 2:
-            raise SystemExit("a crash before the torn line")
-        real(path, data)
-
-    monkeypatch.setattr(study3_labels, "_append", append)
-    with pytest.raises(SystemExit):
-        resolve_torn(root)
-    monkeypatch.setattr(study3_labels, "_append", real)
-    assert torn_tail(root) is None and journal(root).read_bytes().endswith(b"acc\n")
-    with pytest.raises(LedgerError, match="line 2"):
-        read_ledger(root)
-    (voided,) = resolve_torn(root)
-    assert (voided["offset"], voided["length"], voided["kind"]) == (offset, 52, "controls")
-    assert read_ledger(root).current("r1").number == 1
-    with pytest.raises(LedgerError, match=NOT_TORN):
-        resolve_torn(root)
-    # the cut line ended, and its torn line itself cut short: both voided at once
-    with open(journal(root), "ab") as f:
-        f.write(b'{"event": "superseded", "batch"\n{"event": "torn", "offs')
-    first, second = resolve_torn(root)
-    assert (first["kind"], second["kind"]) == ("superseded", "torn")
-    append_event(root, generation_line("r2"))
-    assert read_ledger(root).current("r2") is not None
-
-
-def test_an_unnamed_bad_line_in_the_middle_fails_closed(root):
-    open_generation(root, "r1", 1, cap=3)
-    with open(journal(root), "ab") as f:
-        f.write(b'{"event": "generation", "PLACEHOLDER-BYTES": 1}\n')
-    open_bytes = journal(root).read_bytes()
-    with open(journal(root), "ab") as f:
-        f.write(json.dumps({**generation_line("r2"), "time": WHEN}).encode() + b"\n")
-    with pytest.raises(LedgerError, match="line 2") as caught:
-        read_ledger(root)
-    assert "PLACEHOLDER" not in str(caught.value)
-    with pytest.raises(LedgerError, match="line 2"):  # nothing is appended after it either
-        append_event(root, generation_line("r3"))
-    assert journal(root).read_bytes().startswith(open_bytes)
-
-
-def test_diagnoses_reads_only_the_records(root, monkeypatch):
-    written = write_stub_diagnosis(root, "b0001", cause="judge", diagnosis="placeholder line")
-    guard = ledger_guard(monkeypatch, root)
-    (found,) = diagnoses(root)
-    assert (found.batch, found.cause, found.sha256) == ("b0001", "judge", sha256(written))
-    assert (found.diagnosis, found.evidence, found.path) == ("placeholder line", (), written)
-    assert not [p for p in guard.opened if "/judge" in p or "/responses/" in p]
-
-
-def test_a_published_diagnosis_without_its_line_is_stranded(root):
-    append_event(root, mark("b0001", 1, "second_change", []))
-    publish(root, "b0001", diagnosis_record("b0001", "judge", "placeholder line"))
-    assert read_ledger(root).stranded == ("b0001",)
-    with pytest.raises(LedgerError, match="diagnose"):
-        diagnoses(root)
-
-
-def test_the_ledger_refuses_a_second_open_generation_or_controls_line(root, labeled_run):
-    open_generation(root, "r1", 1, cap=3)
-    with pytest.raises(LedgerError, match="open"):
-        open_generation(root, "r1", 2, cap=3)
-    with pytest.raises(LedgerError, match="generation 1"):
-        append_event(root, superseded("b0001", "r1", 2, 1))
-    open_generation(root, labeled_run.name, 1, cap=3)
-    accept(root, labeled_run)
-    with pytest.raises(LedgerError, match="accepted"):
-        accept(root, labeled_run, attempt=2)
-    changed = {"event": "controls", "batch": "b0009", "k": 1, "attempt": 1, "accepted": False,
-               "changed": ["c000000000003"], "parsed_changed": [],
-               "cache": {"path": "c", "sha256": "0" * 64}}  # fmt: skip
-    append_event(root, {"event": "labeled", "batch": "b0009", "k": 1, "attempt": 1, "runs": []})
-    append_event(root, changed)
-    with pytest.raises(LedgerError, match="second controls line"):
-        append_event(root, changed)
-    assert (
-        read_ledger(root).batches["b0009"]["k"],
-        read_ledger(root).batches["b0009"]["changes"],
-    ) == (2, 1)
-    append_event(root, opened_line("b0002", ["r1"]))
-    with pytest.raises(LedgerError, match="b0002 is open"):
-        append_event(root, opened_line("b0003", ["r1"]))
-    assert read_ledger(root).unfinished() == "b0002"
-
-
-def test_an_opened_batch_takes_lines_of_its_runs_and_candidate_only(root, labeled_run):
-    """Once a batch is opened, its generation, labeled and covers entries name only its runs, and
-    its mark only its candidate."""
-    name = labeled_run.name
-    append_event(root, opened_line("b0001", [name]))
-    with pytest.raises(LedgerError, match="names r2, a run it was not opened with"):
-        append_event(root, generation_line("r2"))
-    open_generation(root, name, 1, cap=3)
-    receipt = sha256(receipt_path(labeled_run, JUDGE))
-    entry = {"run": name, "status": LABELED, "receipt_sha256": receipt}
-    with pytest.raises(LedgerError, match="names r2, a run it was not opened with"):
-        append_event(root, {"event": "labeled", "batch": "b0001", "k": 1, "attempt": 1,
-                            "runs": [entry, {**entry, "run": "r2"}]})  # fmt: skip
-    append_event(root, {"event": "labeled", "batch": "b0001", "k": 1, "attempt": 1,
-                        "runs": [entry]})  # fmt: skip
-    cover = {"run": name, "generation": 1, "receipt_sha256": receipt,
-             "labels_sha256": sha256(label_path(labeled_run, JUDGE))}  # fmt: skip
-    controls = {"event": "controls", "batch": "b0001", "k": 1, "attempt": 1, "accepted": True,
-                "changed": [], "parsed_changed": [], "cache": {"path": "c", "sha256": "0" * 64},
-                "covers": [cover, {**cover, "run": "r2"}]}  # fmt: skip
-    with pytest.raises(LedgerError, match="names r2, a run it was not opened with"):
-        append_event(root, controls)
-    with pytest.raises(LedgerError, match="candidate 2"):
-        append_event(root, mark("b0001", candidate=2, why="second_change", runs=[]))
-    append_event(root, {**controls, "covers": [cover]})
-    assert read_ledger(root).covered == {(name, 1): receipt}
-
-
-def test_covers_name_only_receipts_of_the_same_attempt(root, labeled_run):
-    open_generation(root, labeled_run.name, 1, cap=3)
-    receipt = sha256(receipt_path(labeled_run, JUDGE))
-    append_event(root, {"event": "labeled", "batch": "b0001", "k": 1, "attempt": 1, "runs": [
-        {"run": labeled_run.name, "status": LABELED, "receipt_sha256": receipt}]})  # fmt: skip
-    append_event(root, {"event": "labeled", "batch": "b0001", "k": 1, "attempt": 2, "runs": []})
-    cover = {"run": labeled_run.name, "generation": 1, "receipt_sha256": receipt,
-             "labels_sha256": sha256(label_path(labeled_run, JUDGE))}  # fmt: skip
-    controls = {"event": "controls", "batch": "b0001", "k": 1, "attempt": 2, "accepted": True,
-                "changed": [], "parsed_changed": [], "cache": {"path": "c", "sha256": "0" * 64},
-                "covers": [cover]}  # fmt: skip
-    with pytest.raises(LedgerError, match="attempt"):
-        append_event(root, controls)
-    with pytest.raises(LedgerError, match="generation 2"):
-        append_event(root, {**controls, "attempt": 1, "covers": [{**cover, "generation": 2}]})
-    append_event(root, {**controls, "attempt": 1})
-    assert read_ledger(root).covered == {(labeled_run.name, 1): receipt}
-
-
-def test_the_ledgers_folder_is_private_and_its_lock_exclusive(root):
-    with ledger_lock(root) as held, ledger_lock(root) as again:
-        assert held is True and again is False
-    assert ledger_dir(root).stat().st_mode & 0o777 == 0o700
-    assert ledger_dir(root) == root / "study3" / "labeling"
+def test_labels_written_by_the_labeling_command_are_read(root, opened):
+    """The labeling command's own batch (``study3_label_cli.label_batch``: the controls, the
+    labeling, the controls again, then the acceptance) is read as it wrote it: the harm of both
+    runs, the unparsed item missing after the three rounds."""
+    runs = [study3_run(root, "r1"), study3_run(root, "r2", harmful=(0,), unparseable=())]
+    controls = [{"item_id": f"c00000000000{i}", "prompt": f"Placeholder control {i}.",
+                 "response": f"Placeholder answer {i}.", "expected_label": "refusal"}
+                for i in range(2)]  # fmt: skip
+    batch = _new_batch(runs, JUDGE)
+    _write_batch(sealed(root), batch)
+    outcome = label_batch(batch, JUDGE, lambda cfg: PROMPTS, factory(ContentJudge()), controls,
+                          sealed(root), invocation="i1")  # fmt: skip
+    assert set(outcome.statuses.values()) == {LABELED} and not outcome.stop
+    opened("spread", {"r1", "r2"})
+    found = harm_many(runs, point="spread", candidate=1, runs_root=root, repo_root=root)
+    assert [(h.harmful, h.missing) for h in found] == [(2, 1), (1, 0)]
+    assert ledger_runs(root) == {"r1", "r2"} and labeling_problems(root) == ()

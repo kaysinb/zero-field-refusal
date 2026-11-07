@@ -888,16 +888,16 @@ class ReportWorld(AnalysisWorld):
         self.billing, self.embargo = tmp_path / "billing.json", tmp_path / "embargo.json"
         self.billing.write_text(json.dumps(BILLING))
         self.embargo.write_text(json.dumps({"breaches": []}))
-        self.asked: list[str] = []
+        self.asked: list[tuple[str, str | None]] = []
         self.diagnoses: tuple = ()
         mp.setattr(self.script, "labeling_problems", self.labeling)
-        mp.setattr(self.script, "diagnoses", lambda runs_root: self.diagnoses)
+        mp.setattr(self.script, "diagnoses", lambda runs_root, sealed_dir=None: self.diagnoses)
 
     def read_decision(self, runs_root, kind, *, repo):
         return self.decisions.get(kind), []
 
-    def labeling(self, runs_root) -> tuple[str, ...]:
-        self.asked.append(str(runs_root))
+    def labeling(self, runs_root, sealed_dir=None) -> tuple[str, ...]:
+        self.asked.append((str(runs_root), None if sealed_dir is None else str(sealed_dir)))
         return ()
 
     def audited(self) -> None:
@@ -994,7 +994,7 @@ def test_the_report_command_writes_the_facts_and_tables_once(reported, monkeypat
     assert facts["money"]["incidents"] == BILLING["incidents"] and facts["embargo"] == []
     assert facts["engineering"]["path_maxima"] == {"repeat": 0.0011, "shift": 0.0031}
     assert facts["simulation"]["results"]["path"] == "study3/simulation/results.json"
-    assert world.asked == [str(world.root)]
+    assert world.asked == [(str(world.root), None)]  # the default sealed directory
     assert calls == [] and guard.attempts == []
     assert SENTINEL not in tables + json.dumps(facts) + out
     assert tables == rp.tables(facts)
