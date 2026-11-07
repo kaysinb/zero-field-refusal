@@ -32,8 +32,10 @@ the analysis, validation's harm and the audit's estimate as their records hold t
   results, below).
 
 **The variants.**
-- *standard*: at ``done``, with the judge-based analysis, validation's harm and the audit's
-  estimate, all three required; at a terminal outcome (``study3_progress.TERMINAL``), with what
+- *standard*: at ``done``, with the judge-based analysis and validation's harm, both required,
+  and the audit's estimate, its section ``"pending"`` while it is not written (amendment 7, "The
+  report": a missing audit or billing field gives a pending section, not a blocked report); at a
+  terminal outcome (``study3_progress.TERMINAL``), with what
   the study reached.
 - *judge_technical*: the registered technical feasibility report for the harm comparison, written
   when the judge's technical mark is unresolved (a diagnosis record whose cause is ``judge``) and
@@ -95,8 +97,8 @@ and ``embargo`` are lists, ``[]`` when empty.
 - ``judge_mark``: the judge's diagnoses, each its path, sha256, batch, cause, diagnosis and
   evidence.
 - ``money``: actual spending by stage, one row per incident (its id, stage, incident time, cause,
-  billed price and evidence list), and the stages an internal spending policy stopped, by name
-  alone.
+  billed price and evidence list), the stages an internal spending policy stopped, by name
+  alone, and ``pending``: the stages and incidents whose amount is not yet billed.
 - ``embargo``: the breaches the researcher's embargo file lists (stage, what).
 
 **Money** ("Budget and timing"; amendment 5, "Infrastructure incidents": each incident is counted
@@ -113,8 +115,11 @@ is named by exactly one billed incident, every record an incident names is one o
 are distinct, every incident names some evidence, and each incident's stage is its records'
 where shown (a journal line's: the step of its log's study-3 starts; a qualification record's:
 its stage folder, ``numerical`` covering the repair). Every stage the route reached (the stage of
-a route event) or an incident is billed at has its spending entry, ``0`` included; otherwise the
-report is refused. No other money figure is read or written.
+a route event) or an incident is billed at has its spending entry, ``0`` included. A missing
+amount is pending, never filled in (amendment 7, "The report"): a stage's ``spent`` or an
+incident's ``billed`` given as null, and a stage the route or an incident reached with no
+spending entry, which is shown with ``spent`` null; each is listed in ``pending``. No other money
+figure is read or written.
 
 **The simulation's results** are read through one adapter, ``simulation_results``: the per-test
 rows of ``RUNS_DIR/study3/simulation/results.json`` (``SIMULATION_RESULTS``), each with the row
@@ -206,6 +211,7 @@ MONEY_STAGES = (
 )
 CURRENCY = "USD"
 NOT_REACHED = "not reached"
+PENDING = "pending"  # amendment 7, "The report": a missing audit or billing field
 JUDGE_NOT_REACHED = "not reached: the judge's technical mark"
 SPACING = math.log(1.25)  # "Candidates and rate search": the spacing between targets
 SIMULATION_RESULTS = "/".join((EXPERIMENT, SIMULATION, "results.json"))
@@ -256,9 +262,11 @@ CHECK_NOTE = (
 
 def read_billing(path: str | Path) -> dict[str, Any]:
     """The billing file (closed schema): ``currency`` (``USD``); ``stages``, each ``{"stage",
-    "spent"}`` (a ``MONEY_STAGES`` id, once, and a finite amount ≥ 0); ``incidents``, each
+    "spent"}`` (a ``MONEY_STAGES`` id, once, and a finite amount ≥ 0, or null: pending);
+    ``incidents``, each
     ``{"id", "stage", "incident_time", "cause", "billed", "evidence"}`` (the id ``INCIDENT_ID``,
-    once; the time ISO 8601 in UTC; the cause one line; the billed price a finite amount ≥ 0; the
+    once; the time ISO 8601 in UTC; the cause one line; the billed price a finite amount ≥ 0 or
+    null, pending; the
     evidence a non-empty list of items, each ``{"journal": <log under RUNS_DIR>, "line": n}``
     (n ≥ 1), ``{"qualification": <record path under RUNS_DIR>}`` or ``{"pod": <provider
     reference>}``, each text one line, and no journal line or qualification record named twice,
@@ -294,7 +302,7 @@ def billing_problems(data: Any) -> list[str]:
         found = _closed(entry, STAGE_FIELDS, where)
         if not found:
             found += _stage(entry["stage"], where)
-            found += _amount(entry["spent"], f"{where}.spent")
+            found += _amount(entry["spent"], f"{where}.spent", pending=True)
             if entry["stage"] in seen:
                 found.append(f"{where}: stage {entry['stage']!r} is listed twice")
             seen.add(entry["stage"])
@@ -320,7 +328,7 @@ def billing_problems(data: Any) -> list[str]:
                 found.append(f"{where}.incident_time is no ISO 8601 time in UTC")
             if not _one_line(entry["cause"]):
                 found.append(f"{where}.cause is not one non-empty line")
-            found += _amount(entry["billed"], f"{where}.billed")
+            found += _amount(entry["billed"], f"{where}.billed", pending=True)
             found += _evidence(entry["evidence"], where, named)
         problems += found
     for i, entry in enumerate(data["policy_stops"]):
@@ -370,14 +378,18 @@ def _stage(value: Any, where: str) -> list[str]:
     return [] if value in MONEY_STAGES else [f"{where}.stage is not one of {list(MONEY_STAGES)}"]
 
 
-def _amount(value: Any, where: str) -> list[str]:
+def _amount(value: Any, where: str, *, pending: bool = False) -> list[str]:
+    """A finite amount ≥ 0; with ``pending``, null too (not yet billed)."""
+    if pending and value is None:
+        return []
     ok = (
         not isinstance(value, bool)
         and isinstance(value, int | float)
         and math.isfinite(value)
         and value >= 0
     )
-    return [] if ok else [f"{where} is not a finite amount of at least 0"]
+    nor = ", nor null" if pending else ""
+    return [] if ok else [f"{where} is not a finite amount of at least 0{nor}"]
 
 
 def _one_line(value: Any) -> bool:
@@ -614,7 +626,8 @@ def report_facts(
     billing record off its schema; an incident of the records (a launch-journal line, a
     qualification ``--infrastructure`` record) named by no billed incident, a record an incident
     names that is none of them, or an incident billed at a stage that is not its records'; a
-    stage the route or an incident reached with no spending entry (module docstring, "Money")."""
+    stage the route or an incident reached with no spending entry is pending, not refused
+    (module docstring, "Money")."""
     diagnoses = list(judge_diagnoses)
     variant = _variant(
         state,
@@ -645,7 +658,9 @@ def report_facts(
         "utility": _utility(state, kept, endpoints, validation_, confirmation),
         "analysis": (JUDGE_NOT_REACHED if judged else _analysis(analysis, records.get("freeze"))),
         "validation_harm": JUDGE_NOT_REACHED if judged else _validation_harm(validation),
-        "audit": JUDGE_NOT_REACHED if judged else _audit(audit),
+        "audit": (JUDGE_NOT_REACHED if judged
+                  else PENDING if audit is None and state.get("stage") == "done"
+                  else _audit(audit)),  # fmt: skip
         "labeling": sorted(labeling_problems),
         "freeze": _freeze(records.get("freeze")),
         "judge_mark": [_judge_mark(d) for d in diagnoses] if judged else None,
@@ -687,12 +702,12 @@ def _variant(
             f"terminal outcome ({', '.join(TERMINAL)}), or as the judge_technical "
             "variant after a judge diagnosis"
         )
-    missing = [name for name in FINAL_THREE if final.get(name) is None]
+    missing = [name for name in ("analysis", "validation") if final.get(name) is None]
     if stage == "done" and missing:
         problems = ", ".join(labeling_problems) or "none"
         raise ValueError(
-            f"at done the report needs the analysis, validation's harm and the "
-            f"audit's estimate: {', '.join(missing)} not written. Runs with a "
+            f"at done the report needs the analysis and validation's harm (the audit's "
+            f"estimate may be pending): {', '.join(missing)} not written. Runs with a "
             f"technical labeling problem: {problems}; a judge diagnosis (cause judge) "
             "calls for the judge_technical variant"
         )
@@ -755,13 +770,11 @@ def _money(
     reached = {e.get("stage") for e in route} | {entry["stage"] for entry in billed}
     spent = {entry["stage"] for entry in billing["stages"]}
     unlisted = [stage for stage in MONEY_STAGES if stage in reached and stage not in spent]
-    if unlisted:
-        raise ValueError(f"the billing file has no spending entry for {', '.join(unlisted)}: every "
-                         "stage the route or an incident reached is listed with what it "
-                         "spent")  # fmt: skip
+    by_stage = [dict(entry) for entry in billing["stages"]]
+    by_stage += [{"stage": stage, "spent": None} for stage in unlisted]
     return {
         "currency": billing["currency"],
-        "by_stage": [dict(entry) for entry in billing["stages"]],
+        "by_stage": by_stage,
         "incidents": [
             {
                 **{key: entry[key] for key in INCIDENT_FIELDS},
@@ -770,6 +783,10 @@ def _money(
             for entry in billed
         ],
         "policy_stops": [entry["stage"] for entry in billing["policy_stops"]],
+        "pending": {
+            "stages": [entry["stage"] for entry in by_stage if entry["spent"] is None],
+            "incidents": [entry["id"] for entry in billed if entry["billed"] is None],
+        },
     }
 
 
@@ -2118,16 +2135,21 @@ def _render_judge_mark(marks: Sequence[Mapping[str, Any]] | None) -> list[str]:
 
 
 def _render_money(m: Mapping[str, Any]) -> list[str]:
+    def amount(value: Any) -> Any:
+        return PENDING if value is None else value
+
     lines = _table(
-        ("stage", f"spent ({m['currency']})"), [(s["stage"], s["spent"]) for s in m["by_stage"]]
+        ("stage", f"spent ({m['currency']})"),
+        [(s["stage"], amount(s["spent"])) for s in m["by_stage"]],
     )
     lines += _table(
         ("incident", "stage", "incident_time", "cause", f"billed ({m['currency']})", "evidence"),
         [
-            (*(i[k] for k in INCIDENT_FIELDS[:-1]), "; ".join(_item(e) for e in i["evidence"]))
+            (*(i[k] for k in INCIDENT_FIELDS[:-2]), amount(i["billed"]),
+             "; ".join(_item(e) for e in i["evidence"]))
             for i in m["incidents"]
         ],
-    )
+    )  # fmt: skip
     return lines + _table(
         ("stage stopped by the internal spending policy",), [(s,) for s in m["policy_stops"]]
     )

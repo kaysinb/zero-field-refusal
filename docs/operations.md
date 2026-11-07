@@ -2773,17 +2773,17 @@ project-run "$SRC" python scripts/study3_analysis.py report --runs-root "$R" \
   --billing BILLING.json --embargo EMBARGO.json
 ```
 
-- **When.** At `done`, once the analysis, validation's harm and the audit's estimate are written,
-  or at a terminal stage of the progress state (`study3_progress.TERMINAL`:
+- **When.** At `done`, once the analysis and validation's harm are written (the audit's section
+  reads `pending` until its estimate is written), or at a terminal stage of the progress state (`study3_progress.TERMINAL`:
   `scientific_feasibility_report`, `budget_stop`), with what the study reached. Each section the
   study did not reach reads `not reached`.
 - **The billing file** (closed schema; an unknown field is refused):
 
   ```text
   {"currency": "USD",
-   "stages": [{"stage": "<stage>", "spent": <amount>}],
+   "stages": [{"stage": "<stage>", "spent": <amount or null>}],
    "incidents": [{"id": "<id>", "stage": "<stage>", "incident_time": "<UTC, ISO 8601>",
-                  "cause": "<one line>", "billed": <amount>,
+                  "cause": "<one line>", "billed": <amount or null>,
                   "evidence": [{"journal": "<log under $RUNS_DIR>", "line": <n>},
                                {"qualification": "<record path under $RUNS_DIR>"},
                                {"pod": "<provider reference>"}]}],
@@ -2803,8 +2803,11 @@ project-run "$SRC" python scripts/study3_analysis.py report --runs-root "$R" \
   the ids are distinct, every incident lists evidence, and each incident's stage is its records'
   (a journal line's: the step of its log's campaign; a qualification record's: its stage folder,
   `numerical` also covering `repair`). The `cause` is shown and never matched. Every stage the
-  route reached or an incident is billed at needs its `stages` entry (`0` when nothing was
-  spent), or the report is refused.
+  route reached or an incident is billed at has its `stages` entry (`0` when nothing was
+  spent). A missing amount is pending, never filled in
+  ([amendment 7](study3-preregistration.md#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run),
+  "The report"): a `spent` or `billed` of null, and a reached stage with no entry, which the
+  report shows with `spent` null; the money section lists them under `pending`.
 - **The embargo file**, `{"breaches": [{"stage", "what"}]}`: each harm label opened outside the
   two scheduled points, with the stage it affected; `{"breaches": []}` when there was none
   ([voiding and supersession](study3-preregistration.md#voiding-and-supersession)).

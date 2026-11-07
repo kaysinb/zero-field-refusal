@@ -481,16 +481,20 @@ def test_the_dead_ends_are_reported_apart() -> None:
     assert facts_of("budget_stop")["outcome"]["dead_ends"] == {"technical": [], "scientific": []}
 
 
-def test_a_stage_the_route_or_an_incident_reached_needs_its_spending_entry() -> None:
+def test_a_stage_the_route_or_an_incident_reached_without_its_spending_entry_is_pending() -> None:
     """The scientific report's route reached search and validation (candidate 1's search failed,
-    candidate 2's validation gate): each needs its spending entry, as does the stage an incident
-    is billed at."""
+    candidate 2's validation gate): each without its spending entry is shown pending, with no
+    amount, as is the stage an incident is billed at (amendment 7: a missing billing field gives
+    a pending section, not a blocked report)."""
     route = facts_of("scientific_feasibility_report")["outcome"]["route"]
     assert {e["stage"] for e in route} == {"search", "validation"}
     for gone in ("search", "validation", "confirmation"):
         stages = [s for s in BILLING["stages"] if s["stage"] != gone]
-        with pytest.raises(ValueError, match=f"no spending entry for {gone}"):
-            facts_of("scientific_feasibility_report", billing={**BILLING, "stages": stages})
+        facts = facts_of("scientific_feasibility_report", billing={**BILLING, "stages": stages})
+        money = facts["money"]
+        assert money["by_stage"] == [*stages, {"stage": gone, "spent": None}]
+        assert money["pending"] == {"stages": [gone], "incidents": []}
+        assert f"| {gone} | pending |" in rp.tables(facts)
     stages = [s for s in BILLING["stages"] if s["stage"] != "search"]
     assert facts_of("budget_stop", billing={**BILLING, "stages": stages})["money"]["by_stage"] == (
         stages
@@ -672,7 +676,7 @@ def test_journal_incidents_are_the_study_3_recovery_lines_with_an_incident(tmp_p
         rp.journal_incidents(tmp_path)
 
 
-def test_refused_at_a_stage_that_is_not_terminal_and_at_done_without_the_audit() -> None:
+def test_refused_at_a_stage_that_is_not_terminal_and_at_done_without_the_analysis() -> None:
     study = Study()
     study.through_validation()
     with pytest.raises(ValueError, match="terminal"):
@@ -683,8 +687,8 @@ def test_refused_at_a_stage_that_is_not_terminal_and_at_done_without_the_audit()
             incidents=INCIDENTS,
             labeling_problems=(),
         )
-    with pytest.raises(ValueError, match="audit") as refused:
-        facts_of("done", audit=None, labeling_problems=("r1",))
+    with pytest.raises(ValueError, match="validation") as refused:
+        facts_of("done", validation=None, labeling_problems=("r1",))
     assert "r1" in str(refused.value) and "judge" in str(refused.value)
     _, _, _, analysis, _, _ = done_world()
     with pytest.raises(ValueError, match="follows done"):
@@ -1103,10 +1107,31 @@ def test_the_report_command_writes_judge_technical_after_a_judge_diagnosis(
     assert calls == [] and guard.attempts == []
 
 
-def test_the_report_command_at_done_without_the_audit_names_the_variant(reported) -> None:
+def test_at_done_a_missing_audit_or_amount_is_pending_and_the_rest_is_reported() -> None:
+    """Amendment 7, "The report": a missing audit or billing field gives a pending section, not a
+    blocked report. The analysis stays as written; no amount is filled in."""
+    full = facts_of("done")
+    billing = {**BILLING,
+               "stages": [{**s, "spent": None} if s["stage"] == "confirmation" else s
+                          for s in BILLING["stages"]],
+               "incidents": [{**i, "billed": None} for i in BILLING["incidents"]]}  # fmt: skip
+    facts = facts_of("done", audit=None, billing=billing)
+    assert facts["audit"] == rp.PENDING and facts["analysis"] == full["analysis"]
+    assert facts["money"]["pending"] == {
+        "stages": ["confirmation"],
+        "incidents": [i["id"] for i in BILLING["incidents"]],
+    }
+    text = rp.tables(facts)
+    assert "| confirmation | pending |" in text and "| pending |" in text.split("## audit")[1]
+    with pytest.raises(ValueError, match="billed is not a finite amount of at least 0, nor null"):
+        facts_of("done", billing={**BILLING, "incidents": [{**BILLING["incidents"][0],
+                                                              "billed": -1}]})  # fmt: skip
+
+
+def test_the_report_command_at_done_without_the_audit_writes_it_pending(reported) -> None:
     world = reported
     (world.root / "study3-final" / "c1" / "audit" / "estimate.json").unlink()
-    why = world.refused(
-        "report", "--runs-root", world.root, "--billing", world.billing, "--embargo", world.embargo
-    )
-    assert "audit" in why and "judge_technical" in why
+    world.report()
+    (folder,) = sorted((world.root / "study3-final").glob("report-*"))
+    facts = json.loads((folder / "facts.json").read_text())
+    assert facts["audit"] == "pending" and facts["analysis"] != "pending"
