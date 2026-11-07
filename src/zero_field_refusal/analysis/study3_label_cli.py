@@ -93,6 +93,7 @@ path, never a count.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import io
 import json
@@ -687,6 +688,7 @@ def main(argv: list[str] | None = None) -> None:
 
         tokens = probe()
 
+    @functools.cache  # one reading of the records per candidate, not one per run
     def freeze_gate(candidate: int) -> tuple[str, ...]:
         from .study3_freeze import freeze_open  # it reads the route: here only
 
