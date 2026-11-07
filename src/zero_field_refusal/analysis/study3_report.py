@@ -84,7 +84,11 @@ and ``embargo`` are lists, ``[]`` when empty.
   undetermined flags; the non-estimable comparisons. Per comparison, whether B_E's MAR estimate
   lies outside its worst-case bound, with why it can (``BIAS_NOTE``): the MAR estimate averages
   over the resolved draws alone, while each missing draw's term in the bound is fixed in sign by
-  its known judge label.
+  its known judge label. The reference's sources (the blind annotators' agreements, the arbiter
+  model's decisions, and the items left missing with no decision or no vote) and the arbiter
+  model's check of the drawn agreements (``consensus_check``: checked, failed, labeled, rejected
+  and the share rejected, an estimate of the consensus's error that changes no reference label;
+  ``CHECK_NOTE``).
 - ``labeling``: the run ids with a technical labeling problem.
 - ``freeze``: the freeze record's path and sha256 and its cohorts as frozen (seeds and run ids per
   comparison, K*_h, A − P).
@@ -239,6 +243,11 @@ BIAS_NOTE = (
     "B_E's MAR estimate averages over the draws with a resolved reference only, while "
     "each missing draw's term in the worst-case bound is fixed in sign by its known "
     "judge label: the MAR estimate can lie outside the worst-case bound"
+)
+CHECK_NOTE = (
+    "the share of the checked agreements the arbiter model rejects (its label differs from the "
+    "agreed one on the two-class outcome), over those it labeled: an estimate of the consensus's "
+    "error; the check changes no reference label"
 )
 
 
@@ -1300,12 +1309,18 @@ def _audit(link: Mapping[str, Any] | None) -> Any:
             if estimate is None or not bound or None in bound
             else not bound[0] <= estimate <= bound[1]
         )
+    check = record.get("consensus_check") or {}
     return {
         "record": _link(link),
         **{
             key: record.get(key)
             for key in ("selection", "bias", "error_rates", "non_estimable", "missing")
         },
+        "reference_sources": (record.get("reference") or {}).get("counts"),
+        "consensus_check": {
+            key: check.get(key) for key in ("checked", "failed", "labeled", "rejected", "share")
+        },
+        "check_note": CHECK_NOTE,
         "mar_outside_worst_case": outside,
         "bias_note": BIAS_NOTE,
     }
@@ -2024,6 +2039,28 @@ def _render_audit(a: Mapping[str, Any]) -> list[str]:
             "undetermined",
         ),
         rows,
+    )
+    lines += _table(("reference source", "items"), (a["reference_sources"] or {}).items())
+    c = a["consensus_check"]
+    lines += _table(
+        (
+            "agreements checked",
+            "failed",
+            "labeled",
+            "rejected",
+            "share rejected",
+            "the check",
+        ),
+        [
+            (
+                c["checked"],
+                c["failed"],
+                c["labeled"],
+                c["rejected"],
+                c["share"],
+                a["check_note"],
+            )
+        ],
     )
     return lines + _table(("non-estimable", "why"), (a["non_estimable"] or {}).items())
 

@@ -257,6 +257,20 @@ AUDIT = {
     },
     "non_estimable": {},
     "missing": {"items": 1, "draws": 2},
+    "reference": {
+        "items": {},
+        "counts": {"agreement": 340, "arbiter": 30, "no decision": 1, "no vote": 0},
+        "missing": 1,
+    },
+    "consensus_check": {
+        "checked": 34,
+        "failed": 1,
+        "labeled": 33,
+        "rejected": 2,
+        "share": 2 / 33,
+        "failed_items": ["c000000000001"],
+        "rejected_items": ["c000000000002", "c000000000003"],
+    },
 }
 
 
@@ -437,6 +451,24 @@ def test_a_mar_estimate_outside_its_worst_case_is_flagged_with_why() -> None:
     assert facts["audit"]["mar_outside_worst_case"] == {"AF": True, "PF": None}
     text = rp.tables(facts)
     assert facts["audit"]["bias_note"] in text and "| AF | false | 0.210 |" in text
+
+
+def test_the_audit_reports_the_references_sources_and_the_arbiters_check() -> None:
+    """Amendment 11: the share of the checked agreements the arbiter model rejects is reported,
+    with the numbers checked, failed and rejected; the check changes no reference label."""
+    facts = facts_of("done")
+    assert facts["audit"]["consensus_check"] == {
+        "checked": 34,
+        "failed": 1,
+        "labeled": 33,
+        "rejected": 2,
+        "share": 2 / 33,
+    }
+    assert facts["audit"]["reference_sources"] == AUDIT["reference"]["counts"]
+    assert "changes no reference label" in facts["audit"]["check_note"]
+    text = rp.tables(facts)
+    assert "| 34 | 1 | 33 | 2 |" in text and facts["audit"]["check_note"] in text
+    assert "| no decision | 1 |" in text
 
 
 def test_the_dead_ends_are_reported_apart() -> None:
