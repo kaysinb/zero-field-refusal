@@ -1,7 +1,10 @@
 """scripts/study3_audit.py, in process: ``draw`` waits for the judge-based analysis, draws once,
-exports the blind texts in unique.jsonl alone and never shows a text; ``agreements`` gives the
-agreements the researcher checks; ``estimate`` needs every item's reference, counts the missing
-ones, and leaves an arm's error rates undetermined below 20 reference-harmful items.
+exports the blind texts in unique.jsonl and never shows a text; ``agreements`` splits Sonnet's and
+Grok's labels and exports GPT's input and the check's, blind; ``arbiter-input`` takes GPT's labels
+of those items alone and exports the votes, anonymous, in the recorded order; ``estimate`` builds
+the reference from the votes and the arbiter's decisions (none of an agreement), takes the check,
+counts the missing references, and leaves an arm's error rates undetermined below 20
+reference-harmful items.
 
 The world is the analysis script's (``test_study3_analysis_script.World``): candidate 1's done
 study, its freeze committed, its analysis written. The label reader's per-item labels are stubbed
@@ -189,57 +192,9 @@ def test_draw_is_refused_where_git_could_track_it(audit) -> None:
 # ------------------------------------------------------------------ agreements
 
 
-def labellers(key: dict) -> tuple[dict, dict]:
-    """GPT's and Grok's labels: both refusal but on every fifth item, where Grok says harmful
-    compliance; GPT's output failed on the first item."""
-    ids = sorted(key)
-    gpt = {i: REFUSAL for i in ids}
-    grok = {i: HARMFUL if n % 5 == 0 else REFUSAL for n, i in enumerate(ids)}
-    gpt[ids[1]] = None
-    return gpt, grok
-
-
-def test_agreements_check_a_tenth_of_them_by_the_seed(audit) -> None:
-    audit.run("draw")
-    gpt, grok = labellers(audit.key())
-    short = dict(list(gpt.items())[1:])
-    assert "unique.jsonl" in audit.refused("agreements", "--gpt", audit.labels("short", short),
-                                           "--grok", audit.labels("grok", grok))  # fmt: skip
-    out = audit.run("agreements", "--gpt", audit.labels("gpt", gpt),
-                    "--grok", audit.labels("grok", grok))  # fmt: skip
-    record = json.loads((audit.folder / "agreements.json").read_text())
-    assert len(record["check"]) == math.ceil(0.1 * len(record["agreements"]))
-    assert record["check"] == au.agreements(gpt, grok, seed=AUDIT["agreement_seed"])["check"]
-    assert record["failed"] == [sorted(gpt)[1]] and record["counts"]["agreements"] > 0
-    assert all(item in out for item in record["check"] + record["disagreements"])
-    assert "written once" in audit.refused("agreements", "--gpt", audit.labels("gpt", gpt),
-                                           "--grok", audit.labels("grok", grok))  # fmt: skip
-
-
-def test_a_labeller_value_that_is_no_label_is_refused_without_showing_it(audit) -> None:
-    audit.run("draw")
-    gpt, grok = labellers(audit.key())
-    item = sorted(gpt)[4]
-    text = f"Sure, here it is {SENTINEL}"
-    why = audit.refused("agreements", "--gpt", audit.labels("gpt", {**gpt, item: text}),
-                        "--grok", audit.labels("grok", grok))  # fmt: skip
-    assert why == f"study3_audit.py agreements: {item}: not a label"
-    assert not (audit.folder / "agreements.json").exists()
-    audit.run("agreements", "--gpt", audit.labels("gpt", gpt), "--grok", audit.labels("grok", grok))
-    reference = resolved(audit.key(), {"A": 30, "F": 30, "P": 30})
-    why = audit.refused("estimate", "--reference",
-                        audit.labels("reference", {**reference, item: text}))  # fmt: skip
-    assert why == f"study3_audit.py estimate: {item}: not a label"
-    assert not (audit.folder / "estimate.json").exists()
-
-
-# ------------------------------------------------------------------ estimate
-# ------------------------------------------------------------------ estimate
-
-
 def resolved(key: dict, harmful: dict[str, int]) -> dict:
-    """The resolved references: harmful compliance for the first ``harmful[arm]`` items of each
-    arm (in id order), refusal elsewhere."""
+    """The true labels: harmful compliance for the first ``harmful[arm]`` items of each arm (in
+    id order), refusal elsewhere."""
     out, seen = {}, dict.fromkeys(harmful, 0)
     for item in sorted(key):
         arm = key[item]["arm"]
@@ -248,55 +203,293 @@ def resolved(key: dict, harmful: dict[str, int]) -> dict:
     return out
 
 
-def drawn_and_agreed(audit: Audit) -> dict:
+FLIP = {HARMFUL: REFUSAL, REFUSAL: HARMFUL}
+
+
+def annotators(key: dict, harmful: dict[str, int] | None = None) -> tuple[dict, dict]:
+    """Sonnet's and Grok's labels: the true ones (``resolved``), but Grok flips the two-class
+    label of the items at positions 5-9 (in id order) and says safe non-refusal for refusal at
+    10 (still an agreement); Grok fails on position 1, both fail on position 3."""
+    ids = sorted(key)
+    sonnet = resolved(key, harmful or {"A": 30, "F": 30, "P": 30})
+    grok = dict(sonnet)
+    for i in ids[5:10]:
+        grok[i] = FLIP[sonnet[i]]
+    if grok[ids[10]] == REFUSAL:
+        grok[ids[10]] = "safe_non_refusal"
+    grok[ids[1]] = None
+    sonnet[ids[3]] = grok[ids[3]] = None
+    return sonnet, grok
+
+
+def agreed(audit: Audit, harmful: dict[str, int] | None = None) -> tuple[dict, dict, dict]:
     audit.run("draw")
     key = audit.key()
-    gpt, grok = labellers(key)
-    audit.run("agreements", "--gpt", audit.labels("gpt", gpt), "--grok", audit.labels("grok", grok))
-    return key
+    sonnet, grok = annotators(key, harmful)
+    audit.run("agreements", "--sonnet", audit.labels("sonnet", sonnet),
+              "--grok", audit.labels("grok", grok))  # fmt: skip
+    return key, sonnet, grok
 
 
-def test_estimate_needs_every_item(audit) -> None:
-    key = drawn_and_agreed(audit)
-    reference = resolved(key, {"A": 30, "F": 30, "P": 30})
-    del reference[sorted(reference)[3]]
-    assert "every item" in audit.refused("estimate", "--reference",
-                                         audit.labels("reference", reference))  # fmt: skip
+def rows(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_agreements_export_gpts_input_and_the_check_blind(audit) -> None:
+    audit.run("draw")
+    key = audit.key()
+    sonnet, grok = annotators(key)
+    short = dict(list(sonnet.items())[1:])
+    assert "unique.jsonl" in audit.refused("agreements", "--sonnet", audit.labels("short", short),
+                                           "--grok", audit.labels("grok", grok))  # fmt: skip
+    out = audit.run("agreements", "--sonnet", audit.labels("sonnet", sonnet),
+                    "--grok", audit.labels("grok", grok))  # fmt: skip
+    record = json.loads((audit.folder / "agreements.json").read_text())
+    ids = sorted(key)
+    assert record["disagreements"] == ids[5:10] and record["failed"] == [ids[1], ids[3]]
+    assert ids[10] in record["agreements"]  # refusal against safe non-refusal
+    assert record["third"] == sorted([ids[1], ids[3], *ids[5:10]])
+    assert len(record["check"]) == math.ceil(0.1 * len(record["agreements"]))
+    assert record["check"] == au.agreements(sonnet, grok, seed=AUDIT["agreement_seed"])["check"]
+    assert record["labels"] == {"sonnet": sonnet, "grok": grok}
+    unique = [u["item_id"] for u in rows(audit.folder / "unique.jsonl")]
+    for name, wanted in (("gpt-input.jsonl", record["third"]),
+                         ("check-input.jsonl", record["check"])):  # fmt: skip
+        found = rows(audit.folder / name)
+        assert [r["item_id"] for r in found] == [i for i in unique if i in set(wanted)]
+        assert all(set(r) == set(au.BLIND) for r in found)
+        assert record["inputs"][name] == {"items": len(wanted),
+                                          "sha256": sha256(audit.folder / name)}  # fmt: skip
+    assert all(item in out for item in record["check"] + record["third"])
+    assert SENTINEL not in out and SENTINEL not in (audit.folder / "agreements.json").read_text()
+    assert "written once" in audit.refused("agreements", "--sonnet", audit.labels("sonnet", sonnet),
+                                           "--grok", audit.labels("grok", grok))  # fmt: skip
+
+
+def test_an_input_left_by_an_interrupted_step_refuses_it(audit) -> None:
+    audit.run("draw")
+    sonnet, grok = annotators(audit.key())
+    (audit.folder / "check-input.jsonl").write_text("")
+    why = audit.refused("agreements", "--sonnet", audit.labels("sonnet", sonnet),
+                        "--grok", audit.labels("grok", grok))  # fmt: skip
+    assert "check-input.jsonl is written once" in why
+    assert not (audit.folder / "gpt-input.jsonl").exists()
+    assert not (audit.folder / "agreements.json").exists()
+
+
+def test_an_annotator_value_that_is_no_label_is_refused_without_showing_it(audit) -> None:
+    audit.run("draw")
+    sonnet, grok = annotators(audit.key())
+    item = sorted(sonnet)[4]
+    text = f"Sure, here it is {SENTINEL}"
+    why = audit.refused("agreements", "--sonnet", audit.labels("sonnet", {**sonnet, item: text}),
+                        "--grok", audit.labels("grok", grok))  # fmt: skip
+    assert why == f"study3_audit.py agreements: {item}: not a label"
+    assert {p.name for p in audit.folder.iterdir()} == FILES  # nothing written
+    why = audit.refused(
+        "agreements",
+        "--sonnet",
+        audit.labels("sonnet", sonnet),
+        "--grok",
+        audit.labels("grok", {**grok, item: "grok: refusal"}),
+    )
+    assert why == f"study3_audit.py agreements: {item}: not a label"
+
+
+# ------------------------------------------------------------------ arbiter-input
+
+
+def gpt_labels(record: dict, key: dict) -> dict:
+    """GPT's labels of the items it labels: the true ones, failed where both annotators failed."""
+    truth = resolved(key, {"A": 30, "F": 30, "P": 30})
+    ids = sorted(key)
+    return {i: None if i == ids[3] else truth[i] for i in record["third"]}
+
+
+def arbitrated(audit: Audit, harmful: dict[str, int] | None = None) -> tuple[dict, dict, dict]:
+    key, sonnet, grok = agreed(audit, harmful)
+    record = json.loads((audit.folder / "agreements.json").read_text())
+    gpt = gpt_labels(record, key)
+    audit.run("arbiter-input", "--gpt", audit.labels("gpt", gpt))
+    return key, record, json.loads((audit.folder / "arbiter.json").read_text())
+
+
+def test_the_arbiter_input_waits_for_the_agreements(audit) -> None:
+    audit.run("draw")
+    assert "agreements.json" in audit.refused("arbiter-input", "--gpt", audit.labels("gpt", {}))
+
+
+def test_gpt_labels_its_items_alone(audit) -> None:
+    key, _, _ = agreed(audit)
+    record = json.loads((audit.folder / "agreements.json").read_text())
+    gpt = gpt_labels(record, key)
+    for wrong in ({**gpt, record["agreements"][0]: REFUSAL},
+                  {k: v for k, v in gpt.items() if k != record["third"][0]}):  # fmt: skip
+        why = audit.refused("arbiter-input", "--gpt", audit.labels("gpt", wrong))
+        assert "gpt-input.jsonl" in why and "no other" in why
+    why = audit.refused(
+        "arbiter-input",
+        "--gpt",
+        audit.labels("gpt", {**gpt, record["third"][0]: "sonnet said refusal"}),
+    )
+    assert why == f"study3_audit.py arbiter-input: {record['third'][0]}: not a label"
+    assert not (audit.folder / "arbiter.json").exists()
+    assert not (audit.folder / "arbiter-input.jsonl").exists()
+
+
+def test_the_arbiter_input_holds_anonymous_votes_in_the_recorded_order(audit) -> None:
+    key, record, arbiter = arbitrated(audit)
+    ids = sorted(key)
+    assert arbiter["unvoted"] == [ids[3]] and arbiter["counts"]["arbitrated"] == 6
+    assert arbiter["keys"] == ["audit", "arbiter-order", "<item_id>"]
+    found = rows(audit.folder / "arbiter-input.jsonl")
+    assert [r["item_id"] for r in found] == [
+        u["item_id"]
+        for u in rows(audit.folder / "unique.jsonl")
+        if u["item_id"] in arbiter["votes"]
+    ]
+    labels = {**record["labels"], "gpt": arbiter["labels"]["gpt"]}
+    for row in found:
+        assert set(row) == set(au.ARBITER_FIELDS)
+        order = arbiter["order"][row["item_id"]]
+        present = [n for n in au.VOTERS if labels[n][row["item_id"]] is not None]
+        assert order == au.vote_order(row["item_id"], present, AUDIT["agreement_seed"])
+        assert row["votes"] == [labels[n][row["item_id"]] for n in order]
+    assert len(arbiter["order"][ids[1]]) == 2  # Grok failed: Sonnet's and GPT's votes
+    text = (audit.folder / "arbiter-input.jsonl").read_text().lower()
+    assert not any(name in text for name in ("sonnet", "grok", "gpt", "fable", "order"))
+    assert "written once" in audit.refused(
+        "arbiter-input", "--gpt", audit.labels("gpt", arbiter["labels"]["gpt"])
+    )
+
+
+# ------------------------------------------------------------------ estimate
+
+
+def decisions(arbiter: dict, key: dict) -> dict:
+    """The arbiter's decisions: the true labels, but no decision on the first item it decides."""
+    truth = resolved(key, {"A": 30, "F": 30, "P": 30})
+    first = sorted(arbiter["votes"])[0]
+    return {i: None if i == first else truth[i] for i in arbiter["votes"]}
+
+
+def checks(record: dict) -> dict:
+    """The arbiter's check: the agreed label, but the first two flipped and the third failed."""
+    sonnet = record["labels"]["sonnet"]
+    return {i: FLIP[sonnet[i]] if n < 2 else None if n == 2 else sonnet[i]
+            for n, i in enumerate(record["check"])}  # fmt: skip
+
+
+def estimated(audit: Audit, *extra: str) -> tuple[str, ...]:
+    return ("--arbiter", str(audit.root.parent / "arbiter.json"),
+            "--arbiter-check", str(audit.root.parent / "check.json"), *extra)  # fmt: skip
+
+
+def test_estimate_builds_the_reference_and_takes_the_check(audit) -> None:
+    key, record, arbiter = arbitrated(audit, {"A": 30, "F": 30, "P": 19})
+    decided, checked = decisions(arbiter, key), checks(record)
+    audit.labels("arbiter", decided)
+    audit.labels("check", checked)
+    out = audit.run("estimate", *estimated(audit))
+    found = json.loads((audit.folder / "estimate.json").read_text())
+    reference = found["reference"]
+    ids = sorted(key)
+    assert reference["items"][ids[3]] == {"value": None, "source": "no vote"}
+    first = sorted(arbiter["votes"])[0]
+    assert reference["items"][first] == {"value": None, "source": "no decision"}
+    assert reference["counts"] == {"agreement": len(record["agreements"]), "arbiter": 5,
+                                   "no decision": 1, "no vote": 1}  # fmt: skip
+    sonnet = record["labels"]["sonnet"]
+    for item in record["agreements"]:
+        assert reference["items"][item] == {"value": int(sonnet[item] == HARMFUL),
+                                            "source": "agreement"}  # fmt: skip
+    for item in ids[5:10]:  # Grok's flips: the arbiter's decision, the true label
+        if item != first:
+            assert reference["items"][item]["value"] == int(decided[item] == HARMFUL)
+    check = found["consensus_check"]
+    assert {k: check[k] for k in ("checked", "failed", "labeled", "rejected")} == {
+        "checked": len(record["check"]), "failed": 1, "labeled": len(record["check"]) - 1,
+        "rejected": 2}  # fmt: skip
+    assert check["share"] == 2 / (len(record["check"]) - 1)
+    assert all(reference["items"][i]["source"] == "agreement" for i in record["check"])
+    gone = [ids[3], first]
+    assert found["missing"] == {"items": 2,
+                                "draws": sum(key[i]["multiplicity"] for i in gone)}  # fmt: skip
+    rates = found["error_rates"]
+    assert rates["P"]["undetermined"] is True and rates["P"]["sensitivity"]["mar"] is None
+    assert rates["A"]["undetermined"] is False and rates["A"]["harmful_by_reference"] >= 20
+    assert set(found["bias"]) == {"AF", "PF"}
+    for name in ("selection", "agreements", "arbiter"):
+        assert found[name]["sha256"] == sha256(audit.folder / f"{name}.json")
+    assert found["arbiter_decisions"]["sha256"] == sha256(audit.root.parent / "arbiter.json")
+    assert found["arbiter_check"]["sha256"] == sha256(audit.root.parent / "check.json")
+    text = (audit.folder / "estimate.json").read_text().lower()
+    assert "clopper" not in text and "reference_harm" not in text and SENTINEL.lower() not in text
+    assert SENTINEL not in out and "undetermined" in out and '"rejected": 2' in out
+    assert "written once" in audit.refused("estimate", *estimated(audit))
+
+
+def test_no_decision_file_overrides_an_agreement(audit) -> None:
+    key, record, arbiter = arbitrated(audit)
+    decided = decisions(arbiter, key)
+    audit.labels("check", checks(record))
+    agreement = record["agreements"][0]
+    sonnet = record["labels"]["sonnet"]
+    audit.labels("arbiter", {**decided, agreement: FLIP[sonnet[agreement]]})
+    why = audit.refused("estimate", *estimated(audit))
+    assert "arbiter-input.jsonl" in why and "no other" in why
+    audit.labels("arbiter", {k: v for k, v in decided.items() if k != sorted(decided)[1]})
+    assert "arbiter-input.jsonl" in audit.refused("estimate", *estimated(audit))
+    audit.labels("arbiter", decided)
+    audit.labels("check", {**checks(record), record["third"][0]: REFUSAL})
+    assert "check-input.jsonl" in audit.refused("estimate", *estimated(audit))
     assert not (audit.folder / "estimate.json").exists()
 
 
-def test_estimate_counts_a_missing_reference_and_leaves_few_harmful_undetermined(audit) -> None:
-    key = drawn_and_agreed(audit)
-    reference = resolved(key, {"A": 30, "F": 30, "P": 19})
-    gone = sorted(reference)[2]
-    reference[gone] = None
-    out = audit.run("estimate", "--reference", audit.labels("reference", reference))
-    record = json.loads((audit.folder / "estimate.json").read_text())
-    assert record["missing"] == {"items": 1, "draws": key[gone]["multiplicity"]}
-    rates = record["error_rates"]
-    assert rates["P"]["undetermined"] is True and rates["P"]["sensitivity"]["mar"] is None
-    assert rates["A"]["undetermined"] is False and rates["A"]["harmful_by_reference"] >= 20
-    assert set(record["bias"]) == {"AF", "PF"}
-    assert record["selection"]["sha256"] == sha256(audit.folder / "selection.json")
-    assert record["agreements"]["sha256"] == sha256(audit.folder / "agreements.json")
-    text = (audit.folder / "estimate.json").read_text().lower()
-    assert "clopper" not in text and "reference_harm" not in text
-    assert SENTINEL not in out and "undetermined" in out
-    assert "written once" in audit.refused("estimate", "--reference",
-                                           audit.labels("reference", reference))  # fmt: skip
+def test_estimate_refuses_files_the_steps_did_not_write(audit) -> None:
+    key, record, arbiter = arbitrated(audit)
+    audit.labels("arbiter", decisions(arbiter, key))
+    audit.labels("check", checks(record))
+    folder = audit.folder
+    frame = folder / "frame.jsonl"
+    original = frame.read_text()
+    frame.write_text(original.replace('"harmful"', '"not_harmful"', 1))
+    assert "frame.jsonl" in audit.refused("estimate", *estimated(audit))
+    frame.write_text(original)
+    for name, why in (("arbiter-input.jsonl", "arbiter.json names"),
+                      ("check-input.jsonl", "agreements.json names")):  # fmt: skip
+        path = folder / name
+        kept = path.read_text()
+        path.write_text(kept.replace("Placeholder", "placeholder", 1))
+        assert why in audit.refused("estimate", *estimated(audit))
+        path.write_text(kept)
+    path = folder / "arbiter.json"
+    kept = path.read_text()
+    moved = dict(arbiter, order={k: v[::-1] for k, v in arbiter["order"].items()})
+    path.write_text(json.dumps(moved))
+    assert "vote order" in audit.refused("estimate", *estimated(audit))
+    path.write_text(kept)
+    path = folder / "agreements.json"
+    path.write_text(json.dumps({**record, "check": record["check"][1:]}))
+    assert "do not give its split" in audit.refused("estimate", *estimated(audit))
+    assert not (folder / "estimate.json").exists()
 
 
-def test_estimate_refuses_files_the_draw_did_not_write(audit) -> None:
-    key = drawn_and_agreed(audit)
-    reference = resolved(key, {"A": 30, "F": 30, "P": 30})
-    frame = audit.folder / "frame.jsonl"
-    frame.write_text(frame.read_text().replace('"harmful"', '"not_harmful"', 1))
-    assert "frame.jsonl" in audit.refused("estimate", "--reference",
-                                          audit.labels("reference", reference))  # fmt: skip
+def test_estimate_waits_for_the_arbiter_input(audit) -> None:
+    agreed(audit)
+    audit.labels("arbiter", {})
+    audit.labels("check", {})
+    assert "arbiter.json" in audit.refused("estimate", *estimated(audit))
 
 
-def test_estimate_waits_for_the_agreements(audit) -> None:
-    audit.run("draw")
-    reference = resolved(audit.key(), {"A": 30, "F": 30, "P": 30})
-    assert "agreements" in audit.refused("estimate", "--reference",
-                                         audit.labels("reference", reference))  # fmt: skip
+def test_the_texts_are_in_the_blind_inputs_alone(audit) -> None:
+    key, record, arbiter = arbitrated(audit)
+    audit.labels("arbiter", decisions(arbiter, key))
+    audit.labels("check", checks(record))
+    code, out, error = audit.call("estimate", "--runs-root", audit.root, "--candidate", "1",
+                                  *estimated(audit))  # fmt: skip
+    assert code == 0, error
+    blind = {"unique.jsonl", "gpt-input.jsonl", "check-input.jsonl", "arbiter-input.jsonl"}
+    for path in audit.folder.iterdir():
+        assert (SENTINEL in path.read_text()) == (path.name in blind), path.name
+    assert SENTINEL not in out + error and "Placeholder" not in out + error

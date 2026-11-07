@@ -1,16 +1,23 @@
 """Draw study 3's audit of the judge once the judge-based analysis is written, then take the
-reference labellers' agreements and estimate the judge's implied bias and error rates.
+blind annotators' agreements, the arbiter model's decisions and check, and estimate the judge's
+implied bias and error rates.
 
-    python scripts/study3_audit.py draw       --runs-root DIR --candidate N [--sealed-dir DIR]
-    python scripts/study3_audit.py agreements --runs-root DIR --candidate N --gpt FILE --grok FILE
-    python scripts/study3_audit.py estimate   --runs-root DIR --candidate N --reference FILE
+    python scripts/study3_audit.py draw          --runs-root DIR --candidate N [--sealed-dir DIR]
+    python scripts/study3_audit.py agreements    --runs-root DIR --candidate N
+                                                 --sonnet FILE --grok FILE
+    python scripts/study3_audit.py arbiter-input --runs-root DIR --candidate N --gpt FILE
+    python scripts/study3_audit.py estimate      --runs-root DIR --candidate N
+                                                 --arbiter FILE --arbiter-check FILE
 
 docs/study3-preregistration.md: "Judge and audit" ("The audit", descriptive: one terminal draw
-after the judge-based analysis, its frame, its draw, the blind reference labels, the researcher's
-resolution and check of 10 % of the agreements, the estimates, the undetermined rates, no
-reference-harm claim) and "Seeds and order" (order step 12, under the confirmation supplement's
-audit seed and agreement seed). The computations are ``analysis.study3_audit``'s; the labels and
-the texts are read through the one label reader of the final analysis (``study3_final``).
+after the judge-based analysis, its frame, its draw, the blind reference labels, the estimates,
+the undetermined rates, no reference-harm claim), amendment 11 (the reference annotators: Sonnet
+and Grok, GPT on their disagreements, the arbiter model's decision from the anonymous votes, and
+its check of 10 % of the agreements) and "Seeds and order" (order step 12, under the confirmation
+supplement's audit seed and agreement seed). The computations are ``analysis.study3_audit``'s;
+the labels and the texts are read through the one label reader of the final analysis
+(``study3_final``). The model calls are made outside the code: it writes their blind inputs and
+reads their labels, checking the item ids and the blinding.
 
 The audit's folder is RUNS_DIR/study3-final/c<N>/audit/, beside the analysis.
 
@@ -33,7 +40,7 @@ The audit's folder is RUNS_DIR/study3-final/c<N>/audit/, beside the analysis.
    of the stream ``stream(seed, "audit", "order")``, each with an opaque id from that stream;
 5. the files, written into a temporary sibling folder, each synced, then renamed to audit/:
    - ``unique.jsonl``: ``{item_id, prompt, response}`` per distinct item drawn, in that order: the
-     only file the reference labellers see, blind to arm, run, block and judge label;
+     blind annotators' input (Sonnet's and Grok's), blind to arm, run, block and judge label;
    - ``key.json``: per item id its origin (frame index, arm, seed, run, side, prompt id, weight),
      its judge label, cohorts, coefficients, a_i, q_i, A_a and multiplicity;
    - ``frame.jsonl``: every frame item, the same fields, its multiplicity (0 when not drawn) and
@@ -46,44 +53,72 @@ The audit's folder is RUNS_DIR/study3-final/c<N>/audit/, beside the analysis.
      count and sha256 of every other file (``files``).
    It prints counts only.
 
-**agreements** reads GPT's and Grok's labels (``--gpt``, ``--grok``: JSON objects ``{item_id:
-label | null}`` over exactly unique.jsonl's item ids; a label one of refusal, safe_non_refusal or
-harmful_compliance; null a failed output) and writes ``agreements.json`` once: the agreements,
-the disagreements the researcher resolves, the failed outputs, and the check, ⌈10 % ×
-agreements⌉ of the agreements drawn under the agreement seed (``study3_audit.agreements``). It
-prints the counts and the item ids to resolve and to check.
+**agreements** reads Sonnet's and Grok's labels (``--sonnet``, ``--grok``: JSON objects
+``{item_id: label | null}`` over exactly unique.jsonl's item ids; a label one of refusal,
+safe_non_refusal or harmful_compliance; null a failed output) and writes, each once, the record
+last:
+- ``gpt-input.jsonl``: ``{item_id, prompt, response}`` per item GPT labels (the disagreements on
+  the two-class outcome and the items either annotator failed to label), in unique.jsonl's order;
+- ``check-input.jsonl``: the same per agreement the arbiter model checks, ⌈10 % × agreements⌉
+  drawn under the agreement seed, blind to the votes;
+- ``agreements.json``: both labels by item id, the agreements, disagreements, failed items, the
+  items GPT labels (``third``), the check, and each input's item count and sha256
+  (``study3_audit.agreements``).
+It prints the counts and the item ids GPT labels and the arbiter checks.
 
-**estimate** reads the resolved reference labels (``--reference``: ``{item_id: label | null}``
-over every item id; null a missing reference, failed or unresolved), once the agreements are
-written. It checks the draw's files against selection.json's sha256 and the in-force audit
-against selection.json's, draws again from frame.jsonl (the draw must be the stored one, its
-items and multiplicities key.json's, its judge points selection.json's), and writes
-``estimate.json`` once: B_E per estimable comparison (missing at random, and its worst-case
-bound), the error rates per arm drawn, the non-estimable comparisons and the missing references
-(``study3_audit.estimates``), naming selection.json, agreements.json and the reference file by
-sha256. It prints those numbers.
+**arbiter-input** reads GPT's labels (``--gpt``: ``{item_id: label | null}`` over exactly the
+items of gpt-input.jsonl, no other) and writes, each once, the record last:
+- ``arbiter-input.jsonl``: ``{item_id, prompt, response, votes}`` per item GPT labeled with at
+  least one vote, ``votes`` the labels alone, anonymous, in the order of the item's own stream
+  ``stream(agreement_seed, "audit", "arbiter-order", item_id)``;
+- ``arbiter.json``: GPT's labels, the stream's keys, per item the voter of each position
+  (``order``) and its ``votes``, the items with no vote (``unvoted``: missing, never sent), and
+  the input's item count and sha256 (``study3_audit.arbitration``).
+
+**estimate** reads the arbiter's decisions (``--arbiter``: ``{item_id: label | null}`` over
+exactly arbiter-input.jsonl's items; null no decision) and its check (``--arbiter-check``: the
+same over exactly check-input.jsonl's items; null a failed output). It checks the draw's files
+against selection.json's sha256, the in-force audit against selection.json's, each record's link
+to the one before it, every input file against its record's sha256, and the agreements and the
+vote order made again from the recorded labels and the agreement seed; it draws again from
+frame.jsonl (the draw must be the stored one, its items and multiplicities key.json's, its judge
+points selection.json's). It builds the reference (``study3_audit.reference``: an agreement's
+shared value, else the arbiter's decision, else missing; no file can set an agreement's
+reference), takes the check (``study3_audit.consensus_check``: the agreements checked, the
+failed, the rejected and their share; no reference changes) and writes ``estimate.json`` once:
+the reference by item id with its source and counts, the check, B_E per estimable comparison
+(missing at random, and its worst-case bound), the error rates per arm drawn, the non-estimable
+comparisons and the missing references (``study3_audit.estimates``), naming selection.json,
+agreements.json, arbiter.json and both decision files by sha256. It prints those numbers.
 
 **Refusals** exit with ``study3_audit.py <command>: <why>``, writing nothing more: the audit's
 folder where Git could track it or under a sealed folder; a draw already made; no analysis, or one
 of another freeze or candidate; a freeze with a problem, a dirty checkout, the in-force
 supplement missing or not the registered procedure; a cohort run pending or a technical labeling
 problem; per-item labels whose counts are not the run's harm; a judge point that is not the
-analysis's mean; a file the draw did not write; labels that do not cover exactly the items; a
-record already written. Messages name ids, counts, paths and hashes, never a label or a text.
+analysis's mean; a file the draw, the agreements or the arbiter's input did not write; a record
+that does not name the one before it, or whose agreements or vote order the recorded labels and
+seed do not give again; labels that do not cover exactly their items (GPT's of an item it does
+not label, the arbiter's of an item outside its input, an agreement among them); a blind row
+with another field or a vote that is no bare label; a record or input already written. Messages
+name ids, counts, paths and hashes, never a label or a text.
 
 **The sealing boundary.** The labels, the prompts and the responses are opened inside
 ``study3_final`` alone, behind the freeze gate; the blind texts only once the analysis is written.
-Only unique.jsonl holds texts: the audit's folder lies under RUNS_DIR, never where Git could track
-it (``study2_label_cli.in_tracked_tree``), its folder 0700 and its files 0600. Nothing printed
-holds a text.
+Only unique.jsonl and the three blind inputs (gpt-input.jsonl, check-input.jsonl and
+arbiter-input.jsonl, their texts copied from unique.jsonl) hold texts: the audit's folder lies
+under RUNS_DIR, never where Git could track it (``study2_label_cli.in_tracked_tree``), its folder
+0700 and its files 0600. Nothing printed holds a text.
 
 **Rulings** where the registration leaves a detail open:
 - *Item ids* are opaque, ``c`` and 12 hexadecimal digits from the order stream: neither the id nor
   the order tells the arm, run, block or judge label.
 - *One item per drawn (run, prompt)*: each distinct item drawn is one line of unique.jsonl, labeled
   once, counted once per draw.
-- *The estimate follows the agreements*: it is refused until agreements.json is written, and names
-  it.
+- *The order of the steps*: the arbiter's input is refused until agreements.json is written, the
+  estimate until arbiter.json is; each names the records before it by sha256.
+- *A step's files* are written new, each synced, the record last: an input left without its record
+  (an interrupted step) refuses the step until it is removed.
 """
 
 import argparse
@@ -119,8 +154,14 @@ FINAL = study3_final.FINAL  # RUNS_DIR/study3-final/c<N>/: the analysis and the 
 AUDIT = "audit"
 DRAWN_FILES = ("unique.jsonl", "key.json", "frame.jsonl")  # selection.json names each
 SELECTION, AGREEMENTS, ESTIMATE = "selection.json", "agreements.json", "estimate.json"
+ARBITER = "arbiter.json"
+GPT_INPUT, CHECK_INPUT = "gpt-input.jsonl", "check-input.jsonl"
+ARBITER_INPUT = "arbiter-input.jsonl"
 KINDS = {"selection": "study3-audit-selection", "agreements": "study3-audit-agreements",
-         "estimate": "study3-audit-estimate"}  # fmt: skip
+         "arbiter": "study3-audit-arbiter", "estimate": "study3-audit-estimate"}  # fmt: skip
+SPLIT = ("items", "agreements", "disagreements", "failed", "share", "stream_seed", "check",
+         "third")  # agreements.json's fields that the recorded labels give again  # fmt: skip
+ORDERED = ("keys", "order", "votes", "unvoted")  # arbiter.json's, likewise
 TOLERANCE = 1e-12  # a judge point against the analysis's primary mean
 DRAWN = ("q", "A", "multiplicity", "item_id")  # frame.jsonl's fields of the draw
 KEY_FIELDS = ("arm", "seed", "run", "side", "prompt", "w", "judge", "y_judge", "cohorts", "c",
@@ -388,7 +429,7 @@ def draw(args: argparse.Namespace) -> None:
         found = (f"{entry['draws']} draws of {entry['frame']} items, {entry['distinct']} distinct"
                  if entry["draws"] else entry["reason"])  # fmt: skip
         print(f"{arm}: {found}")
-    print(f"unique.jsonl: {len(unique)} items for the reference labellers")
+    print(f"unique.jsonl: {len(unique)} items for the blind annotators")
 
 
 def write_folder(folder: Path, files: Mapping[str, bytes]) -> None:
@@ -430,8 +471,9 @@ def read_draw(command: str, folder: Path) -> dict[str, Any]:
     return {"selection": selection, "sha256": sha256(data), "key": key}
 
 
-def labels_file(command: str, path: Path, root: Path, ids: set[str], what: str) -> dict:
-    """A labels file ``{item_id: label | null}`` over exactly ``ids``."""
+def labels_file(command: str, path: Path, root: Path, ids: set[str], what: str,
+                of: str = "unique.jsonl") -> dict:  # fmt: skip
+    """A labels file ``{item_id: label | null}`` over exactly ``ids``, the items of ``of``."""
     if under_sealed(path, root):
         refuse(command, f"{path} resolves under a sealed folder: never opened")
     try:
@@ -442,7 +484,7 @@ def labels_file(command: str, path: Path, root: Path, ids: set[str], what: str) 
         refuse(command, f"{path}: a JSON object {{item_id: label | null}}")
     if set(labels) != ids:
         absent, extra = len(ids - set(labels)), len(set(labels) - ids)
-        refuse(command, f"{what} must give every item of unique.jsonl, null when missing, and no "
+        refuse(command, f"{what} must give every item of {of}, null when missing, and no "
                f"other: {absent} absent, {extra} unknown")  # fmt: skip
     return labels
 
@@ -458,38 +500,206 @@ def file_link(path: Path) -> dict[str, str]:
     return {"path": str(path), "sha256": sha256(Path(path).read_bytes())}
 
 
+# ------------------------------------------------------------------ the blind inputs
+
+
+def texts_of(command: str, folder: Path, selection: Mapping[str, Any]) -> list[dict[str, str]]:
+    """unique.jsonl's rows in its order, the file checked against selection.json's sha256."""
+    try:
+        data = (folder / "unique.jsonl").read_bytes()
+        if sha256(data) != selection["files"]["unique.jsonl"]["sha256"]:
+            refuse(command, f"{folder / 'unique.jsonl'} is not the file the draw wrote")
+        return [json.loads(line) for line in data.splitlines()]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        refuse(command, f"unique.jsonl cannot be read ({type(exc).__name__})")
+
+
+def blind_input(command: str, rows: Sequence[Mapping[str, Any]], fields: Sequence[str]) -> bytes:
+    """A blind input's JSON lines, each row checked to hold exactly ``fields`` and anonymous
+    votes (``study3_audit.blind_checked``)."""
+    try:
+        for row in rows:
+            study3_audit.blind_checked(row, fields)
+    except ValueError as exc:  # an item id, never a text
+        refuse(command, str(exc))
+    return "".join(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n"
+                   for row in rows).encode("utf-8")  # fmt: skip
+
+
+def publish_step(command: str, folder: Path, inputs: Mapping[str, bytes], name: str,
+                 record: Mapping[str, Any]) -> None:  # fmt: skip
+    """A step's inputs, then its record naming each by its item count and sha256, every file
+    written new and synced; refused, writing nothing, when any of them exists."""
+    for found in (*inputs, name):
+        if written(folder / found):
+            refuse(command, f"{found} is written once: it exists already")
+    for found, data in inputs.items():
+        publish(command, folder / found, data)
+    publish(command, folder / name, encoded(record))
+
+
+def described(inputs: Mapping[str, bytes]) -> dict[str, dict[str, Any]]:
+    return {name: {"items": data.count(b"\n"), "sha256": sha256(data)}
+            for name, data in inputs.items()}  # fmt: skip
+
+
+def run_link(candidate: int, name: str, data_sha256: str) -> dict[str, str]:
+    return {"path": f"{FINAL}/c{candidate}/{AUDIT}/{name}", "sha256": data_sha256, "root": "runs"}
+
+
+def read_record(command: str, folder: Path, name: str, kind: str, before: Mapping[str, str],
+                link: str) -> tuple[dict[str, Any], str]:  # fmt: skip
+    """A step's record, its kind ``kind``, naming the record before it (``link``: its key) as
+    ``before``, each of its inputs the file it names; with its sha256."""
+    path = folder / name
+    if not path.is_file():
+        refuse(command, f"the {command} step follows {name}: it is not written")
+    try:
+        data = path.read_bytes()
+        record = json.loads(data)
+        if not isinstance(record, dict) or record.get("kind") != kind:
+            refuse(command, f"{path} is not a {kind} record")
+        if record.get(link) != before:
+            refuse(command, f"{path} does not name {before['path']} by its sha256")
+        for found, entry in record["inputs"].items():
+            if sha256((folder / found).read_bytes()) != entry["sha256"]:
+                refuse(command, f"{folder / found} is not the file {name} names")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        refuse(command, f"{name} cannot be read ({type(exc).__name__})")
+    return record, sha256(data)
+
+
+def read_agreements(command: str, folder: Path, drawn: Mapping[str, Any],
+                    audit: Mapping[str, Any]) -> tuple[dict[str, Any], str]:  # fmt: skip
+    """agreements.json, naming selection.json; its split made again from its labels under the
+    agreement seed must be the recorded one."""
+    candidate = drawn["selection"]["candidate"]
+    record, digest = read_record(
+        command,
+        folder,
+        AGREEMENTS,
+        KINDS["agreements"],
+        run_link(candidate, SELECTION, drawn["sha256"]),
+        "selection",
+    )
+    labels = record.get("labels") or {}
+    try:
+        again = study3_audit.agreements(labels["sonnet"], labels["grok"],
+                                        seed=audit["agreement_seed"])  # fmt: skip
+    except (ValueError, KeyError, TypeError) as exc:
+        refuse(command, f"{AGREEMENTS}'s labels do not split ({type(exc).__name__})")
+    same = {k: record.get(k) for k in SPLIT} == {k: again[k] for k in SPLIT}
+    if not same or set(labels["sonnet"]) != set(drawn["key"]):
+        refuse(command, f"{AGREEMENTS}'s labels and the agreement seed do not give its split")
+    return record, digest
+
+
+def read_arbiter(command: str, folder: Path, agreed: Mapping[str, Any], digest: str,
+                 audit: Mapping[str, Any]) -> tuple[dict[str, Any], str]:  # fmt: skip
+    """arbiter.json, naming agreements.json; its vote order made again from the recorded labels
+    under the agreement seed must be the recorded one."""
+    candidate = agreed["candidate"]
+    record, own = read_record(
+        command,
+        folder,
+        ARBITER,
+        KINDS["arbiter"],
+        run_link(candidate, AGREEMENTS, digest),
+        "agreements",
+    )
+    labels = agreed["labels"]
+    try:
+        again = study3_audit.arbitration(agreed, labels["sonnet"], labels["grok"],
+                                         (record.get("labels") or {})["gpt"],
+                                         seed=audit["agreement_seed"])  # fmt: skip
+    except (ValueError, KeyError, TypeError) as exc:
+        refuse(command, f"{ARBITER}'s labels do not give its order ({type(exc).__name__})")
+    if {k: record.get(k) for k in ORDERED} != {k: again[k] for k in ORDERED}:
+        refuse(command, f"{ARBITER}'s labels and the agreement seed do not give its vote order")
+    return record, own
+
+
 # ------------------------------------------------------------------ agreements
 
 
 def agreements(args: argparse.Namespace) -> None:
-    """The reference labellers' agreements (module docstring, "agreements")."""
+    """The blind annotators' agreements (module docstring, "agreements")."""
     root, candidate = Path(args.runs_root), args.candidate
     folder = audit_folder("agreements", root, candidate)
     drawn = read_draw("agreements", folder)
     audit = checked_audit("agreements", root, candidate, drawn["selection"])
-    path = folder / AGREEMENTS
-    if written(path):
-        refuse("agreements", f"{AGREEMENTS} is written once: it exists already")
+    for name in (GPT_INPUT, CHECK_INPUT, AGREEMENTS):
+        if written(folder / name):
+            refuse("agreements", f"{name} is written once: it exists already")
     code = head_code("agreements")
     ids = set(drawn["key"])
-    gpt = labels_file("agreements", args.gpt, root, ids, "--gpt")
+    sonnet = labels_file("agreements", args.sonnet, root, ids, "--sonnet")
     grok = labels_file("agreements", args.grok, root, ids, "--grok")
     try:
-        found = study3_audit.agreements(gpt, grok, seed=audit["agreement_seed"])
+        found = study3_audit.agreements(sonnet, grok, seed=audit["agreement_seed"])
     except ValueError as exc:  # an item id and "not a label", never the value
         refuse("agreements", str(exc))
-    counts = {k: len(found[k]) for k in ("agreements", "disagreements", "failed", "check")}
+    texts = texts_of("agreements", folder, drawn["selection"])
+    third, check = set(found["third"]), set(found["check"])
+    inputs = {
+        GPT_INPUT: blind_input("agreements", [row for row in texts if row["item_id"] in third],
+                               study3_audit.BLIND),
+        CHECK_INPUT: blind_input("agreements", [row for row in texts if row["item_id"] in check],
+                                 study3_audit.BLIND),
+    }  # fmt: skip
+    counts = {k: len(found[k]) for k in ("agreements", "disagreements", "failed", "third",
+                                         "check")}  # fmt: skip
     record = {"kind": KINDS["agreements"], "candidate": candidate, "written_at": now(),
-              "code": code,
-              "selection": {"path": f"{FINAL}/c{candidate}/{AUDIT}/{SELECTION}",
-                            "sha256": drawn["sha256"], "root": "runs"},
-              "gpt": file_link(args.gpt), "grok": file_link(args.grok), "counts": counts,
-              **found}  # fmt: skip
-    publish("agreements", path, encoded(record))
-    print(path)
+              "code": code, "selection": run_link(candidate, SELECTION, drawn["sha256"]),
+              "agreement_on": "the two-class outcome: harmful_compliance or not",
+              "sonnet": file_link(args.sonnet), "grok": file_link(args.grok),
+              "labels": {"sonnet": sonnet, "grok": grok}, "counts": counts, **found,
+              "inputs": described(inputs)}  # fmt: skip
+    publish_step("agreements", folder, inputs, AGREEMENTS, record)
+    print(folder / AGREEMENTS)
     print(json.dumps(counts))
-    print("to resolve: " + " ".join(found["disagreements"] + found["failed"]))
-    print("to check: " + " ".join(found["check"]))
+    print("GPT labels: " + " ".join(found["third"]))
+    print("the arbiter checks: " + " ".join(found["check"]))
+
+
+# ------------------------------------------------------------------ arbiter-input
+
+
+def arbiter_input(args: argparse.Namespace) -> None:
+    """The arbiter model's input (module docstring, "arbiter-input")."""
+    root, candidate = Path(args.runs_root), args.candidate
+    command = "arbiter-input"
+    folder = audit_folder(command, root, candidate)
+    drawn = read_draw(command, folder)
+    audit = checked_audit(command, root, candidate, drawn["selection"])
+    agreed, digest = read_agreements(command, folder, drawn, audit)
+    for name in (ARBITER_INPUT, ARBITER):
+        if written(folder / name):
+            refuse(command, f"{name} is written once: it exists already")
+    code = head_code(command)
+    gpt = labels_file(command, args.gpt, root, set(agreed["third"]), "--gpt", GPT_INPUT)
+    labels = agreed["labels"]
+    try:
+        found = study3_audit.arbitration(agreed, labels["sonnet"], labels["grok"], gpt,
+                                         seed=audit["agreement_seed"])  # fmt: skip
+    except ValueError as exc:  # an item id and "not a label", or counts
+        refuse(command, str(exc))
+    texts = texts_of(command, folder, drawn["selection"])
+    rows = [{**row, "votes": found["votes"][row["item_id"]]} for row in texts
+            if row["item_id"] in found["votes"]]  # fmt: skip
+    inputs = {ARBITER_INPUT: blind_input(command, rows, study3_audit.ARBITER_FIELDS)}
+    counts = {"third": len(agreed["third"]), "arbitrated": len(found["votes"]),
+              "unvoted": len(found["unvoted"])}  # fmt: skip
+    record = {"kind": KINDS["arbiter"], "candidate": candidate, "written_at": now(),
+              "code": code, "selection": run_link(candidate, SELECTION, drawn["sha256"]),
+              "agreements": run_link(candidate, AGREEMENTS, digest),
+              "gpt": file_link(args.gpt), "labels": {"gpt": gpt}, "counts": counts,
+              "stream": {"seed": "agreement_seed", "keys": found["keys"]}, **found,
+              "inputs": described(inputs)}  # fmt: skip
+    publish_step(command, folder, inputs, ARBITER, record)
+    print(folder / ARBITER)
+    print(json.dumps(counts))
+    print("the arbiter decides: " + " ".join(found["votes"]))
 
 
 # ------------------------------------------------------------------ estimate
@@ -505,27 +715,35 @@ def estimate(args: argparse.Namespace) -> None:
     path = folder / ESTIMATE
     if written(path):
         refuse("estimate", f"{ESTIMATE} is written once: it exists already")
-    agreed = folder / AGREEMENTS
-    if not agreed.is_file():
-        refuse("estimate", f"the estimate follows the agreements: {AGREEMENTS} is not written")
+    agreed, agreed_sha = read_agreements("estimate", folder, drawn, audit)
+    arbitrated, arbiter_sha = read_arbiter("estimate", folder, agreed, agreed_sha, audit)
     code = head_code("estimate")
-    resolved = labels_file("estimate", args.reference, root, set(key), "--reference")
+    decisions = labels_file("estimate", args.arbiter, root, set(arbitrated["votes"]),
+                            "--arbiter", ARBITER_INPUT)  # fmt: skip
+    checked = labels_file("estimate", args.arbiter_check, root, set(agreed["check"]),
+                          "--arbiter-check", CHECK_INPUT)  # fmt: skip
+    sonnet = agreed["labels"]["sonnet"]
     try:
-        values = study3_audit.reference_values(resolved)
-    except ValueError as exc:  # an item id and "not a label", never the value
+        built = study3_audit.reference(agreed, sonnet, arbitrated, decisions)
+        check = study3_audit.consensus_check(agreed, sonnet, checked)
+    except ValueError as exc:  # an item id and "not a label", or counts
         refuse("estimate", str(exc))
     frame, sample = redrawn(folder, selection, key, audit)
-    reference = {entry["frame_index"]: values[item_id] for item_id, entry in key.items()}
+    reference = {entry["frame_index"]: built["items"][item_id]["value"]
+                 for item_id, entry in key.items()}  # fmt: skip
     found = study3_audit.estimates(frame, sample, reference)
     record = {"kind": KINDS["estimate"], "candidate": candidate, "written_at": now(),
-              "code": code,
-              "selection": {"path": f"{FINAL}/c{candidate}/{AUDIT}/{SELECTION}",
-                            "sha256": drawn["sha256"], "root": "runs"},
-              "agreements": {"path": f"{FINAL}/c{candidate}/{AUDIT}/{AGREEMENTS}",
-                             "sha256": sha256(agreed.read_bytes()), "root": "runs"},
-              "reference": file_link(args.reference), **found}  # fmt: skip
+              "code": code, "selection": run_link(candidate, SELECTION, drawn["sha256"]),
+              "agreements": run_link(candidate, AGREEMENTS, agreed_sha),
+              "arbiter": run_link(candidate, ARBITER, arbiter_sha),
+              "arbiter_decisions": file_link(args.arbiter),
+              "arbiter_check": file_link(args.arbiter_check),
+              "reference": built, "consensus_check": check, **found}  # fmt: skip
     publish("estimate", path, encoded(record))
     print(path)
+    shown = {k: check[k] for k in ("checked", "failed", "labeled", "rejected", "share")}
+    print(json.dumps({"reference": built["counts"], "missing_references": built["missing"],
+                      "consensus_check": shown}))  # fmt: skip
     print(json.dumps(found, indent=1, allow_nan=False))
 
 
@@ -559,9 +777,12 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     drawn = commands.add_parser("draw", help="draw the audit once, after the analysis")
-    agreed = commands.add_parser("agreements", help="the agreements the researcher checks")
-    estimated = commands.add_parser("estimate", help="the bias and the error rates")
-    for command in (drawn, agreed, estimated):
+    agreed = commands.add_parser("agreements", help="the blind annotators' agreements, GPT's "
+                                 "input and the check's")  # fmt: skip
+    arbiter = commands.add_parser("arbiter-input", help="the arbiter's input, the votes anonymous")
+    estimated = commands.add_parser("estimate", help="the reference, the check, the bias and the "
+                                    "error rates")  # fmt: skip
+    for command in (drawn, agreed, arbiter, estimated):
         command.add_argument(
             "--runs-root",
             type=Path,
@@ -572,12 +793,25 @@ def main(argv: list[str] | None = None) -> None:
     drawn.add_argument("--sealed-dir", type=Path,
                        help="the labeling's sealed directory, its ledger in study3-ledger/ (by "
                        "default <--runs-root>/sealed)")  # fmt: skip
-    agreed.add_argument("--gpt", type=Path, required=True, help="GPT's labels (JSON)")
+    agreed.add_argument("--sonnet", type=Path, required=True, help="Sonnet's labels (JSON)")
     agreed.add_argument("--grok", type=Path, required=True, help="Grok's labels (JSON)")
-    estimated.add_argument("--reference", type=Path, required=True,
-                           help="the resolved reference labels (JSON)")  # fmt: skip
+    arbiter.add_argument("--gpt", type=Path, required=True,
+                         help="GPT's labels of gpt-input.jsonl's items (JSON)")  # fmt: skip
+    estimated.add_argument(
+        "--arbiter",
+        type=Path,
+        required=True,
+        help="the arbiter's decisions of arbiter-input.jsonl's items (JSON)",
+    )
+    estimated.add_argument(
+        "--arbiter-check",
+        type=Path,
+        required=True,
+        help="the arbiter's labels of check-input.jsonl's items (JSON)",
+    )
     args = parser.parse_args(argv)
-    {"draw": draw, "agreements": agreements, "estimate": estimate}[args.command](args)
+    {"draw": draw, "agreements": agreements, "arbiter-input": arbiter_input,
+     "estimate": estimate}[args.command](args)  # fmt: skip
 
 
 if __name__ == "__main__":
