@@ -1,0 +1,4816 @@
+{
+  "a_minus_p": {
+    "blocks": [
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T050847Z-c1-confirmation-adamw-2.11e--s10400-2f0c4d7a-a1",
+            "lo": "20261105T050251Z-c1-confirmation-adamw-1.45e--s10400-93b612e3-a1",
+            "w": 0.4149222137092619,
+            "width": 0.41681934597844106
+          },
+          "P": {
+            "hi": "20261105T053542Z-c1-confirmation-adamw_prewar-s10400-7afff485-a1",
+            "lo": "20261105T052837Z-c1-confirmation-adamw_prewar-s10400-3eba5aee-a1",
+            "w": 0.42385867939729943,
+            "width": 0.41618567794860173
+          }
+        },
+        "seed": 10400
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T054946Z-c1-confirmation-adamw-2.11e--s10401-2235bf7a-a1",
+            "lo": "20261105T054332Z-c1-confirmation-adamw-1.45e--s10401-b70eac9a-a1",
+            "w": 0.1585567741733013,
+            "width": 0.4726092533835762
+          },
+          "P": {
+            "hi": "20261105T061745Z-c1-confirmation-adamw_prewar-s10401-45eeaee4-a1",
+            "lo": "20261105T061024Z-c1-confirmation-adamw_prewar-s10401-9ca929f7-a1",
+            "w": 0.31258189256271185,
+            "width": 0.4231275873001974
+          }
+        },
+        "seed": 10401
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T063208Z-c1-confirmation-adamw-2.11e--s10402-79b8512b-a1",
+            "lo": "20261105T062552Z-c1-confirmation-adamw-1.45e--s10402-1bec2e29-a1",
+            "w": 0.5066436912411149,
+            "width": 0.4538595269583905
+          },
+          "P": {
+            "hi": "20261105T070011Z-c1-confirmation-adamw_prewar-s10402-b740b6aa-a1",
+            "lo": "20261105T065245Z-c1-confirmation-adamw_prewar-s10402-f1a5d5ee-a1",
+            "w": 0.42793712822614577,
+            "width": 0.4272770084049342
+          }
+        },
+        "seed": 10402
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T071354Z-c1-confirmation-adamw-2.11e--s10403-b0680528-a1",
+            "lo": "20261105T070816Z-c1-confirmation-adamw-1.45e--s10403-ae69aa40-a1",
+            "w": 0.46834744549474605,
+            "width": 0.48693338740864256
+          },
+          "P": {
+            "hi": "20261105T074151Z-c1-confirmation-adamw_prewar-s10403-a6cc2188-a1",
+            "lo": "20261105T073428Z-c1-confirmation-adamw_prewar-s10403-e9e910a8-a1",
+            "w": 0.5164183945256596,
+            "width": 0.47150806717702776
+          }
+        },
+        "seed": 10403
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T075614Z-c1-confirmation-adamw-2.11e--s10404-bb5e2a10-a1",
+            "lo": "20261105T075001Z-c1-confirmation-adamw-1.45e--s10404-b6c46fae-a1",
+            "w": 0.3631249843085849,
+            "width": 0.4641985705989893
+          },
+          "P": {
+            "hi": "20261105T082319Z-c1-confirmation-adamw_prewar-s10404-a34cbf14-a1",
+            "lo": "20261105T081611Z-c1-confirmation-adamw_prewar-s10404-7592f4d6-a1",
+            "w": 0.45224980900149153,
+            "width": 0.41885959376025705
+          }
+        },
+        "seed": 10404
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T083654Z-c1-confirmation-adamw-2.11e--s10405-aed243f3-a1",
+            "lo": "20261105T083113Z-c1-confirmation-adamw-1.45e--s10405-f579fb0f-a1",
+            "w": 0.5398082356461851,
+            "width": 0.48226999104901225
+          },
+          "P": {
+            "hi": "20261105T090258Z-c1-confirmation-adamw_prewar-s10405-7d12bf18-a1",
+            "lo": "20261105T085610Z-c1-confirmation-adamw_prewar-s10405-ec2ea5a6-a1",
+            "w": 0.6542634140308298,
+            "width": 0.43665315745032296
+          }
+        },
+        "seed": 10405
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T091629Z-c1-confirmation-adamw-2.11e--s10406-22f3ba19-a1",
+            "lo": "20261105T091036Z-c1-confirmation-adamw-1.45e--s10406-e1ce045d-a1",
+            "w": 0.5159134569279739,
+            "width": 0.4770641917577563
+          },
+          "P": {
+            "hi": "20261105T094311Z-c1-confirmation-adamw_prewar-s10406-ea55fbdf-a1",
+            "lo": "20261105T093616Z-c1-confirmation-adamw_prewar-s10406-aca3b584-a1",
+            "w": 0.6531851784865974,
+            "width": 0.42191488737487415
+          }
+        },
+        "seed": 10406
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T095646Z-c1-confirmation-adamw-2.11e--s10407-62fa123e-a1",
+            "lo": "20261105T095059Z-c1-confirmation-adamw-1.45e--s10407-3c639471-a1",
+            "w": 0.5981113864090507,
+            "width": 0.44740479165605707
+          },
+          "P": {
+            "hi": "20261105T102324Z-c1-confirmation-adamw_prewar-s10407-67735e48-a1",
+            "lo": "20261105T101627Z-c1-confirmation-adamw_prewar-s10407-78c68b4f-a1",
+            "w": 0.6950763838903962,
+            "width": 0.40163462275762485
+          }
+        },
+        "seed": 10407
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T103647Z-c1-confirmation-adamw-2.11e--s10408-3c9d06a5-a1",
+            "lo": "20261105T103121Z-c1-confirmation-adamw-1.45e--s10408-dbcb16ee-a1",
+            "w": 0.5225732384858336,
+            "width": 0.4984987785408881
+          },
+          "P": {
+            "hi": "20261105T110219Z-c1-confirmation-adamw_prewar-s10408-f7fe1d66-a1",
+            "lo": "20261105T105543Z-c1-confirmation-adamw_prewar-s10408-9bb29205-a1",
+            "w": 0.27192355101671106,
+            "width": 0.4734828344880182
+          }
+        },
+        "seed": 10408
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T111507Z-c1-confirmation-adamw-2.11e--s10409-3a580d44-a1",
+            "lo": "20261105T110951Z-c1-confirmation-adamw-1.45e--s10409-58afcffb-a1",
+            "w": 0.4069096332869339,
+            "width": 0.47946714965004267
+          },
+          "P": {
+            "hi": "20261105T114001Z-c1-confirmation-adamw_prewar-s10409-fcd0e1e4-a1",
+            "lo": "20261105T113327Z-c1-confirmation-adamw_prewar-s10409-ab36d016-a1",
+            "w": 0.6208005623109626,
+            "width": 0.4638233299727377
+          }
+        },
+        "seed": 10409
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T115319Z-c1-confirmation-adamw-2.11e--s10410-1d3fdf0e-a1",
+            "lo": "20261105T114720Z-c1-confirmation-adamw-1.45e--s10410-7192fddb-a1",
+            "w": 0.3298108658128979,
+            "width": 0.41731671170182016
+          },
+          "P": {
+            "hi": "20261105T122024Z-c1-confirmation-adamw_prewar-s10410-dfe8b72c-a1",
+            "lo": "20261105T121318Z-c1-confirmation-adamw_prewar-s10410-ce3e0c4b-a1",
+            "w": 0.3034784906463018,
+            "width": 0.4212304162195646
+          }
+        },
+        "seed": 10410
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T123417Z-c1-confirmation-adamw-2.11e--s10411-c9153ae3-a1",
+            "lo": "20261105T122819Z-c1-confirmation-adamw-1.45e--s10411-117a41c8-a1",
+            "w": 0.42027733453191146,
+            "width": 0.47542647085672973
+          },
+          "P": {
+            "hi": "20261105T130317Z-c1-confirmation-adamw_prewar-s10411-f4c3dc43-a1",
+            "lo": "20261105T125605Z-c1-confirmation-adamw_prewar-s10411-e10c9c16-a1",
+            "w": 0.5048743406114549,
+            "width": 0.4802867245190827
+          }
+        },
+        "seed": 10411
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T131726Z-c1-confirmation-adamw-2.11e--s10412-4c0d653e-a1",
+            "lo": "20261105T131109Z-c1-confirmation-adamw-1.45e--s10412-40161921-a1",
+            "w": 0.2847759692926368,
+            "width": 0.41967007708459425
+          },
+          "P": {
+            "hi": "20261105T134621Z-c1-confirmation-adamw_prewar-s10412-89a4dd42-a1",
+            "lo": "20261105T133902Z-c1-confirmation-adamw_prewar-s10412-8e6e43cc-a1",
+            "w": 0.3359843828357225,
+            "width": 0.45843414583013486
+          }
+        },
+        "seed": 10412
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T135959Z-c1-confirmation-adamw-2.11e--s10413-a73231ba-a1",
+            "lo": "20261105T135418Z-c1-confirmation-adamw-1.45e--s10413-f5a99bbf-a1",
+            "w": 0.1874227382874678,
+            "width": 0.44905935570204236
+          },
+          "P": {
+            "hi": "20261105T142620Z-c1-confirmation-adamw_prewar-s10413-849dc5d0-a1",
+            "lo": "20261105T141930Z-c1-confirmation-adamw_prewar-s10413-da232883-a1",
+            "w": 0.3517190311556265,
+            "width": 0.41634908340411236
+          }
+        },
+        "seed": 10413
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T151642Z-c1-confirmation-adamw-2.11e--s10415-2ea0cd4c-a1",
+            "lo": "20261105T151054Z-c1-confirmation-adamw-1.45e--s10415-045f4b83-a1",
+            "w": 0.2960125504456815,
+            "width": 0.4741985230717476
+          },
+          "P": {
+            "hi": "20261105T154334Z-c1-confirmation-adamw_prewar-s10415-a8a33d9a-a1",
+            "lo": "20261105T153627Z-c1-confirmation-adamw_prewar-s10415-b36ba660-a1",
+            "w": 0.17526749888431722,
+            "width": 0.41345710837012195
+          }
+        },
+        "seed": 10415
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T155707Z-c1-confirmation-adamw-2.11e--s10416-4b86d833-a1",
+            "lo": "20261105T155129Z-c1-confirmation-adamw-1.45e--s10416-ea1c0f98-a1",
+            "w": 0.36484837803938347,
+            "width": 0.4840692966601594
+          },
+          "P": {
+            "hi": "20261105T162321Z-c1-confirmation-adamw_prewar-s10416-6651afa0-a1",
+            "lo": "20261105T161635Z-c1-confirmation-adamw_prewar-s10416-cf82cc26-a1",
+            "w": 0.3068367333325291,
+            "width": 0.4179052203117952
+          }
+        },
+        "seed": 10416
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T163707Z-c1-confirmation-adamw-2.11e--s10417-01f939fd-a1",
+            "lo": "20261105T163113Z-c1-confirmation-adamw-1.45e--s10417-910700b0-a1",
+            "w": 0.6996899793269835,
+            "width": 0.4702964446930247
+          },
+          "P": {
+            "hi": "20261105T170448Z-c1-confirmation-adamw_prewar-s10417-58003cb7-a1",
+            "lo": "20261105T165728Z-c1-confirmation-adamw_prewar-s10417-1cf3412c-a1",
+            "w": 0.765628601656946,
+            "width": 0.40760876381796285
+          }
+        },
+        "seed": 10417
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T172132Z-c1-confirmation-adamw-2.11e--s10418-9c83a44e-a1",
+            "lo": "20261105T171540Z-c1-confirmation-adamw-1.45e--s10418-93e70590-a1",
+            "w": 0.4759701024874943,
+            "width": 0.45785589226467294
+          },
+          "P": {
+            "hi": "20261105T174804Z-c1-confirmation-adamw_prewar-s10418-d3f728ab-a1",
+            "lo": "20261105T174106Z-c1-confirmation-adamw_prewar-s10418-6baae8cf-a1",
+            "w": 0.3316526160660381,
+            "width": 0.510257494375606
+          }
+        },
+        "seed": 10418
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T180156Z-c1-confirmation-adamw-2.11e--s10419-f26c1619-a1",
+            "lo": "20261105T175559Z-c1-confirmation-adamw-1.45e--s10419-19d3cd1e-a1",
+            "w": 0.44154397051748434,
+            "width": 0.436307075301795
+          },
+          "P": {
+            "hi": "20261105T182929Z-c1-confirmation-adamw_prewar-s10419-9e233b70-a1",
+            "lo": "20261105T182222Z-c1-confirmation-adamw_prewar-s10419-184dacbf-a1",
+            "w": 0.5097583536426372,
+            "width": 0.46098870265363634
+          }
+        },
+        "seed": 10419
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T184314Z-c1-confirmation-adamw-2.11e--s10420-1b0afb84-a1",
+            "lo": "20261105T183729Z-c1-confirmation-adamw-1.45e--s10420-bc45682e-a1",
+            "w": 0.39106742564155705,
+            "width": 0.4577354505466573
+          },
+          "P": {
+            "hi": "20261105T191041Z-c1-confirmation-adamw_prewar-s10420-cb97827a-a1",
+            "lo": "20261105T190328Z-c1-confirmation-adamw_prewar-s10420-7c4e8ee4-a1",
+            "w": 0.39719416464391716,
+            "width": 0.5197164264750502
+          }
+        },
+        "seed": 10420
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T192446Z-c1-confirmation-adamw-2.11e--s10421-f58dcf90-a1",
+            "lo": "20261105T191856Z-c1-confirmation-adamw-1.45e--s10421-8a5b6b7b-a1",
+            "w": 0.3128682020577319,
+            "width": 0.4781323460756868
+          },
+          "P": {
+            "hi": "20261105T195117Z-c1-confirmation-adamw_prewar-s10421-b87ffa29-a1",
+            "lo": "20261105T194419Z-c1-confirmation-adamw_prewar-s10421-61004c38-a1",
+            "w": 0.4937768731007853,
+            "width": 0.4518526825395197
+          }
+        },
+        "seed": 10421
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T200457Z-c1-confirmation-adamw-2.11e--s10422-d04e6282-a1",
+            "lo": "20261105T195913Z-c1-confirmation-adamw-1.45e--s10422-edacce41-a1",
+            "w": 0.46093204229338114,
+            "width": 0.46540859618114805
+          },
+          "P": {
+            "hi": "20261105T203021Z-c1-confirmation-adamw_prewar-s10422-264a4a74-a1",
+            "lo": "20261105T202344Z-c1-confirmation-adamw_prewar-s10422-4b1c2dc5-a1",
+            "w": 0.6801798990707223,
+            "width": 0.4038137252490426
+          }
+        },
+        "seed": 10422
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T204319Z-c1-confirmation-adamw-2.11e--s10423-545c9cd0-a1",
+            "lo": "20261105T203755Z-c1-confirmation-adamw-1.45e--s10423-86e6f4ce-a1",
+            "w": 0.40817021931731867,
+            "width": 0.5273562091651685
+          },
+          "P": {
+            "hi": "20261105T210911Z-c1-confirmation-adamw_prewar-s10423-efbc1e8a-a1",
+            "lo": "20261105T210234Z-c1-confirmation-adamw_prewar-s10423-40144c78-a1",
+            "w": 0.3952344953366606,
+            "width": 0.4474704158349305
+          }
+        },
+        "seed": 10423
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T212302Z-c1-confirmation-adamw-2.11e--s10424-b7fe2c54-a1",
+            "lo": "20261105T211702Z-c1-confirmation-adamw-1.45e--s10424-78e20f40-a1",
+            "w": 0.4643598873912309,
+            "width": 0.46576747645006633
+          },
+          "P": {
+            "hi": "20261105T215014Z-c1-confirmation-adamw_prewar-s10424-a135fb2c-a1",
+            "lo": "20261105T214305Z-c1-confirmation-adamw_prewar-s10424-86604e80-a1",
+            "w": 0.5421606360923781,
+            "width": 0.4276292245856894
+          }
+        },
+        "seed": 10424
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T220404Z-c1-confirmation-adamw-2.11e--s10425-f78a70e9-a1",
+            "lo": "20261105T215814Z-c1-confirmation-adamw-1.45e--s10425-39799eed-a1",
+            "w": 0.32473193010942863,
+            "width": 0.43955150627263917
+          },
+          "P": {
+            "hi": "20261105T223104Z-c1-confirmation-adamw_prewar-s10425-d509f01e-a1",
+            "lo": "20261105T222357Z-c1-confirmation-adamw_prewar-s10425-c7361330-a1",
+            "w": 0.12979397485655852,
+            "width": 0.4216700518073684
+          }
+        },
+        "seed": 10425
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T224438Z-c1-confirmation-adamw-2.11e--s10426-75057582-a1",
+            "lo": "20261105T223851Z-c1-confirmation-adamw-1.45e--s10426-35c26c9f-a1",
+            "w": 0.358614378168958,
+            "width": 0.43403249317700854
+          },
+          "P": {
+            "hi": "20261105T231056Z-c1-confirmation-adamw_prewar-s10426-0df82a95-a1",
+            "lo": "20261105T230411Z-c1-confirmation-adamw_prewar-s10426-a7125f6f-a1",
+            "w": 0.27135449454315036,
+            "width": 0.45176507957624557
+          }
+        },
+        "seed": 10426
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T232456Z-c1-confirmation-adamw-2.11e--s10427-3eb2b6f7-a1",
+            "lo": "20261105T231856Z-c1-confirmation-adamw-1.45e--s10427-4e1cbdc0-a1",
+            "w": 0.7178914072007663,
+            "width": 0.4479859608944341
+          },
+          "P": {
+            "hi": "20261105T235203Z-c1-confirmation-adamw_prewar-s10427-37755855-a1",
+            "lo": "20261105T234458Z-c1-confirmation-adamw_prewar-s10427-9755cacd-a1",
+            "w": 0.6821347308843472,
+            "width": 0.4248496862503699
+          }
+        },
+        "seed": 10427
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T000556Z-c1-confirmation-adamw-2.11e--s10428-a608fd9d-a1",
+            "lo": "20261106T000001Z-c1-confirmation-adamw-1.45e--s10428-c9c6c35b-a1",
+            "w": 0.45675757488197133,
+            "width": 0.47142362207887234
+          },
+          "P": {
+            "hi": "20261106T003232Z-c1-confirmation-adamw_prewar-s10428-41b523b0-a1",
+            "lo": "20261106T002538Z-c1-confirmation-adamw_prewar-s10428-5f320a89-a1",
+            "w": 0.3546329369071411,
+            "width": 0.3277226562090325
+          }
+        },
+        "seed": 10428
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T004615Z-c1-confirmation-adamw-2.11e--s10429-b0963d48-a1",
+            "lo": "20261106T004027Z-c1-confirmation-adamw-1.45e--s10429-81292270-a1",
+            "w": 0.5863106149553788,
+            "width": 0.47722384833558373
+          },
+          "P": {
+            "hi": "20261106T011204Z-c1-confirmation-adamw_prewar-s10429-97d1507e-a1",
+            "lo": "20261106T010520Z-c1-confirmation-adamw_prewar-s10429-67e85e45-a1",
+            "w": 0.7034373216357025,
+            "width": 0.4700479118665004
+          }
+        },
+        "seed": 10429
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T012537Z-c1-confirmation-adamw-2.11e--s10430-e7248105-a1",
+            "lo": "20261106T011948Z-c1-confirmation-adamw-1.45e--s10430-7ee8c181-a1",
+            "w": 0.38168854394558827,
+            "width": 0.4280583895387884
+          },
+          "P": {
+            "hi": "20261106T015253Z-c1-confirmation-adamw_prewar-s10430-f7b13dc1-a1",
+            "lo": "20261106T014543Z-c1-confirmation-adamw_prewar-s10430-766850f4-a1",
+            "w": 0.4722357674474275,
+            "width": 0.44577355643926597
+          }
+        },
+        "seed": 10430
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T020708Z-c1-confirmation-adamw-2.11e--s10431-7601c848-a1",
+            "lo": "20261106T020119Z-c1-confirmation-adamw-1.45e--s10431-b450976f-a1",
+            "w": 0.4439923721334601,
+            "width": 0.48758762078978624
+          },
+          "P": {
+            "hi": "20261106T023435Z-c1-confirmation-adamw_prewar-s10431-7f2ed9b0-a1",
+            "lo": "20261106T022725Z-c1-confirmation-adamw_prewar-s10431-4a51db0c-a1",
+            "w": 0.3422061798258691,
+            "width": 0.4626257038823498
+          }
+        },
+        "seed": 10431
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T024900Z-c1-confirmation-adamw-2.11e--s10432-bf49c43b-a1",
+            "lo": "20261106T024247Z-c1-confirmation-adamw-1.45e--s10432-6119d069-a1",
+            "w": 0.4807103032694996,
+            "width": 0.46640302515633003
+          },
+          "P": {
+            "hi": "20261106T031708Z-c1-confirmation-adamw_prewar-s10432-3d3ce87b-a1",
+            "lo": "20261106T030947Z-c1-confirmation-adamw_prewar-s10432-b8ec7883-a1",
+            "w": 0.5386128564499209,
+            "width": 0.4112592224931664
+          }
+        },
+        "seed": 10432
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T033111Z-c1-confirmation-adamw-2.11e--s10433-a173166c-a1",
+            "lo": "20261106T032522Z-c1-confirmation-adamw-1.45e--s10433-a1830825-a1",
+            "w": 0.6133674140267923,
+            "width": 0.47809020214416864
+          },
+          "P": {
+            "hi": "20261106T035803Z-c1-confirmation-adamw_prewar-s10433-e7762d3e-a1",
+            "lo": "20261106T035100Z-c1-confirmation-adamw_prewar-s10433-c165bb9c-a1",
+            "w": 0.6071139255586244,
+            "width": 0.45118567567770107
+          }
+        },
+        "seed": 10433
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T041157Z-c1-confirmation-adamw-2.11e--s10434-7ef76fd9-a1",
+            "lo": "20261106T040601Z-c1-confirmation-adamw-1.45e--s10434-df15065c-a1",
+            "w": 0.31903035772846594,
+            "width": 0.4771858503001021
+          },
+          "P": {
+            "hi": "20261106T043847Z-c1-confirmation-adamw_prewar-s10434-488fcac6-a1",
+            "lo": "20261106T043144Z-c1-confirmation-adamw_prewar-s10434-c4405c25-a1",
+            "w": 0.34437141626770257,
+            "width": 0.4221797657174262
+          }
+        },
+        "seed": 10434
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T045242Z-c1-confirmation-adamw-2.11e--s10435-0ee2e522-a1",
+            "lo": "20261106T044645Z-c1-confirmation-adamw-1.45e--s10435-526b6742-a1",
+            "w": 0.5377592808562197,
+            "width": 0.4750810565309571
+          },
+          "P": {
+            "hi": "20261106T051931Z-c1-confirmation-adamw_prewar-s10435-6ba72121-a1",
+            "lo": "20261106T051228Z-c1-confirmation-adamw_prewar-s10435-0a606037-a1",
+            "w": 0.6107901788235913,
+            "width": 0.3141267980952225
+          }
+        },
+        "seed": 10435
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T053346Z-c1-confirmation-adamw-2.11e--s10436-09e9d7d0-a1",
+            "lo": "20261106T052730Z-c1-confirmation-adamw-1.45e--s10436-8f2ed530-a1",
+            "w": 0.4996553195972742,
+            "width": 0.47213966783742345
+          },
+          "P": {
+            "hi": "20261106T060200Z-c1-confirmation-adamw_prewar-s10436-afe92eef-a1",
+            "lo": "20261106T055440Z-c1-confirmation-adamw_prewar-s10436-9c1bf40b-a1",
+            "w": 0.5538408179267974,
+            "width": 0.44614667290393384
+          }
+        },
+        "seed": 10436
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T061619Z-c1-confirmation-adamw-2.11e--s10437-475d699e-a1",
+            "lo": "20261106T061019Z-c1-confirmation-adamw-1.45e--s10437-2d02cfa4-a1",
+            "w": 0.5906321341539419,
+            "width": 0.49133193624509564
+          },
+          "P": {
+            "hi": "20261106T064323Z-c1-confirmation-adamw_prewar-s10437-b0e2d329-a1",
+            "lo": "20261106T063616Z-c1-confirmation-adamw_prewar-s10437-a2724948-a1",
+            "w": 0.7512017063801535,
+            "width": 0.4622492247824501
+          }
+        },
+        "seed": 10437
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T065729Z-c1-confirmation-adamw-2.11e--s10438-d8caab8f-a1",
+            "lo": "20261106T065130Z-c1-confirmation-adamw-1.45e--s10438-505849a9-a1",
+            "w": 0.24776198698080956,
+            "width": 0.46654055582616216
+          },
+          "P": {
+            "hi": "20261106T072442Z-c1-confirmation-adamw_prewar-s10438-5d922af5-a1",
+            "lo": "20261106T071736Z-c1-confirmation-adamw_prewar-s10438-99fff2aa-a1",
+            "w": 0.355239212596481,
+            "width": 0.5659980523406807
+          }
+        },
+        "seed": 10438
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T073902Z-c1-confirmation-adamw-2.11e--s10439-193cf5c6-a1",
+            "lo": "20261106T073245Z-c1-confirmation-adamw-1.45e--s10439-876c48e5-a1",
+            "w": 0.5131573521384134,
+            "width": 0.44599916381274496
+          },
+          "P": {
+            "hi": "20261106T080650Z-c1-confirmation-adamw_prewar-s10439-83b15d3c-a1",
+            "lo": "20261106T075930Z-c1-confirmation-adamw_prewar-s10439-58d812ea-a1",
+            "w": 0.4196418403624775,
+            "width": 0.3670728015089557
+          }
+        },
+        "seed": 10439
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T082122Z-c1-confirmation-adamw-2.11e--s10440-bdce69ce-a1",
+            "lo": "20261106T081508Z-c1-confirmation-adamw-1.45e--s10440-4e2322ff-a1",
+            "w": 0.6353495700444799,
+            "width": 0.46742775933633696
+          },
+          "P": {
+            "hi": "20261106T084919Z-c1-confirmation-adamw_prewar-s10440-7abf1dca-a1",
+            "lo": "20261106T084201Z-c1-confirmation-adamw_prewar-s10440-c2a1c9bd-a1",
+            "w": 0.3920689275858182,
+            "width": 0.4772242975858172
+          }
+        },
+        "seed": 10440
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T090334Z-c1-confirmation-adamw-2.11e--s10441-9064d65b-a1",
+            "lo": "20261106T085738Z-c1-confirmation-adamw-1.45e--s10441-ee07330c-a1",
+            "w": 0.5034598155174601,
+            "width": 0.4463378998148462
+          },
+          "P": {
+            "hi": "20261106T093102Z-c1-confirmation-adamw_prewar-s10441-e72c79e7-a1",
+            "lo": "20261106T092347Z-c1-confirmation-adamw_prewar-s10441-bc879582-a1",
+            "w": 0.2824182596215441,
+            "width": 0.5335023502518221
+          }
+        },
+        "seed": 10441
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T094508Z-c1-confirmation-adamw-2.11e--s10442-020f6463-a1",
+            "lo": "20261106T093913Z-c1-confirmation-adamw-1.45e--s10442-d546b246-a1",
+            "w": 0.4671788045906223,
+            "width": 0.4819664712138252
+          },
+          "P": {
+            "hi": "20261106T101200Z-c1-confirmation-adamw_prewar-s10442-1c04c0da-a1",
+            "lo": "20261106T100459Z-c1-confirmation-adamw_prewar-s10442-150e42ad-a1",
+            "w": 0.6834267584976687,
+            "width": 0.44909985527250584
+          }
+        },
+        "seed": 10442
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T102601Z-c1-confirmation-adamw-2.11e--s10443-f16af950-a1",
+            "lo": "20261106T102002Z-c1-confirmation-adamw-1.45e--s10443-be8ba3b8-a1",
+            "w": 0.533030498227669,
+            "width": 0.43150758421122726
+          },
+          "P": {
+            "hi": "20261106T105310Z-c1-confirmation-adamw_prewar-s10443-6b0730cf-a1",
+            "lo": "20261106T104602Z-c1-confirmation-adamw_prewar-s10443-56bd3f76-a1",
+            "w": 0.43850448003066733,
+            "width": 0.36046805623573497
+          }
+        },
+        "seed": 10443
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T110715Z-c1-confirmation-adamw-2.11e--s10444-be7d3f53-a1",
+            "lo": "20261106T110116Z-c1-confirmation-adamw-1.45e--s10444-e0164083-a1",
+            "w": 0.2872650801814177,
+            "width": 0.4604185518646664
+          },
+          "P": {
+            "hi": "20261106T113417Z-c1-confirmation-adamw_prewar-s10444-970e7cf9-a1",
+            "lo": "20261106T112712Z-c1-confirmation-adamw_prewar-s10444-59bb8e7d-a1",
+            "w": 0.3949032267088689,
+            "width": 0.4271671331701501
+          }
+        },
+        "seed": 10444
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T114913Z-c1-confirmation-adamw-2.11e--s10445-5642b8d1-a1",
+            "lo": "20261106T114227Z-c1-confirmation-adamw-1.45e--s10445-bba36acf-a1",
+            "w": 0.3611775631236938,
+            "width": 0.4326405739908843
+          },
+          "P": {
+            "hi": "20261106T121753Z-c1-confirmation-adamw_prewar-s10445-1f8f4285-a1",
+            "lo": "20261106T121037Z-c1-confirmation-adamw_prewar-s10445-81e9d837-a1",
+            "w": 0.1429202388911724,
+            "width": 0.3632541178863087
+          }
+        },
+        "seed": 10445
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T123209Z-c1-confirmation-adamw-2.11e--s10446-496fc9c3-a1",
+            "lo": "20261106T122554Z-c1-confirmation-adamw-1.45e--s10446-e0c17003-a1",
+            "w": 0.4799890686233661,
+            "width": 0.4960317239839851
+          },
+          "P": {
+            "hi": "20261106T130022Z-c1-confirmation-adamw_prewar-s10446-f0e1a99e-a1",
+            "lo": "20261106T125259Z-c1-confirmation-adamw_prewar-s10446-6541242e-a1",
+            "w": 0.34059234548983613,
+            "width": 0.4011922238538552
+          }
+        },
+        "seed": 10446
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T135248Z-c1-confirmation-adamw-2.11e--s10448-531e57a7-a1",
+            "lo": "20261106T134639Z-c1-confirmation-adamw-1.45e--s10448-e470f7e5-a1",
+            "w": 0.5804663916591956,
+            "width": 0.43222181620604094
+          },
+          "P": {
+            "hi": "20261106T142043Z-c1-confirmation-adamw_prewar-s10448-28edca25-a1",
+            "lo": "20261106T141320Z-c1-confirmation-adamw_prewar-s10448-05c45311-a1",
+            "w": 0.4973034357274663,
+            "width": 0.45310619030278043
+          }
+        },
+        "seed": 10448
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T143515Z-c1-confirmation-adamw-2.11e--s10449-7efc26a2-a1",
+            "lo": "20261106T142920Z-c1-confirmation-adamw-1.45e--s10449-b4039e6d-a1",
+            "w": 0.5542850124979012,
+            "width": 0.510831097541921
+          },
+          "P": {
+            "hi": "20261106T150201Z-c1-confirmation-adamw_prewar-s10449-fe743b1a-a1",
+            "lo": "20261106T145504Z-c1-confirmation-adamw_prewar-s10449-d78e054e-a1",
+            "w": 0.5232884558291481,
+            "width": 0.4716985210263933
+          }
+        },
+        "seed": 10449
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T151634Z-c1-confirmation-adamw-2.11e--s10450-35e97c85-a1",
+            "lo": "20261106T151013Z-c1-confirmation-adamw-1.45e--s10450-a5119e85-a1",
+            "w": 0.3768106873252865,
+            "width": 0.44021235903361133
+          },
+          "P": {
+            "hi": "20261106T154519Z-c1-confirmation-adamw_prewar-s10450-216ba616-a1",
+            "lo": "20261106T153746Z-c1-confirmation-adamw_prewar-s10450-37fc6692-a1",
+            "w": 0.3745940526342564,
+            "width": 0.47455349725359985
+          }
+        },
+        "seed": 10450
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T160010Z-c1-confirmation-adamw-2.11e--s10451-64c7412b-a1",
+            "lo": "20261106T155354Z-c1-confirmation-adamw-1.45e--s10451-ead89fbc-a1",
+            "w": 0.43167619047987715,
+            "width": 0.44890084445090594
+          },
+          "P": {
+            "hi": "20261106T162752Z-c1-confirmation-adamw_prewar-s10451-fe9f7ae9-a1",
+            "lo": "20261106T162050Z-c1-confirmation-adamw_prewar-s10451-06304257-a1",
+            "w": 0.6303269447192209,
+            "width": 0.4204089560954898
+          }
+        },
+        "seed": 10451
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T164110Z-c1-confirmation-adamw-2.11e--s10452-ada330e5-a1",
+            "lo": "20261106T163548Z-c1-confirmation-adamw-1.45e--s10452-26cbd45b-a1",
+            "w": 0.40415769413254915,
+            "width": 0.4644855487717472
+          },
+          "P": {
+            "hi": "20261106T170632Z-c1-confirmation-adamw_prewar-s10452-116bd477-a1",
+            "lo": "20261106T165956Z-c1-confirmation-adamw_prewar-s10452-ba73545c-a1",
+            "w": 0.5786494417747399,
+            "width": 0.42673293681256896
+          }
+        },
+        "seed": 10452
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T172009Z-c1-confirmation-adamw-2.11e--s10453-3eb338b4-a1",
+            "lo": "20261106T171414Z-c1-confirmation-adamw-1.45e--s10453-b3dd244b-a1",
+            "w": 0.5482495747434858,
+            "width": 0.481334626199428
+          },
+          "P": {
+            "hi": "20261106T174704Z-c1-confirmation-adamw_prewar-s10453-6de0dce9-a1",
+            "lo": "20261106T174000Z-c1-confirmation-adamw_prewar-s10453-fa7ec0cf-a1",
+            "w": 0.44789121795464415,
+            "width": 0.43645767347447406
+          }
+        },
+        "seed": 10453
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T180114Z-c1-confirmation-adamw-2.11e--s10454-1c281c92-a1",
+            "lo": "20261106T175513Z-c1-confirmation-adamw-1.45e--s10454-50d58bda-a1",
+            "w": 0.2618464398960677,
+            "width": 0.5157961965446136
+          },
+          "P": {
+            "hi": "20261106T182813Z-c1-confirmation-adamw_prewar-s10454-c8fb712e-a1",
+            "lo": "20261106T182107Z-c1-confirmation-adamw_prewar-s10454-ed264284-a1",
+            "w": 0.615121674115328,
+            "width": 0.49582514699609925
+          }
+        },
+        "seed": 10454
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T184209Z-c1-confirmation-adamw-2.11e--s10455-410f55d9-a1",
+            "lo": "20261106T183621Z-c1-confirmation-adamw-1.45e--s10455-d0e2fda0-a1",
+            "w": 0.4590192039170571,
+            "width": 0.5243425929271348
+          },
+          "P": {
+            "hi": "20261106T190818Z-c1-confirmation-adamw_prewar-s10455-60403de3-a1",
+            "lo": "20261106T190132Z-c1-confirmation-adamw_prewar-s10455-31c341cb-a1",
+            "w": 0.5312667535149219,
+            "width": 0.48272342641670396
+          }
+        },
+        "seed": 10455
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T192156Z-c1-confirmation-adamw-2.11e--s10456-cf207430-a1",
+            "lo": "20261106T191625Z-c1-confirmation-adamw-1.45e--s10456-ad18e357-a1",
+            "w": 0.4218622946415221,
+            "width": 0.4492744839515348
+          },
+          "P": {
+            "hi": "20261106T194742Z-c1-confirmation-adamw_prewar-s10456-31a55204-a1",
+            "lo": "20261106T194107Z-c1-confirmation-adamw_prewar-s10456-6ea61100-a1",
+            "w": 0.21369497836087828,
+            "width": 0.4658035188200258
+          }
+        },
+        "seed": 10456
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T200136Z-c1-confirmation-adamw-2.11e--s10457-f046eead-a1",
+            "lo": "20261106T195551Z-c1-confirmation-adamw-1.45e--s10457-320cc91e-a1",
+            "w": 0.4856832087824107,
+            "width": 0.5121715528002015
+          },
+          "P": {
+            "hi": "20261106T202820Z-c1-confirmation-adamw_prewar-s10457-f10173aa-a1",
+            "lo": "20261106T202123Z-c1-confirmation-adamw_prewar-s10457-798f3e53-a1",
+            "w": 0.41063825445003355,
+            "width": 0.47826657032627096
+          }
+        },
+        "seed": 10457
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T204154Z-c1-confirmation-adamw-2.11e--s10458-f8642123-a1",
+            "lo": "20261106T203627Z-c1-confirmation-adamw-1.45e--s10458-49b9487f-a1",
+            "w": 0.623991369284876,
+            "width": 0.49633576672512913
+          },
+          "P": {
+            "hi": "20261106T210724Z-c1-confirmation-adamw_prewar-s10458-add3069f-a1",
+            "lo": "20261106T210043Z-c1-confirmation-adamw_prewar-s10458-25ba1617-a1",
+            "w": 0.361234017531671,
+            "width": 0.4860451967383945
+          }
+        },
+        "seed": 10458
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T212107Z-c1-confirmation-adamw-2.11e--s10459-3c101b0a-a1",
+            "lo": "20261106T211516Z-c1-confirmation-adamw-1.45e--s10459-273ece61-a1",
+            "w": 0.45805976234398044,
+            "width": 0.4656469163329935
+          },
+          "P": {
+            "hi": "20261106T214752Z-c1-confirmation-adamw_prewar-s10459-abba82b9-a1",
+            "lo": "20261106T214053Z-c1-confirmation-adamw_prewar-s10459-d1c2c37d-a1",
+            "w": 0.6737662828469911,
+            "width": 0.39984656058715307
+          }
+        },
+        "seed": 10459
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T220152Z-c1-confirmation-adamw-2.11e--s10460-819b06ec-a1",
+            "lo": "20261106T215559Z-c1-confirmation-adamw-1.45e--s10460-0bc929f0-a1",
+            "w": 0.3258828723634512,
+            "width": 0.46325520625060923
+          },
+          "P": {
+            "hi": "20261106T222453Z-c1-confirmation-adamw_prewar-s10460-208cc7e2-a1",
+            "lo": "20261106T221753Z-c1-confirmation-adamw_prewar-s10460-b1a54468-a1",
+            "w": 0.3242565889347754,
+            "width": 0.5550612552145504
+          }
+        },
+        "seed": 10460
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T223856Z-c1-confirmation-adamw-2.11e--s10461-c1f86ff4-a1",
+            "lo": "20261106T223258Z-c1-confirmation-adamw-1.45e--s10461-5e34d70b-a1",
+            "w": 0.5423527590231805,
+            "width": 0.4756337701542128
+          },
+          "P": {
+            "hi": "20261106T230555Z-c1-confirmation-adamw_prewar-s10461-71e1d749-a1",
+            "lo": "20261106T225851Z-c1-confirmation-adamw_prewar-s10461-14af7100-a1",
+            "w": 0.7464210236958926,
+            "width": 0.4663729961539824
+          }
+        },
+        "seed": 10461
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T232002Z-c1-confirmation-adamw-2.11e--s10462-ec81f13b-a1",
+            "lo": "20261106T231404Z-c1-confirmation-adamw-1.45e--s10462-ce6875f9-a1",
+            "w": 0.519490440285355,
+            "width": 0.4668095860761976
+          },
+          "P": {
+            "hi": "20261106T234716Z-c1-confirmation-adamw_prewar-s10462-64ce56ac-a1",
+            "lo": "20261106T234008Z-c1-confirmation-adamw_prewar-s10462-966488ed-a1",
+            "w": 0.6062966561047999,
+            "width": 0.44049442379434445
+          }
+        },
+        "seed": 10462
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261107T000125Z-c1-confirmation-adamw-2.11e--s10463-3644634b-a1",
+            "lo": "20261106T235526Z-c1-confirmation-adamw-1.45e--s10463-cca89f3c-a1",
+            "w": 0.2647368626276568,
+            "width": 0.46877503747345806
+          },
+          "P": {
+            "hi": "20261107T002821Z-c1-confirmation-adamw_prewar-s10463-1c8842fc-a1",
+            "lo": "20261107T002115Z-c1-confirmation-adamw_prewar-s10463-02c7a939-a1",
+            "w": 0.33382328656857113,
+            "width": 0.44061199533601925
+          }
+        },
+        "seed": 10463
+      }
+    ]
+  },
+  "candidate": 1,
+  "code": {
+    "commit": "a810bdf80b52169d8f18e4e2103794517f65aae4",
+    "gpu_code_sha256": "717cd02317526179a821eb8eb57e85cefba9e49083108922013b2b353c45ebbc"
+  },
+  "comparisons": {
+    "A-F": {
+      "blocks": [
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T050847Z-c1-confirmation-adamw-2.11e--s10400-2f0c4d7a-a1",
+              "lo": "20261105T050251Z-c1-confirmation-adamw-1.45e--s10400-93b612e3-a1",
+              "w": 0.4149222137092619,
+              "width": 0.41681934597844106
+            },
+            "F": {
+              "hi": "20261105T052138Z-c1-confirmation-adam_frozen--s10400-fed71d21-a1",
+              "lo": "20261105T051443Z-c1-confirmation-adam_frozen--s10400-981a4aa8-a1",
+              "w": 0.4193078181117579,
+              "width": 0.4099588122750648
+            }
+          },
+          "seed": 10400
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T054946Z-c1-confirmation-adamw-2.11e--s10401-2235bf7a-a1",
+              "lo": "20261105T054332Z-c1-confirmation-adamw-1.45e--s10401-b70eac9a-a1",
+              "w": 0.1585567741733013,
+              "width": 0.4726092533835762
+            },
+            "F": {
+              "hi": "20261105T060318Z-c1-confirmation-adam_frozen--s10401-e5f1f0c8-a1",
+              "lo": "20261105T055612Z-c1-confirmation-adam_frozen--s10401-c3b639c6-a1",
+              "w": 0.33701665575706374,
+              "width": 0.42620087886129854
+            }
+          },
+          "seed": 10401
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T063208Z-c1-confirmation-adamw-2.11e--s10402-79b8512b-a1",
+              "lo": "20261105T062552Z-c1-confirmation-adamw-1.45e--s10402-1bec2e29-a1",
+              "w": 0.5066436912411149,
+              "width": 0.4538595269583905
+            },
+            "F": {
+              "hi": "20261105T064536Z-c1-confirmation-adam_frozen--s10402-f81bb06d-a1",
+              "lo": "20261105T063826Z-c1-confirmation-adam_frozen--s10402-5bfa9f14-a1",
+              "w": 0.3511421460496179,
+              "width": 0.43419647663198235
+            }
+          },
+          "seed": 10402
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T071354Z-c1-confirmation-adamw-2.11e--s10403-b0680528-a1",
+              "lo": "20261105T070816Z-c1-confirmation-adamw-1.45e--s10403-ae69aa40-a1",
+              "w": 0.46834744549474605,
+              "width": 0.48693338740864256
+            },
+            "F": {
+              "hi": "20261105T072713Z-c1-confirmation-adam_frozen--s10403-3b4601aa-a1",
+              "lo": "20261105T072010Z-c1-confirmation-adam_frozen--s10403-d1ce7a92-a1",
+              "w": 0.5233234461310494,
+              "width": 0.45733365659081127
+            }
+          },
+          "seed": 10403
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T075614Z-c1-confirmation-adamw-2.11e--s10404-bb5e2a10-a1",
+              "lo": "20261105T075001Z-c1-confirmation-adamw-1.45e--s10404-b6c46fae-a1",
+              "w": 0.3631249843085849,
+              "width": 0.4641985705989893
+            },
+            "F": {
+              "hi": "20261105T080908Z-c1-confirmation-adam_frozen--s10404-12d33e5f-a1",
+              "lo": "20261105T080218Z-c1-confirmation-adam_frozen--s10404-79e87542-a1",
+              "w": 0.4308089528812507,
+              "width": 0.39007717043239154
+            }
+          },
+          "seed": 10404
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T083654Z-c1-confirmation-adamw-2.11e--s10405-aed243f3-a1",
+              "lo": "20261105T083113Z-c1-confirmation-adamw-1.45e--s10405-f579fb0f-a1",
+              "w": 0.5398082356461851,
+              "width": 0.48226999104901225
+            },
+            "F": {
+              "hi": "20261105T084928Z-c1-confirmation-adam_frozen--s10405-edb4027e-a1",
+              "lo": "20261105T084245Z-c1-confirmation-adam_frozen--s10405-1eb3a012-a1",
+              "w": 0.6717111533323903,
+              "width": 0.41770904878231097
+            }
+          },
+          "seed": 10405
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T091629Z-c1-confirmation-adamw-2.11e--s10406-22f3ba19-a1",
+              "lo": "20261105T091036Z-c1-confirmation-adamw-1.45e--s10406-e1ce045d-a1",
+              "w": 0.5159134569279739,
+              "width": 0.4770641917577563
+            },
+            "F": {
+              "hi": "20261105T092917Z-c1-confirmation-adam_frozen--s10406-9e30cbb9-a1",
+              "lo": "20261105T092224Z-c1-confirmation-adam_frozen--s10406-d8218472-a1",
+              "w": 0.6636345189317457,
+              "width": 0.4085160168861226
+            }
+          },
+          "seed": 10406
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T095646Z-c1-confirmation-adamw-2.11e--s10407-62fa123e-a1",
+              "lo": "20261105T095059Z-c1-confirmation-adamw-1.45e--s10407-3c639471-a1",
+              "w": 0.5981113864090507,
+              "width": 0.44740479165605707
+            },
+            "F": {
+              "hi": "20261105T100932Z-c1-confirmation-adam_frozen--s10407-605fa885-a1",
+              "lo": "20261105T100243Z-c1-confirmation-adam_frozen--s10407-34a3b501-a1",
+              "w": 0.7075414514092069,
+              "width": 0.39079995461315553
+            }
+          },
+          "seed": 10407
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T103647Z-c1-confirmation-adamw-2.11e--s10408-3c9d06a5-a1",
+              "lo": "20261105T103121Z-c1-confirmation-adamw-1.45e--s10408-dbcb16ee-a1",
+              "w": 0.5225732384858336,
+              "width": 0.4984987785408881
+            },
+            "F": {
+              "hi": "20261105T104901Z-c1-confirmation-adam_frozen--s10408-a04acaca-a1",
+              "lo": "20261105T104230Z-c1-confirmation-adam_frozen--s10408-96e3b5d7-a1",
+              "w": 0.25896908020072046,
+              "width": 0.4648484601478169
+            }
+          },
+          "seed": 10408
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T111507Z-c1-confirmation-adamw-2.11e--s10409-3a580d44-a1",
+              "lo": "20261105T110951Z-c1-confirmation-adamw-1.45e--s10409-58afcffb-a1",
+              "w": 0.4069096332869339,
+              "width": 0.47946714965004267
+            },
+            "F": {
+              "hi": "20261105T112653Z-c1-confirmation-adam_frozen--s10409-54f3996b-a1",
+              "lo": "20261105T112034Z-c1-confirmation-adam_frozen--s10409-e3ebd510-a1",
+              "w": 0.6331768947621556,
+              "width": 0.45017366229698874
+            }
+          },
+          "seed": 10409
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T115319Z-c1-confirmation-adamw-2.11e--s10410-1d3fdf0e-a1",
+              "lo": "20261105T114720Z-c1-confirmation-adamw-1.45e--s10410-7192fddb-a1",
+              "w": 0.3298108658128979,
+              "width": 0.41731671170182016
+            },
+            "F": {
+              "hi": "20261105T120619Z-c1-confirmation-adam_frozen--s10410-577760aa-a1",
+              "lo": "20261105T115919Z-c1-confirmation-adam_frozen--s10410-6b3c5534-a1",
+              "w": 0.2959497189961268,
+              "width": 0.4126056925913215
+            }
+          },
+          "seed": 10410
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T123417Z-c1-confirmation-adamw-2.11e--s10411-c9153ae3-a1",
+              "lo": "20261105T122819Z-c1-confirmation-adamw-1.45e--s10411-117a41c8-a1",
+              "w": 0.42027733453191146,
+              "width": 0.47542647085672973
+            },
+            "F": {
+              "hi": "20261105T124824Z-c1-confirmation-adam_frozen--s10411-15239db3-a1",
+              "lo": "20261105T124026Z-c1-confirmation-adam_frozen--s10411-78eb2e7f-a1",
+              "w": 0.5046402713246292,
+              "width": 0.4665917625989784
+            }
+          },
+          "seed": 10411
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T131726Z-c1-confirmation-adamw-2.11e--s10412-4c0d653e-a1",
+              "lo": "20261105T131109Z-c1-confirmation-adamw-1.45e--s10412-40161921-a1",
+              "w": 0.2847759692926368,
+              "width": 0.41967007708459425
+            },
+            "F": {
+              "hi": "20261105T133122Z-c1-confirmation-adam_frozen--s10412-ddb42053-a1",
+              "lo": "20261105T132342Z-c1-confirmation-adam_frozen--s10412-3d189a9e-a1",
+              "w": 0.33662679233460807,
+              "width": 0.445207703648582
+            }
+          },
+          "seed": 10412
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T135959Z-c1-confirmation-adamw-2.11e--s10413-a73231ba-a1",
+              "lo": "20261105T135418Z-c1-confirmation-adamw-1.45e--s10413-f5a99bbf-a1",
+              "w": 0.1874227382874678,
+              "width": 0.44905935570204236
+            },
+            "F": {
+              "hi": "20261105T141236Z-c1-confirmation-adam_frozen--s10413-4d6c07d7-a1",
+              "lo": "20261105T140555Z-c1-confirmation-adam_frozen--s10413-58af40c6-a1",
+              "w": 0.3539213136135568,
+              "width": 0.40173275202316483
+            }
+          },
+          "seed": 10413
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T143957Z-c1-confirmation-adamw-2.11e--s10414-1e74ceb1-a1",
+              "lo": "20261105T143412Z-c1-confirmation-adamw-1.45e--s10414-c9bd9a7b-a1",
+              "w": 0.4282909238230267,
+              "width": 0.472853654194078
+            },
+            "F": {
+              "hi": "20261105T145244Z-c1-confirmation-adam_frozen--s10414-f8fc56df-a1",
+              "lo": "20261105T144547Z-c1-confirmation-adam_frozen--s10414-e392cc59-a1",
+              "w": 0.19385243825754286,
+              "width": 0.44107310823947654
+            }
+          },
+          "seed": 10414
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T151642Z-c1-confirmation-adamw-2.11e--s10415-2ea0cd4c-a1",
+              "lo": "20261105T151054Z-c1-confirmation-adamw-1.45e--s10415-045f4b83-a1",
+              "w": 0.2960125504456815,
+              "width": 0.4741985230717476
+            },
+            "F": {
+              "hi": "20261105T152929Z-c1-confirmation-adam_frozen--s10415-43e4aacd-a1",
+              "lo": "20261105T152240Z-c1-confirmation-adam_frozen--s10415-67ae11c0-a1",
+              "w": 0.03343528888960775,
+              "width": 0.36880088581387915
+            }
+          },
+          "seed": 10415
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T155707Z-c1-confirmation-adamw-2.11e--s10416-4b86d833-a1",
+              "lo": "20261105T155129Z-c1-confirmation-adamw-1.45e--s10416-ea1c0f98-a1",
+              "w": 0.36484837803938347,
+              "width": 0.4840692966601594
+            },
+            "F": {
+              "hi": "20261105T160943Z-c1-confirmation-adam_frozen--s10416-6822f765-a1",
+              "lo": "20261105T160304Z-c1-confirmation-adam_frozen--s10416-0ff06754-a1",
+              "w": 0.30462687547410605,
+              "width": 0.40289574451758337
+            }
+          },
+          "seed": 10416
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T163707Z-c1-confirmation-adamw-2.11e--s10417-01f939fd-a1",
+              "lo": "20261105T163113Z-c1-confirmation-adamw-1.45e--s10417-910700b0-a1",
+              "w": 0.6996899793269835,
+              "width": 0.4702964446930247
+            },
+            "F": {
+              "hi": "20261105T165023Z-c1-confirmation-adam_frozen--s10417-46f283fb-a1",
+              "lo": "20261105T164311Z-c1-confirmation-adam_frozen--s10417-d9628054-a1",
+              "w": 0.7817204400924174,
+              "width": 0.3915391172977063
+            }
+          },
+          "seed": 10417
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T172132Z-c1-confirmation-adamw-2.11e--s10418-9c83a44e-a1",
+              "lo": "20261105T171540Z-c1-confirmation-adamw-1.45e--s10418-93e70590-a1",
+              "w": 0.4759701024874943,
+              "width": 0.45785589226467294
+            },
+            "F": {
+              "hi": "20261105T173410Z-c1-confirmation-adam_frozen--s10418-e3156ed5-a1",
+              "lo": "20261105T172729Z-c1-confirmation-adam_frozen--s10418-273760e2-a1",
+              "w": 0.344449658098818,
+              "width": 0.4783903571884114
+            }
+          },
+          "seed": 10418
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T180156Z-c1-confirmation-adamw-2.11e--s10419-f26c1619-a1",
+              "lo": "20261105T175559Z-c1-confirmation-adamw-1.45e--s10419-19d3cd1e-a1",
+              "w": 0.44154397051748434,
+              "width": 0.436307075301795
+            },
+            "F": {
+              "hi": "20261105T181511Z-c1-confirmation-adam_frozen--s10419-ecaab3c3-a1",
+              "lo": "20261105T180807Z-c1-confirmation-adam_frozen--s10419-0539efc0-a1",
+              "w": 0.5187100173332747,
+              "width": 0.44565355516870464
+            }
+          },
+          "seed": 10419
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T184314Z-c1-confirmation-adamw-2.11e--s10420-1b0afb84-a1",
+              "lo": "20261105T183729Z-c1-confirmation-adamw-1.45e--s10420-bc45682e-a1",
+              "w": 0.39106742564155705,
+              "width": 0.4577354505466573
+            },
+            "F": {
+              "hi": "20261105T185613Z-c1-confirmation-adam_frozen--s10420-cd7b2ba4-a1",
+              "lo": "20261105T184915Z-c1-confirmation-adam_frozen--s10420-d2b3957d-a1",
+              "w": 0.4839523836919053,
+              "width": 0.41521440851830205
+            }
+          },
+          "seed": 10420
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T192446Z-c1-confirmation-adamw-2.11e--s10421-f58dcf90-a1",
+              "lo": "20261105T191856Z-c1-confirmation-adamw-1.45e--s10421-8a5b6b7b-a1",
+              "w": 0.3128682020577319,
+              "width": 0.4781323460756868
+            },
+            "F": {
+              "hi": "20261105T193725Z-c1-confirmation-adam_frozen--s10421-b93a4ad1-a1",
+              "lo": "20261105T193034Z-c1-confirmation-adam_frozen--s10421-4a5bd5a2-a1",
+              "w": 0.5000168409488618,
+              "width": 0.4389422862686023
+            }
+          },
+          "seed": 10421
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T200457Z-c1-confirmation-adamw-2.11e--s10422-d04e6282-a1",
+              "lo": "20261105T195913Z-c1-confirmation-adamw-1.45e--s10422-edacce41-a1",
+              "w": 0.46093204229338114,
+              "width": 0.46540859618114805
+            },
+            "F": {
+              "hi": "20261105T201704Z-c1-confirmation-adam_frozen--s10422-f5200e5a-a1",
+              "lo": "20261105T201036Z-c1-confirmation-adam_frozen--s10422-c5555632-a1",
+              "w": 0.6930933420850645,
+              "width": 0.393076990402772
+            }
+          },
+          "seed": 10422
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T204319Z-c1-confirmation-adamw-2.11e--s10423-545c9cd0-a1",
+              "lo": "20261105T203755Z-c1-confirmation-adamw-1.45e--s10423-86e6f4ce-a1",
+              "w": 0.40817021931731867,
+              "width": 0.5273562091651685
+            },
+            "F": {
+              "hi": "20261105T205543Z-c1-confirmation-adam_frozen--s10423-e35ce75e-a1",
+              "lo": "20261105T204916Z-c1-confirmation-adam_frozen--s10423-60e64f7e-a1",
+              "w": 0.3951418553380084,
+              "width": 0.43534530274264127
+            }
+          },
+          "seed": 10423
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T212302Z-c1-confirmation-adamw-2.11e--s10424-b7fe2c54-a1",
+              "lo": "20261105T211702Z-c1-confirmation-adamw-1.45e--s10424-78e20f40-a1",
+              "w": 0.4643598873912309,
+              "width": 0.46576747645006633
+            },
+            "F": {
+              "hi": "20261105T213605Z-c1-confirmation-adam_frozen--s10424-969193cc-a1",
+              "lo": "20261105T212904Z-c1-confirmation-adam_frozen--s10424-69efaa65-a1",
+              "w": 0.5509479258637823,
+              "width": 0.4154020985396156
+            }
+          },
+          "seed": 10424
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T220404Z-c1-confirmation-adamw-2.11e--s10425-f78a70e9-a1",
+              "lo": "20261105T215814Z-c1-confirmation-adamw-1.45e--s10425-39799eed-a1",
+              "w": 0.32473193010942863,
+              "width": 0.43955150627263917
+            },
+            "F": {
+              "hi": "20261105T221706Z-c1-confirmation-adam_frozen--s10425-b1b6d153-a1",
+              "lo": "20261105T221007Z-c1-confirmation-adam_frozen--s10425-01809d0e-a1",
+              "w": 0.11595508408988289,
+              "width": 0.4116448149895069
+            }
+          },
+          "seed": 10425
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T224438Z-c1-confirmation-adamw-2.11e--s10426-75057582-a1",
+              "lo": "20261105T223851Z-c1-confirmation-adamw-1.45e--s10426-35c26c9f-a1",
+              "w": 0.358614378168958,
+              "width": 0.43403249317700854
+            },
+            "F": {
+              "hi": "20261105T225714Z-c1-confirmation-adam_frozen--s10426-82bf1eff-a1",
+              "lo": "20261105T225037Z-c1-confirmation-adam_frozen--s10426-dc5c9c0f-a1",
+              "w": 0.2676780184077498,
+              "width": 0.4399688284709735
+            }
+          },
+          "seed": 10426
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261105T232456Z-c1-confirmation-adamw-2.11e--s10427-3eb2b6f7-a1",
+              "lo": "20261105T231856Z-c1-confirmation-adamw-1.45e--s10427-4e1cbdc0-a1",
+              "w": 0.7178914072007663,
+              "width": 0.4479859608944341
+            },
+            "F": {
+              "hi": "20261105T233757Z-c1-confirmation-adam_frozen--s10427-2869adc9-a1",
+              "lo": "20261105T233056Z-c1-confirmation-adam_frozen--s10427-1773b720-a1",
+              "w": 0.6919297289037039,
+              "width": 0.4116922805766894
+            }
+          },
+          "seed": 10427
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T004615Z-c1-confirmation-adamw-2.11e--s10429-b0963d48-a1",
+              "lo": "20261106T004027Z-c1-confirmation-adamw-1.45e--s10429-81292270-a1",
+              "w": 0.5863106149553788,
+              "width": 0.47722384833558373
+            },
+            "F": {
+              "hi": "20261106T005842Z-c1-confirmation-adam_frozen--s10429-3ba8c3e0-a1",
+              "lo": "20261106T005204Z-c1-confirmation-adam_frozen--s10429-e65aaa16-a1",
+              "w": 0.7172316340832606,
+              "width": 0.45240390825306775
+            }
+          },
+          "seed": 10429
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T012537Z-c1-confirmation-adamw-2.11e--s10430-e7248105-a1",
+              "lo": "20261106T011948Z-c1-confirmation-adamw-1.45e--s10430-7ee8c181-a1",
+              "w": 0.38168854394558827,
+              "width": 0.4280583895387884
+            },
+            "F": {
+              "hi": "20261106T013828Z-c1-confirmation-adam_frozen--s10430-07fefc41-a1",
+              "lo": "20261106T013134Z-c1-confirmation-adam_frozen--s10430-bd969c64-a1",
+              "w": 0.49878293004338364,
+              "width": 0.41646706871107364
+            }
+          },
+          "seed": 10430
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T020708Z-c1-confirmation-adamw-2.11e--s10431-7601c848-a1",
+              "lo": "20261106T020119Z-c1-confirmation-adamw-1.45e--s10431-b450976f-a1",
+              "w": 0.4439923721334601,
+              "width": 0.48758762078978624
+            },
+            "F": {
+              "hi": "20261106T022019Z-c1-confirmation-adam_frozen--s10431-64a012cc-a1",
+              "lo": "20261106T021321Z-c1-confirmation-adam_frozen--s10431-6126cfc1-a1",
+              "w": 0.33976553393443737,
+              "width": 0.4467265453411715
+            }
+          },
+          "seed": 10431
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T024900Z-c1-confirmation-adamw-2.11e--s10432-bf49c43b-a1",
+              "lo": "20261106T024247Z-c1-confirmation-adamw-1.45e--s10432-6119d069-a1",
+              "w": 0.4807103032694996,
+              "width": 0.46640302515633003
+            },
+            "F": {
+              "hi": "20261106T030231Z-c1-confirmation-adam_frozen--s10432-557823ed-a1",
+              "lo": "20261106T025516Z-c1-confirmation-adam_frozen--s10432-20f01b57-a1",
+              "w": 0.5449914143623414,
+              "width": 0.3992943837466627
+            }
+          },
+          "seed": 10432
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T033111Z-c1-confirmation-adamw-2.11e--s10433-a173166c-a1",
+              "lo": "20261106T032522Z-c1-confirmation-adamw-1.45e--s10433-a1830825-a1",
+              "w": 0.6133674140267923,
+              "width": 0.47809020214416864
+            },
+            "F": {
+              "hi": "20261106T034404Z-c1-confirmation-adam_frozen--s10433-dc9eb320-a1",
+              "lo": "20261106T033708Z-c1-confirmation-adam_frozen--s10433-3df6abc9-a1",
+              "w": 0.6108501662985716,
+              "width": 0.4374364100349353
+            }
+          },
+          "seed": 10433
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T041157Z-c1-confirmation-adamw-2.11e--s10434-7ef76fd9-a1",
+              "lo": "20261106T040601Z-c1-confirmation-adamw-1.45e--s10434-df15065c-a1",
+              "w": 0.31903035772846594,
+              "width": 0.4771858503001021
+            },
+            "F": {
+              "hi": "20261106T042449Z-c1-confirmation-adam_frozen--s10434-119d457d-a1",
+              "lo": "20261106T041753Z-c1-confirmation-adam_frozen--s10434-fadbe7f8-a1",
+              "w": 0.34294592438380145,
+              "width": 0.4100919643118057
+            }
+          },
+          "seed": 10434
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T045242Z-c1-confirmation-adamw-2.11e--s10435-0ee2e522-a1",
+              "lo": "20261106T044645Z-c1-confirmation-adamw-1.45e--s10435-526b6742-a1",
+              "w": 0.5377592808562197,
+              "width": 0.4750810565309571
+            },
+            "F": {
+              "hi": "20261106T050533Z-c1-confirmation-adam_frozen--s10435-10a49311-a1",
+              "lo": "20261106T045838Z-c1-confirmation-adam_frozen--s10435-ee601b33-a1",
+              "w": 0.7361149084781718,
+              "width": 0.417024467155529
+            }
+          },
+          "seed": 10435
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T053346Z-c1-confirmation-adamw-2.11e--s10436-09e9d7d0-a1",
+              "lo": "20261106T052730Z-c1-confirmation-adamw-1.45e--s10436-8f2ed530-a1",
+              "w": 0.4996553195972742,
+              "width": 0.47213966783742345
+            },
+            "F": {
+              "hi": "20261106T054724Z-c1-confirmation-adam_frozen--s10436-62a7f4d9-a1",
+              "lo": "20261106T054006Z-c1-confirmation-adam_frozen--s10436-8a52448f-a1",
+              "w": 0.434892459954269,
+              "width": 0.548576069437924
+            }
+          },
+          "seed": 10436
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T061619Z-c1-confirmation-adamw-2.11e--s10437-475d699e-a1",
+              "lo": "20261106T061019Z-c1-confirmation-adamw-1.45e--s10437-2d02cfa4-a1",
+              "w": 0.5906321341539419,
+              "width": 0.49133193624509564
+            },
+            "F": {
+              "hi": "20261106T062917Z-c1-confirmation-adam_frozen--s10437-84e4ed22-a1",
+              "lo": "20261106T062217Z-c1-confirmation-adam_frozen--s10437-ffc8c12f-a1",
+              "w": 0.6403724909382903,
+              "width": 0.5368952079001903
+            }
+          },
+          "seed": 10437
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T065729Z-c1-confirmation-adamw-2.11e--s10438-d8caab8f-a1",
+              "lo": "20261106T065130Z-c1-confirmation-adamw-1.45e--s10438-505849a9-a1",
+              "w": 0.24776198698080956,
+              "width": 0.46654055582616216
+            },
+            "F": {
+              "hi": "20261106T071032Z-c1-confirmation-adam_frozen--s10438-8b0a1461-a1",
+              "lo": "20261106T070330Z-c1-confirmation-adam_frozen--s10438-2abf2415-a1",
+              "w": 0.3751372744566636,
+              "width": 0.5258017567694209
+            }
+          },
+          "seed": 10438
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T073902Z-c1-confirmation-adamw-2.11e--s10439-193cf5c6-a1",
+              "lo": "20261106T073245Z-c1-confirmation-adamw-1.45e--s10439-876c48e5-a1",
+              "w": 0.5131573521384134,
+              "width": 0.44599916381274496
+            },
+            "F": {
+              "hi": "20261106T075225Z-c1-confirmation-adam_frozen--s10439-86712ce0-a1",
+              "lo": "20261106T074514Z-c1-confirmation-adam_frozen--s10439-5badb301-a1",
+              "w": 0.39605823312717403,
+              "width": 0.3620970462856441
+            }
+          },
+          "seed": 10439
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T082122Z-c1-confirmation-adamw-2.11e--s10440-bdce69ce-a1",
+              "lo": "20261106T081508Z-c1-confirmation-adamw-1.45e--s10440-4e2322ff-a1",
+              "w": 0.6353495700444799,
+              "width": 0.46742775933633696
+            },
+            "F": {
+              "hi": "20261106T083446Z-c1-confirmation-adam_frozen--s10440-7c105018-a1",
+              "lo": "20261106T082738Z-c1-confirmation-adam_frozen--s10440-eb1dfe56-a1",
+              "w": 0.3927932783122602,
+              "width": 0.45995030000474024
+            }
+          },
+          "seed": 10440
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T090334Z-c1-confirmation-adamw-2.11e--s10441-9064d65b-a1",
+              "lo": "20261106T085738Z-c1-confirmation-adamw-1.45e--s10441-ee07330c-a1",
+              "w": 0.5034598155174601,
+              "width": 0.4463378998148462
+            },
+            "F": {
+              "hi": "20261106T091633Z-c1-confirmation-adam_frozen--s10441-afaab4eb-a1",
+              "lo": "20261106T090929Z-c1-confirmation-adam_frozen--s10441-7e4ba88a-a1",
+              "w": 0.27801521845925753,
+              "width": 0.5128125872449036
+            }
+          },
+          "seed": 10441
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T094508Z-c1-confirmation-adamw-2.11e--s10442-020f6463-a1",
+              "lo": "20261106T093913Z-c1-confirmation-adamw-1.45e--s10442-d546b246-a1",
+              "w": 0.4671788045906223,
+              "width": 0.4819664712138252
+            },
+            "F": {
+              "hi": "20261106T095759Z-c1-confirmation-adam_frozen--s10442-55f08873-a1",
+              "lo": "20261106T095109Z-c1-confirmation-adam_frozen--s10442-0b388ee6-a1",
+              "w": 0.6968269451481074,
+              "width": 0.4357928166456093
+            }
+          },
+          "seed": 10442
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T102601Z-c1-confirmation-adamw-2.11e--s10443-f16af950-a1",
+              "lo": "20261106T102002Z-c1-confirmation-adamw-1.45e--s10443-be8ba3b8-a1",
+              "w": 0.533030498227669,
+              "width": 0.43150758421122726
+            },
+            "F": {
+              "hi": "20261106T103901Z-c1-confirmation-adam_frozen--s10443-dfbe2b08-a1",
+              "lo": "20261106T103202Z-c1-confirmation-adam_frozen--s10443-4e5fb601-a1",
+              "w": 0.46893506206054364,
+              "width": 0.36844530713298673
+            }
+          },
+          "seed": 10443
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T110715Z-c1-confirmation-adamw-2.11e--s10444-be7d3f53-a1",
+              "lo": "20261106T110116Z-c1-confirmation-adamw-1.45e--s10444-e0164083-a1",
+              "w": 0.2872650801814177,
+              "width": 0.4604185518646664
+            },
+            "F": {
+              "hi": "20261106T112016Z-c1-confirmation-adam_frozen--s10444-bf80ad9a-a1",
+              "lo": "20261106T111317Z-c1-confirmation-adam_frozen--s10444-210e006e-a1",
+              "w": 0.3981843859177539,
+              "width": 0.41371689311603554
+            }
+          },
+          "seed": 10444
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T114913Z-c1-confirmation-adamw-2.11e--s10445-5642b8d1-a1",
+              "lo": "20261106T114227Z-c1-confirmation-adamw-1.45e--s10445-bba36acf-a1",
+              "w": 0.3611775631236938,
+              "width": 0.4326405739908843
+            },
+            "F": {
+              "hi": "20261106T120238Z-c1-confirmation-adam_frozen--s10445-ef9e56c4-a1",
+              "lo": "20261106T115457Z-c1-confirmation-adam_frozen--s10445-cdcb2d67-a1",
+              "w": 0.1269626078363545,
+              "width": 0.34867385052852007
+            }
+          },
+          "seed": 10445
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T123209Z-c1-confirmation-adamw-2.11e--s10446-496fc9c3-a1",
+              "lo": "20261106T122554Z-c1-confirmation-adamw-1.45e--s10446-e0c17003-a1",
+              "w": 0.4799890686233661,
+              "width": 0.4960317239839851
+            },
+            "F": {
+              "hi": "20261106T124546Z-c1-confirmation-adam_frozen--s10446-e8248db7-a1",
+              "lo": "20261106T123827Z-c1-confirmation-adam_frozen--s10446-dacca9a8-a1",
+              "w": 0.3060019572857952,
+              "width": 0.3781159606443609
+            }
+          },
+          "seed": 10446
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T135248Z-c1-confirmation-adamw-2.11e--s10448-531e57a7-a1",
+              "lo": "20261106T134639Z-c1-confirmation-adamw-1.45e--s10448-e470f7e5-a1",
+              "w": 0.5804663916591956,
+              "width": 0.43222181620604094
+            },
+            "F": {
+              "hi": "20261106T140610Z-c1-confirmation-adam_frozen--s10448-e6551cb3-a1",
+              "lo": "20261106T135902Z-c1-confirmation-adam_frozen--s10448-87fa87d5-a1",
+              "w": 0.4968301722933034,
+              "width": 0.441960013569656
+            }
+          },
+          "seed": 10448
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T143515Z-c1-confirmation-adamw-2.11e--s10449-7efc26a2-a1",
+              "lo": "20261106T142920Z-c1-confirmation-adamw-1.45e--s10449-b4039e6d-a1",
+              "w": 0.5542850124979012,
+              "width": 0.510831097541921
+            },
+            "F": {
+              "hi": "20261106T144801Z-c1-confirmation-adam_frozen--s10449-b1017928-a1",
+              "lo": "20261106T144117Z-c1-confirmation-adam_frozen--s10449-fc58b8a8-a1",
+              "w": 0.524175875494777,
+              "width": 0.4607878130222747
+            }
+          },
+          "seed": 10449
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T151634Z-c1-confirmation-adamw-2.11e--s10450-35e97c85-a1",
+              "lo": "20261106T151013Z-c1-confirmation-adamw-1.45e--s10450-a5119e85-a1",
+              "w": 0.3768106873252865,
+              "width": 0.44021235903361133
+            },
+            "F": {
+              "hi": "20261106T153019Z-c1-confirmation-adam_frozen--s10450-d018db69-a1",
+              "lo": "20261106T152301Z-c1-confirmation-adam_frozen--s10450-45d64859-a1",
+              "w": 0.37994561913575875,
+              "width": 0.45786684124928323
+            }
+          },
+          "seed": 10450
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T160010Z-c1-confirmation-adamw-2.11e--s10451-64c7412b-a1",
+              "lo": "20261106T155354Z-c1-confirmation-adamw-1.45e--s10451-ead89fbc-a1",
+              "w": 0.43167619047987715,
+              "width": 0.44890084445090594
+            },
+            "F": {
+              "hi": "20261106T161347Z-c1-confirmation-adam_frozen--s10451-2da4dd0a-a1",
+              "lo": "20261106T160635Z-c1-confirmation-adam_frozen--s10451-0290f7f1-a1",
+              "w": 0.6414279953325605,
+              "width": 0.40765616430672025
+            }
+          },
+          "seed": 10451
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T164110Z-c1-confirmation-adamw-2.11e--s10452-ada330e5-a1",
+              "lo": "20261106T163548Z-c1-confirmation-adamw-1.45e--s10452-26cbd45b-a1",
+              "w": 0.40415769413254915,
+              "width": 0.4644855487717472
+            },
+            "F": {
+              "hi": "20261106T165323Z-c1-confirmation-adam_frozen--s10452-5263ea31-a1",
+              "lo": "20261106T164654Z-c1-confirmation-adam_frozen--s10452-066c5837-a1",
+              "w": 0.5874479486214381,
+              "width": 0.4136156579388701
+            }
+          },
+          "seed": 10452
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T172009Z-c1-confirmation-adamw-2.11e--s10453-3eb338b4-a1",
+              "lo": "20261106T171414Z-c1-confirmation-adamw-1.45e--s10453-b3dd244b-a1",
+              "w": 0.5482495747434858,
+              "width": 0.481334626199428
+            },
+            "F": {
+              "hi": "20261106T173305Z-c1-confirmation-adam_frozen--s10453-e76b98bd-a1",
+              "lo": "20261106T172605Z-c1-confirmation-adam_frozen--s10453-63e6f15e-a1",
+              "w": 0.47074618217966474,
+              "width": 0.41953915886736937
+            }
+          },
+          "seed": 10453
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T180114Z-c1-confirmation-adamw-2.11e--s10454-1c281c92-a1",
+              "lo": "20261106T175513Z-c1-confirmation-adamw-1.45e--s10454-50d58bda-a1",
+              "w": 0.2618464398960677,
+              "width": 0.5157961965446136
+            },
+            "F": {
+              "hi": "20261106T181410Z-c1-confirmation-adam_frozen--s10454-1aa0a53b-a1",
+              "lo": "20261106T180712Z-c1-confirmation-adam_frozen--s10454-b546f9e3-a1",
+              "w": 0.625645738617442,
+              "width": 0.4842883713621997
+            }
+          },
+          "seed": 10454
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T184209Z-c1-confirmation-adamw-2.11e--s10455-410f55d9-a1",
+              "lo": "20261106T183621Z-c1-confirmation-adamw-1.45e--s10455-d0e2fda0-a1",
+              "w": 0.4590192039170571,
+              "width": 0.5243425929271348
+            },
+            "F": {
+              "hi": "20261106T185436Z-c1-confirmation-adam_frozen--s10455-e21e2ee6-a1",
+              "lo": "20261106T184801Z-c1-confirmation-adam_frozen--s10455-95d57fa1-a1",
+              "w": 0.5312109979616464,
+              "width": 0.4732834850471952
+            }
+          },
+          "seed": 10455
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T192156Z-c1-confirmation-adamw-2.11e--s10456-cf207430-a1",
+              "lo": "20261106T191625Z-c1-confirmation-adamw-1.45e--s10456-ad18e357-a1",
+              "w": 0.4218622946415221,
+              "width": 0.4492744839515348
+            },
+            "F": {
+              "hi": "20261106T193410Z-c1-confirmation-adam_frozen--s10456-56aa51dd-a1",
+              "lo": "20261106T192742Z-c1-confirmation-adam_frozen--s10456-21fac1a9-a1",
+              "w": 0.2073673368300603,
+              "width": 0.433124296014024
+            }
+          },
+          "seed": 10456
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T200136Z-c1-confirmation-adamw-2.11e--s10457-f046eead-a1",
+              "lo": "20261106T195551Z-c1-confirmation-adamw-1.45e--s10457-320cc91e-a1",
+              "w": 0.4856832087824107,
+              "width": 0.5121715528002015
+            },
+            "F": {
+              "hi": "20261106T201426Z-c1-confirmation-adam_frozen--s10457-e62b4968-a1",
+              "lo": "20261106T200735Z-c1-confirmation-adam_frozen--s10457-cc88687d-a1",
+              "w": 0.4066570431855959,
+              "width": 0.46486302370279575
+            }
+          },
+          "seed": 10457
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T204154Z-c1-confirmation-adamw-2.11e--s10458-f8642123-a1",
+              "lo": "20261106T203627Z-c1-confirmation-adamw-1.45e--s10458-49b9487f-a1",
+              "w": 0.623991369284876,
+              "width": 0.49633576672512913
+            },
+            "F": {
+              "hi": "20261106T205403Z-c1-confirmation-adam_frozen--s10458-858da9bf-a1",
+              "lo": "20261106T204736Z-c1-confirmation-adam_frozen--s10458-65e68fb2-a1",
+              "w": 0.35446647339263776,
+              "width": 0.47506041070085336
+            }
+          },
+          "seed": 10458
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T212107Z-c1-confirmation-adamw-2.11e--s10459-3c101b0a-a1",
+              "lo": "20261106T211516Z-c1-confirmation-adamw-1.45e--s10459-273ece61-a1",
+              "w": 0.45805976234398044,
+              "width": 0.4656469163329935
+            },
+            "F": {
+              "hi": "20261106T213356Z-c1-confirmation-adam_frozen--s10459-312c2f4a-a1",
+              "lo": "20261106T212705Z-c1-confirmation-adam_frozen--s10459-e8b33bab-a1",
+              "w": 0.6895971287779199,
+              "width": 0.3863257053644129
+            }
+          },
+          "seed": 10459
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T223856Z-c1-confirmation-adamw-2.11e--s10461-c1f86ff4-a1",
+              "lo": "20261106T223258Z-c1-confirmation-adamw-1.45e--s10461-5e34d70b-a1",
+              "w": 0.5423527590231805,
+              "width": 0.4756337701542128
+            },
+            "F": {
+              "hi": "20261106T225152Z-c1-confirmation-adam_frozen--s10461-3392b665-a1",
+              "lo": "20261106T224456Z-c1-confirmation-adam_frozen--s10461-bba87de5-a1",
+              "w": 0.7615392408431996,
+              "width": 0.4528343880895642
+            }
+          },
+          "seed": 10461
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261106T232002Z-c1-confirmation-adamw-2.11e--s10462-ec81f13b-a1",
+              "lo": "20261106T231404Z-c1-confirmation-adamw-1.45e--s10462-ce6875f9-a1",
+              "w": 0.519490440285355,
+              "width": 0.4668095860761976
+            },
+            "F": {
+              "hi": "20261106T233308Z-c1-confirmation-adam_frozen--s10462-ec58f793-a1",
+              "lo": "20261106T232607Z-c1-confirmation-adam_frozen--s10462-a56fada9-a1",
+              "w": 0.6137779981097216,
+              "width": 0.4290445720731022
+            }
+          },
+          "seed": 10462
+        }
+      ],
+      "reading": "confirmatory",
+      "rule": "n_reached",
+      "unknown": [
+        10428,
+        10447,
+        10460,
+        10463
+      ]
+    },
+    "P-F": {
+      "blocks": [
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T052138Z-c1-confirmation-adam_frozen--s10400-fed71d21-a1",
+              "lo": "20261105T051443Z-c1-confirmation-adam_frozen--s10400-981a4aa8-a1",
+              "w": 0.4193078181117579,
+              "width": 0.4099588122750648
+            },
+            "P": {
+              "hi": "20261105T053542Z-c1-confirmation-adamw_prewar-s10400-7afff485-a1",
+              "lo": "20261105T052837Z-c1-confirmation-adamw_prewar-s10400-3eba5aee-a1",
+              "w": 0.42385867939729943,
+              "width": 0.41618567794860173
+            }
+          },
+          "seed": 10400
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T060318Z-c1-confirmation-adam_frozen--s10401-e5f1f0c8-a1",
+              "lo": "20261105T055612Z-c1-confirmation-adam_frozen--s10401-c3b639c6-a1",
+              "w": 0.33701665575706374,
+              "width": 0.42620087886129854
+            },
+            "P": {
+              "hi": "20261105T061745Z-c1-confirmation-adamw_prewar-s10401-45eeaee4-a1",
+              "lo": "20261105T061024Z-c1-confirmation-adamw_prewar-s10401-9ca929f7-a1",
+              "w": 0.31258189256271185,
+              "width": 0.4231275873001974
+            }
+          },
+          "seed": 10401
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T064536Z-c1-confirmation-adam_frozen--s10402-f81bb06d-a1",
+              "lo": "20261105T063826Z-c1-confirmation-adam_frozen--s10402-5bfa9f14-a1",
+              "w": 0.3511421460496179,
+              "width": 0.43419647663198235
+            },
+            "P": {
+              "hi": "20261105T070011Z-c1-confirmation-adamw_prewar-s10402-b740b6aa-a1",
+              "lo": "20261105T065245Z-c1-confirmation-adamw_prewar-s10402-f1a5d5ee-a1",
+              "w": 0.42793712822614577,
+              "width": 0.4272770084049342
+            }
+          },
+          "seed": 10402
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T072713Z-c1-confirmation-adam_frozen--s10403-3b4601aa-a1",
+              "lo": "20261105T072010Z-c1-confirmation-adam_frozen--s10403-d1ce7a92-a1",
+              "w": 0.5233234461310494,
+              "width": 0.45733365659081127
+            },
+            "P": {
+              "hi": "20261105T074151Z-c1-confirmation-adamw_prewar-s10403-a6cc2188-a1",
+              "lo": "20261105T073428Z-c1-confirmation-adamw_prewar-s10403-e9e910a8-a1",
+              "w": 0.5164183945256596,
+              "width": 0.47150806717702776
+            }
+          },
+          "seed": 10403
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T080908Z-c1-confirmation-adam_frozen--s10404-12d33e5f-a1",
+              "lo": "20261105T080218Z-c1-confirmation-adam_frozen--s10404-79e87542-a1",
+              "w": 0.4308089528812507,
+              "width": 0.39007717043239154
+            },
+            "P": {
+              "hi": "20261105T082319Z-c1-confirmation-adamw_prewar-s10404-a34cbf14-a1",
+              "lo": "20261105T081611Z-c1-confirmation-adamw_prewar-s10404-7592f4d6-a1",
+              "w": 0.45224980900149153,
+              "width": 0.41885959376025705
+            }
+          },
+          "seed": 10404
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T084928Z-c1-confirmation-adam_frozen--s10405-edb4027e-a1",
+              "lo": "20261105T084245Z-c1-confirmation-adam_frozen--s10405-1eb3a012-a1",
+              "w": 0.6717111533323903,
+              "width": 0.41770904878231097
+            },
+            "P": {
+              "hi": "20261105T090258Z-c1-confirmation-adamw_prewar-s10405-7d12bf18-a1",
+              "lo": "20261105T085610Z-c1-confirmation-adamw_prewar-s10405-ec2ea5a6-a1",
+              "w": 0.6542634140308298,
+              "width": 0.43665315745032296
+            }
+          },
+          "seed": 10405
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T092917Z-c1-confirmation-adam_frozen--s10406-9e30cbb9-a1",
+              "lo": "20261105T092224Z-c1-confirmation-adam_frozen--s10406-d8218472-a1",
+              "w": 0.6636345189317457,
+              "width": 0.4085160168861226
+            },
+            "P": {
+              "hi": "20261105T094311Z-c1-confirmation-adamw_prewar-s10406-ea55fbdf-a1",
+              "lo": "20261105T093616Z-c1-confirmation-adamw_prewar-s10406-aca3b584-a1",
+              "w": 0.6531851784865974,
+              "width": 0.42191488737487415
+            }
+          },
+          "seed": 10406
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T100932Z-c1-confirmation-adam_frozen--s10407-605fa885-a1",
+              "lo": "20261105T100243Z-c1-confirmation-adam_frozen--s10407-34a3b501-a1",
+              "w": 0.7075414514092069,
+              "width": 0.39079995461315553
+            },
+            "P": {
+              "hi": "20261105T102324Z-c1-confirmation-adamw_prewar-s10407-67735e48-a1",
+              "lo": "20261105T101627Z-c1-confirmation-adamw_prewar-s10407-78c68b4f-a1",
+              "w": 0.6950763838903962,
+              "width": 0.40163462275762485
+            }
+          },
+          "seed": 10407
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T104901Z-c1-confirmation-adam_frozen--s10408-a04acaca-a1",
+              "lo": "20261105T104230Z-c1-confirmation-adam_frozen--s10408-96e3b5d7-a1",
+              "w": 0.25896908020072046,
+              "width": 0.4648484601478169
+            },
+            "P": {
+              "hi": "20261105T110219Z-c1-confirmation-adamw_prewar-s10408-f7fe1d66-a1",
+              "lo": "20261105T105543Z-c1-confirmation-adamw_prewar-s10408-9bb29205-a1",
+              "w": 0.27192355101671106,
+              "width": 0.4734828344880182
+            }
+          },
+          "seed": 10408
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T112653Z-c1-confirmation-adam_frozen--s10409-54f3996b-a1",
+              "lo": "20261105T112034Z-c1-confirmation-adam_frozen--s10409-e3ebd510-a1",
+              "w": 0.6331768947621556,
+              "width": 0.45017366229698874
+            },
+            "P": {
+              "hi": "20261105T114001Z-c1-confirmation-adamw_prewar-s10409-fcd0e1e4-a1",
+              "lo": "20261105T113327Z-c1-confirmation-adamw_prewar-s10409-ab36d016-a1",
+              "w": 0.6208005623109626,
+              "width": 0.4638233299727377
+            }
+          },
+          "seed": 10409
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T120619Z-c1-confirmation-adam_frozen--s10410-577760aa-a1",
+              "lo": "20261105T115919Z-c1-confirmation-adam_frozen--s10410-6b3c5534-a1",
+              "w": 0.2959497189961268,
+              "width": 0.4126056925913215
+            },
+            "P": {
+              "hi": "20261105T122024Z-c1-confirmation-adamw_prewar-s10410-dfe8b72c-a1",
+              "lo": "20261105T121318Z-c1-confirmation-adamw_prewar-s10410-ce3e0c4b-a1",
+              "w": 0.3034784906463018,
+              "width": 0.4212304162195646
+            }
+          },
+          "seed": 10410
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T124824Z-c1-confirmation-adam_frozen--s10411-15239db3-a1",
+              "lo": "20261105T124026Z-c1-confirmation-adam_frozen--s10411-78eb2e7f-a1",
+              "w": 0.5046402713246292,
+              "width": 0.4665917625989784
+            },
+            "P": {
+              "hi": "20261105T130317Z-c1-confirmation-adamw_prewar-s10411-f4c3dc43-a1",
+              "lo": "20261105T125605Z-c1-confirmation-adamw_prewar-s10411-e10c9c16-a1",
+              "w": 0.5048743406114549,
+              "width": 0.4802867245190827
+            }
+          },
+          "seed": 10411
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T133122Z-c1-confirmation-adam_frozen--s10412-ddb42053-a1",
+              "lo": "20261105T132342Z-c1-confirmation-adam_frozen--s10412-3d189a9e-a1",
+              "w": 0.33662679233460807,
+              "width": 0.445207703648582
+            },
+            "P": {
+              "hi": "20261105T134621Z-c1-confirmation-adamw_prewar-s10412-89a4dd42-a1",
+              "lo": "20261105T133902Z-c1-confirmation-adamw_prewar-s10412-8e6e43cc-a1",
+              "w": 0.3359843828357225,
+              "width": 0.45843414583013486
+            }
+          },
+          "seed": 10412
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T141236Z-c1-confirmation-adam_frozen--s10413-4d6c07d7-a1",
+              "lo": "20261105T140555Z-c1-confirmation-adam_frozen--s10413-58af40c6-a1",
+              "w": 0.3539213136135568,
+              "width": 0.40173275202316483
+            },
+            "P": {
+              "hi": "20261105T142620Z-c1-confirmation-adamw_prewar-s10413-849dc5d0-a1",
+              "lo": "20261105T141930Z-c1-confirmation-adamw_prewar-s10413-da232883-a1",
+              "w": 0.3517190311556265,
+              "width": 0.41634908340411236
+            }
+          },
+          "seed": 10413
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T152929Z-c1-confirmation-adam_frozen--s10415-43e4aacd-a1",
+              "lo": "20261105T152240Z-c1-confirmation-adam_frozen--s10415-67ae11c0-a1",
+              "w": 0.03343528888960775,
+              "width": 0.36880088581387915
+            },
+            "P": {
+              "hi": "20261105T154334Z-c1-confirmation-adamw_prewar-s10415-a8a33d9a-a1",
+              "lo": "20261105T153627Z-c1-confirmation-adamw_prewar-s10415-b36ba660-a1",
+              "w": 0.17526749888431722,
+              "width": 0.41345710837012195
+            }
+          },
+          "seed": 10415
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T160943Z-c1-confirmation-adam_frozen--s10416-6822f765-a1",
+              "lo": "20261105T160304Z-c1-confirmation-adam_frozen--s10416-0ff06754-a1",
+              "w": 0.30462687547410605,
+              "width": 0.40289574451758337
+            },
+            "P": {
+              "hi": "20261105T162321Z-c1-confirmation-adamw_prewar-s10416-6651afa0-a1",
+              "lo": "20261105T161635Z-c1-confirmation-adamw_prewar-s10416-cf82cc26-a1",
+              "w": 0.3068367333325291,
+              "width": 0.4179052203117952
+            }
+          },
+          "seed": 10416
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T165023Z-c1-confirmation-adam_frozen--s10417-46f283fb-a1",
+              "lo": "20261105T164311Z-c1-confirmation-adam_frozen--s10417-d9628054-a1",
+              "w": 0.7817204400924174,
+              "width": 0.3915391172977063
+            },
+            "P": {
+              "hi": "20261105T170448Z-c1-confirmation-adamw_prewar-s10417-58003cb7-a1",
+              "lo": "20261105T165728Z-c1-confirmation-adamw_prewar-s10417-1cf3412c-a1",
+              "w": 0.765628601656946,
+              "width": 0.40760876381796285
+            }
+          },
+          "seed": 10417
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T173410Z-c1-confirmation-adam_frozen--s10418-e3156ed5-a1",
+              "lo": "20261105T172729Z-c1-confirmation-adam_frozen--s10418-273760e2-a1",
+              "w": 0.344449658098818,
+              "width": 0.4783903571884114
+            },
+            "P": {
+              "hi": "20261105T174804Z-c1-confirmation-adamw_prewar-s10418-d3f728ab-a1",
+              "lo": "20261105T174106Z-c1-confirmation-adamw_prewar-s10418-6baae8cf-a1",
+              "w": 0.3316526160660381,
+              "width": 0.510257494375606
+            }
+          },
+          "seed": 10418
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T181511Z-c1-confirmation-adam_frozen--s10419-ecaab3c3-a1",
+              "lo": "20261105T180807Z-c1-confirmation-adam_frozen--s10419-0539efc0-a1",
+              "w": 0.5187100173332747,
+              "width": 0.44565355516870464
+            },
+            "P": {
+              "hi": "20261105T182929Z-c1-confirmation-adamw_prewar-s10419-9e233b70-a1",
+              "lo": "20261105T182222Z-c1-confirmation-adamw_prewar-s10419-184dacbf-a1",
+              "w": 0.5097583536426372,
+              "width": 0.46098870265363634
+            }
+          },
+          "seed": 10419
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T185613Z-c1-confirmation-adam_frozen--s10420-cd7b2ba4-a1",
+              "lo": "20261105T184915Z-c1-confirmation-adam_frozen--s10420-d2b3957d-a1",
+              "w": 0.4839523836919053,
+              "width": 0.41521440851830205
+            },
+            "P": {
+              "hi": "20261105T191041Z-c1-confirmation-adamw_prewar-s10420-cb97827a-a1",
+              "lo": "20261105T190328Z-c1-confirmation-adamw_prewar-s10420-7c4e8ee4-a1",
+              "w": 0.39719416464391716,
+              "width": 0.5197164264750502
+            }
+          },
+          "seed": 10420
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T193725Z-c1-confirmation-adam_frozen--s10421-b93a4ad1-a1",
+              "lo": "20261105T193034Z-c1-confirmation-adam_frozen--s10421-4a5bd5a2-a1",
+              "w": 0.5000168409488618,
+              "width": 0.4389422862686023
+            },
+            "P": {
+              "hi": "20261105T195117Z-c1-confirmation-adamw_prewar-s10421-b87ffa29-a1",
+              "lo": "20261105T194419Z-c1-confirmation-adamw_prewar-s10421-61004c38-a1",
+              "w": 0.4937768731007853,
+              "width": 0.4518526825395197
+            }
+          },
+          "seed": 10421
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T201704Z-c1-confirmation-adam_frozen--s10422-f5200e5a-a1",
+              "lo": "20261105T201036Z-c1-confirmation-adam_frozen--s10422-c5555632-a1",
+              "w": 0.6930933420850645,
+              "width": 0.393076990402772
+            },
+            "P": {
+              "hi": "20261105T203021Z-c1-confirmation-adamw_prewar-s10422-264a4a74-a1",
+              "lo": "20261105T202344Z-c1-confirmation-adamw_prewar-s10422-4b1c2dc5-a1",
+              "w": 0.6801798990707223,
+              "width": 0.4038137252490426
+            }
+          },
+          "seed": 10422
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T205543Z-c1-confirmation-adam_frozen--s10423-e35ce75e-a1",
+              "lo": "20261105T204916Z-c1-confirmation-adam_frozen--s10423-60e64f7e-a1",
+              "w": 0.3951418553380084,
+              "width": 0.43534530274264127
+            },
+            "P": {
+              "hi": "20261105T210911Z-c1-confirmation-adamw_prewar-s10423-efbc1e8a-a1",
+              "lo": "20261105T210234Z-c1-confirmation-adamw_prewar-s10423-40144c78-a1",
+              "w": 0.3952344953366606,
+              "width": 0.4474704158349305
+            }
+          },
+          "seed": 10423
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T213605Z-c1-confirmation-adam_frozen--s10424-969193cc-a1",
+              "lo": "20261105T212904Z-c1-confirmation-adam_frozen--s10424-69efaa65-a1",
+              "w": 0.5509479258637823,
+              "width": 0.4154020985396156
+            },
+            "P": {
+              "hi": "20261105T215014Z-c1-confirmation-adamw_prewar-s10424-a135fb2c-a1",
+              "lo": "20261105T214305Z-c1-confirmation-adamw_prewar-s10424-86604e80-a1",
+              "w": 0.5421606360923781,
+              "width": 0.4276292245856894
+            }
+          },
+          "seed": 10424
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T221706Z-c1-confirmation-adam_frozen--s10425-b1b6d153-a1",
+              "lo": "20261105T221007Z-c1-confirmation-adam_frozen--s10425-01809d0e-a1",
+              "w": 0.11595508408988289,
+              "width": 0.4116448149895069
+            },
+            "P": {
+              "hi": "20261105T223104Z-c1-confirmation-adamw_prewar-s10425-d509f01e-a1",
+              "lo": "20261105T222357Z-c1-confirmation-adamw_prewar-s10425-c7361330-a1",
+              "w": 0.12979397485655852,
+              "width": 0.4216700518073684
+            }
+          },
+          "seed": 10425
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T225714Z-c1-confirmation-adam_frozen--s10426-82bf1eff-a1",
+              "lo": "20261105T225037Z-c1-confirmation-adam_frozen--s10426-dc5c9c0f-a1",
+              "w": 0.2676780184077498,
+              "width": 0.4399688284709735
+            },
+            "P": {
+              "hi": "20261105T231056Z-c1-confirmation-adamw_prewar-s10426-0df82a95-a1",
+              "lo": "20261105T230411Z-c1-confirmation-adamw_prewar-s10426-a7125f6f-a1",
+              "w": 0.27135449454315036,
+              "width": 0.45176507957624557
+            }
+          },
+          "seed": 10426
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261105T233757Z-c1-confirmation-adam_frozen--s10427-2869adc9-a1",
+              "lo": "20261105T233056Z-c1-confirmation-adam_frozen--s10427-1773b720-a1",
+              "w": 0.6919297289037039,
+              "width": 0.4116922805766894
+            },
+            "P": {
+              "hi": "20261105T235203Z-c1-confirmation-adamw_prewar-s10427-37755855-a1",
+              "lo": "20261105T234458Z-c1-confirmation-adamw_prewar-s10427-9755cacd-a1",
+              "w": 0.6821347308843472,
+              "width": 0.4248496862503699
+            }
+          },
+          "seed": 10427
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T005842Z-c1-confirmation-adam_frozen--s10429-3ba8c3e0-a1",
+              "lo": "20261106T005204Z-c1-confirmation-adam_frozen--s10429-e65aaa16-a1",
+              "w": 0.7172316340832606,
+              "width": 0.45240390825306775
+            },
+            "P": {
+              "hi": "20261106T011204Z-c1-confirmation-adamw_prewar-s10429-97d1507e-a1",
+              "lo": "20261106T010520Z-c1-confirmation-adamw_prewar-s10429-67e85e45-a1",
+              "w": 0.7034373216357025,
+              "width": 0.4700479118665004
+            }
+          },
+          "seed": 10429
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T013828Z-c1-confirmation-adam_frozen--s10430-07fefc41-a1",
+              "lo": "20261106T013134Z-c1-confirmation-adam_frozen--s10430-bd969c64-a1",
+              "w": 0.49878293004338364,
+              "width": 0.41646706871107364
+            },
+            "P": {
+              "hi": "20261106T015253Z-c1-confirmation-adamw_prewar-s10430-f7b13dc1-a1",
+              "lo": "20261106T014543Z-c1-confirmation-adamw_prewar-s10430-766850f4-a1",
+              "w": 0.4722357674474275,
+              "width": 0.44577355643926597
+            }
+          },
+          "seed": 10430
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T022019Z-c1-confirmation-adam_frozen--s10431-64a012cc-a1",
+              "lo": "20261106T021321Z-c1-confirmation-adam_frozen--s10431-6126cfc1-a1",
+              "w": 0.33976553393443737,
+              "width": 0.4467265453411715
+            },
+            "P": {
+              "hi": "20261106T023435Z-c1-confirmation-adamw_prewar-s10431-7f2ed9b0-a1",
+              "lo": "20261106T022725Z-c1-confirmation-adamw_prewar-s10431-4a51db0c-a1",
+              "w": 0.3422061798258691,
+              "width": 0.4626257038823498
+            }
+          },
+          "seed": 10431
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T030231Z-c1-confirmation-adam_frozen--s10432-557823ed-a1",
+              "lo": "20261106T025516Z-c1-confirmation-adam_frozen--s10432-20f01b57-a1",
+              "w": 0.5449914143623414,
+              "width": 0.3992943837466627
+            },
+            "P": {
+              "hi": "20261106T031708Z-c1-confirmation-adamw_prewar-s10432-3d3ce87b-a1",
+              "lo": "20261106T030947Z-c1-confirmation-adamw_prewar-s10432-b8ec7883-a1",
+              "w": 0.5386128564499209,
+              "width": 0.4112592224931664
+            }
+          },
+          "seed": 10432
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T034404Z-c1-confirmation-adam_frozen--s10433-dc9eb320-a1",
+              "lo": "20261106T033708Z-c1-confirmation-adam_frozen--s10433-3df6abc9-a1",
+              "w": 0.6108501662985716,
+              "width": 0.4374364100349353
+            },
+            "P": {
+              "hi": "20261106T035803Z-c1-confirmation-adamw_prewar-s10433-e7762d3e-a1",
+              "lo": "20261106T035100Z-c1-confirmation-adamw_prewar-s10433-c165bb9c-a1",
+              "w": 0.6071139255586244,
+              "width": 0.45118567567770107
+            }
+          },
+          "seed": 10433
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T042449Z-c1-confirmation-adam_frozen--s10434-119d457d-a1",
+              "lo": "20261106T041753Z-c1-confirmation-adam_frozen--s10434-fadbe7f8-a1",
+              "w": 0.34294592438380145,
+              "width": 0.4100919643118057
+            },
+            "P": {
+              "hi": "20261106T043847Z-c1-confirmation-adamw_prewar-s10434-488fcac6-a1",
+              "lo": "20261106T043144Z-c1-confirmation-adamw_prewar-s10434-c4405c25-a1",
+              "w": 0.34437141626770257,
+              "width": 0.4221797657174262
+            }
+          },
+          "seed": 10434
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T050533Z-c1-confirmation-adam_frozen--s10435-10a49311-a1",
+              "lo": "20261106T045838Z-c1-confirmation-adam_frozen--s10435-ee601b33-a1",
+              "w": 0.7361149084781718,
+              "width": 0.417024467155529
+            },
+            "P": {
+              "hi": "20261106T051931Z-c1-confirmation-adamw_prewar-s10435-6ba72121-a1",
+              "lo": "20261106T051228Z-c1-confirmation-adamw_prewar-s10435-0a606037-a1",
+              "w": 0.6107901788235913,
+              "width": 0.3141267980952225
+            }
+          },
+          "seed": 10435
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T054724Z-c1-confirmation-adam_frozen--s10436-62a7f4d9-a1",
+              "lo": "20261106T054006Z-c1-confirmation-adam_frozen--s10436-8a52448f-a1",
+              "w": 0.434892459954269,
+              "width": 0.548576069437924
+            },
+            "P": {
+              "hi": "20261106T060200Z-c1-confirmation-adamw_prewar-s10436-afe92eef-a1",
+              "lo": "20261106T055440Z-c1-confirmation-adamw_prewar-s10436-9c1bf40b-a1",
+              "w": 0.5538408179267974,
+              "width": 0.44614667290393384
+            }
+          },
+          "seed": 10436
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T062917Z-c1-confirmation-adam_frozen--s10437-84e4ed22-a1",
+              "lo": "20261106T062217Z-c1-confirmation-adam_frozen--s10437-ffc8c12f-a1",
+              "w": 0.6403724909382903,
+              "width": 0.5368952079001903
+            },
+            "P": {
+              "hi": "20261106T064323Z-c1-confirmation-adamw_prewar-s10437-b0e2d329-a1",
+              "lo": "20261106T063616Z-c1-confirmation-adamw_prewar-s10437-a2724948-a1",
+              "w": 0.7512017063801535,
+              "width": 0.4622492247824501
+            }
+          },
+          "seed": 10437
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T071032Z-c1-confirmation-adam_frozen--s10438-8b0a1461-a1",
+              "lo": "20261106T070330Z-c1-confirmation-adam_frozen--s10438-2abf2415-a1",
+              "w": 0.3751372744566636,
+              "width": 0.5258017567694209
+            },
+            "P": {
+              "hi": "20261106T072442Z-c1-confirmation-adamw_prewar-s10438-5d922af5-a1",
+              "lo": "20261106T071736Z-c1-confirmation-adamw_prewar-s10438-99fff2aa-a1",
+              "w": 0.355239212596481,
+              "width": 0.5659980523406807
+            }
+          },
+          "seed": 10438
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T075225Z-c1-confirmation-adam_frozen--s10439-86712ce0-a1",
+              "lo": "20261106T074514Z-c1-confirmation-adam_frozen--s10439-5badb301-a1",
+              "w": 0.39605823312717403,
+              "width": 0.3620970462856441
+            },
+            "P": {
+              "hi": "20261106T080650Z-c1-confirmation-adamw_prewar-s10439-83b15d3c-a1",
+              "lo": "20261106T075930Z-c1-confirmation-adamw_prewar-s10439-58d812ea-a1",
+              "w": 0.4196418403624775,
+              "width": 0.3670728015089557
+            }
+          },
+          "seed": 10439
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T083446Z-c1-confirmation-adam_frozen--s10440-7c105018-a1",
+              "lo": "20261106T082738Z-c1-confirmation-adam_frozen--s10440-eb1dfe56-a1",
+              "w": 0.3927932783122602,
+              "width": 0.45995030000474024
+            },
+            "P": {
+              "hi": "20261106T084919Z-c1-confirmation-adamw_prewar-s10440-7abf1dca-a1",
+              "lo": "20261106T084201Z-c1-confirmation-adamw_prewar-s10440-c2a1c9bd-a1",
+              "w": 0.3920689275858182,
+              "width": 0.4772242975858172
+            }
+          },
+          "seed": 10440
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T091633Z-c1-confirmation-adam_frozen--s10441-afaab4eb-a1",
+              "lo": "20261106T090929Z-c1-confirmation-adam_frozen--s10441-7e4ba88a-a1",
+              "w": 0.27801521845925753,
+              "width": 0.5128125872449036
+            },
+            "P": {
+              "hi": "20261106T093102Z-c1-confirmation-adamw_prewar-s10441-e72c79e7-a1",
+              "lo": "20261106T092347Z-c1-confirmation-adamw_prewar-s10441-bc879582-a1",
+              "w": 0.2824182596215441,
+              "width": 0.5335023502518221
+            }
+          },
+          "seed": 10441
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T095759Z-c1-confirmation-adam_frozen--s10442-55f08873-a1",
+              "lo": "20261106T095109Z-c1-confirmation-adam_frozen--s10442-0b388ee6-a1",
+              "w": 0.6968269451481074,
+              "width": 0.4357928166456093
+            },
+            "P": {
+              "hi": "20261106T101200Z-c1-confirmation-adamw_prewar-s10442-1c04c0da-a1",
+              "lo": "20261106T100459Z-c1-confirmation-adamw_prewar-s10442-150e42ad-a1",
+              "w": 0.6834267584976687,
+              "width": 0.44909985527250584
+            }
+          },
+          "seed": 10442
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T103901Z-c1-confirmation-adam_frozen--s10443-dfbe2b08-a1",
+              "lo": "20261106T103202Z-c1-confirmation-adam_frozen--s10443-4e5fb601-a1",
+              "w": 0.46893506206054364,
+              "width": 0.36844530713298673
+            },
+            "P": {
+              "hi": "20261106T105310Z-c1-confirmation-adamw_prewar-s10443-6b0730cf-a1",
+              "lo": "20261106T104602Z-c1-confirmation-adamw_prewar-s10443-56bd3f76-a1",
+              "w": 0.43850448003066733,
+              "width": 0.36046805623573497
+            }
+          },
+          "seed": 10443
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T112016Z-c1-confirmation-adam_frozen--s10444-bf80ad9a-a1",
+              "lo": "20261106T111317Z-c1-confirmation-adam_frozen--s10444-210e006e-a1",
+              "w": 0.3981843859177539,
+              "width": 0.41371689311603554
+            },
+            "P": {
+              "hi": "20261106T113417Z-c1-confirmation-adamw_prewar-s10444-970e7cf9-a1",
+              "lo": "20261106T112712Z-c1-confirmation-adamw_prewar-s10444-59bb8e7d-a1",
+              "w": 0.3949032267088689,
+              "width": 0.4271671331701501
+            }
+          },
+          "seed": 10444
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T120238Z-c1-confirmation-adam_frozen--s10445-ef9e56c4-a1",
+              "lo": "20261106T115457Z-c1-confirmation-adam_frozen--s10445-cdcb2d67-a1",
+              "w": 0.1269626078363545,
+              "width": 0.34867385052852007
+            },
+            "P": {
+              "hi": "20261106T121753Z-c1-confirmation-adamw_prewar-s10445-1f8f4285-a1",
+              "lo": "20261106T121037Z-c1-confirmation-adamw_prewar-s10445-81e9d837-a1",
+              "w": 0.1429202388911724,
+              "width": 0.3632541178863087
+            }
+          },
+          "seed": 10445
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T124546Z-c1-confirmation-adam_frozen--s10446-e8248db7-a1",
+              "lo": "20261106T123827Z-c1-confirmation-adam_frozen--s10446-dacca9a8-a1",
+              "w": 0.3060019572857952,
+              "width": 0.3781159606443609
+            },
+            "P": {
+              "hi": "20261106T130022Z-c1-confirmation-adamw_prewar-s10446-f0e1a99e-a1",
+              "lo": "20261106T125259Z-c1-confirmation-adamw_prewar-s10446-6541242e-a1",
+              "w": 0.34059234548983613,
+              "width": 0.4011922238538552
+            }
+          },
+          "seed": 10446
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T140610Z-c1-confirmation-adam_frozen--s10448-e6551cb3-a1",
+              "lo": "20261106T135902Z-c1-confirmation-adam_frozen--s10448-87fa87d5-a1",
+              "w": 0.4968301722933034,
+              "width": 0.441960013569656
+            },
+            "P": {
+              "hi": "20261106T142043Z-c1-confirmation-adamw_prewar-s10448-28edca25-a1",
+              "lo": "20261106T141320Z-c1-confirmation-adamw_prewar-s10448-05c45311-a1",
+              "w": 0.4973034357274663,
+              "width": 0.45310619030278043
+            }
+          },
+          "seed": 10448
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T144801Z-c1-confirmation-adam_frozen--s10449-b1017928-a1",
+              "lo": "20261106T144117Z-c1-confirmation-adam_frozen--s10449-fc58b8a8-a1",
+              "w": 0.524175875494777,
+              "width": 0.4607878130222747
+            },
+            "P": {
+              "hi": "20261106T150201Z-c1-confirmation-adamw_prewar-s10449-fe743b1a-a1",
+              "lo": "20261106T145504Z-c1-confirmation-adamw_prewar-s10449-d78e054e-a1",
+              "w": 0.5232884558291481,
+              "width": 0.4716985210263933
+            }
+          },
+          "seed": 10449
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T153019Z-c1-confirmation-adam_frozen--s10450-d018db69-a1",
+              "lo": "20261106T152301Z-c1-confirmation-adam_frozen--s10450-45d64859-a1",
+              "w": 0.37994561913575875,
+              "width": 0.45786684124928323
+            },
+            "P": {
+              "hi": "20261106T154519Z-c1-confirmation-adamw_prewar-s10450-216ba616-a1",
+              "lo": "20261106T153746Z-c1-confirmation-adamw_prewar-s10450-37fc6692-a1",
+              "w": 0.3745940526342564,
+              "width": 0.47455349725359985
+            }
+          },
+          "seed": 10450
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T161347Z-c1-confirmation-adam_frozen--s10451-2da4dd0a-a1",
+              "lo": "20261106T160635Z-c1-confirmation-adam_frozen--s10451-0290f7f1-a1",
+              "w": 0.6414279953325605,
+              "width": 0.40765616430672025
+            },
+            "P": {
+              "hi": "20261106T162752Z-c1-confirmation-adamw_prewar-s10451-fe9f7ae9-a1",
+              "lo": "20261106T162050Z-c1-confirmation-adamw_prewar-s10451-06304257-a1",
+              "w": 0.6303269447192209,
+              "width": 0.4204089560954898
+            }
+          },
+          "seed": 10451
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T165323Z-c1-confirmation-adam_frozen--s10452-5263ea31-a1",
+              "lo": "20261106T164654Z-c1-confirmation-adam_frozen--s10452-066c5837-a1",
+              "w": 0.5874479486214381,
+              "width": 0.4136156579388701
+            },
+            "P": {
+              "hi": "20261106T170632Z-c1-confirmation-adamw_prewar-s10452-116bd477-a1",
+              "lo": "20261106T165956Z-c1-confirmation-adamw_prewar-s10452-ba73545c-a1",
+              "w": 0.5786494417747399,
+              "width": 0.42673293681256896
+            }
+          },
+          "seed": 10452
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T173305Z-c1-confirmation-adam_frozen--s10453-e76b98bd-a1",
+              "lo": "20261106T172605Z-c1-confirmation-adam_frozen--s10453-63e6f15e-a1",
+              "w": 0.47074618217966474,
+              "width": 0.41953915886736937
+            },
+            "P": {
+              "hi": "20261106T174704Z-c1-confirmation-adamw_prewar-s10453-6de0dce9-a1",
+              "lo": "20261106T174000Z-c1-confirmation-adamw_prewar-s10453-fa7ec0cf-a1",
+              "w": 0.44789121795464415,
+              "width": 0.43645767347447406
+            }
+          },
+          "seed": 10453
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T181410Z-c1-confirmation-adam_frozen--s10454-1aa0a53b-a1",
+              "lo": "20261106T180712Z-c1-confirmation-adam_frozen--s10454-b546f9e3-a1",
+              "w": 0.625645738617442,
+              "width": 0.4842883713621997
+            },
+            "P": {
+              "hi": "20261106T182813Z-c1-confirmation-adamw_prewar-s10454-c8fb712e-a1",
+              "lo": "20261106T182107Z-c1-confirmation-adamw_prewar-s10454-ed264284-a1",
+              "w": 0.615121674115328,
+              "width": 0.49582514699609925
+            }
+          },
+          "seed": 10454
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T185436Z-c1-confirmation-adam_frozen--s10455-e21e2ee6-a1",
+              "lo": "20261106T184801Z-c1-confirmation-adam_frozen--s10455-95d57fa1-a1",
+              "w": 0.5312109979616464,
+              "width": 0.4732834850471952
+            },
+            "P": {
+              "hi": "20261106T190818Z-c1-confirmation-adamw_prewar-s10455-60403de3-a1",
+              "lo": "20261106T190132Z-c1-confirmation-adamw_prewar-s10455-31c341cb-a1",
+              "w": 0.5312667535149219,
+              "width": 0.48272342641670396
+            }
+          },
+          "seed": 10455
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T193410Z-c1-confirmation-adam_frozen--s10456-56aa51dd-a1",
+              "lo": "20261106T192742Z-c1-confirmation-adam_frozen--s10456-21fac1a9-a1",
+              "w": 0.2073673368300603,
+              "width": 0.433124296014024
+            },
+            "P": {
+              "hi": "20261106T194742Z-c1-confirmation-adamw_prewar-s10456-31a55204-a1",
+              "lo": "20261106T194107Z-c1-confirmation-adamw_prewar-s10456-6ea61100-a1",
+              "w": 0.21369497836087828,
+              "width": 0.4658035188200258
+            }
+          },
+          "seed": 10456
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T201426Z-c1-confirmation-adam_frozen--s10457-e62b4968-a1",
+              "lo": "20261106T200735Z-c1-confirmation-adam_frozen--s10457-cc88687d-a1",
+              "w": 0.4066570431855959,
+              "width": 0.46486302370279575
+            },
+            "P": {
+              "hi": "20261106T202820Z-c1-confirmation-adamw_prewar-s10457-f10173aa-a1",
+              "lo": "20261106T202123Z-c1-confirmation-adamw_prewar-s10457-798f3e53-a1",
+              "w": 0.41063825445003355,
+              "width": 0.47826657032627096
+            }
+          },
+          "seed": 10457
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T205403Z-c1-confirmation-adam_frozen--s10458-858da9bf-a1",
+              "lo": "20261106T204736Z-c1-confirmation-adam_frozen--s10458-65e68fb2-a1",
+              "w": 0.35446647339263776,
+              "width": 0.47506041070085336
+            },
+            "P": {
+              "hi": "20261106T210724Z-c1-confirmation-adamw_prewar-s10458-add3069f-a1",
+              "lo": "20261106T210043Z-c1-confirmation-adamw_prewar-s10458-25ba1617-a1",
+              "w": 0.361234017531671,
+              "width": 0.4860451967383945
+            }
+          },
+          "seed": 10458
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T213356Z-c1-confirmation-adam_frozen--s10459-312c2f4a-a1",
+              "lo": "20261106T212705Z-c1-confirmation-adam_frozen--s10459-e8b33bab-a1",
+              "w": 0.6895971287779199,
+              "width": 0.3863257053644129
+            },
+            "P": {
+              "hi": "20261106T214752Z-c1-confirmation-adamw_prewar-s10459-abba82b9-a1",
+              "lo": "20261106T214053Z-c1-confirmation-adamw_prewar-s10459-d1c2c37d-a1",
+              "w": 0.6737662828469911,
+              "width": 0.39984656058715307
+            }
+          },
+          "seed": 10459
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T225152Z-c1-confirmation-adam_frozen--s10461-3392b665-a1",
+              "lo": "20261106T224456Z-c1-confirmation-adam_frozen--s10461-bba87de5-a1",
+              "w": 0.7615392408431996,
+              "width": 0.4528343880895642
+            },
+            "P": {
+              "hi": "20261106T230555Z-c1-confirmation-adamw_prewar-s10461-71e1d749-a1",
+              "lo": "20261106T225851Z-c1-confirmation-adamw_prewar-s10461-14af7100-a1",
+              "w": 0.7464210236958926,
+              "width": 0.4663729961539824
+            }
+          },
+          "seed": 10461
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261106T233308Z-c1-confirmation-adam_frozen--s10462-ec58f793-a1",
+              "lo": "20261106T232607Z-c1-confirmation-adam_frozen--s10462-a56fada9-a1",
+              "w": 0.6137779981097216,
+              "width": 0.4290445720731022
+            },
+            "P": {
+              "hi": "20261106T234716Z-c1-confirmation-adamw_prewar-s10462-64ce56ac-a1",
+              "lo": "20261106T234008Z-c1-confirmation-adamw_prewar-s10462-966488ed-a1",
+              "w": 0.6062966561047999,
+              "width": 0.44049442379434445
+            }
+          },
+          "seed": 10462
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261107T001418Z-c1-confirmation-adam_frozen--s10463-e3a0d1a4-a1",
+              "lo": "20261107T000723Z-c1-confirmation-adam_frozen--s10463-d2ddc508-a1",
+              "w": 0.33398788263191553,
+              "width": 0.42821843929569203
+            },
+            "P": {
+              "hi": "20261107T002821Z-c1-confirmation-adamw_prewar-s10463-1c8842fc-a1",
+              "lo": "20261107T002115Z-c1-confirmation-adamw_prewar-s10463-02c7a939-a1",
+              "w": 0.33382328656857113,
+              "width": 0.44061199533601925
+            }
+          },
+          "seed": 10463
+        }
+      ],
+      "reading": "confirmatory",
+      "rule": "n_reached",
+      "unknown": [
+        10414,
+        10428,
+        10447,
+        10460
+      ]
+    }
+  },
+  "confirmation": {
+    "N": 60,
+    "active": [
+      "A-F",
+      "P-F"
+    ],
+    "cap": 74,
+    "outcome": "confirmed",
+    "started": [
+      10400,
+      10401,
+      10402,
+      10403,
+      10404,
+      10405,
+      10406,
+      10407,
+      10408,
+      10409,
+      10410,
+      10411,
+      10412,
+      10413,
+      10414,
+      10415,
+      10416,
+      10417,
+      10418,
+      10419,
+      10420,
+      10421,
+      10422,
+      10423,
+      10424,
+      10425,
+      10426,
+      10427,
+      10428,
+      10429,
+      10430,
+      10431,
+      10432,
+      10433,
+      10434,
+      10435,
+      10436,
+      10437,
+      10438,
+      10439,
+      10440,
+      10441,
+      10442,
+      10443,
+      10444,
+      10445,
+      10446,
+      10447,
+      10448,
+      10449,
+      10450,
+      10451,
+      10452,
+      10453,
+      10454,
+      10455,
+      10456,
+      10457,
+      10458,
+      10459,
+      10460,
+      10461,
+      10462,
+      10463
+    ],
+    "stop": "counters"
+  },
+  "k_harmful": {
+    "blocks": [
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T054946Z-c1-confirmation-adamw-2.11e--s10401-2235bf7a-a1",
+            "lo": "20261105T054332Z-c1-confirmation-adamw-1.45e--s10401-b70eac9a-a1",
+            "w": 0.574507263949248
+          },
+          "F": {
+            "hi": "20261105T060318Z-c1-confirmation-adam_frozen--s10401-e5f1f0c8-a1",
+            "lo": "20261105T055612Z-c1-confirmation-adam_frozen--s10401-c3b639c6-a1",
+            "w": 0.8783753862530751
+          }
+        },
+        "seed": 10401
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T071354Z-c1-confirmation-adamw-2.11e--s10403-b0680528-a1",
+            "lo": "20261105T070816Z-c1-confirmation-adamw-1.45e--s10403-ae69aa40-a1",
+            "w": 0.8128829612542907
+          },
+          "F": {
+            "hi": "20261105T072713Z-c1-confirmation-adam_frozen--s10403-3b4601aa-a1",
+            "lo": "20261105T072010Z-c1-confirmation-adam_frozen--s10403-d1ce7a92-a1",
+            "w": 0.6297649484339191
+          }
+        },
+        "seed": 10403
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T083654Z-c1-confirmation-adamw-2.11e--s10405-aed243f3-a1",
+            "lo": "20261105T083113Z-c1-confirmation-adamw-1.45e--s10405-f579fb0f-a1",
+            "w": 0.3041196383943765
+          },
+          "F": {
+            "hi": "20261105T084928Z-c1-confirmation-adam_frozen--s10405-edb4027e-a1",
+            "lo": "20261105T084245Z-c1-confirmation-adam_frozen--s10405-1eb3a012-a1",
+            "w": 0.6309423683024965
+          }
+        },
+        "seed": 10405
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T123417Z-c1-confirmation-adamw-2.11e--s10411-c9153ae3-a1",
+            "lo": "20261105T122819Z-c1-confirmation-adamw-1.45e--s10411-117a41c8-a1",
+            "w": 0.177911636132416
+          },
+          "F": {
+            "hi": "20261105T124824Z-c1-confirmation-adam_frozen--s10411-15239db3-a1",
+            "lo": "20261105T124026Z-c1-confirmation-adam_frozen--s10411-78eb2e7f-a1",
+            "w": 0.03052452096436598
+          }
+        },
+        "seed": 10411
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T131726Z-c1-confirmation-adamw-2.11e--s10412-4c0d653e-a1",
+            "lo": "20261105T131109Z-c1-confirmation-adamw-1.45e--s10412-40161921-a1",
+            "w": 0.6523476143126898
+          },
+          "F": {
+            "hi": "20261105T133122Z-c1-confirmation-adam_frozen--s10412-ddb42053-a1",
+            "lo": "20261105T132342Z-c1-confirmation-adam_frozen--s10412-3d189a9e-a1",
+            "w": 0.4723843742802334
+          }
+        },
+        "seed": 10412
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T151642Z-c1-confirmation-adamw-2.11e--s10415-2ea0cd4c-a1",
+            "lo": "20261105T151054Z-c1-confirmation-adamw-1.45e--s10415-045f4b83-a1",
+            "w": 0.3927037711070524
+          },
+          "F": {
+            "hi": "20261105T152929Z-c1-confirmation-adam_frozen--s10415-43e4aacd-a1",
+            "lo": "20261105T152240Z-c1-confirmation-adam_frozen--s10415-67ae11c0-a1",
+            "w": 0.3733695096188601
+          }
+        },
+        "seed": 10415
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T155707Z-c1-confirmation-adamw-2.11e--s10416-4b86d833-a1",
+            "lo": "20261105T155129Z-c1-confirmation-adamw-1.45e--s10416-ea1c0f98-a1",
+            "w": 0.6009681321958765
+          },
+          "F": {
+            "hi": "20261105T160943Z-c1-confirmation-adam_frozen--s10416-6822f765-a1",
+            "lo": "20261105T160304Z-c1-confirmation-adam_frozen--s10416-0ff06754-a1",
+            "w": 0.6414294886411772
+          }
+        },
+        "seed": 10416
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T172132Z-c1-confirmation-adamw-2.11e--s10418-9c83a44e-a1",
+            "lo": "20261105T171540Z-c1-confirmation-adamw-1.45e--s10418-93e70590-a1",
+            "w": 0.43526736881104366
+          },
+          "F": {
+            "hi": "20261105T173410Z-c1-confirmation-adam_frozen--s10418-e3156ed5-a1",
+            "lo": "20261105T172729Z-c1-confirmation-adam_frozen--s10418-273760e2-a1",
+            "w": 0.21462438871798173
+          }
+        },
+        "seed": 10418
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T180156Z-c1-confirmation-adamw-2.11e--s10419-f26c1619-a1",
+            "lo": "20261105T175559Z-c1-confirmation-adamw-1.45e--s10419-19d3cd1e-a1",
+            "w": 0.4688324719784494
+          },
+          "F": {
+            "hi": "20261105T181511Z-c1-confirmation-adam_frozen--s10419-ecaab3c3-a1",
+            "lo": "20261105T180807Z-c1-confirmation-adam_frozen--s10419-0539efc0-a1",
+            "w": 0.6103014697193078
+          }
+        },
+        "seed": 10419
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T184314Z-c1-confirmation-adamw-2.11e--s10420-1b0afb84-a1",
+            "lo": "20261105T183729Z-c1-confirmation-adamw-1.45e--s10420-bc45682e-a1",
+            "w": 0.8577960299624908
+          },
+          "F": {
+            "hi": "20261105T185613Z-c1-confirmation-adam_frozen--s10420-cd7b2ba4-a1",
+            "lo": "20261105T184915Z-c1-confirmation-adam_frozen--s10420-d2b3957d-a1",
+            "w": 0.8027856288059861
+          }
+        },
+        "seed": 10420
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T192446Z-c1-confirmation-adamw-2.11e--s10421-f58dcf90-a1",
+            "lo": "20261105T191856Z-c1-confirmation-adamw-1.45e--s10421-8a5b6b7b-a1",
+            "w": 0.6459378668858946
+          },
+          "F": {
+            "hi": "20261105T193725Z-c1-confirmation-adam_frozen--s10421-b93a4ad1-a1",
+            "lo": "20261105T193034Z-c1-confirmation-adam_frozen--s10421-4a5bd5a2-a1",
+            "w": 0.7388497623525104
+          }
+        },
+        "seed": 10421
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T212302Z-c1-confirmation-adamw-2.11e--s10424-b7fe2c54-a1",
+            "lo": "20261105T211702Z-c1-confirmation-adamw-1.45e--s10424-78e20f40-a1",
+            "w": 0.48334099568200517
+          },
+          "F": {
+            "hi": "20261105T213605Z-c1-confirmation-adam_frozen--s10424-969193cc-a1",
+            "lo": "20261105T212904Z-c1-confirmation-adam_frozen--s10424-69efaa65-a1",
+            "w": 0.028182118661254214
+          }
+        },
+        "seed": 10424
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T220404Z-c1-confirmation-adamw-2.11e--s10425-f78a70e9-a1",
+            "lo": "20261105T215814Z-c1-confirmation-adamw-1.45e--s10425-39799eed-a1",
+            "w": 0.6802382189482152
+          },
+          "F": {
+            "hi": "20261105T221706Z-c1-confirmation-adam_frozen--s10425-b1b6d153-a1",
+            "lo": "20261105T221007Z-c1-confirmation-adam_frozen--s10425-01809d0e-a1",
+            "w": 0.019883250745093724
+          }
+        },
+        "seed": 10425
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261105T224438Z-c1-confirmation-adamw-2.11e--s10426-75057582-a1",
+            "lo": "20261105T223851Z-c1-confirmation-adamw-1.45e--s10426-35c26c9f-a1",
+            "w": 0.563475620792078
+          },
+          "F": {
+            "hi": "20261105T225714Z-c1-confirmation-adam_frozen--s10426-82bf1eff-a1",
+            "lo": "20261105T225037Z-c1-confirmation-adam_frozen--s10426-dc5c9c0f-a1",
+            "w": 0.5625285184551334
+          }
+        },
+        "seed": 10426
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T004615Z-c1-confirmation-adamw-2.11e--s10429-b0963d48-a1",
+            "lo": "20261106T004027Z-c1-confirmation-adamw-1.45e--s10429-81292270-a1",
+            "w": 0.48268372139174764
+          },
+          "F": {
+            "hi": "20261106T005842Z-c1-confirmation-adam_frozen--s10429-3ba8c3e0-a1",
+            "lo": "20261106T005204Z-c1-confirmation-adam_frozen--s10429-e65aaa16-a1",
+            "w": 0.7718827980888743
+          }
+        },
+        "seed": 10429
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T012537Z-c1-confirmation-adamw-2.11e--s10430-e7248105-a1",
+            "lo": "20261106T011948Z-c1-confirmation-adamw-1.45e--s10430-7ee8c181-a1",
+            "w": 0.6834015252991897
+          },
+          "F": {
+            "hi": "20261106T013828Z-c1-confirmation-adam_frozen--s10430-07fefc41-a1",
+            "lo": "20261106T013134Z-c1-confirmation-adam_frozen--s10430-bd969c64-a1",
+            "w": 0.9414764426688149
+          }
+        },
+        "seed": 10430
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T024900Z-c1-confirmation-adamw-2.11e--s10432-bf49c43b-a1",
+            "lo": "20261106T024247Z-c1-confirmation-adamw-1.45e--s10432-6119d069-a1",
+            "w": 0.6821458393671764
+          },
+          "F": {
+            "hi": "20261106T030231Z-c1-confirmation-adam_frozen--s10432-557823ed-a1",
+            "lo": "20261106T025516Z-c1-confirmation-adam_frozen--s10432-20f01b57-a1",
+            "w": 0.7126688053096842
+          }
+        },
+        "seed": 10432
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T045242Z-c1-confirmation-adamw-2.11e--s10435-0ee2e522-a1",
+            "lo": "20261106T044645Z-c1-confirmation-adamw-1.45e--s10435-526b6742-a1",
+            "w": 0.6629211746256027
+          },
+          "F": {
+            "hi": "20261106T050533Z-c1-confirmation-adam_frozen--s10435-10a49311-a1",
+            "lo": "20261106T045838Z-c1-confirmation-adam_frozen--s10435-ee601b33-a1",
+            "w": 0.9173140911899373
+          }
+        },
+        "seed": 10435
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T053346Z-c1-confirmation-adamw-2.11e--s10436-09e9d7d0-a1",
+            "lo": "20261106T052730Z-c1-confirmation-adamw-1.45e--s10436-8f2ed530-a1",
+            "w": 0.4322895253354725
+          },
+          "F": {
+            "hi": "20261106T054724Z-c1-confirmation-adam_frozen--s10436-62a7f4d9-a1",
+            "lo": "20261106T054006Z-c1-confirmation-adam_frozen--s10436-8a52448f-a1",
+            "w": 0.43056450109451305
+          }
+        },
+        "seed": 10436
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T065729Z-c1-confirmation-adamw-2.11e--s10438-d8caab8f-a1",
+            "lo": "20261106T065130Z-c1-confirmation-adamw-1.45e--s10438-505849a9-a1",
+            "w": 0.11316472001352536
+          },
+          "F": {
+            "hi": "20261106T071032Z-c1-confirmation-adam_frozen--s10438-8b0a1461-a1",
+            "lo": "20261106T070330Z-c1-confirmation-adam_frozen--s10438-2abf2415-a1",
+            "w": 0.13732837695586464
+          }
+        },
+        "seed": 10438
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T073902Z-c1-confirmation-adamw-2.11e--s10439-193cf5c6-a1",
+            "lo": "20261106T073245Z-c1-confirmation-adamw-1.45e--s10439-876c48e5-a1",
+            "w": 0.5324879230622196
+          },
+          "F": {
+            "hi": "20261106T075225Z-c1-confirmation-adam_frozen--s10439-86712ce0-a1",
+            "lo": "20261106T074514Z-c1-confirmation-adam_frozen--s10439-5badb301-a1",
+            "w": 0.1414576715064731
+          }
+        },
+        "seed": 10439
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T082122Z-c1-confirmation-adamw-2.11e--s10440-bdce69ce-a1",
+            "lo": "20261106T081508Z-c1-confirmation-adamw-1.45e--s10440-4e2322ff-a1",
+            "w": 0.6327898998341845
+          },
+          "F": {
+            "hi": "20261106T083446Z-c1-confirmation-adam_frozen--s10440-7c105018-a1",
+            "lo": "20261106T082738Z-c1-confirmation-adam_frozen--s10440-eb1dfe56-a1",
+            "w": 0.2555140424420034
+          }
+        },
+        "seed": 10440
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T102601Z-c1-confirmation-adamw-2.11e--s10443-f16af950-a1",
+            "lo": "20261106T102002Z-c1-confirmation-adamw-1.45e--s10443-be8ba3b8-a1",
+            "w": 0.4937605061498712
+          },
+          "F": {
+            "hi": "20261106T103901Z-c1-confirmation-adam_frozen--s10443-dfbe2b08-a1",
+            "lo": "20261106T103202Z-c1-confirmation-adam_frozen--s10443-4e5fb601-a1",
+            "w": 0.4073180609271007
+          }
+        },
+        "seed": 10443
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T114913Z-c1-confirmation-adamw-2.11e--s10445-5642b8d1-a1",
+            "lo": "20261106T114227Z-c1-confirmation-adamw-1.45e--s10445-bba36acf-a1",
+            "w": 0.9342778670718747
+          },
+          "F": {
+            "hi": "20261106T120238Z-c1-confirmation-adam_frozen--s10445-ef9e56c4-a1",
+            "lo": "20261106T115457Z-c1-confirmation-adam_frozen--s10445-cdcb2d67-a1",
+            "w": 0.9322587047605241
+          }
+        },
+        "seed": 10445
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T135248Z-c1-confirmation-adamw-2.11e--s10448-531e57a7-a1",
+            "lo": "20261106T134639Z-c1-confirmation-adamw-1.45e--s10448-e470f7e5-a1",
+            "w": 0.9090744022452556
+          },
+          "F": {
+            "hi": "20261106T140610Z-c1-confirmation-adam_frozen--s10448-e6551cb3-a1",
+            "lo": "20261106T135902Z-c1-confirmation-adam_frozen--s10448-87fa87d5-a1",
+            "w": 0.7304613661766053
+          }
+        },
+        "seed": 10448
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T143515Z-c1-confirmation-adamw-2.11e--s10449-7efc26a2-a1",
+            "lo": "20261106T142920Z-c1-confirmation-adamw-1.45e--s10449-b4039e6d-a1",
+            "w": 0.25651051416239395
+          },
+          "F": {
+            "hi": "20261106T144801Z-c1-confirmation-adam_frozen--s10449-b1017928-a1",
+            "lo": "20261106T144117Z-c1-confirmation-adam_frozen--s10449-fc58b8a8-a1",
+            "w": 0.3889235053417024
+          }
+        },
+        "seed": 10449
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T151634Z-c1-confirmation-adamw-2.11e--s10450-35e97c85-a1",
+            "lo": "20261106T151013Z-c1-confirmation-adamw-1.45e--s10450-a5119e85-a1",
+            "w": 0.23484716664421718
+          },
+          "F": {
+            "hi": "20261106T153019Z-c1-confirmation-adam_frozen--s10450-d018db69-a1",
+            "lo": "20261106T152301Z-c1-confirmation-adam_frozen--s10450-45d64859-a1",
+            "w": 0.07587335662138656
+          }
+        },
+        "seed": 10450
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T164110Z-c1-confirmation-adamw-2.11e--s10452-ada330e5-a1",
+            "lo": "20261106T163548Z-c1-confirmation-adamw-1.45e--s10452-26cbd45b-a1",
+            "w": 0.8161181598602121
+          },
+          "F": {
+            "hi": "20261106T165323Z-c1-confirmation-adam_frozen--s10452-5263ea31-a1",
+            "lo": "20261106T164654Z-c1-confirmation-adam_frozen--s10452-066c5837-a1",
+            "w": 0.994061570456812
+          }
+        },
+        "seed": 10452
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T172009Z-c1-confirmation-adamw-2.11e--s10453-3eb338b4-a1",
+            "lo": "20261106T171414Z-c1-confirmation-adamw-1.45e--s10453-b3dd244b-a1",
+            "w": 0.8244239191199199
+          },
+          "F": {
+            "hi": "20261106T173305Z-c1-confirmation-adam_frozen--s10453-e76b98bd-a1",
+            "lo": "20261106T172605Z-c1-confirmation-adam_frozen--s10453-63e6f15e-a1",
+            "w": 0.9016272174972452
+          }
+        },
+        "seed": 10453
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T180114Z-c1-confirmation-adamw-2.11e--s10454-1c281c92-a1",
+            "lo": "20261106T175513Z-c1-confirmation-adamw-1.45e--s10454-50d58bda-a1",
+            "w": 0.3364117276223431
+          },
+          "F": {
+            "hi": "20261106T181410Z-c1-confirmation-adam_frozen--s10454-1aa0a53b-a1",
+            "lo": "20261106T180712Z-c1-confirmation-adam_frozen--s10454-b546f9e3-a1",
+            "w": 0.737991689898037
+          }
+        },
+        "seed": 10454
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T184209Z-c1-confirmation-adamw-2.11e--s10455-410f55d9-a1",
+            "lo": "20261106T183621Z-c1-confirmation-adamw-1.45e--s10455-d0e2fda0-a1",
+            "w": 0.2503533037642701
+          },
+          "F": {
+            "hi": "20261106T185436Z-c1-confirmation-adam_frozen--s10455-e21e2ee6-a1",
+            "lo": "20261106T184801Z-c1-confirmation-adam_frozen--s10455-95d57fa1-a1",
+            "w": 0.4757928470820472
+          }
+        },
+        "seed": 10455
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T192156Z-c1-confirmation-adamw-2.11e--s10456-cf207430-a1",
+            "lo": "20261106T191625Z-c1-confirmation-adamw-1.45e--s10456-ad18e357-a1",
+            "w": 0.8164721384746152
+          },
+          "F": {
+            "hi": "20261106T193410Z-c1-confirmation-adam_frozen--s10456-56aa51dd-a1",
+            "lo": "20261106T192742Z-c1-confirmation-adam_frozen--s10456-21fac1a9-a1",
+            "w": 0.5453475194868229
+          }
+        },
+        "seed": 10456
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T204154Z-c1-confirmation-adamw-2.11e--s10458-f8642123-a1",
+            "lo": "20261106T203627Z-c1-confirmation-adamw-1.45e--s10458-49b9487f-a1",
+            "w": 0.9528652074239695
+          },
+          "F": {
+            "hi": "20261106T205403Z-c1-confirmation-adam_frozen--s10458-858da9bf-a1",
+            "lo": "20261106T204736Z-c1-confirmation-adam_frozen--s10458-65e68fb2-a1",
+            "w": 0.1602538809313409
+          }
+        },
+        "seed": 10458
+      },
+      {
+        "arms": {
+          "A": {
+            "hi": "20261106T223856Z-c1-confirmation-adamw-2.11e--s10461-c1f86ff4-a1",
+            "lo": "20261106T223258Z-c1-confirmation-adamw-1.45e--s10461-5e34d70b-a1",
+            "w": 0.3854298109152817
+          },
+          "F": {
+            "hi": "20261106T225152Z-c1-confirmation-adam_frozen--s10461-3392b665-a1",
+            "lo": "20261106T224456Z-c1-confirmation-adam_frozen--s10461-bba87de5-a1",
+            "w": 0.6873219905658909
+          }
+        },
+        "seed": 10461
+      }
+    ],
+    "kstar_h": 5.876018430993404,
+    "left_out": [
+      {
+        "arms": {
+          "F": "no bracket"
+        },
+        "seed": 10400
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10402
+      },
+      {
+        "arms": {
+          "A": "no bracket"
+        },
+        "seed": 10404
+      },
+      {
+        "arms": {
+          "F": "no bracket"
+        },
+        "seed": 10406
+      },
+      {
+        "arms": {
+          "F": "no bracket"
+        },
+        "seed": 10407
+      },
+      {
+        "arms": {
+          "A": "no bracket"
+        },
+        "seed": 10408
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10409
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10410
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10413
+      },
+      {
+        "arms": {
+          "F": "no bracket"
+        },
+        "seed": 10414
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10417
+      },
+      {
+        "arms": {
+          "F": "no bracket"
+        },
+        "seed": 10422
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10423
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10427
+      },
+      {
+        "arms": {
+          "A": "no bracket"
+        },
+        "seed": 10431
+      },
+      {
+        "arms": {
+          "F": "no bracket"
+        },
+        "seed": 10433
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10434
+      },
+      {
+        "arms": {
+          "A": "no bracket"
+        },
+        "seed": 10437
+      },
+      {
+        "arms": {
+          "A": "no bracket"
+        },
+        "seed": 10441
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10442
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10444
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10446
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10451
+      },
+      {
+        "arms": {
+          "A": "no bracket"
+        },
+        "seed": 10457
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10459
+      },
+      {
+        "arms": {
+          "A": "no bracket",
+          "F": "no bracket"
+        },
+        "seed": 10462
+      }
+    ]
+  },
+  "kind": "analysis-freeze",
+  "labels": {
+    "confirmation_runs": 384,
+    "ledger_runs": 160
+  },
+  "supplement": {
+    "path": "docs/study3-fixation-confirmation-c1.json",
+    "root": "repo",
+    "sha256": "411ca520c685c7d904b87ebb526b6de906febed5688b216610f0701a6f094cb1"
+  },
+  "validation": {
+    "A-F": {
+      "blocks": [
+        {
+          "arms": {
+            "A": {
+              "hi": "20261103T193353Z-c1-validation-adamw-2.11e-05-s10300-4e1b700c-a1",
+              "lo": "20261103T192819Z-c1-validation-adamw-1.45e-05-s10300-4b0be9c1-a1",
+              "w": 0.42888739161372413,
+              "width": 0.4285670862516049
+            },
+            "F": {
+              "hi": "20261103T194605Z-c1-validation-adam_frozen-1.-s10300-b30aaf76-a1",
+              "lo": "20261103T193932Z-c1-validation-adam_frozen-1.-s10300-33bbba32-a1",
+              "w": 0.43101657686139494,
+              "width": 0.3907959424860361
+            }
+          },
+          "seed": 10300
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261103T201101Z-c1-validation-adamw-2.11e-05-s10301-174571b2-a1",
+              "lo": "20261103T200603Z-c1-validation-adamw-1.45e-05-s10301-322cbf49-a1",
+              "w": 0.27392181721422737,
+              "width": 0.43282259823706926
+            },
+            "F": {
+              "hi": "20261103T202218Z-c1-validation-adam_frozen-1.-s10301-fb43c5bb-a1",
+              "lo": "20261103T201600Z-c1-validation-adam_frozen-1.-s10301-a7037464-a1",
+              "w": 0.3746577117523314,
+              "width": 0.4135751044237259
+            }
+          },
+          "seed": 10301
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261103T204651Z-c1-validation-adamw-2.11e-05-s10302-663e20f0-a1",
+              "lo": "20261103T204126Z-c1-validation-adamw-1.45e-05-s10302-8e10cef6-a1",
+              "w": 0.724290166195231,
+              "width": 0.4796177558795318
+            },
+            "F": {
+              "hi": "20261103T205900Z-c1-validation-adam_frozen-1.-s10302-238df8e0-a1",
+              "lo": "20261103T205232Z-c1-validation-adam_frozen-1.-s10302-a2817236-a1",
+              "w": 0.45803773161647093,
+              "width": 0.48185693020149456
+            }
+          },
+          "seed": 10302
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261103T212407Z-c1-validation-adamw-2.11e-05-s10303-660ec186-a1",
+              "lo": "20261103T211835Z-c1-validation-adamw-1.45e-05-s10303-cd927701-a1",
+              "w": 0.47866678952618724,
+              "width": 0.47142535858089296
+            },
+            "F": {
+              "hi": "20261103T213557Z-c1-validation-adam_frozen-1.-s10303-59a9e6d4-a1",
+              "lo": "20261103T212937Z-c1-validation-adam_frozen-1.-s10303-7e0071d5-a1",
+              "w": 0.5928203360875466,
+              "width": 0.4589413722667557
+            }
+          },
+          "seed": 10303
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261103T220054Z-c1-validation-adamw-2.11e-05-s10304-47feb002-a1",
+              "lo": "20261103T215527Z-c1-validation-adamw-1.45e-05-s10304-8fd4d4d0-a1",
+              "w": 0.5573577226639268,
+              "width": 0.48174651325947715
+            },
+            "F": {
+              "hi": "20261103T221241Z-c1-validation-adam_frozen-1.-s10304-ec68b574-a1",
+              "lo": "20261103T220626Z-c1-validation-adam_frozen-1.-s10304-dba16aaa-a1",
+              "w": 0.6717394648475575,
+              "width": 0.4246777560709951
+            }
+          },
+          "seed": 10304
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261103T231209Z-c1-validation-adamw-2.11e-05-s10306-e574b367-a1",
+              "lo": "20261103T230634Z-c1-validation-adamw-1.45e-05-s10306-d49a8f11-a1",
+              "w": 0.2386389580820396,
+              "width": 0.47417930795976315
+            },
+            "F": {
+              "hi": "20261103T232409Z-c1-validation-adam_frozen-1.-s10306-e2718b4e-a1",
+              "lo": "20261103T231746Z-c1-validation-adam_frozen-1.-s10306-167cdb48-a1",
+              "w": 0.311525523511838,
+              "width": 0.45865176081560355
+            }
+          },
+          "seed": 10306
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261103T234919Z-c1-validation-adamw-2.11e-05-s10307-6f31ec7c-a1",
+              "lo": "20261103T234343Z-c1-validation-adamw-1.45e-05-s10307-7179b773-a1",
+              "w": 0.4352895021205415,
+              "width": 0.46130115048124254
+            },
+            "F": {
+              "hi": "20261104T000117Z-c1-validation-adam_frozen-1.-s10307-ae10d8b6-a1",
+              "lo": "20261103T235500Z-c1-validation-adam_frozen-1.-s10307-a6114a39-a1",
+              "w": 0.5359468884286455,
+              "width": 0.43814920905780097
+            }
+          },
+          "seed": 10307
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T002636Z-c1-validation-adamw-2.11e-05-s10308-46004861-a1",
+              "lo": "20261104T002100Z-c1-validation-adamw-1.45e-05-s10308-abf018d7-a1",
+              "w": 0.2752951842063895,
+              "width": 0.4361369879200834
+            },
+            "F": {
+              "hi": "20261104T003843Z-c1-validation-adam_frozen-1.-s10308-16fcbb41-a1",
+              "lo": "20261104T003208Z-c1-validation-adam_frozen-1.-s10308-6c4c6d85-a1",
+              "w": 0.3687722889384517,
+              "width": 0.4046155491887251
+            }
+          },
+          "seed": 10308
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T010423Z-c1-validation-adamw-2.11e-05-s10309-b0c5f20c-a1",
+              "lo": "20261104T005845Z-c1-validation-adamw-1.45e-05-s10309-b08584e2-a1",
+              "w": 0.2813804298392573,
+              "width": 0.46591478892324667
+            },
+            "F": {
+              "hi": "20261104T011638Z-c1-validation-adam_frozen-1.-s10309-92ce6217-a1",
+              "lo": "20261104T011002Z-c1-validation-adam_frozen-1.-s10309-dae5b28b-a1",
+              "w": 0.3093534494843646,
+              "width": 0.41039842853120545
+            }
+          },
+          "seed": 10309
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T014212Z-c1-validation-adamw-2.11e-05-s10310-8d7b3c47-a1",
+              "lo": "20261104T013633Z-c1-validation-adamw-1.45e-05-s10310-186853ff-a1",
+              "w": 0.3482513935408124,
+              "width": 0.40088225941790134
+            },
+            "F": {
+              "hi": "20261104T015427Z-c1-validation-adam_frozen-1.-s10310-0be09ebb-a1",
+              "lo": "20261104T014752Z-c1-validation-adam_frozen-1.-s10310-7edb726e-a1",
+              "w": 0.24003439004577662,
+              "width": 0.4921234160475709
+            }
+          },
+          "seed": 10310
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T022010Z-c1-validation-adamw-2.11e-05-s10311-b3d42905-a1",
+              "lo": "20261104T021429Z-c1-validation-adamw-1.45e-05-s10311-8ce29cf5-a1",
+              "w": 0.4732283349528178,
+              "width": 0.4804063820595006
+            },
+            "F": {
+              "hi": "20261104T023224Z-c1-validation-adam_frozen-1.-s10311-36abf2fd-a1",
+              "lo": "20261104T022547Z-c1-validation-adam_frozen-1.-s10311-860a2233-a1",
+              "w": 0.28184551349679754,
+              "width": 0.3996754516887109
+            }
+          },
+          "seed": 10311
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T025734Z-c1-validation-adamw-2.11e-05-s10312-1e303d2a-a1",
+              "lo": "20261104T025224Z-c1-validation-adamw-1.45e-05-s10312-551cfabe-a1",
+              "w": 0.5155603260419886,
+              "width": 0.5093639791339666
+            },
+            "F": {
+              "hi": "20261104T030854Z-c1-validation-adam_frozen-1.-s10312-3b1925d5-a1",
+              "lo": "20261104T030245Z-c1-validation-adam_frozen-1.-s10312-a4b1adfe-a1",
+              "w": 0.8246232205318491,
+              "width": 0.43744753324122243
+            }
+          },
+          "seed": 10312
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T033308Z-c1-validation-adamw-2.11e-05-s10313-7d202842-a1",
+              "lo": "20261104T032726Z-c1-validation-adamw-1.45e-05-s10313-b8493810-a1",
+              "w": 0.33939428449659026,
+              "width": 0.5197257877037376
+            },
+            "F": {
+              "hi": "20261104T034524Z-c1-validation-adam_frozen-1.-s10313-a32858ab-a1",
+              "lo": "20261104T033848Z-c1-validation-adam_frozen-1.-s10313-75c1d3e1-a1",
+              "w": 0.4293361968145378,
+              "width": 0.3025752658230709
+            }
+          },
+          "seed": 10313
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T041021Z-c1-validation-adamw-2.11e-05-s10314-7b64e1de-a1",
+              "lo": "20261104T040526Z-c1-validation-adamw-1.45e-05-s10314-fcf3c51e-a1",
+              "w": 0.5381390753271454,
+              "width": 0.46364125806834067
+            },
+            "F": {
+              "hi": "20261104T042134Z-c1-validation-adam_frozen-1.-s10314-32be69f1-a1",
+              "lo": "20261104T041545Z-c1-validation-adam_frozen-1.-s10314-9418e837-a1",
+              "w": 0.7035075370881378,
+              "width": 0.44003033557213067
+            }
+          },
+          "seed": 10314
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T044447Z-c1-validation-adamw-2.11e-05-s10315-696d2bac-a1",
+              "lo": "20261104T043934Z-c1-validation-adamw-1.45e-05-s10315-d2b05d12-a1",
+              "w": 0.09645969286589641,
+              "width": 0.38534649213569394
+            },
+            "F": {
+              "hi": "20261104T045632Z-c1-validation-adam_frozen-1.-s10315-2397296e-a1",
+              "lo": "20261104T045021Z-c1-validation-adam_frozen-1.-s10315-0f0d15d4-a1",
+              "w": 0.1408179292456478,
+              "width": 0.3783447891949372
+            }
+          },
+          "seed": 10315
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T052145Z-c1-validation-adamw-2.11e-05-s10316-cdc750d2-a1",
+              "lo": "20261104T051616Z-c1-validation-adamw-1.45e-05-s10316-1eeb4c0e-a1",
+              "w": 0.47860905367743234,
+              "width": 0.4871893553875657
+            },
+            "F": {
+              "hi": "20261104T053345Z-c1-validation-adam_frozen-1.-s10316-f04261b3-a1",
+              "lo": "20261104T052721Z-c1-validation-adam_frozen-1.-s10316-fa54cf3d-a1",
+              "w": 0.6389177371700145,
+              "width": 0.45433553585747544
+            }
+          },
+          "seed": 10316
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T055855Z-c1-validation-adamw-2.11e-05-s10317-f0cafc6e-a1",
+              "lo": "20261104T055328Z-c1-validation-adamw-1.45e-05-s10317-85b4de6d-a1",
+              "w": 0.679612550435038,
+              "width": 0.47538291696318224
+            },
+            "F": {
+              "hi": "20261104T061103Z-c1-validation-adam_frozen-1.-s10317-b1767e3d-a1",
+              "lo": "20261104T060425Z-c1-validation-adam_frozen-1.-s10317-19fa5f26-a1",
+              "w": 0.6573845033634719,
+              "width": 0.40951842279221684
+            }
+          },
+          "seed": 10317
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T063646Z-c1-validation-adamw-2.11e-05-s10318-c079bd5c-a1",
+              "lo": "20261104T063105Z-c1-validation-adamw-1.45e-05-s10318-6c52d013-a1",
+              "w": 0.36032906917412794,
+              "width": 0.44749277183199143
+            },
+            "F": {
+              "hi": "20261104T064905Z-c1-validation-adam_frozen-1.-s10318-b6be3a96-a1",
+              "lo": "20261104T064228Z-c1-validation-adam_frozen-1.-s10318-7bc13378-a1",
+              "w": 0.34428769788187813,
+              "width": 0.42702780072832125
+            }
+          },
+          "seed": 10318
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T071439Z-c1-validation-adamw-2.11e-05-s10319-e0622e91-a1",
+              "lo": "20261104T070904Z-c1-validation-adamw-1.45e-05-s10319-832f44ae-a1",
+              "w": 0.30835577381267404,
+              "width": 0.49786219594416514
+            },
+            "F": {
+              "hi": "20261104T072651Z-c1-validation-adam_frozen-1.-s10319-ccdadbcb-a1",
+              "lo": "20261104T072019Z-c1-validation-adam_frozen-1.-s10319-bc8f9262-a1",
+              "w": 0.5170917127176455,
+              "width": 0.46410049709765255
+            }
+          },
+          "seed": 10319
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T075226Z-c1-validation-adamw-2.11e-05-s10320-b65b8eab-a1",
+              "lo": "20261104T074648Z-c1-validation-adamw-1.45e-05-s10320-b9686efe-a1",
+              "w": 0.6740843898529854,
+              "width": 0.4921437846844263
+            },
+            "F": {
+              "hi": "20261104T080437Z-c1-validation-adam_frozen-1.-s10320-eebaaea4-a1",
+              "lo": "20261104T075807Z-c1-validation-adam_frozen-1.-s10320-648e99d2-a1",
+              "w": 0.7398979975331336,
+              "width": 0.47992398034238604
+            }
+          },
+          "seed": 10320
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T083009Z-c1-validation-adamw-2.11e-05-s10321-2486a7c3-a1",
+              "lo": "20261104T082440Z-c1-validation-adamw-1.45e-05-s10321-492d650d-a1",
+              "w": 0.3861091105254138,
+              "width": 0.4685357083350956
+            },
+            "F": {
+              "hi": "20261104T084209Z-c1-validation-adam_frozen-1.-s10321-3c8c3090-a1",
+              "lo": "20261104T083543Z-c1-validation-adam_frozen-1.-s10321-c808d05e-a1",
+              "w": 0.5557370036118909,
+              "width": 0.4518199039460422
+            }
+          },
+          "seed": 10321
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T090705Z-c1-validation-adamw-2.11e-05-s10322-40f8751f-a1",
+              "lo": "20261104T090151Z-c1-validation-adamw-1.45e-05-s10322-13dedfbc-a1",
+              "w": 0.716373283802912,
+              "width": 0.4870411221197555
+            },
+            "F": {
+              "hi": "20261104T091832Z-c1-validation-adam_frozen-1.-s10322-f489bdb9-a1",
+              "lo": "20261104T091230Z-c1-validation-adam_frozen-1.-s10322-35727de1-a1",
+              "w": 0.6006636843410688,
+              "width": 0.5150823896479173
+            }
+          },
+          "seed": 10322
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T094313Z-c1-validation-adamw-2.11e-05-s10323-698f0494-a1",
+              "lo": "20261104T093805Z-c1-validation-adamw-1.45e-05-s10323-58ec6b5b-a1",
+              "w": 0.5635560322077229,
+              "width": 0.5341412516299142
+            },
+            "F": {
+              "hi": "20261104T095447Z-c1-validation-adam_frozen-1.-s10323-2934b145-a1",
+              "lo": "20261104T094841Z-c1-validation-adam_frozen-1.-s10323-71a4f6e2-a1",
+              "w": 0.40756797298729064,
+              "width": 0.5193425968568053
+            }
+          },
+          "seed": 10323
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T101918Z-c1-validation-adamw-2.11e-05-s10324-e565458c-a1",
+              "lo": "20261104T101345Z-c1-validation-adamw-1.45e-05-s10324-cf5a7289-a1",
+              "w": 0.3551895822272463,
+              "width": 0.4863636446068538
+            },
+            "F": {
+              "hi": "20261104T103125Z-c1-validation-adam_frozen-1.-s10324-1dfe4288-a1",
+              "lo": "20261104T102500Z-c1-validation-adam_frozen-1.-s10324-1236b68f-a1",
+              "w": 0.5739223014167941,
+              "width": 0.46136249132060536
+            }
+          },
+          "seed": 10324
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T105651Z-c1-validation-adamw-2.11e-05-s10325-8dde29c4-a1",
+              "lo": "20261104T105115Z-c1-validation-adamw-1.45e-05-s10325-1affe626-a1",
+              "w": 0.41287231174207467,
+              "width": 0.4408449487476074
+            },
+            "F": {
+              "hi": "20261104T110837Z-c1-validation-adam_frozen-1.-s10325-b4cca10f-a1",
+              "lo": "20261104T110224Z-c1-validation-adam_frozen-1.-s10325-1c5f63fc-a1",
+              "w": 0.4263948396230133,
+              "width": 0.4407924931745766
+            }
+          },
+          "seed": 10325
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T113328Z-c1-validation-adamw-2.11e-05-s10326-10fd4e63-a1",
+              "lo": "20261104T112812Z-c1-validation-adamw-1.45e-05-s10326-30bbf194-a1",
+              "w": 0.36304889513563837,
+              "width": 0.46568518537096204
+            },
+            "F": {
+              "hi": "20261104T114510Z-c1-validation-adam_frozen-1.-s10326-c809491f-a1",
+              "lo": "20261104T113859Z-c1-validation-adam_frozen-1.-s10326-1121fa74-a1",
+              "w": 0.46599945942712795,
+              "width": 0.4349804796138177
+            }
+          },
+          "seed": 10326
+        },
+        {
+          "arms": {
+            "A": {
+              "hi": "20261104T121016Z-c1-validation-adamw-2.11e-05-s10327-51a720b0-a1",
+              "lo": "20261104T120437Z-c1-validation-adamw-1.45e-05-s10327-824331e7-a1",
+              "w": 0.41709949046392886,
+              "width": 0.45622905241886014
+            },
+            "F": {
+              "hi": "20261104T122231Z-c1-validation-adam_frozen-1.-s10327-098b6e0d-a1",
+              "lo": "20261104T121556Z-c1-validation-adam_frozen-1.-s10327-1a3b4641-a1",
+              "w": 0.6239567126389163,
+              "width": 0.4096556250930772
+            }
+          },
+          "seed": 10327
+        }
+      ]
+    },
+    "P-F": {
+      "blocks": [
+        {
+          "arms": {
+            "F": {
+              "hi": "20261103T194605Z-c1-validation-adam_frozen-1.-s10300-b30aaf76-a1",
+              "lo": "20261103T193932Z-c1-validation-adam_frozen-1.-s10300-33bbba32-a1",
+              "w": 0.43101657686139494,
+              "width": 0.3907959424860361
+            },
+            "P": {
+              "hi": "20261103T195921Z-c1-validation-adamw_prewarme-s10300-2bae657d-a1",
+              "lo": "20261103T195239Z-c1-validation-adamw_prewarme-s10300-b3b766f9-a1",
+              "w": 0.42956630853742167,
+              "width": 0.4057267341913511
+            }
+          },
+          "seed": 10300
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261103T202218Z-c1-validation-adam_frozen-1.-s10301-fb43c5bb-a1",
+              "lo": "20261103T201600Z-c1-validation-adam_frozen-1.-s10301-a7037464-a1",
+              "w": 0.3746577117523314,
+              "width": 0.4135751044237259
+            },
+            "P": {
+              "hi": "20261103T203503Z-c1-validation-adamw_prewarme-s10301-9e6cf3a0-a1",
+              "lo": "20261103T202838Z-c1-validation-adamw_prewarme-s10301-256eb909-a1",
+              "w": 0.3712702089883119,
+              "width": 0.4259217688578414
+            }
+          },
+          "seed": 10301
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261103T205900Z-c1-validation-adam_frozen-1.-s10302-238df8e0-a1",
+              "lo": "20261103T205232Z-c1-validation-adam_frozen-1.-s10302-a2817236-a1",
+              "w": 0.45803773161647093,
+              "width": 0.48185693020149456
+            },
+            "P": {
+              "hi": "20261103T211202Z-c1-validation-adamw_prewarme-s10302-a90d29a6-a1",
+              "lo": "20261103T210529Z-c1-validation-adamw_prewarme-s10302-aeff00b0-a1",
+              "w": 0.4764175862734799,
+              "width": 0.4777400851650855
+            }
+          },
+          "seed": 10302
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261103T213557Z-c1-validation-adam_frozen-1.-s10303-59a9e6d4-a1",
+              "lo": "20261103T212937Z-c1-validation-adam_frozen-1.-s10303-7e0071d5-a1",
+              "w": 0.5928203360875466,
+              "width": 0.4589413722667557
+            },
+            "P": {
+              "hi": "20261103T214849Z-c1-validation-adamw_prewarme-s10303-977d4904-a1",
+              "lo": "20261103T214227Z-c1-validation-adamw_prewarme-s10303-836189bd-a1",
+              "w": 0.5730810111480886,
+              "width": 0.48221422628282995
+            }
+          },
+          "seed": 10303
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261103T221241Z-c1-validation-adam_frozen-1.-s10304-ec68b574-a1",
+              "lo": "20261103T220626Z-c1-validation-adam_frozen-1.-s10304-dba16aaa-a1",
+              "w": 0.6717394648475575,
+              "width": 0.4246777560709951
+            },
+            "P": {
+              "hi": "20261103T222539Z-c1-validation-adamw_prewarme-s10304-3e1f7d9b-a1",
+              "lo": "20261103T221914Z-c1-validation-adamw_prewarme-s10304-ce9b9a05-a1",
+              "w": 0.6676624788310065,
+              "width": 0.4404884357063146
+            }
+          },
+          "seed": 10304
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261103T232409Z-c1-validation-adam_frozen-1.-s10306-e2718b4e-a1",
+              "lo": "20261103T231746Z-c1-validation-adam_frozen-1.-s10306-167cdb48-a1",
+              "w": 0.311525523511838,
+              "width": 0.45865176081560355
+            },
+            "P": {
+              "hi": "20261103T233704Z-c1-validation-adamw_prewarme-s10306-b4fa8a0e-a1",
+              "lo": "20261103T233039Z-c1-validation-adamw_prewarme-s10306-5432bc82-a1",
+              "w": 0.3160606604918006,
+              "width": 0.4735953122102303
+            }
+          },
+          "seed": 10306
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T000117Z-c1-validation-adam_frozen-1.-s10307-ae10d8b6-a1",
+              "lo": "20261103T235500Z-c1-validation-adam_frozen-1.-s10307-a6114a39-a1",
+              "w": 0.5359468884286455,
+              "width": 0.43814920905780097
+            },
+            "P": {
+              "hi": "20261104T001417Z-c1-validation-adamw_prewarme-s10307-6a78cc1d-a1",
+              "lo": "20261104T000753Z-c1-validation-adamw_prewarme-s10307-dd1fecf4-a1",
+              "w": 0.4800098364714935,
+              "width": 0.4970781254389709
+            }
+          },
+          "seed": 10307
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T003843Z-c1-validation-adam_frozen-1.-s10308-16fcbb41-a1",
+              "lo": "20261104T003208Z-c1-validation-adam_frozen-1.-s10308-6c4c6d85-a1",
+              "w": 0.3687722889384517,
+              "width": 0.4046155491887251
+            },
+            "P": {
+              "hi": "20261104T005202Z-c1-validation-adamw_prewarme-s10308-0aeefe8f-a1",
+              "lo": "20261104T004517Z-c1-validation-adamw_prewarme-s10308-63100799-a1",
+              "w": 0.3700288978131353,
+              "width": 0.42565333334882083
+            }
+          },
+          "seed": 10308
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T011638Z-c1-validation-adam_frozen-1.-s10309-92ce6217-a1",
+              "lo": "20261104T011002Z-c1-validation-adam_frozen-1.-s10309-dae5b28b-a1",
+              "w": 0.3093534494843646,
+              "width": 0.41039842853120545
+            },
+            "P": {
+              "hi": "20261104T012952Z-c1-validation-adamw_prewarme-s10309-94b96e63-a1",
+              "lo": "20261104T012311Z-c1-validation-adamw_prewarme-s10309-1fa24097-a1",
+              "w": 0.31266931270842296,
+              "width": 0.4223214873172745
+            }
+          },
+          "seed": 10309
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T015427Z-c1-validation-adam_frozen-1.-s10310-0be09ebb-a1",
+              "lo": "20261104T014752Z-c1-validation-adam_frozen-1.-s10310-7edb726e-a1",
+              "w": 0.24003439004577662,
+              "width": 0.4921234160475709
+            },
+            "P": {
+              "hi": "20261104T020746Z-c1-validation-adamw_prewarme-s10310-16ab5624-a1",
+              "lo": "20261104T020104Z-c1-validation-adamw_prewarme-s10310-86f3c37e-a1",
+              "w": 0.2553206374436039,
+              "width": 0.4820567469291557
+            }
+          },
+          "seed": 10310
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T023224Z-c1-validation-adam_frozen-1.-s10311-36abf2fd-a1",
+              "lo": "20261104T022547Z-c1-validation-adam_frozen-1.-s10311-860a2233-a1",
+              "w": 0.28184551349679754,
+              "width": 0.3996754516887109
+            },
+            "P": {
+              "hi": "20261104T024541Z-c1-validation-adamw_prewarme-s10311-0caae3f1-a1",
+              "lo": "20261104T023858Z-c1-validation-adamw_prewarme-s10311-53bea0cf-a1",
+              "w": 0.2876324502418177,
+              "width": 0.42235471536563685
+            }
+          },
+          "seed": 10311
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T030854Z-c1-validation-adam_frozen-1.-s10312-3b1925d5-a1",
+              "lo": "20261104T030245Z-c1-validation-adam_frozen-1.-s10312-a4b1adfe-a1",
+              "w": 0.8246232205318491,
+              "width": 0.43744753324122243
+            },
+            "P": {
+              "hi": "20261104T032117Z-c1-validation-adamw_prewarme-s10312-c8756eaf-a1",
+              "lo": "20261104T031501Z-c1-validation-adamw_prewarme-s10312-713738c8-a1",
+              "w": 0.8115595546604891,
+              "width": 0.4507906686004388
+            }
+          },
+          "seed": 10312
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T034524Z-c1-validation-adam_frozen-1.-s10313-a32858ab-a1",
+              "lo": "20261104T033848Z-c1-validation-adam_frozen-1.-s10313-75c1d3e1-a1",
+              "w": 0.4293361968145378,
+              "width": 0.3025752658230709
+            },
+            "P": {
+              "hi": "20261104T035841Z-c1-validation-adamw_prewarme-s10313-3c7fd1ab-a1",
+              "lo": "20261104T035159Z-c1-validation-adamw_prewarme-s10313-07795de0-a1",
+              "w": 0.45531183110299434,
+              "width": 0.3380920612162066
+            }
+          },
+          "seed": 10313
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T042134Z-c1-validation-adam_frozen-1.-s10314-32be69f1-a1",
+              "lo": "20261104T041545Z-c1-validation-adam_frozen-1.-s10314-9418e837-a1",
+              "w": 0.7035075370881378,
+              "width": 0.44003033557213067
+            },
+            "P": {
+              "hi": "20261104T043328Z-c1-validation-adamw_prewarme-s10314-659e61f2-a1",
+              "lo": "20261104T042732Z-c1-validation-adamw_prewarme-s10314-c2c0b3dc-a1",
+              "w": 0.693249072258655,
+              "width": 0.45402179054878355
+            }
+          },
+          "seed": 10314
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T045632Z-c1-validation-adam_frozen-1.-s10315-2397296e-a1",
+              "lo": "20261104T045021Z-c1-validation-adam_frozen-1.-s10315-0f0d15d4-a1",
+              "w": 0.1408179292456478,
+              "width": 0.3783447891949372
+            },
+            "P": {
+              "hi": "20261104T050931Z-c1-validation-adamw_prewarme-s10315-c1b9acac-a1",
+              "lo": "20261104T050309Z-c1-validation-adamw_prewarme-s10315-77fe40a8-a1",
+              "w": 0.144258898419235,
+              "width": 0.3903846105219564
+            }
+          },
+          "seed": 10315
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T053345Z-c1-validation-adam_frozen-1.-s10316-f04261b3-a1",
+              "lo": "20261104T052721Z-c1-validation-adam_frozen-1.-s10316-fa54cf3d-a1",
+              "w": 0.6389177371700145,
+              "width": 0.45433553585747544
+            },
+            "P": {
+              "hi": "20261104T054648Z-c1-validation-adamw_prewarme-s10316-81ee5f0c-a1",
+              "lo": "20261104T054017Z-c1-validation-adamw_prewarme-s10316-1340bc80-a1",
+              "w": 0.6306539815099336,
+              "width": 0.46673972026233224
+            }
+          },
+          "seed": 10316
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T064905Z-c1-validation-adam_frozen-1.-s10318-b6be3a96-a1",
+              "lo": "20261104T064228Z-c1-validation-adam_frozen-1.-s10318-7bc13378-a1",
+              "w": 0.34428769788187813,
+              "width": 0.42702780072832125
+            },
+            "P": {
+              "hi": "20261104T070222Z-c1-validation-adamw_prewarme-s10318-17b3f3de-a1",
+              "lo": "20261104T065540Z-c1-validation-adamw_prewarme-s10318-e08546cd-a1",
+              "w": 0.34534960774878354,
+              "width": 0.4363349003174475
+            }
+          },
+          "seed": 10318
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T072651Z-c1-validation-adam_frozen-1.-s10319-ccdadbcb-a1",
+              "lo": "20261104T072019Z-c1-validation-adam_frozen-1.-s10319-bc8f9262-a1",
+              "w": 0.5170917127176455,
+              "width": 0.46410049709765255
+            },
+            "P": {
+              "hi": "20261104T074004Z-c1-validation-adamw_prewarme-s10319-85c772b0-a1",
+              "lo": "20261104T073326Z-c1-validation-adamw_prewarme-s10319-4f349277-a1",
+              "w": 0.511863360326324,
+              "width": 0.47575365059281793
+            }
+          },
+          "seed": 10319
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T080437Z-c1-validation-adam_frozen-1.-s10320-eebaaea4-a1",
+              "lo": "20261104T075807Z-c1-validation-adam_frozen-1.-s10320-648e99d2-a1",
+              "w": 0.7398979975331336,
+              "width": 0.47992398034238604
+            },
+            "P": {
+              "hi": "20261104T081756Z-c1-validation-adamw_prewarme-s10320-81b4ecdf-a1",
+              "lo": "20261104T081115Z-c1-validation-adamw_prewarme-s10320-0addc088-a1",
+              "w": 0.7266006200764941,
+              "width": 0.49442609834910956
+            }
+          },
+          "seed": 10320
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T084209Z-c1-validation-adam_frozen-1.-s10321-3c8c3090-a1",
+              "lo": "20261104T083543Z-c1-validation-adam_frozen-1.-s10321-c808d05e-a1",
+              "w": 0.5557370036118909,
+              "width": 0.4518199039460422
+            },
+            "P": {
+              "hi": "20261104T085513Z-c1-validation-adamw_prewarme-s10321-08e0a230-a1",
+              "lo": "20261104T084838Z-c1-validation-adamw_prewarme-s10321-d5df55a2-a1",
+              "w": 0.5498958016813682,
+              "width": 0.4624579237463642
+            }
+          },
+          "seed": 10321
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T091832Z-c1-validation-adam_frozen-1.-s10322-f489bdb9-a1",
+              "lo": "20261104T091230Z-c1-validation-adam_frozen-1.-s10322-35727de1-a1",
+              "w": 0.6006636843410688,
+              "width": 0.5150823896479173
+            },
+            "P": {
+              "hi": "20261104T093120Z-c1-validation-adamw_prewarme-s10322-8ff04316-a1",
+              "lo": "20261104T092508Z-c1-validation-adamw_prewarme-s10322-cdc79294-a1",
+              "w": 0.6770948188163448,
+              "width": 0.4626523111464067
+            }
+          },
+          "seed": 10322
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T095447Z-c1-validation-adam_frozen-1.-s10323-2934b145-a1",
+              "lo": "20261104T094841Z-c1-validation-adam_frozen-1.-s10323-71a4f6e2-a1",
+              "w": 0.40756797298729064,
+              "width": 0.5193425968568053
+            },
+            "P": {
+              "hi": "20261104T100716Z-c1-validation-adamw_prewarme-s10323-dadac9af-a1",
+              "lo": "20261104T100105Z-c1-validation-adamw_prewarme-s10323-616e0235-a1",
+              "w": 0.3979020241893241,
+              "width": 0.5354243458136008
+            }
+          },
+          "seed": 10323
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T103125Z-c1-validation-adam_frozen-1.-s10324-1dfe4288-a1",
+              "lo": "20261104T102500Z-c1-validation-adam_frozen-1.-s10324-1236b68f-a1",
+              "w": 0.5739223014167941,
+              "width": 0.46136249132060536
+            },
+            "P": {
+              "hi": "20261104T104431Z-c1-validation-adamw_prewarme-s10324-89d4ada2-a1",
+              "lo": "20261104T103759Z-c1-validation-adamw_prewarme-s10324-81b0a66b-a1",
+              "w": 0.5631473799849935,
+              "width": 0.47526670792749437
+            }
+          },
+          "seed": 10324
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T110837Z-c1-validation-adam_frozen-1.-s10325-b4cca10f-a1",
+              "lo": "20261104T110224Z-c1-validation-adam_frozen-1.-s10325-1c5f63fc-a1",
+              "w": 0.4263948396230133,
+              "width": 0.4407924931745766
+            },
+            "P": {
+              "hi": "20261104T112129Z-c1-validation-adamw_prewarme-s10325-f55f7270-a1",
+              "lo": "20261104T111511Z-c1-validation-adamw_prewarme-s10325-9b48af55-a1",
+              "w": 0.42680060504997375,
+              "width": 0.45129339495411736
+            }
+          },
+          "seed": 10325
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T114510Z-c1-validation-adam_frozen-1.-s10326-c809491f-a1",
+              "lo": "20261104T113859Z-c1-validation-adam_frozen-1.-s10326-1121fa74-a1",
+              "w": 0.46599945942712795,
+              "width": 0.4349804796138177
+            },
+            "P": {
+              "hi": "20261104T115757Z-c1-validation-adamw_prewarme-s10326-30f6d96c-a1",
+              "lo": "20261104T115133Z-c1-validation-adamw_prewarme-s10326-d9a266ec-a1",
+              "w": 0.45662549051899853,
+              "width": 0.45153286616635135
+            }
+          },
+          "seed": 10326
+        },
+        {
+          "arms": {
+            "F": {
+              "hi": "20261104T122231Z-c1-validation-adam_frozen-1.-s10327-098b6e0d-a1",
+              "lo": "20261104T121556Z-c1-validation-adam_frozen-1.-s10327-1a3b4641-a1",
+              "w": 0.6239567126389163,
+              "width": 0.4096556250930772
+            },
+            "P": {
+              "hi": "20261104T123547Z-c1-validation-adamw_prewarme-s10327-d438cd5e-a1",
+              "lo": "20261104T122906Z-c1-validation-adamw_prewarme-s10327-55167954-a1",
+              "w": 0.6088133588799892,
+              "width": 0.4320645765825508
+            }
+          },
+          "seed": 10327
+        }
+      ]
+    }
+  },
+  "written_at": "2026-11-07T06:32:21+00:00"
+}
