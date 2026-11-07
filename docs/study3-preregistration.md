@@ -570,7 +570,8 @@ The audit is descriptive.
   - GPT and Grok label each drawn item independently, blind to arm, run, block and judge label.
   - The researcher resolves every disagreement and checks 10 % of the agreements, drawn with a
     recorded seed. *The annotators and the resolution of disagreements:
-    [amendment 11](#amendment-11-the-audits-reference-annotators).*
+    [amendment 11](#amendment-11-the-audits-reference-annotators); safety-filter stops and the
+    majority after an arbiter stop: [amendment 12](#amendment-12-safety-filter-stops-in-the-audits-labeling).*
   - A failed or unresolved reference stays missing. Missing references are counted and reported,
     never silently dropped. *Recovery after a technical fault, on the same draw:
     [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
@@ -1325,3 +1326,57 @@ exists.
 > blind to arm, rate, block, the judge's labels and the annotators' votes. The share of agreements
 > it rejects is reported as an estimate of the consensus's error; this check does not change the
 > reference labels.
+
+### Amendment 12: safety-filter stops in the audit's labeling
+
+> Amendment 12 (2026-11-07), recorded before the audit's draw and before any audit label.
+>
+> 1. **Batches.** Every model call labels a fixed batch: consecutive items of its input file, in
+>    the file's order, 25 per batch, the last one shorter. The batches of a stage (the two blind
+>    annotators, GPT, the arbiter, the check) are formed before that stage's first call. A call
+>    stopped by its provider's safety filter is recorded: the model, the batch, the time and the
+>    provider's stop reason. It is not sent again to the same model, whole or in parts, and its
+>    items are null for that model. Nothing is regrouped after a stop.
+> 2. **Annotators.** Sonnet, Grok and GPT are unchanged: a null is a failed output, as registered.
+> 3. **Arbiter.** Only after a recorded safety-filter stop of an arbiter call, the reference of each
+>    of its items is the strict majority, on the two-class outcome, of the votes available from
+>    Sonnet, Grok and GPT: at least two votes for one value, two of two or two of three, whichever
+>    annotator is in the minority. A null is no vote, never a vote against. One vote alone, or one
+>    against one, leaves the reference missing. Its source is "majority after arbiter stop": a
+>    reference by the models' agreement, not an equivalent of the arbiter's decision. No other
+>    model is called. An arbiter failure that is not a safety-filter stop leaves the reference
+>    missing, as registered, and the valid decisions of the arbiter calls that were not stopped
+>    stay.
+> 4. **The check.** A check call stopped by the safety filter leaves its items failed checks,
+>    counted apart as registered; no other model checks them. As in amendment 11, the check
+>    changes no reference.
+> 5. **Records.** The arbiter's decisions and its check, as the estimate takes them, stay
+>    `{item_id: label | null}`. An item whose reference is a majority after an arbiter stop
+>    carries the label of the first majority vote in the item's recorded vote order (only its
+>    two-class value enters the estimate). Beside these files, a source record bound to them by
+>    sha256 gives, per item, its source (Fable, majority after arbiter stop, or none), the stop
+>    that triggered the majority, the votes and whether they disagreed, and the sha256 of each
+>    original model output, which is kept in the audit's folder.
+> 6. **Report.** Per model, the safety-filter stops and the items they cover; per item, the source
+>    of its reference (agreement, Fable, majority after arbiter stop, or missing). The report
+>    states that the reference procedure is mixed. Fewer missing references make the reference
+>    neither more accurate nor its remaining missingness random, and the worst-case bound stays.
+>    The estimate's generic source "arbiter" does not mean Fable alone.
+> 7. **Sensitivity.** When any reference is a majority after an arbiter stop, the report also gives
+>    the same estimates and worst-case bounds with those items' references missing, from the same
+>    draw, so that it shows whether the audit's reading depends on the majority rule.
+> 8. **The check's counts.** The report gives the agreements the check tried, those it checked,
+>    those whose check failed and those it rejected. When every check call is stopped, the check is
+>    "unavailable", which is no evidence that the consensus's error is zero.
+
+- **Why.** The provider's safety filter has stopped Claude labelers on this project's harmful texts
+  before: in study 1's judge calibration and in its judge check across optimizers
+  ([amendments](preregistration.md#amendments), 2026-10-11 and 2026-10-12). A stop falls on
+  harmful items, so the items it leaves unlabeled depend on the reference label itself. A stopped
+  annotator is already covered: its null sends the item to GPT and the arbiter. A stopped arbiter
+  is not: it leaves the item without a decision. No model of another provider is available as a
+  fallback: Gemini 3.8 Flash blocked every part of the same kind of texts in study 1's judge check
+  across optimizers. The estimator is unchanged; the majority rule after an arbiter stop and the
+  record of each reference's source are added.
+- **What is unchanged.** The draw, its seed, its sizes, the frame, the coefficients, the
+  Hansen–Hurwitz estimates, the agreement seed and the vote order.
