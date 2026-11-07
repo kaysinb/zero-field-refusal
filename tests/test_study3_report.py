@@ -16,6 +16,7 @@ import functools
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -493,7 +494,7 @@ def test_a_stage_the_route_or_an_incident_reached_without_its_spending_entry_is_
         facts = facts_of("scientific_feasibility_report", billing={**BILLING, "stages": stages})
         money = facts["money"]
         assert money["by_stage"] == [*stages, {"stage": gone, "spent": None}]
-        assert money["pending"] == {"stages": [gone], "incidents": []}
+        assert money["pending"] == {"stages": [gone], "incidents": [], "unbilled": []}
         assert f"| {gone} | pending |" in rp.tables(facts)
     stages = [s for s in BILLING["stages"] if s["stage"] != "search"]
     assert facts_of("budget_stop", billing={**BILLING, "stages": stages})["money"]["by_stage"] == (
@@ -511,10 +512,15 @@ def test_the_sections_a_terminal_stop_did_not_reach() -> None:
 
 def test_the_labeling_problems_and_an_unbilled_journal_incident() -> None:
     assert facts_of("done", labeling_problems=("r1",))["labeling"] == ["r1"]
-    unbilled = {**BILLING, "incidents": []}
-    with pytest.raises(ValueError, match="billed once") as refused:
-        facts_of("done", billing=unbilled)
-    assert f"{LOG} line 2 is named by no billed incident" in str(refused.value)
+    # an incident of the records that no billed incident names is pending, with what it shows
+    facts = facts_of("done", billing={**BILLING, "incidents": []})
+    assert facts["money"]["incidents"] == []
+    assert facts["money"]["pending"]["unbilled"] == [
+        {"stage": "confirmation", "incident_time": INCIDENT["incident_time"],
+         "cause": INCIDENT["cause"], "evidence": [{"journal": LOG, "line": 2}],
+         "record_sha256": None, "billed": None}
+    ]  # fmt: skip
+    assert f"| {LOG} line 2 | confirmation |" in rp.tables(facts)
     # the cause is shown, never matched: another text names the same record
     other = {**BILLING, "incidents": [{**BILLED, "cause": "another cause"}]}
     assert facts_of("budget_stop", billing=other)["money"]["incidents"][0]["cause"] == (
@@ -570,9 +576,10 @@ def test_a_qualification_infrastructure_record_needs_its_billed_incident(tmp_pat
     found = rp.qualification_incidents(tmp_path)
     assert [(i["path"], i["kind"]) for i in found] == [(path, kind)]
     incidents = {**INCIDENTS, "qualification": found}
-    with pytest.raises(ValueError, match="billed once") as refused:
-        facts_of("budget_stop", incidents=incidents)
-    assert path in str(refused.value)
+    (pending,) = facts_of("budget_stop", incidents=incidents)["money"]["pending"]["unbilled"]
+    assert pending == {"stage": None, "incident_time": None, "cause": None,  # numerical or repair
+                       "evidence": [{"qualification": path}],
+                       "record_sha256": found[0]["sha256"], "billed": None}  # fmt: skip
     stop = billed("stop-2", {"qualification": path})
     billing = {**BILLING, "incidents": [BILLED, stop]}
     facts = facts_of("budget_stop", incidents=incidents, billing=billing)
@@ -596,14 +603,13 @@ def test_one_stop_that_left_a_restart_and_a_part_record_is_one_incident(tmp_path
     assert all(p in text for p in paths) and "pod pod-x" in text
 
 
-def test_a_record_named_twice_or_by_no_incident_is_refused(tmp_path) -> None:
+def test_a_record_named_twice_or_one_that_is_no_incident_is_refused(tmp_path) -> None:
     paths = qualification_world(tmp_path, "part", "restart")
     incidents = {**INCIDENTS, "qualification": rp.qualification_incidents(tmp_path)}
     part, restart = ({"qualification": p} for p in paths)
     for refused_incidents, words in [
         ([BILLED, billed("a", part, restart), billed("b", part)], "named twice"),  # across
         ([BILLED, billed("a", part, restart, part)], "named twice"),  # within one incident
-        ([BILLED, billed("a", part)], f"{paths[1]} is named by no billed incident"),
         (
             [BILLED, billed("a", part, restart, {"qualification": "qualification/c1/x.json"})],
             "qualification/c1/x.json is no incident of the records",
@@ -632,9 +638,11 @@ def test_two_journal_rounds_of_one_stop_with_other_cause_texts_are_one_incident(
                      billing={**BILLING, "incidents": [stop]})  # fmt: skip
     assert facts["money"]["incidents"] == [stop]
     first = {**stop, "evidence": stop["evidence"][:1]}
-    with pytest.raises(ValueError, match=re.escape(f"{LOG} line 4 is named by no billed")):
-        facts_of("budget_stop", incidents={"journal": rounds, "qualification": []},
-                 billing={**BILLING, "incidents": [first]})  # fmt: skip
+    facts = facts_of("budget_stop", incidents={"journal": rounds, "qualification": []},
+                     billing={**BILLING, "incidents": [first]})  # fmt: skip
+    (pending,) = facts["money"]["pending"]["unbilled"]  # line 4: no billed incident names it
+    assert pending["evidence"] == [{"journal": LOG, "line": 4}]
+    assert pending["cause"] == "the Pod stopped." and pending["billed"] is None
 
 
 def test_journal_incidents_are_the_study_3_recovery_lines_with_an_incident(tmp_path) -> None:
@@ -1027,14 +1035,16 @@ def test_the_report_command_writes_the_facts_and_tables_once(reported, monkeypat
     assert list(taken.iterdir()) == []
 
 
-def test_the_report_command_refuses_an_unbilled_incident_and_writes_nothing(reported):
+def test_the_report_command_shows_an_unbilled_incident_pending_and_refuses_a_bad_billing(
+    reported,
+):
     world = reported
     world.billing.write_text(json.dumps({**BILLING, "incidents": []}))
-    why = world.refused(
-        "report", "--runs-root", world.root, "--billing", world.billing, "--embargo", world.embargo
-    )
-    assert "billed once" in why and f"{LOG} line 2 is named by no billed incident" in why
-    assert not list((world.root / "study3-final").glob("report-*"))
+    world.report()
+    (folder,) = sorted((world.root / "study3-final").glob("report-*"))
+    (pending,) = json.loads((folder / "facts.json").read_text())["money"]["pending"]["unbilled"]
+    assert pending["evidence"] == [{"journal": LOG, "line": 2}] and pending["billed"] is None
+    shutil.rmtree(folder)
     world.billing.write_text(json.dumps({**BILLING, "available": 294}))
     assert "'available' is not a field" in world.refused(
         "report", "--runs-root", world.root, "--billing", world.billing, "--embargo", world.embargo
@@ -1120,6 +1130,7 @@ def test_at_done_a_missing_audit_or_amount_is_pending_and_the_rest_is_reported()
     assert facts["money"]["pending"] == {
         "stages": ["confirmation"],
         "incidents": [i["id"] for i in BILLING["incidents"]],
+        "unbilled": [],
     }
     text = rp.tables(facts)
     assert "| confirmation | pending |" in text and "| pending |" in text.split("## audit")[1]

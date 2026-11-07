@@ -99,7 +99,8 @@ reference), so it is given the coefficients negated, −c^E: Σ (−c_i)(judge_i
   term scaled by φ = n_nz/n_a. The variance is "from the draws", the zeros included: with every
   reference resolved it is the with-replacement variance of the mean over all n_a draws,
   s_all²/n_a, which splits into a part within the draws with c_i^E ≠ 0 and a part between them
-  and the zeros. Under missing references the within part takes the resolved draws' v²/n_r:
+  and the zeros. Under missing references it is a plug-in estimate that assumes them missing at
+  random, not a general guarantee: the within part takes the resolved draws' v²/n_r:
   φ²·(v²/n_r)·n_a(n_nz − 1)/((n_a − 1)n_nz) + m²·φ(1 − φ)/(n_a − 1), summed over E's arms; the
   SE the square root of the sum (None when an arm with draws of c_i^E ≠ 0 has fewer than two
   resolved ones, unless it has exactly one such draw and it is resolved: then the within part is

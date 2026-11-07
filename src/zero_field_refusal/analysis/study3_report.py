@@ -26,8 +26,8 @@ the analysis, validation's harm and the audit's estimate as their records hold t
 - ``tables``: the facts as markdown tables, harm proportions shown in pp, no prose.
 - ``read_billing`` and ``read_embargo``: the researcher's billing and embargo files, closed
   schemas.
-- ``journal_incidents`` and ``qualification_incidents``: the incidents the records hold, each of
-  which needs a billed price.
+- ``journal_incidents`` and ``qualification_incidents``: the incidents the records hold, each
+  billed or shown pending.
 - ``simulation_results``: the simulation's per-test rows (the one adapter of the simulation's
   results, below).
 
@@ -110,11 +110,12 @@ incident (a study-3 ``recovery`` line carrying ``INCIDENT_KEYS``) by its log and
 qualification record made with ``--infrastructure`` (a part record carrying ``infrastructure``,
 or a case restart) by its path under RUNS_DIR. Each billed incident names its records in its
 evidence (``{"journal": log, "line": n}``, ``{"qualification": path}``), and may add a provider
-reference (``{"pod": ref}``), which names no record. The report is refused unless every record
-is named by exactly one billed incident, every record an incident names is one of them, the ids
-are distinct, every incident names some evidence, and each incident's stage is its records'
-where shown (a journal line's: the step of its log's study-3 starts; a qualification record's:
-its stage folder, ``numerical`` covering the repair). Every stage the route reached (the stage of
+reference (``{"pod": ref}``), which names no record. A record that no billed incident names is
+pending (``pending.unbilled``: its record, and the stage, time and cause it shows, the rest
+null). The report is refused unless no record is named twice, every record an incident names is
+one of them, the ids are distinct, every incident names some evidence, and each incident's
+stage is its records' where shown (a journal line's: the step of its log's study-3 starts; a
+qualification record's: its stage folder, ``numerical`` covering the repair). Every stage the route reached (the stage of
 a route event) or an incident is billed at has its spending entry, ``0`` included. A missing
 amount is pending, never filled in (amendment 7, "The report"): a stage's ``spent`` or an
 incident's ``billed`` given as null, and a stage the route or an incident reached with no
@@ -623,9 +624,9 @@ def report_facts(
     stage that is neither ``done`` nor terminal, at ``done`` without the analysis, validation's
     harm or the audit's estimate (naming the runs with a technical labeling problem, and that a
     judge diagnosis calls for the ``judge_technical`` variant), or with them before ``done``; a
-    billing record off its schema; an incident of the records (a launch-journal line, a
-    qualification ``--infrastructure`` record) named by no billed incident, a record an incident
-    names that is none of them, or an incident billed at a stage that is not its records'; a
+    billing record off its schema; a record an incident names that is none of the records'
+    incidents (a launch-journal line, a qualification ``--infrastructure`` record), or an
+    incident billed at a stage that is not its records'; a
     stage the route or an incident reached with no spending entry is pending, not refused
     (module docstring, "Money")."""
     diagnoses = list(judge_diagnoses)
@@ -732,20 +733,33 @@ def _money(
     incidents: Mapping[str, Sequence[Mapping[str, Any]]],
     route: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """Money (module docstring): the billing as it is, each incident of the records named by one
-    billed incident of its stage, nothing else named, and a spending entry for every stage the
-    route (its events' stages) or an incident reached."""
+    """Money (module docstring): the billing as it is, each incident of the records named by at
+    most one billed incident of its stage, nothing else named; an incident of the records that no
+    billed incident names is pending (``unbilled``: its record and what the record shows, the
+    rest null); a stage the route (its events' stages) or an incident reached with no spending
+    entry is pending with no amount."""
     problems = billing_problems(billing)
     if problems:
         raise ValueError("the billing file: " + "; ".join(problems))
     billed = list(billing["incidents"])
     # each record of an incident → the stages its incident can be billed at (None: not shown)
     records: dict[tuple[Any, ...], tuple[str, ...] | None] = {}
+    known: dict[tuple[Any, ...], dict[str, Any]] = {}  # what each record shows of its incident
     for row in incidents.get("journal") or ():
         stage = row.get("stage")
-        records[("journal", row.get("log"), row.get("line"))] = None if stage is None else (stage,)
+        key = ("journal", row.get("log"), row.get("line"))
+        records[key] = None if stage is None else (stage,)
+        known[key] = {"stage": stage, "incident_time": row.get("incident_time"),
+                      "cause": row.get("cause"),
+                      "evidence": [{"journal": row.get("log"), "line": row.get("line")}],
+                      "record_sha256": None}  # fmt: skip
     for row in incidents.get("qualification") or ():
-        records[("qualification", row.get("path"))] = _qualification_stages(row.get("path"))
+        key = ("qualification", row.get("path"))
+        records[key] = stages = _qualification_stages(row.get("path"))
+        known[key] = {"stage": stages[0] if stages and len(stages) == 1 else None,
+                      "incident_time": None, "cause": None,
+                      "evidence": [{"qualification": row.get("path")}],
+                      "record_sha256": row.get("sha256")}  # fmt: skip
     found, named = [], set()
     for entry in billed:
         for item in entry["evidence"]:
@@ -761,13 +775,12 @@ def _money(
             if stages is not None and entry["stage"] not in stages:
                 found.append(f"incident {entry['id']} is billed at {entry['stage']}, but "
                              f"{_shown(key)} is of {' or '.join(stages)}")  # fmt: skip
-    found += [
-        f"{_shown(key)} is named by no billed incident" for key in records if key not in named
-    ]
+    unbilled = [{**known[key], "billed": None} for key in records if key not in named]
     if found:
-        raise ValueError("every incident of the records is billed once, at its stage: "
+        raise ValueError("every incident of the records is billed at most once, at its stage: "
                          + "; ".join(found))  # fmt: skip
     reached = {e.get("stage") for e in route} | {entry["stage"] for entry in billed}
+    reached |= {entry["stage"] for entry in unbilled}
     spent = {entry["stage"] for entry in billing["stages"]}
     unlisted = [stage for stage in MONEY_STAGES if stage in reached and stage not in spent]
     by_stage = [dict(entry) for entry in billing["stages"]]
@@ -786,6 +799,7 @@ def _money(
         "pending": {
             "stages": [entry["stage"] for entry in by_stage if entry["spent"] is None],
             "incidents": [entry["id"] for entry in billed if entry["billed"] is None],
+            "unbilled": unbilled,
         },
     }
 
@@ -2149,6 +2163,12 @@ def _render_money(m: Mapping[str, Any]) -> list[str]:
              "; ".join(_item(e) for e in i["evidence"]))
             for i in m["incidents"]
         ],
+    )  # fmt: skip
+    lines += _table(
+        ("incident of the records not billed", "stage", "incident_time", "cause",
+         f"billed ({m['currency']})"),
+        [("; ".join(_item(e) for e in u["evidence"]), u["stage"], u["incident_time"], u["cause"],
+          PENDING) for u in m["pending"]["unbilled"]],
     )  # fmt: skip
     return lines + _table(
         ("stage stopped by the internal spending policy",), [(s,) for s in m["policy_stops"]]

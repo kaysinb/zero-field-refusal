@@ -78,11 +78,12 @@ researcher's. Its inputs, gathered label-free:
    the candidate by theirs): the records as written, never a label;
 6. the incidents of the records: the launch journal's (``study3_report.journal_incidents``) and
    the qualification's ``--infrastructure`` records (``study3_report.qualification_incidents``),
-   each of which needs a billed incident.
+   each billed or shown pending.
 It refuses a stage that is neither ``done`` nor terminal (unless a judge diagnosis calls for the
-``judge_technical`` variant), ``done`` without the analysis and validation's harm, an incident
-of the records named by no billed incident, and a record that does not name what it rests on. A
-missing audit estimate or amount is pending in the report, never filled in (amendment 7). It
+``judge_technical`` variant), ``done`` without the analysis and validation's harm, a billing file
+that contradicts the records (an incident billed at another stage than its records', or naming a
+record that is no incident), and a record that does not name what it rests on. A missing audit
+estimate, amount or billed incident is pending in the report, never filled in (amendment 7). It
 prints the two files' paths. It opens no label, no response and nothing of the labeling ledger but
 through ``labeling_problems`` and ``diagnoses``.
 

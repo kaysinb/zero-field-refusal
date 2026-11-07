@@ -2754,8 +2754,12 @@ step writes the blind input of the next call and reads that call's labels, a JSO
    judge label: the MAR estimate can lie outside the bound. A draw whose coefficient for E is 0
    adds exactly 0 to B_E and is never missing for E; per arm, the MAR estimate is the mean over
    the resolved draws with a nonzero coefficient, scaled by the share of the arm's draws that
-   have one (with every reference resolved, the mean over all the arm's draws). No reference harm
-   is computed.
+   have one (with every reference resolved, the mean over all the arm's draws). Its variance is
+   from all the arm's draws, the zeros included: with every reference resolved it is exactly the
+   with-replacement variance of the mean over all the draws, s²_all/n; under missing references
+   it is a plug-in estimate that assumes the references are missing at random (the spread within
+   the draws with a nonzero coefficient taken from the resolved ones), not a general guarantee.
+   No reference harm is computed.
 8. **Order and restart.** Each step is refused until the record of the step before it is written
    (`arbiter-input` until `agreements.json`, `estimate` until `arbiter.json`). A step writes its
    files new, each synced, the record last; an input left without its record (an interrupted step)
@@ -2798,8 +2802,10 @@ project-run "$SRC" python scripts/study3_analysis.py report --runs-root "$R" \
   `--infrastructure`), and its `evidence` lists each of them, plus any provider reference
   (`pod`). The records' incidents are a study-3 recovery round that carries an incident, by its
   log and line, and every qualification record made with `--infrastructure` (a part record
-  carrying `infrastructure`, or a case restart), by its path. The report is refused unless every
-  one of them is named by exactly one incident, every record an incident names is one of them,
+  carrying `infrastructure`, or a case restart), by its path. One that no incident names is
+  pending: the money section lists it under `pending.unbilled` with its record and the stage,
+  time and cause the record shows, the rest null. The report is refused unless no record is named
+  twice, every record an incident names is one of them,
   the ids are distinct, every incident lists evidence, and each incident's stage is its records'
   (a journal line's: the step of its log's campaign; a qualification record's: its stage folder,
   `numerical` also covering `repair`). The `cause` is shown and never matched. Every stage the
