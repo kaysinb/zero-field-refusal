@@ -2808,17 +2808,17 @@ project-run "$SRC" python scripts/study3_analysis.py report --runs-root "$R" \
 - **The embargo file**, `{"breaches": [{"stage", "what"}]}`: each harm label opened outside the
   two scheduled points, with the stage it affected; `{"breaches": []}` when there was none
   ([voiding and supersession](study3-preregistration.md#voiding-and-supersession)).
-- **After a judge diagnosis.** When the labeling ledger holds a diagnosis whose cause is `judge`,
-  labeling stays stopped and the report is the `judge_technical` variant: the registered
-  technical feasibility report for the harm comparison, with no Δ, no interval and no audit, the
-  freeze with its cohorts, every diagnosis whose cause is `judge` (each also a technical dead end,
-  `judge_mark`, with its batch) and the runs with a technical labeling problem. An
-  `infrastructure` diagnosis changes nothing: labeling resumes.
+- **After a judge mark.** The `judge_technical` variant (the registered technical feasibility
+  report for the harm comparison: no Δ, no interval and no audit; the freeze with its cohorts, each
+  judge diagnosis as a technical dead end, `judge_mark`, with its batch, and the runs with a
+  technical labeling problem) needs a recorded diagnosis of the judge's mark. The labeling ledger
+  records no diagnosis yet (`study3_labels.diagnoses` is empty), so while a batch's mark is
+  unresolved its runs are technical labeling problems and the report is refused.
 - **What it writes.** `$RUNS_DIR/study3-final/report-<UTC>/` (or `--out`, a folder that does not
   exist yet), once: `facts.json` and `tables.md`, harm in pp in the tables. The facts hold the
   audit's reference sources and the arbiter model's check of the agreements as the estimate
   records them. It reads no label: of the labeling ledger, only the runs with a technical
-  labeling problem and the diagnosis records.
+  labeling problem.
 - **The prose is the researcher's.** The facts carry no interpretation. Money is actual spending
   by stage plus each incident with its billed price; the report names the stages an internal
   spending policy stopped, and no other money figure
