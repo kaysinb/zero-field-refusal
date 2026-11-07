@@ -322,6 +322,8 @@ topics:
   - docs/study3-preregistration.md#failure-routes
   - docs/study3-preregistration.md#voiding-and-supersession
   - docs/operations.md#study-3-numerical-qualification
+  - docs/operations.md#study-3-the-final-analysis-the-audit-and-the-report
+  - docs/study3-preregistration.md#amendment-11-the-audits-reference-annotators
   - docs/architecture.md#modules
   watch:
   - scripts/study3_*.py

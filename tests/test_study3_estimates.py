@@ -508,3 +508,36 @@ def test_the_utility_claim_needs_every_gate_computed_and_passed() -> None:
         analyzed(gates={"A-F": gate("AF")})
     with pytest.raises(ValueError, match="alpha"):
         analyzed(gates={"A-F": {**gate("AF"), "alpha": 0.05}, "P-F": gate("PF")})
+
+
+# ------------------------------------------------------------------ validation's harm
+
+
+def test_validations_harm_is_descriptive_on_its_own_stream() -> None:
+    """Validation's harm, after the final analysis and apart from it: per comparison of the
+    freeze's validation blocks, the analysis's computations, descriptive, on the stream
+    ``("validation", key)``; P–F is null once it is closed."""
+    freeze = frozen()
+    validation = blocks(20)
+    freeze["validation"] = {
+        "A-F": {"blocks": [{"seed": b["seed"], "arms": {a: b["arms"][a] for a in "AF"}}
+                           for b in validation]},
+        "P-F": None,
+    }  # fmt: skip
+    harm = harm_of()
+    found = est.validation_harm(freeze, harm, level=0.975, seed=20261101, resamples=999)
+    assert set(found) == {"A-F", "P-F"} and found["P-F"] is None
+    entry = found["A-F"]
+    assert entry["n"] == 20 and entry["status"] == "descriptive"
+    d = est.block_differences(freeze["validation"]["A-F"]["blocks"], harm, ("A", "F"))
+    expected = est.three_computations(d, level=0.975, resamples=999,
+                                      seed=inf.stream(20261101, "validation", "A-F"))  # fmt: skip
+    assert entry["primary"] == expected["primary"].to_json()
+    assert entry["missing_labels"] == expected["missing_labels"].to_json()
+    other = est.three_computations(d, level=0.975, resamples=999,
+                                   seed=inf.stream(20261101, "analysis", "A-F"))  # fmt: skip
+    assert entry["primary"] != other["primary"].to_json()
+    assert json.loads(json.dumps(found, allow_nan=False)) == found
+    with pytest.raises(ValueError, match="A-F"):
+        est.validation_harm({**freeze, "validation": {"A-F": None, "P-F": None}}, harm,
+                            level=0.975, seed=20261101, resamples=999)  # fmt: skip

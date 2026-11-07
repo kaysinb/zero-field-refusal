@@ -20,6 +20,7 @@ intervals and their readings are ``study3_inference``'s.
 - ``kstar_h`` and ``matched_blocks``: K*_h and the blocks bracketing it in K_harmful.
 - ``curvature_bias``, ``spread_quantiles``: the curvature sensitivity, the spread of K.
 - ``analysis``: the whole label-dependent result, per comparison, as strict JSON.
+- ``validation_harm``: validation's harm, descriptive, computed as the analysis is.
 
 **Units.** Harm is a proportion of 521; every difference, mean, interval and margin here is a
 proportion (±0.025 and ±0.05 are the registered 2.5 and 5 pp). The report alone multiplies by
@@ -73,6 +74,10 @@ bounds encoded as ``to_json`` encodes them (NaN as null, ±∞ as "+inf"/"-inf")
   every interval is undetermined (``bootstrap_t``).
 - *The utility claim* at confirmation holds only when every comparison's gate (at α = 0.05/8 per
   bound) was computed and passes.
+- *Validation's harm* ("Descriptive": after the final analysis and apart from it) is A–F on the n
+  record's cohort and P–F on the validation blocks supported for P and F while P–F is active (the
+  freeze's ``validation``), each computed as an analysis comparison, descriptive, on its own stream
+  (``stream(seed, "validation", key)``).
 """
 
 from __future__ import annotations
@@ -529,6 +534,35 @@ def analysis(
     }  # fmt: skip
 
 
+def validation_harm(
+    freeze: Mapping[str, Any],
+    harm: Mapping[str, Any],
+    *,
+    level: float,
+    seed: int,
+    resamples: int,
+) -> dict[str, Any]:
+    """Validation's harm (module docstring, "Rulings"), pure: per comparison (``A-F``, ``P-F``) of
+    the freeze's ``validation`` blocks, what ``analysis`` gives a descriptive comparison (``n``,
+    ``status``, the four intervals, the envelope, ``readings``, ``reading``, ``wording`` and
+    ``missing``), on the stream ``stream(seed, "validation", key)``; None for P–F once it is
+    closed. ``ValueError`` without A–F's blocks."""
+    if not _is_int(seed):
+        raise ValueError(f"the bootstrap seed is an integer, not {seed!r}")
+    found = freeze["validation"]
+    if set(found) != set(COMPARISONS) or found["A-F"] is None:
+        raise ValueError("validation's frozen blocks are A-F's, and P-F's or null")
+    out: dict[str, Any] = {}
+    for key, pair in COMPARISONS.items():
+        if found[key] is None:
+            out[key] = None
+            continue
+        result, _ = _estimate(key, found[key]["blocks"], pair, harm=harm, level=level, seed=seed,
+                              resamples=resamples, stream_name="validation")  # fmt: skip
+        out[key] = {**result, "status": DESCRIPTIVE}
+    return out
+
+
 def _estimate(
     key: str,
     blocks: Sequence[Mapping[str, Any]],
@@ -538,8 +572,10 @@ def _estimate(
     level: float,
     seed: int,
     resamples: int,
+    stream_name: str = "analysis",
 ) -> tuple[dict[str, Any], np.ndarray]:
-    """One comparison's three computations as strict JSON, and its primary block differences."""
+    """One comparison's three computations as strict JSON, on the stream ``stream(seed,
+    stream_name, key)``, and its primary block differences."""
     d = block_differences(blocks, harm, pair)
     if not blocks:  # an interval needs a block: none, every reading undetermined
         absent = dict.fromkeys((*COMPUTATIONS, "missing_labels"))
@@ -547,7 +583,7 @@ def _estimate(
         combined, worded = UNDETERMINED, wording(UNDETERMINED, [])
     else:
         found = three_computations(d, level=level, resamples=resamples,
-                                   seed=stream(seed, "analysis", key))  # fmt: skip
+                                   seed=stream(seed, stream_name, key))  # fmt: skip
         absent = {**{k: found[k].to_json() for k in COMPUTATIONS},
                   "missing_labels": found["missing_labels"].to_json()}  # fmt: skip
         readings, combined = found["readings"], found["reading"]

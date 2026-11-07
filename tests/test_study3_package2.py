@@ -95,6 +95,7 @@ RECORD_FILES = ("config.yaml", "meta.json", "terminal.json", "summary.json", "ev
                 "metrics.jsonl", "monitor.jsonl")  # fmt: skip
 ANALYSIS = REPO_ROOT / "src" / "zero_field_refusal" / "analysis"
 PACKAGE = (
+    ANALYSIS / "study3_audit.py",
     ANALYSIS / "study3_blocks.py",
     ANALYSIS / "study3_cycle.py",
     ANALYSIS / "study3_decisions.py",
@@ -103,6 +104,7 @@ PACKAGE = (
     ANALYSIS / "study3_inference.py",
     ANALYSIS / "study3_progress.py",
     ANALYSIS / "study3_records.py",
+    ANALYSIS / "study3_report.py",
     ANALYSIS / "study3_search.py",
     ANALYSIS / "study3_seed_vectors.py",
     ANALYSIS / "study3_simulation.py",
@@ -113,7 +115,9 @@ PACKAGE = (
 # study 3's label readers (package 2b), each with its own sealing tests
 LABEL_READERS: tuple[Path, ...] = (
     ANALYSIS / "study3_controls.py",  # study 1's calibration labels and items (control items)
+    ANALYSIS / "study3_final.py",  # the final analysis's label reader
     ANALYSIS / "study3_label_cli.py",
+    ANALYSIS / "study3_labels.py",  # the label reader over the labeling's ledger
     ANALYSIS / "study3_spread.py",
 )
 OTHER = (
@@ -767,7 +771,7 @@ def test_the_package_imports_no_gpu_module_and_loads_no_script() -> None:
     - ``campaign_prep``'s lazy import of ``analysis.study2_short`` (study 2's ``prep`` only) loads
       torch and ``zero_field_refusal.runtime``.
     The scripts run no training: none calls a GPU path."""
-    assert len(PACKAGE) == 14 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
+    assert len(PACKAGE) == 16 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
     for path in PACKAGE:
         assert gpu_uses(path, "zero_field_refusal.analysis") == set(), path.name
     for path in SCRIPTS:

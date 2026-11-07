@@ -75,7 +75,7 @@ study 2's records give them, equal to this checkout's configs (``experiments/stu
    ``budget``: the evidence of ``study3/decisions/budget-c<N>.json`` when
    ``study3_decisions.budget_reason`` says N needs a budget decision (its decision proceed), else
    null; ``bootstrap``: the interval's fixed ``seed`` and its ``resamples`` (100 000);
-   ``audit``: the draw's ``seed``, the ``agreement_seed`` of the draw of agreements the researcher
+   ``audit``: the draw's ``seed``, the ``agreement_seed`` of the draw of agreements the arbiter model
    checks, and the ``procedure``, the fixed id ``AUDIT_PROCEDURE`` that names the registration's
    "Draw" (probability proportional to size, with replacement; 400 A, 400 F and 200 P draws), run
    by the pinned ``code``; seeds are integers in [0, 2³²); ``code``.
