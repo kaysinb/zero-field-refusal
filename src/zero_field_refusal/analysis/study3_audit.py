@@ -95,10 +95,15 @@ reference), so it is given the coefficients negated, −c^E: Σ (−c_i)(judge_i
   draw of c_i^E ≠ 0 (n_nz = 0) adds exactly 0; one with such draws but none resolved leaves B_E
   undetermined.
 - *Hansen–Hurwitz* is study 2's ``hansen_hurwitz``, per arm among its draws with c_i^E ≠ 0: the
-  mean over the resolved ones of c_i·(reference_i − judge_i)/p_i and its variance s_a²/n'_a, the
-  term and the variance scaled by n_nz/n_a and (n_nz/n_a)², summed over E's arms; the SE the
-  square root of the sum (None under two resolved draws with c_i^E ≠ 0 in an arm that has
-  such draws). Its Wald interval is not kept: none is registered.
+  mean m over the resolved ones of c_i·(reference_i − judge_i)/p_i and its variance v²/n_r, the
+  term scaled by φ = n_nz/n_a. The variance is "from the draws", the zeros included: with every
+  reference resolved it is the with-replacement variance of the mean over all n_a draws,
+  s_all²/n_a, which splits into a part within the draws with c_i^E ≠ 0 and a part between them
+  and the zeros. Under missing references the within part takes the resolved draws' v²/n_r:
+  φ²·(v²/n_r)·n_a(n_nz − 1)/((n_a − 1)n_nz) + m²·φ(1 − φ)/(n_a − 1), summed over E's arms; the
+  SE the square root of the sum (None when an arm with draws of c_i^E ≠ 0 has fewer than two
+  resolved ones, unless it has exactly one such draw and it is resolved: then the within part is
+  0). Its Wald interval is not kept: none is registered.
 
 Study 2's audit module loads torch through ``study2_short``: it is imported only inside the
 functions that use it, so that importing this module loads neither.
@@ -331,7 +336,8 @@ def bias(
     ``se``, ``variance``), per arm of E the share n_nz/n_a of its draws with c^E ≠ 0 times the
     mean over those of them with a resolved reference of c_i·(reference_i − judge_i)/p_i (study
     2's ``hansen_hurwitz`` on the coefficients negated, among those draws), summed over E's arms,
-    its variance theirs times (n_nz/n_a)²; ``worst_case`` [low, high], every draw counted, each
+    its variance from all the arm's draws, the zeros included (module docstring,
+    "Hansen–Hurwitz"); ``worst_case`` [low, high], every draw counted, each
     missing reference at its extreme; ``missing_draws`` and ``missing_items`` over E's arms;
     ``undetermined`` when an arm of E is not drawn, or has a draw with c^E ≠ 0 but none of them
     resolved (then no estimate and no bound). ``reference``: y_R by frame index of every drawn
@@ -372,7 +378,8 @@ def _rescaled(
 ) -> tuple[float | None, float | None]:
     """B_E and its variance from the references ``values`` (``bias``): per arm of E, study 2's
     ``hansen_hurwitz`` among its draws with c^E ≠ 0 (the mean over the resolved ones, and its
-    s²/n'), scaled by n_nz/n_a and its variance by (n_nz/n_a)²; an arm with no such draw adds
+    s²/n'), scaled by n_nz/n_a; the variance within those draws and between them and the zeros
+    (module docstring, "Hansen–Hurwitz"); an arm with no such draw adds
     exactly 0, with variance 0. The estimate is None when an arm is not drawn, or has such draws
     but none resolved; the variance None when it has fewer than two resolved."""
     from .study2_audit import hansen_hurwitz  # loads torch: here only
@@ -392,9 +399,21 @@ def _rescaled(
                                level=_HH_LEVEL)  # fmt: skip
         if found["estimate"] is None:
             return None, None
-        share = len(nonzero) / len(draws)
+        n, n_nz = len(draws), len(nonzero)
+        n_r = sum(values[i] is not None for i in nonzero)
+        share = n_nz / n
         terms.append(share * found["estimate"])
-        variances.append(None if found["se"] is None else share * share * found["se"] ** 2)
+        if found["se"] is not None:  # within the draws with c^E ≠ 0, among the resolved ones
+            within = share * share * found["se"] ** 2
+            if n_nz < n:
+                within *= n * (n_nz - 1) / ((n - 1) * n_nz)
+        elif n_r == n_nz == 1:  # one such draw, resolved: no spread within
+            within = 0.0
+        else:
+            variances.append(None)
+            continue
+        between = 0.0 if n_nz == n else found["estimate"] ** 2 * share * (1 - share) / (n - 1)
+        variances.append(within + between)
     return math.fsum(terms), None if None in variances else math.fsum(variances)
 
 

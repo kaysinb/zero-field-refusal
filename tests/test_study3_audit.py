@@ -230,14 +230,15 @@ def test_the_mar_estimate_is_taken_among_the_draws_with_a_coefficient_then_resca
     assert af["mar"]["estimate"] == pytest.approx(0.2 + 0.4 / 3, abs=1e-15)
     assert (af["missing_draws"], af["undetermined"]) == (0, False)
     assert af["worst_case"] == [pytest.approx(0.2 + 0.4 / 3, abs=1e-15)] * 2  # exact
-    assert af["mar"]["se"] is None  # F has one resolved draw with c^AF ≠ 0
+    # F's values over its three draws are 0.4, 0, 0: the spread between them is its variance
+    assert af["mar"]["se"] == pytest.approx(math.sqrt(np.var([0.4, 0, 0], ddof=1) / 3))
     pf = au.bias(frame, sample, reference, "PF")
     assert pf["undetermined"] is True and pf["worst_case"] is None  # F's draws with c^PF: missing
     assert (pf["missing_draws"], pf["missing_items"]) == (2, 1)
     pf = au.bias(frame, sample, {**reference, 2: 1}, "PF")
     # P: 0.4·(0 − 1)/1; F: 2/3 times −0.3·(1 − 0)/0.75 = −0.4
     assert pf["mar"]["estimate"] == pytest.approx(-0.4 - 0.4 * 2 / 3, abs=1e-15)
-    assert pf["mar"]["se"] == 0.0
+    assert pf["mar"]["se"] == pytest.approx(math.sqrt(np.var([0, -0.4, -0.4], ddof=1) / 3))
     frame, sample = hand_case([1, 1, 1])  # F drew no item of the P-F cohort: its term is 0
     pf = au.bias(frame, sample, reference, "PF")
     assert pf["mar"]["estimate"] == pytest.approx(-0.4, abs=1e-15) and pf["mar"]["se"] == 0.0
@@ -288,6 +289,50 @@ def test_the_mar_estimate_is_unbiased_when_references_are_missing_completely_at_
     assert abs(np.mean(found) - full) <= 3 * error
     if comparison == "PF":  # the case that showed the dilution
         assert abs(np.mean(diluted) - full) > 3 * np.std(diluted, ddof=1) / math.sqrt(200)
+
+
+@pytest.mark.parametrize("comparison", ["PF", "AF"])
+def test_the_variance_counts_the_draws_with_a_zero_coefficient(comparison) -> None:
+    """With every reference resolved, B_E's variance is the with-replacement variance over all
+    of each arm's draws, the zeros of c^E = 0 included (registration: "with its variance from
+    the draws"), as study 2's ``hansen_hurwitz`` gives it over every draw."""
+    from zero_field_refusal.analysis.study2_audit import hansen_hurwitz
+
+    frame, truth = mixed_arms()
+    sample = au.draw(frame, seed=7)
+    got = au.bias(frame, sample, truth, comparison)["mar"]
+    c = np.array([-item["c"][comparison] for item in frame])
+    oracle = hansen_hurwitz(frame, sample, truth, c, arms=au.COMPARISONS[comparison], level=0.95)
+    assert got["estimate"] == pytest.approx(oracle["estimate"])
+    assert got["se"] == pytest.approx(oracle["se"]) and got["se"] > 0.005
+    nonzero = {arm: [i for i in sample["draws"][arm] if frame[i]["c"][comparison] != 0]
+               for arm in au.COMPARISONS[comparison]}  # fmt: skip
+    assert any(len(v) < len(sample["draws"][a]) for a, v in nonzero.items())  # zeros are drawn
+
+
+def test_the_se_under_missing_references_tracks_the_estimates_spread() -> None:
+    """Over draws of the audit, each with 20 % of references missing at random, the mean SE of
+    B_PF is the spread of its MAR estimate within a fifth. Here every F item of the P–F cohort
+    has the same term and P's terms are 0, so the spread comes only from how many of F's draws
+    fall on c^PF = 0: a variance taken among the draws with c^PF ≠ 0 alone would be 0."""
+    frame: list[dict] = []
+    for arm, c_af, c_pf, judge in (("A", 1e-3, 0.0, 0), ("F", -1e-3, 0.0, 0),
+                                   ("F", 0.0, -1e-3, 0), ("P", 0.0, 1e-3, 1)):  # fmt: skip
+        for _ in range(300):
+            c = {"AF": c_af, "PF": c_pf}
+            frame.append({"index": len(frame), "arm": arm, "c": c, "a": max(abs(c_af), abs(c_pf)),
+                          "y_judge": judge, "cohorts": [e for e in c if c[e]]})  # fmt: skip
+    truth = {i["index"]: 1 for i in frame}  # ref − judge: 1 for F's items, 0 for P's
+    estimates, ses = [], []
+    for k in range(300):
+        rng = np.random.default_rng(1000 + k)
+        sample = au.draw(frame, seed=k)
+        reference = {i: (None if rng.random() < 0.2 else v) for i, v in truth.items()}
+        got = au.bias(frame, sample, reference, "PF")["mar"]
+        estimates.append(got["estimate"])
+        ses.append(got["se"])
+    spread = float(np.std(estimates, ddof=1))
+    assert spread > 0 and float(np.mean(ses)) == pytest.approx(spread, rel=0.2)
 
 
 def test_an_arm_without_a_resolved_draw_leaves_its_bias_undetermined() -> None:
