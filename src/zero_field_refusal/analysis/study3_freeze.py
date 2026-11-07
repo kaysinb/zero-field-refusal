@@ -21,7 +21,7 @@ supplement and, for a trace of a label, folder names alone (``os.path.lexists``,
 - ``freeze_open``: the gate, with the signature the labeling calls: ``()`` when the final point is
   open, otherwise its problems. ``read_freeze``: the record with the same problems, and no check
   of its own, so that the analysis and the gate cannot diverge.
-- ``in_force_supplement``: the in-force confirmation supplement as a link.
+- ``in_force_supplement``: the in-force confirmation supplement and its link, from one reading.
 
 **The record**, ``docs/study3-analysis-freeze-c<N>.json`` (``freeze_name``), closed schema
 (``FIELDS``): ``kind`` (``analysis-freeze``), ``candidate``, ``written_at`` (ISO 8601, UTC),
@@ -75,6 +75,7 @@ labeling refuses a confirmation run while the gate names a problem.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -86,7 +87,7 @@ from typing import Any
 
 from ..paths import REPO_ROOT
 from .study3_blocks import OPEN, PAIRS, SUPPORTED, UNRESOLVED, block_state
-from .study3_decisions import _digest, _sealed_problem, _under_sealed, decisions
+from .study3_decisions import _sealed_problem, _under_sealed, decisions
 from .study3_estimates import kstar_h, matched_blocks
 from .study3_progress import COMPARISONS, read_state
 from .study3_records import SEEDS, Endpoint
@@ -285,16 +286,26 @@ def _confirmation_runs(endpoints: Iterable[Endpoint], candidate: int) -> list[En
 
 def in_force_supplement(
     candidate: int, *, runs_root: str | Path, repo: str | Path = REPO_ROOT
-) -> tuple[dict[str, str] | None, list[str]]:
-    """The in-force confirmation supplement of candidate N as a link, ``{"path", "sha256",
-    "root": "repo"}``, valid by its full reader, and its problems; absent: (None, []). The
-    supplement in force is its chain's last link (``fixation_chain``: the first record, or its
-    successor after a cycle), the one ``read_confirmation_fixation`` reads in full."""
+) -> tuple[dict[str, Any] | None, dict[str, str] | None, list[str]]:
+    """The in-force confirmation supplement of candidate N, valid by its full reader
+    (``read_confirmation_fixation``), its chain's last link (``fixation_chain``: the first record,
+    or its successor after a cycle), its link
+    ``{"path", "sha256", "root": "repo"}`` and its problems; absent: (None, None, []). The record
+    and the link are one reading's: the bytes hashed must parse to the record the reader returned
+    (otherwise the file changed while it was read, a problem), so that what a caller takes from
+    the record (the bootstrap's seed, the audit's seeds) and the link it records always agree."""
     record, problems = read_confirmation_fixation(candidate, runs_root=runs_root, repo=repo)
     if record is None:
-        return None, list(problems)
+        return None, None, list(problems)
     name = fixation_chain("confirmation", candidate, repo=repo)[-1]
-    return {"path": name, "sha256": _digest(Path(repo) / name), "root": "repo"}, []
+    try:
+        data = (Path(repo) / name).read_bytes()
+        same = json.loads(data) == record
+    except (OSError, ValueError):
+        same = False
+    if not same:
+        return None, None, [f"{name}: it changed while it was read, or cannot be read again"]
+    return record, {"path": name, "sha256": hashlib.sha256(data).hexdigest(), "root": "repo"}, []
 
 
 def analysis_freeze(
@@ -353,7 +364,7 @@ def _validation_cohort(record: Mapping[str, Any], candidate: int, runs_root: str
 def _supplement(candidate: int, runs_root: str | Path,
                 repo: str | Path) -> tuple[dict[str, str] | None, list[str]]:  # fmt: skip
     """The in-force supplement's link, and its problems named as the supplement's."""
-    link, found = in_force_supplement(candidate, runs_root=runs_root, repo=repo)
+    _, link, found = in_force_supplement(candidate, runs_root=runs_root, repo=repo)
     if link is not None:
         return link, []
     name = fixation_name("confirmation", candidate)

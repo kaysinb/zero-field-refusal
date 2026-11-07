@@ -180,7 +180,7 @@ def checkout(tmp_path, monkeypatch):
                               supplement=SUPPLEMENT, code=code, written_at=WHEN,
                               labels={"confirmation_runs": 360, "ledger_runs": 0})  # fmt: skip
     monkeypatch.setattr(fz, "read_state", lambda root, **kw: (study.advance(), study.endpoints))
-    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (dict(SUPPLEMENT), []))
+    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: ({}, dict(SUPPLEMENT), []))
     world = Gate(repo, tmp_path / "runs", study, record)
     return world
 
@@ -291,11 +291,11 @@ def test_the_gate_checks_the_in_force_supplement(checkout, monkeypatch) -> None:
     checkout.write()
     checkout.commit()
     changed = {**SUPPLEMENT, "sha256": "f" * 64}
-    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (changed, []))
+    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: ({}, changed, []))
     assert any("supplement" in p for p in checkout.open())
-    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (None, ["invalid"]))
+    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (None, None, ["invalid"]))
     assert any("supplement" in p and "invalid" in p for p in checkout.open())
-    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (None, []))
+    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (None, None, []))
     assert any("supplement" in p for p in checkout.open())
 
 
@@ -319,7 +319,7 @@ def test_after_a_cycle_at_the_confirmation_the_freeze_names_the_supplements_succ
         return {"k": 2}, []
 
     monkeypatch.setattr(fz, "read_confirmation_fixation", full_reader)
-    link, problems = fz.in_force_supplement(1, runs_root=tmp_path / "runs", repo=repo)
+    _, link, problems = fz.in_force_supplement(1, runs_root=tmp_path / "runs", repo=repo)
     assert problems == [] and read == [1]
     assert link == {"path": "docs/study3-fixation-confirmation-c1-2.json",
                     "sha256": hashlib.sha256(successor.read_bytes()).hexdigest(),
