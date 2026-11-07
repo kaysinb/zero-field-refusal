@@ -314,9 +314,9 @@ def test_after_a_cycle_at_the_confirmation_the_freeze_names_the_supplements_succ
     successor.write_text(json.dumps({"kind": "fixation-confirmation", "k": 2}))
     read = []
 
-    def full_reader(candidate, **kw):
+    def full_reader(candidate, **kw):  # the successor's record, as its full reader returns it
         read.append(candidate)
-        return {"k": 2}, []
+        return json.loads(successor.read_bytes()), []
 
     monkeypatch.setattr(fz, "read_confirmation_fixation", full_reader)
     _, link, problems = fz.in_force_supplement(1, runs_root=tmp_path / "runs", repo=repo)
