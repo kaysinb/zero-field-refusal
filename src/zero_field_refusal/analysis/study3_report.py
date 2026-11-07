@@ -151,12 +151,8 @@ from typing import Any
 
 from .study3_blocks import PAIRS, SUPPORTED, VALIDATION_ALPHA, block_state, utility_gate
 from .study3_progress import (
-    BUDGET_STOP,
     COMPARISONS,
-    DESIGN_STOP,
     ENDED,
-    SCIENTIFIC_REPORT,
-    TECHNICAL_REPORT,
     TERMINAL,
 )
 from .study3_records import (
@@ -170,7 +166,7 @@ from .study3_records import (
 )
 from .study3_search import ARM_ORDER
 
-OUTCOMES = ("done", SCIENTIFIC_REPORT, TECHNICAL_REPORT, DESIGN_STOP, BUDGET_STOP)
+OUTCOMES = ("done", *TERMINAL)
 VARIANTS = ("standard", "judge_technical")
 SECTIONS = (
     "outcome",
@@ -830,17 +826,6 @@ def _dead_ends(
             technical.append({**entry, "reason": record.get("reason") or "closure", "closure": why})
         elif kind == "report":
             technical.append({**entry, "reason": state.get("reason")})
-    if state.get("outcome") == TECHNICAL_REPORT and not any(
-        e.get("event") == "report" for e in state.get("route") or ()
-    ):
-        technical.append(
-            {
-                "candidate": state.get("candidate"),
-                "stage": None,
-                "arms": [],
-                "reason": state.get("reason"),
-            }
-        )
     for diagnosis in diagnoses:
         technical.append(
             {

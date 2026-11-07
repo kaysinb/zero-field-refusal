@@ -323,14 +323,6 @@ def terminal(outcome: str) -> tuple[dict, dict, dict]:
         study.ready()
         fail_at(study, "search", "F", 1)
         fail_at(study, "validation", "A", 2)
-    elif outcome == "technical_feasibility_report":
-        study.ready()
-        study.entries["engineering"]["state"] = "failed"
-        study.entries["engineering"]["record"]["state"] = "failed"
-    elif outcome == "design_stop":
-        study.ready()
-        study.entries["simulation"]["state"] = "failed"
-        study.entries["simulation"]["record"]["state"] = "failed"
     else:
         study.through_validation()
         study.n(N=99)
@@ -454,12 +446,7 @@ def test_the_dead_ends_are_reported_apart() -> None:
         (1, "scientific_failure"),
         (2, "validation_gate"),
     ]
-    technical = facts_of("technical_feasibility_report")["outcome"]
-    assert technical["dead_ends"] == {
-        "technical": [{"candidate": 1, "stage": None, "arms": [], "reason": "engineering_failed"}],
-        "scientific": [],
-    }
-    assert facts_of("design_stop")["outcome"]["dead_ends"] == {"technical": [], "scientific": []}
+    assert facts_of("budget_stop")["outcome"]["dead_ends"] == {"technical": [], "scientific": []}
 
 
 def test_a_stage_the_route_or_an_incident_reached_needs_its_spending_entry() -> None:
@@ -473,26 +460,16 @@ def test_a_stage_the_route_or_an_incident_reached_needs_its_spending_entry() -> 
         with pytest.raises(ValueError, match=f"no spending entry for {gone}"):
             facts_of("scientific_feasibility_report", billing={**BILLING, "stages": stages})
     stages = [s for s in BILLING["stages"] if s["stage"] != "search"]
-    assert facts_of("design_stop", billing={**BILLING, "stages": stages})["money"]["by_stage"] == (
+    assert facts_of("budget_stop", billing={**BILLING, "stages": stages})["money"]["by_stage"] == (
         stages
     )
 
 
 def test_the_sections_a_terminal_stop_did_not_reach() -> None:
-    facts = facts_of("design_stop")
-    for section in (
-        "validation",
-        "n",
-        "confirmation",
-        "utility",
-        "analysis",
-        "validation_harm",
-        "audit",
-        "freeze",
-    ):
-        assert facts[section] == "not reached", section
     budget = facts_of("budget_stop")
-    assert budget["n"]["budget"]["decision"] == "stop" and budget["confirmation"] == "not reached"
+    for section in ("confirmation", "analysis", "validation_harm", "audit", "freeze"):
+        assert budget[section] == "not reached", section
+    assert budget["n"]["budget"]["decision"] == "stop"
     assert budget["validation"]["gates"]["AF"]["passes"] is True
 
 
@@ -504,7 +481,7 @@ def test_the_labeling_problems_and_an_unbilled_journal_incident() -> None:
     assert f"{LOG} line 2 is named by no billed incident" in str(refused.value)
     # the cause is shown, never matched: another text names the same record
     other = {**BILLING, "incidents": [{**BILLED, "cause": "another cause"}]}
-    assert facts_of("design_stop", billing=other)["money"]["incidents"][0]["cause"] == (
+    assert facts_of("budget_stop", billing=other)["money"]["incidents"][0]["cause"] == (
         "another cause"
     )
 
@@ -558,11 +535,11 @@ def test_a_qualification_infrastructure_record_needs_its_billed_incident(tmp_pat
     assert [(i["path"], i["kind"]) for i in found] == [(path, kind)]
     incidents = {**INCIDENTS, "qualification": found}
     with pytest.raises(ValueError, match="billed once") as refused:
-        facts_of("design_stop", incidents=incidents)
+        facts_of("budget_stop", incidents=incidents)
     assert path in str(refused.value)
     stop = billed("stop-2", {"qualification": path})
     billing = {**BILLING, "incidents": [BILLED, stop]}
-    facts = facts_of("design_stop", incidents=incidents, billing=billing)
+    facts = facts_of("budget_stop", incidents=incidents, billing=billing)
     assert stop in facts["money"]["incidents"]
     assert path in rp.tables(facts)
 
@@ -573,7 +550,7 @@ def test_one_stop_that_left_a_restart_and_a_part_record_is_one_incident(tmp_path
     paths = qualification_world(tmp_path, "part", "restart")
     incidents = {**INCIDENTS, "qualification": rp.qualification_incidents(tmp_path)}
     stop = billed("stop-2", *({"qualification": p} for p in paths), {"pod": "pod-x"})
-    facts = facts_of("design_stop", incidents=incidents,
+    facts = facts_of("budget_stop", incidents=incidents,
                      billing={**BILLING, "incidents": [BILLED, stop]})  # fmt: skip
     money = facts["money"]["incidents"]
     assert [i["id"] for i in money] == ["pod-stop-1", "stop-2"]
@@ -602,9 +579,9 @@ def test_a_record_named_twice_or_by_no_incident_is_refused(tmp_path) -> None:
     ]:
         billing = {**BILLING, "incidents": refused_incidents}
         with pytest.raises(ValueError, match=re.escape(words)):
-            facts_of("design_stop", incidents=incidents, billing=billing)
+            facts_of("budget_stop", incidents=incidents, billing=billing)
     repair = billed("a", part, restart, stage="repair")  # the repair's rates: numerical runs
-    facts = facts_of("design_stop", incidents=incidents, billing={**BILLING,
+    facts = facts_of("budget_stop", incidents=incidents, billing={**BILLING,
                      "incidents": [BILLED, repair]})  # fmt: skip
     assert facts["money"]["incidents"][1]["stage"] == "repair"
 
@@ -615,12 +592,12 @@ def test_two_journal_rounds_of_one_stop_with_other_cause_texts_are_one_incident(
         {"log": LOG, "line": 4, "stage": "confirmation", **INCIDENT, "cause": "the Pod stopped."},
     ]
     stop = billed("stop", *({"journal": LOG, "line": n} for n in (3, 4)), stage="confirmation")
-    facts = facts_of("design_stop", incidents={"journal": rounds, "qualification": []},
+    facts = facts_of("budget_stop", incidents={"journal": rounds, "qualification": []},
                      billing={**BILLING, "incidents": [stop]})  # fmt: skip
     assert facts["money"]["incidents"] == [stop]
     first = {**stop, "evidence": stop["evidence"][:1]}
     with pytest.raises(ValueError, match=re.escape(f"{LOG} line 4 is named by no billed")):
-        facts_of("design_stop", incidents={"journal": rounds, "qualification": []},
+        facts_of("budget_stop", incidents={"journal": rounds, "qualification": []},
                  billing={**BILLING, "incidents": [first]})  # fmt: skip
 
 
@@ -798,7 +775,7 @@ def test_read_embargo(tmp_path) -> None:
     breach = {"stage": "validation", "what": "one run's labels opened by hand"}
     path.write_text(json.dumps({"breaches": [breach]}))
     assert rp.read_embargo(path) == [breach]
-    assert facts_of("design_stop", embargo=[breach])["embargo"] == [breach]
+    assert facts_of("budget_stop", embargo=[breach])["embargo"] == [breach]
     path.write_text(json.dumps({"breaches": [{**breach, "who": "x"}]}))
     with pytest.raises(ValueError, match="'who' is not a field"):
         rp.read_embargo(path)
