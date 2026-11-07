@@ -1380,3 +1380,30 @@ exists.
   record of each reference's source are added.
 - **What is unchanged.** The draw, its seed, its sizes, the frame, the coefficients, the
   Hansen–Hurwitz estimates, the agreement seed and the vote order.
+
+### Correction record (2026-11-07): the audit labels' provenance
+
+This applies amendments 7 and 12; it adds no rule. It was recorded before the audit's estimate.
+
+- **What happened.** When the provider's safety filter stopped a model annotator, the labeling
+  harness silently continued the call with another model: Claude Sonnet 5.5 with Claude Sonnet 5
+  (one annotator batch) and Claude Fable 5.1 with Claude Opus 5 (one check batch and one arbiter
+  batch). The harness's log records the model of every message and, just before each switch, the
+  safety classifier's stop of the registered model's message.
+- **What is done.** Those calls are safety-filter stops of the registered model (amendment 12,
+  item 1): the outputs written after the switch are discarded, kept with their sha256 outside the
+  audit's records, and their items are null for that model. Every model call of the audit is
+  checked against the log for the model that wrote its output.
+- **The records.** Sonnet's labels are corrected; the agreements step is recomputed from them on
+  the same draw. The superseded agreements, GPT and arbiter inputs and arbiter record are kept,
+  with their sha256, beside the new ones, which name their inputs by sha256.
+- **Reuse and no resend.** GPT's labels of the items whose text, instruction and model are
+  unchanged are reused; GPT labels only the items new to its input, in batches formed before its
+  first call. No item of a stopped Fable call, of the check or of the arbiter, is sent to Fable
+  again at either stage. Such an item in the check is a failed check. In the arbiter's input, an
+  item of a stopped arbiter call takes its reference under amendment 12, item 3 (the majority or
+  missing); an item of a stopped check call, never sent to the arbiter, has no arbiter stop and
+  its reference is missing.
+- **What was known.** When this was found, audit labels and their summary counts existed: under
+  the uncorrected labels, 865 agreements, 10 disagreements and 125 failed items. No audit result
+  had been seen and the estimate had not been run.
