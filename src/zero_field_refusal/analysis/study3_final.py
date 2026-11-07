@@ -16,12 +16,13 @@ validation's spread step, which ``scripts/study3_spread.py`` reads alone, and th
 which is read here alone. Every entry of ``SEALED_ENTRIES``, and ``gather``, first asks the freeze
 gate (``study3_freeze.freeze_open``) and raises ``SealedPoint`` with its problems before any path
 is touched; the label reader's own functions (``study3_labels.harm_many``, ``run_harm`` and
-``run_items``, at the point ``final``) keep their own gates, the final point's run set among them.
+``items_many``, at the point ``final``) keep their own gates, the final point's run set among them.
 
 - ``cohort_harm``: the harm of the cohort's runs, one ``harm_many`` call for them all, gated once;
   a run of the freeze's validation blocks only once the final analysis is written.
 - ``k_spread``: one endpoint's spread of K over prompts, the per-prompt means of its K samples.
-- ``item_labels``: runs' per-item labels (``run_items``), their counts checked against their harm.
+- ``item_labels``: runs' per-item labels (one ``items_many`` call), their counts checked against
+  their harm.
 - ``blind_texts``: the prompt and step-25 response texts of named prompts of runs, once the final
   analysis is written, for the audit's blind file.
 - ``gather``: the harm of every run of the freeze's comparisons, A − P's blocks and the matched
@@ -106,9 +107,9 @@ from .study3_labels import (
     SealedPoint,
     _plain_child,
     harm_many,
+    items_many,
     labeling_problems,
     open_point,
-    run_items,
 )
 from .study3_records import EXPERIMENT, Endpoint, under_sealed
 
@@ -304,7 +305,7 @@ def item_labels(
     repo: Path,
     sealed_dir: Path | None = None,
 ) -> dict[str, tuple[ItemLabel, ...]]:
-    """Each run's items at the endpoint (``study3_labels.run_items`` at the point ``final``), by
+    """Each run's items at the endpoint (``study3_labels.items_many`` at the point ``final``), by
     run id (run id → its folder), gated once: first the runs' harm, from one reading under
     ``cohort_harm``'s rule (``Pending`` naming every pending run and technical problem before any
     item is read); then each run's items, exactly 521 in its prompt order, their ``harmful`` and
@@ -316,8 +317,9 @@ def item_labels(
     given = {"point": POINT, "candidate": candidate, "runs_root": runs_root, "repo_root": repo,
              "sealed_dir": sealed_dir}  # fmt: skip
     out = {}
-    for name, run_dir in run_dirs.items():
-        items = tuple(run_items(Path(run_dir), **given))
+    read = items_many([Path(d) for d in run_dirs.values()], **given)  # one gate for the list
+    for name, items in zip(run_dirs, read, strict=True):
+        items = tuple(items)
         harm = harms[name]
         if len(items) != HARMFUL_PROMPTS:
             raise ItemsRefused(f"{name}: {len(items)} items, not {HARMFUL_PROMPTS}")

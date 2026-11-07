@@ -428,7 +428,8 @@ def items_of(harmful: int, missing: int, n: int = 521) -> tuple[ItemLabel, ...]:
                                        (items_of(10, 2, 520), "520 items")])  # fmt: skip
 def test_a_runs_items_agree_with_its_harm(world, monkeypatch, given, why) -> None:
     open_freeze(world, monkeypatch)
-    monkeypatch.setattr(study3_final, "run_items", lambda run_dir, **kw: given)
+    monkeypatch.setattr(study3_final, "items_many",
+                        lambda run_dirs, **kw: [given for _ in run_dirs])  # fmt: skip
     monkeypatch.setattr(study3_final, "harm_many",
                         lambda run_dirs, **kw: [RunHarm(harmful=10, missing=2,
                                                         receipt_sha256="f" * 64)
@@ -445,8 +446,9 @@ def test_runs_items_wait_for_every_runs_harm_reading_no_item(world, monkeypatch)
     every culprit named, before any run's items are read."""
     open_freeze(world, monkeypatch)
     items: list = []
-    monkeypatch.setattr(study3_final, "run_items",
-                        lambda run_dir, **kw: items.append(run_dir) or items_of(10, 2))  # fmt: skip
+    monkeypatch.setattr(study3_final, "items_many",
+                        lambda run_dirs, **kw: items.extend(run_dirs)
+                        or [items_of(10, 2) for _ in run_dirs])  # fmt: skip
     reads = label_raisers(monkeypatch)
     gate_steps(monkeypatch, {world.runs[3]}, LabelsPending)
     monkeypatch.setattr(study3_final, "labeling_problems", lambda root, sealed_dir=None: ())

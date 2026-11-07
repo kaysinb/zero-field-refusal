@@ -62,7 +62,8 @@ class Audit:
         mp.setattr(self.script, "REPO", world.repo)
         mp.setattr(self.script, "in_force_supplement",
                    lambda c, **kw: (supplement, dict(SUPPLEMENT), []))  # fmt: skip
-        mp.setattr(study3_final, "run_items", self.items)
+        mp.setattr(study3_final, "items_many",
+                   lambda run_dirs, **kw: [self.items(d, **kw) for d in run_dirs])  # fmt: skip
         mp.setattr(study3_final, "_texts", self.texts)
         self.skew: str | None = None
         freeze = json.loads((world.repo / freeze_name(1)).read_text())

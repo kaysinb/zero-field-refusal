@@ -380,6 +380,16 @@ def run_harm(
                      repo_root=repo_root, sealed_dir=sealed_dir)[0]  # fmt: skip
 
 
+def items_many(run_dirs: Sequence[Path], *, point: Literal["spread", "final"], candidate: int,
+               runs_root: Path, repo_root: Path,
+               sealed_dir: Path | None = None) -> list[tuple[ItemLabel, ...]]:  # fmt: skip
+    """The items of each run of ``run_dirs`` (``run_items``), the point opened once for the
+    list, as ``harm_many`` opens it."""
+    return [_read_run(run_dir, found)
+            for run_dir, found in _gated(run_dirs, point, candidate, runs_root, repo_root,
+                                         sealed_dir)]  # fmt: skip
+
+
 def run_items(run_dir: Path, *, point: Literal["spread", "final"], candidate: int,
               runs_root: Path, repo_root: Path,
               sealed_dir: Path | None = None) -> tuple[ItemLabel, ...]:  # fmt: skip
