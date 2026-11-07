@@ -1394,8 +1394,16 @@ This applies amendments 7 and 12; it adds no rule. It was recorded before the au
   item 1): the outputs written after the switch are discarded, kept with their sha256 outside the
   audit's records, and their items are null for that model. Every model call of the audit is
   checked against the log for the model that wrote its output.
+- **A stopped call.** A call is stopped when the log records a safety classifier's stop of any of
+  its messages, whether the harness then ended the call, continued it with another model, or let
+  the same model continue it. Every output of a stopped call is discarded and its items are null
+  for that model: a continuation by the same model within the call is a resend in parts
+  (amendment 12, item 1). Under this definition four more Sonnet batches, in which the same model
+  continued after a stop, and one check batch, stopped right after its labels were written, are
+  stopped calls.
 - **The records.** Sonnet's labels are corrected; the agreements step is recomputed from them on
-  the same draw. The superseded agreements, GPT and arbiter inputs and arbiter record are kept,
+  the same draw, twice: once for the model switches, once more for the stopped calls the same
+  model continued. The superseded agreements, GPT and arbiter inputs and arbiter record are kept,
   with their sha256, beside the new ones, which name their inputs by sha256.
 - **Reuse and no resend.** GPT's labels of the items whose text, instruction and model are
   unchanged are reused; GPT labels only the items new to its input, in batches formed before its
@@ -1404,6 +1412,9 @@ This applies amendments 7 and 12; it adds no rule. It was recorded before the au
   item of a stopped arbiter call takes its reference under amendment 12, item 3 (the majority or
   missing); an item of a stopped check call, never sent to the arbiter, has no arbiter stop and
   its reference is missing.
-- **What was known.** When this was found, audit labels and their summary counts existed: under
-  the uncorrected labels, 865 agreements, 10 disagreements and 125 failed items. No audit result
-  had been seen and the estimate had not been run.
+- **What was known.** When the switches were found, audit labels and their summary counts existed:
+  under the uncorrected labels, 865 agreements, 10 disagreements and 125 failed items. When the
+  continued calls were found, the first recomputation's counts existed (841 agreements, 9
+  disagreements and 150 failed items), with GPT's labels of its 159 items (135 reused, 24 new) and
+  the 12 valid check labels of one Fable batch. No audit result had been seen and the estimate had
+  not been run.
