@@ -1,0 +1,180 @@
+{
+ "currency": "USD",
+ "stages": [
+  {
+   "stage": "dry_run",
+   "spent": 12.35
+  },
+  {
+   "stage": "engineering",
+   "spent": 45.58
+  },
+  {
+   "stage": "simulation",
+   "spent": 0.0
+  },
+  {
+   "stage": "search",
+   "spent": 4.21
+  },
+  {
+   "stage": "numerical",
+   "spent": 16.38
+  },
+  {
+   "stage": "validation",
+   "spent": 21.91
+  },
+  {
+   "stage": "confirmation",
+   "spent": 56.42
+  },
+  {
+   "stage": "labeling",
+   "spent": 11.05
+  },
+  {
+   "stage": "audit",
+   "spent": 0.0
+  }
+ ],
+ "incidents": [
+  {
+   "id": "engineering-cycle-c1-8dcfe20",
+   "stage": "engineering",
+   "incident_time": "2026-10-31T23:09:03Z",
+   "cause": "case 17's diagnosis and the re-run of the engineering trajectories under fix 8dcfe204415685976ba219727369f80032fc5314",
+   "billed": 28.24,
+   "evidence": [
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 51
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 54
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 57
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 60
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 63
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 66
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 69
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 72
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 75
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 78
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 81
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 84
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 87
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 90
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 93
+    },
+    {
+     "journal": "launch/study3-c1-engineering-20261030T113942Z.jsonl",
+     "line": 96
+    },
+    {
+     "pod": "iu69haoozd6ued"
+    }
+   ]
+  },
+  {
+   "id": "dry-run-image-pull",
+   "stage": "dry_run",
+   "incident_time": "2026-10-28T14:21:47Z",
+   "cause": "the image pull failed and the container never started",
+   "billed": 1.03,
+   "evidence": [
+    {
+     "pod": "k89018y06rfzq1"
+    }
+   ]
+  },
+  {
+   "id": "dry-run-unfit-volume",
+   "stage": "dry_run",
+   "incident_time": "2026-10-29T18:16:52Z",
+   "cause": "the Pod's volume was a network file system, unfit for the run",
+   "billed": 1.14,
+   "evidence": [
+    {
+     "pod": "2xyqxu4mgc0yos"
+    }
+   ]
+  },
+  {
+   "id": "engineering-unfit-volume",
+   "stage": "engineering",
+   "incident_time": "2026-10-30T09:51:11Z",
+   "cause": "the Pod's volume was a network file system, unfit for the run",
+   "billed": 0.12,
+   "evidence": [
+    {
+     "pod": "a6n73b0kyvq7hs"
+    }
+   ]
+  },
+  {
+   "id": "confirmation-unfit-volume",
+   "stage": "confirmation",
+   "incident_time": "2026-11-04T22:27:56Z",
+   "cause": "the Pod's volume was a network file system, unfit for the run",
+   "billed": 0.17,
+   "evidence": [
+    {
+     "pod": "6s0ljn2e0maqm0"
+    }
+   ]
+  },
+  {
+   "id": "labeling-gate-per-run",
+   "stage": "labeling",
+   "incident_time": "2026-11-07T06:42:10Z",
+   "cause": "the labeling read the freeze gate once per run and labeled nothing until fix 860700a, restarted 08:04:35Z",
+   "billed": 1.5,
+   "evidence": [
+    {
+     "pod": "fnew8k5gjgrbcu"
+    }
+   ]
+  }
+ ],
+ "policy_stops": []
+}
