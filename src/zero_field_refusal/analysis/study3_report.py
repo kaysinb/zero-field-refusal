@@ -230,6 +230,8 @@ ROW_FIELDS = (
     "passed",
     "rate",
     "interval",
+    "floor",
+    "below",
 )
 BILLING_FIELDS = ("currency", "stages", "incidents", "policy_stops")
 STAGE_FIELDS = ("stage", "spent")
@@ -958,6 +960,7 @@ def _simulation(link: Mapping[str, Any] | None, results: Mapping[str, Any] | Non
                 "non_coverage": row["rate"],
                 "interval": row["interval"],
                 "reason": row["reason"],
+                "floor": row["floor"],
             }
             for row in results.get("tests") or ()
         ]
@@ -1622,6 +1625,7 @@ def _render_simulation(s: Mapping[str, Any]) -> list[str]:
             "non-coverage",
             "95 % interval",
             "reason",
+            "floor",
         ),
         [
             (
@@ -1635,6 +1639,7 @@ def _render_simulation(s: Mapping[str, Any]) -> list[str]:
                 t["non_coverage"],
                 t["interval"],
                 t["reason"],
+                t["floor"],
             )
             for t in s["tests"]
         ],

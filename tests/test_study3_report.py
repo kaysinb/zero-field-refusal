@@ -91,6 +91,8 @@ ROW = {
     "passed": True,
     "rate": 0.0241,
     "interval": [0.0212, 0.0273],
+    "floor": None,
+    "below": None,
 }
 JUDGE = {
     "path": "study3/labeling/diagnosis-b0003.json",
