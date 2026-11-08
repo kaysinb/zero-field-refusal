@@ -196,6 +196,15 @@ def test_a_non_finite_scan_point_is_recorded_and_the_scan_goes_on(
     assert rows[0]["reason"] == "nonfinite_k"
     conditions = response_conditions(run_config(run_dir), run_dir)
     assert conditions == ["step-3", *(line_scan_condition(a) for a in POINTS[1:])]
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    partial = {**summary, "line_scan": {**summary["line_scan"], "points": POINTS[:-1]}}
+    summary_path.write_text(json.dumps(partial))  # a scan that stopped before its last point
+    with pytest.raises(ValueError, match="incomplete"):
+        response_conditions(run_config(run_dir), run_dir)
+    summary_path.write_text(json.dumps({k: v for k, v in summary.items() if k != "line_scan"}))
+    with pytest.raises(ValueError, match="incomplete"):
+        response_conditions(run_config(run_dir), run_dir)
 
 
 def test_no_scan_after_an_early_stop(env, tmp_path, monkeypatch) -> None:  # noqa: F811

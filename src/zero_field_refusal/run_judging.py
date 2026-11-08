@@ -176,12 +176,23 @@ def scheduled_conditions(
 def line_scan_conditions(run_dir: Path) -> list[str]:
     """The conditions of study 5's line-scan points a scheduled run evaluated
     (``schedule.run_line_scan``), in order, from ``<run dir>/line_scan.jsonl``: none without the
-    file. A point whose K was not finite answered nothing and is not one of them."""
+    file. A point whose K was not finite answered nothing and is not one of them. The scan must be
+    complete: the summary's ``line_scan`` (written after the last point) names the same points
+    and the same evaluated conditions as the rows, else the run is refused."""
     path = Path(run_dir) / "line_scan.jsonl"
     if not path.is_file():
         return []
     rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     conditions = [row["condition"] for row in rows if row["evaluated"]]
+    summary_path = Path(run_dir) / "summary.json"
+    summary = json.loads(summary_path.read_text()) if summary_path.is_file() else {}
+    scan = summary.get("line_scan") or {}
+    if (scan.get("conditions") != [row["condition"] for row in rows]
+            or scan.get("evaluated") != conditions
+            or scan.get("points") != [row["a"] for row in rows]):  # fmt: skip
+        raise ValueError(
+            f"{path}: the line scan is incomplete (its summary does not match its rows)"
+        )
     if any(not c.startswith("line_scan_") for c in conditions) or len(set(conditions)) != len(
         conditions
     ):
