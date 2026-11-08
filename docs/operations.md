@@ -2885,8 +2885,8 @@ the driver's journal and logs, and its receipt.
 | 1 | `surrogate`: `scripts/study5_surrogate_checks.py` | 0 | any non-zero exit (2: the sets are changed once, before any extraction); its archive |
 | 1 | `retrospective`: study 3's 60 A–F seeds (from its analysis freeze), their streams fetched from the bucket, then `study5_predict.py` at 1.3·10⁻⁵ and `study5_stream_features.py` per seed | 0 | the fetch; each seed's archive |
 | 2 | `streams`: each fresh seed's streams (`generate_teacher.py`), archived before anything reads them, then `study5_predict.py` and `study5_stream_features.py` | 0 | each seed's streams archive and records archive |
-| 2 | `predictions`: the record of p for every seed in order, with its sha256; copied to the bucket, read back, its object's creation time in a receipt | 0 | a missing seed; a kept record of other seeds, n or code; the copy |
-| 2 | `fresh`: per seed F at 1.3·10⁻⁵ (line scan, endpoint checkpoint), its checkpoint archived and removed, then F at 1.83·10⁻⁵, each in a launcher campaign of its own | 2n | the receipt's check (the record published, of the plan's seeds in order, n, commit and GPU code); a second checkpoint on the disk before a seed; each seed's archive |
+| 2 | `predictions`: the record of p for every seed in order, with its sha256; copied to the bucket, read back, its object's creation time in a receipt | 0 | a missing seed; a kept record of other seeds, n or GPU code, or not the published copy; the copy |
+| 2 | `fresh`: per seed F at 1.3·10⁻⁵ (line scan, endpoint checkpoint), its checkpoint archived and removed, then F at 1.83·10⁻⁵, each in a launcher campaign of its own | 2n | the receipt's check (the record the published copy, of the plan's seeds in order, n and GPU code); a second checkpoint on the disk before a seed; each seed's archive |
 | 2 | `controls`: seeds 50000–50005, the order and v₀ controls at 1.3·10⁻⁵, then the ladder's `isotropic`, `linear_no_d` and `linear` | 12 + 18 rungs | each seed's archive |
 
 Every block's deadline, snapshot and receipt stop the campaign when they fail. Every run goes
@@ -2903,23 +2903,44 @@ run directory moved aside under `$RUNS_DIR/aside/`). A launcher run the Pod cut 
 the launcher; its rerun is a recovery round of its own ([launching runs](#launching-runs)).
 
 **After a stop.** Fix the cause, then start the campaign with a new `--out` and the same
-`--archive-id`, from the same commit (a gate's record of another commit does not stand, and a
-gate that ran stops the campaign when its new record does not stand either: an engineering check
-of reruns made under another commit, say). What stands is kept:
+`--archive-id`. What stands is kept:
 - a record a step wrote, by its existence, except the gates;
 - a launch whose runs all completed, by the launcher's journal (a fresh η_l run whose checkpoint
   was archived and removed is not launched again: its launcher would refuse the missing file);
 - an archive whose objects are identical.
 
-A gate's record stands only by its verdict, for the plan's commit (clean) and GPU code:
-- the engineering check: equal, its reruns of that commit;
+A gate's record stands only by its verdict, written from a clean checkout under the plan's GPU
+code identity. A commit counts by its GPU code identity, never by itself:
+- the engineering check: equal, its reruns run from a clean checkout under that GPU code;
 - the surrogate checks: passed.
 
 Any other gate record is moved aside beside itself (`<record>.aside-<UTC>`, never deleted) and the
-gate runs again. A kept predictions record must hold exactly the plan's seeds in order, its n and
-its commit and GPU code, or the campaign stops before any fresh run. A fresh η_l run that saved a
-checkpoint is refused by the checkpoint step when its run records no sha256 for it; the file stays
-on the disk, and the next seed's count stops the campaign.
+gate runs again. A gate that ran stops the campaign when its new record does not stand either.
+
+A kept predictions record must hold exactly the plan's seeds in order and its n, carry the plan's
+GPU code identity, and have the sha256 of its published copy (the receipt's and the sidecar's),
+or the campaign stops before any fresh run. Its commit is information only.
+
+A fresh η_l run that saved a checkpoint is refused by the checkpoint step when its run records no
+sha256 for it; the file stays on the disk, and the next seed's count stops the campaign. A
+checkpoint already archived counts only when its archive's inventory shows it verified with the
+run's recorded sha256.
+
+**A fix that needs a new commit.** Commit it, then start from the new commit with a new `--out`
+and the same `--archive-id`:
+- *The GPU code identity is unchanged* (a driver, analysis or docs fix: `code_identity`'s GPU paths
+  untouched; `tests/test_study5_code_identity.py` passes). Every gate, the predictions record and
+  every completed run are kept.
+- *The GPU code identity changed.* Run the engineering check again before anything else: commit a
+  new `docs/study5-code-identity.json` first (the driver refuses another identity). The driver
+  moves the old engineering reruns of the other GPU code aside, to `$RUNS_DIR/aside/` (never
+  deleted, never reused). The launcher would otherwise reuse them, since it reuses a completed run
+  of the same config hash from any campaign. The cells then run in their one recovery round
+  (`launch.py --recovery`); the old gate records are moved aside as above. A second change of the
+  identity has no recovery round left: it takes a new `--archive-id`.
+
+**SIGTERM** to the driver kills the running step's process group (the step is rerun by a restart;
+a launcher run is settled by the launcher) and runs the close, its deadline last.
 
 **Disk.** The container disk holds the endpoint checkpoints (5.24 GB each, as study 3's: two at
 most, 10.5 GB) besides the image and the Google Cloud CLI: study 3's 50 GB container disk

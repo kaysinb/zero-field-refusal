@@ -9,6 +9,8 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -198,7 +200,7 @@ def test_pod1_engineering_reruns_study3s_f_runs_and_stops_on_any_failure(where, 
         "fetch-streams",
         "fetch-run",
         "fetch-run",
-        "scripts/launch.py",
+        "eng-launch",
         "with-runs",
         "archive",
         "snapshot",
@@ -207,8 +209,10 @@ def test_pod1_engineering_reruns_study3s_f_runs_and_stops_on_any_failure(where, 
     fetch = block[1]
     assert fetch.argv[fetch.argv.index("--seeds") + 1 :][:1] == ("10403",)
     launch_step = block[4]
-    assert launch_step.argv[-2:] == ("--max-attempts", "1")
-    runs = campaign_runs(plan, tmp_path, Path(launch_step.argv[1]).stem)
+    assert launch_step.kind == "launch" and not launch_step.kept_if_runs
+    assert launch_step.argv[launch_step.argv.index("--gpu-code") + 1] == GPU
+    campaign_file = launch_step.argv[launch_step.argv.index("--campaign-file") + 1]
+    runs = campaign_runs(plan, tmp_path, Path(campaign_file).stem)
     assert {run.config_hash for run in runs} == STUDY3_F_HASHES
     assert {run.seed for run in runs} == {10403} and all(r.experiment == "study3" for r in runs)
     check = block[5]
@@ -271,7 +275,7 @@ def test_pod2_seeds_and_the_predictions_before_any_f_run(where, n):
     check = fresh[1]
     assert check.argv[1] == "check-published" and check.on_fail == "stop"
     assert [int(x) for x in check.argv[check.argv.index("--seeds") + 1 :]] == seeds
-    assert check.argv[check.argv.index("--commit") + 1] == COMMIT
+    assert "--commit" not in check.argv  # the record's commit is information only
     assert check.argv[check.argv.index("--gpu-code") + 1] == GPU
     assert every[record].gate == "predictions"
     launches = [s for s in fresh if s.kind == "launch"]
@@ -778,8 +782,6 @@ def test_publish_then_check_published(tmp_path, bucket):
         str(record),
         "--receipt",
         str(receipt),
-        "--commit",
-        COMMIT,
         "--gpu-code",
         GPU,
         "--seeds",
@@ -939,27 +941,58 @@ def gate_plan(tmp_path, step, n=None):
     return plan
 
 
-def engineering_record(equal=True, commit=COMMIT, rerun_commit=COMMIT, gpu=GPU):
+HEAD = camp.code_identity.gpu_code_identity()
+# The commit docs/study5-code-identity.json records: an earlier commit of HEAD's GPU code
+SAME = json.loads((REPO_ROOT / "docs" / "study5-code-identity.json").read_text())["commit"]
+OTHER = "fd54945"  # study 3's qualified GPU code: another identity
+
+
+def in_history(commit):
+    found = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", commit, "HEAD"], cwd=REPO_ROOT, capture_output=True
+    )
+    return found.returncode == 0
+
+
+def engineering_record(equal=True, commit=None, rerun_commit=None, gpu=None, dirty=False):
+    commit = commit or HEAD["commit"]
     return {
         "kind": "study5-engineering-check",
         "equal": equal,
-        "pairs": [{"rerun": "r", "rerun_commit": rerun_commit, "rerun_dirty": False}],
-        "code": {"commit": commit, "gpu_code_sha256": gpu},
+        "pairs": [
+            {"rerun": "r", "rerun_commit": rerun_commit or HEAD["commit"], "rerun_dirty": dirty}
+        ],
+        "code": {"commit": commit, "gpu_code_sha256": gpu or HEAD["sha256"]},
         "git": {"commit": commit, "dirty": False},
     }
 
 
 @pytest.mark.parametrize(
-    "record, kept",
+    "case, kept",
     [
-        (engineering_record(), True),
-        (engineering_record(equal=False), False),  # a difference: never kept
-        (engineering_record(commit="d" * 40), False),  # another commit
-        (engineering_record(gpu="f" * 64), False),  # another GPU code
-        (engineering_record(rerun_commit="d" * 40), False),  # reruns of another commit
+        ("good", True),
+        ("later-commit-same-gpu", True),  # a commit is compared by its GPU code only
+        ("different", False),  # a difference: never kept
+        ("record-gpu-disagrees", False),
+        ("unknown-commit", False),
+        ("reruns-other-gpu", False),
+        ("reruns-dirty", False),
     ],
 )
-def test_an_engineering_record_is_kept_by_its_verdict_and_code_only(tmp_path, record, kept):
+def test_an_engineering_record_is_kept_by_its_verdict_and_gpu_code_only(tmp_path, case, kept):
+    if case in ("later-commit-same-gpu", "reruns-other-gpu") and not (
+        in_history(SAME) and in_history(OTHER)
+    ):
+        pytest.skip("the commits compared are not in this history")
+    record = {
+        "good": engineering_record(),
+        "later-commit-same-gpu": engineering_record(commit=SAME, rerun_commit=SAME),
+        "different": engineering_record(equal=False),
+        "record-gpu-disagrees": engineering_record(gpu="f" * 64),
+        "unknown-commit": engineering_record(commit="d" * 40),
+        "reruns-other-gpu": engineering_record(rerun_commit=OTHER),
+        "reruns-dirty": engineering_record(dirty=True),
+    }[case]
     path = tmp_path / "check.json"
     path.write_text(json.dumps(record))
     step = camp.Step(
@@ -970,6 +1003,7 @@ def test_an_engineering_record_is_kept_by_its_verdict_and_code_only(tmp_path, re
         gate="engineering",
     )
     plan = gate_plan(tmp_path, step)
+    plan.gpu_code = HEAD["sha256"]
     assert run_plan(plan, tmp_path) == camp.COMPLETED
     assert marks(tmp_path) == ([] if kept else ["check"])
     aside = sorted(p.name for p in tmp_path.glob("check.json.aside-*"))
@@ -978,50 +1012,77 @@ def test_an_engineering_record_is_kept_by_its_verdict_and_code_only(tmp_path, re
         assert json.loads((tmp_path / aside[0]).read_text()) == record  # moved, never deleted
 
 
-def test_a_surrogate_record_is_kept_by_its_verdict_and_its_commits_gpu_code(tmp_path):
-    head = camp.code_identity.gpu_code_identity()
-    for passes, commit, kept in (
-        (True, head["commit"], True),
-        (False, head["commit"], False),
-        (True, "d" * 40, False),
-    ):
-        for p in (tmp_path / "marks").glob("*") if (tmp_path / "marks").exists() else ():
-            p.unlink()
-        for p in tmp_path.glob("checks.json*"):
-            p.unlink()
-        (tmp_path / "c").exists() and shutil.rmtree(tmp_path / "c")
-        path = tmp_path / "checks.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "kind": "study5-surrogate-checks",
-                    "passes": passes,
-                    "git": {"commit": commit, "dirty": False},
-                }
-            )
+@pytest.mark.parametrize(
+    "passes, commit, dirty, kept",
+    [
+        (True, "head", False, True),
+        (True, "same", False, True),  # a later commit of the same GPU code
+        (False, "head", False, False),
+        (True, "head", True, False),
+        (True, "other", False, False),
+        (True, "d" * 40, False, False),
+    ],
+)
+def test_a_surrogate_record_is_kept_by_its_verdict_and_its_gpu_code(
+    tmp_path, passes, commit, dirty, kept
+):
+    commit = {"head": HEAD["commit"], "same": SAME, "other": OTHER}.get(commit, commit)
+    if commit in (SAME, OTHER) and not in_history(commit):
+        pytest.skip("the commit compared is not in this history")
+    path = tmp_path / "checks.json"
+    path.write_text(
+        json.dumps(
+            {
+                "kind": "study5-surrogate-checks",
+                "passes": passes,
+                "git": {"commit": commit, "dirty": dirty},
+            }
         )
-        good = {
-            "kind": "study5-surrogate-checks",
-            "passes": True,
-            "git": {"commit": head["commit"], "dirty": False},
-        }
-        step = camp.Step(
-            "one/checks",
-            writes(tmp_path, "checks", path, good),
-            on_fail="stop",
-            outputs=(str(path),),
-            gate="surrogate",
-        )
-        plan = gate_plan(tmp_path, step)
-        plan.commit, plan.gpu_code = head["commit"], head["sha256"]
-        assert run_plan(plan, tmp_path) == camp.COMPLETED
-        assert marks(tmp_path) == ([] if kept else ["checks"]), (passes, commit)
+    )
+    good = {
+        "kind": "study5-surrogate-checks",
+        "passes": True,
+        "git": {"commit": HEAD["commit"], "dirty": False},
+    }
+    step = camp.Step(
+        "one/checks",
+        writes(tmp_path, "checks", path, good),
+        on_fail="stop",
+        outputs=(str(path),),
+        gate="surrogate",
+    )
+    plan = gate_plan(tmp_path, step)
+    plan.gpu_code = HEAD["sha256"]
+    assert run_plan(plan, tmp_path) == camp.COMPLETED
+    assert marks(tmp_path) == ([] if kept else ["checks"])
 
 
-@pytest.mark.parametrize("record_n, plan_n", [(24, 40), (40, 24), (40, 40)])
-def test_a_predictions_record_of_other_seeds_stops_before_any_f_run(tmp_path, record_n, plan_n):
-    path = tmp_path / "record.json"
-    path.write_text(json.dumps(predictions_of(camp.fresh_seeds(record_n))))
+def published(tmp_path, record):
+    """The record written with its sidecar, and its receipt: published."""
+    path = tmp_path / "pub" / "predictions-record.json"
+    digest = camp.write_record(path, record)
+    receipt = path.with_name(camp.RECEIPT_NAME)
+    receipt.write_text(json.dumps({"sha256": digest, "created": "t"}))
+    return path, receipt
+
+
+def check_published(path, receipt, seeds, gpu=GPU):
+    return camp.main(
+        [
+            "check-published",
+            "--record",
+            str(path),
+            "--receipt",
+            str(receipt),
+            "--gpu-code",
+            gpu,
+            "--seeds",
+            *map(str, seeds),
+        ]
+    )
+
+
+def predictions_plan(tmp_path, path, plan_n, gpu=GPU):
     step = camp.Step(
         "one/record",
         mark(tmp_path, "record"),
@@ -1031,32 +1092,44 @@ def test_a_predictions_record_of_other_seeds_stops_before_any_f_run(tmp_path, re
     )
     after = camp.Step("one/launch", mark(tmp_path, "launch"), kind="launch")
     plan = fake_plan(tmp_path, [camp.Block("one", (step, after)), camp.Block("close", ())])
-    plan.n = plan_n
+    plan.n, plan.gpu_code = plan_n, gpu
+    return plan
+
+
+@pytest.mark.parametrize("record_n, plan_n", [(24, 40), (40, 24), (40, 40)])
+def test_a_predictions_record_of_other_seeds_stops_before_any_f_run(tmp_path, record_n, plan_n):
+    path, receipt = published(tmp_path, predictions_of(camp.fresh_seeds(record_n)))
+    plan = predictions_plan(tmp_path, path, plan_n)
     expected = camp.COMPLETED if record_n == plan_n else camp.STOPPED
     assert run_plan(plan, tmp_path) == expected
     assert marks(tmp_path) == (["launch"] if record_n == plan_n else [])
     # check-published, before the first fresh run, refuses it the same way
-    digest = camp.write_record(
-        tmp_path / "pub" / "r.json", predictions_of(camp.fresh_seeds(record_n))
+    assert check_published(path, receipt, camp.fresh_seeds(plan_n)) == (
+        0 if record_n == plan_n else 1
     )
-    receipt = tmp_path / "pub" / "receipt.json"
-    receipt.write_text(json.dumps({"sha256": digest}))
-    argv = [
-        "check-published",
-        "--record",
-        str(tmp_path / "pub" / "r.json"),
-        "--receipt",
-        str(receipt),
-        "--commit",
-        COMMIT,
-        "--gpu-code",
-        GPU,
-        "--seeds",
-        *map(str, camp.fresh_seeds(plan_n)),
-    ]
-    assert camp.main(argv) == (0 if record_n == plan_n else 1)
-    other = [*argv[:6], "d" * 40, *argv[7:]]
-    assert camp.main(other) == 1  # another commit
+
+
+def test_a_predictions_record_is_bound_to_its_gpu_code_and_its_published_sha(tmp_path):
+    seeds = camp.fresh_seeds(24)
+    # a resume from a later commit of the same GPU code: the record's commit is information
+    path, receipt = published(tmp_path, predictions_of(seeds, commit="d" * 40))
+    plan = predictions_plan(tmp_path, path, 24)
+    plan.commit = "a" * 40
+    assert run_plan(plan, tmp_path) == camp.COMPLETED
+    assert marks(tmp_path) == ["launch"]
+    assert check_published(path, receipt, seeds) == 0
+    # another GPU code stops
+    shutil.rmtree(tmp_path / "c")
+    (tmp_path / "marks" / "launch").unlink()
+    assert run_plan(predictions_plan(tmp_path, path, 24, gpu="f" * 64), tmp_path) == camp.STOPPED
+    assert marks(tmp_path) == []
+    assert check_published(path, receipt, seeds, gpu="f" * 64) == 1
+    # a published copy whose sha256 is not the local record's stops
+    receipt.write_text(json.dumps({"sha256": "0" * 64, "created": "t"}))
+    shutil.rmtree(tmp_path / "c")
+    assert run_plan(predictions_plan(tmp_path, path, 24), tmp_path) == camp.STOPPED
+    assert marks(tmp_path) == []
+    assert check_published(path, receipt, seeds) == 1
 
 
 def test_every_planned_step_has_a_timeout_and_every_group_sets_its_deadline_first(where):
@@ -1190,3 +1263,131 @@ def test_a_gate_that_writes_a_record_that_does_not_stand_fails(tmp_path):
     assert run_plan(plan, tmp_path) == camp.STOPPED
     assert marks(tmp_path) == []
     assert camp.read_journal(plan.out / "journal.jsonl")["one/check"] == "failed"
+
+
+def rerun_dir(runs, name, config_hash, commit, dirty=False):
+    run = runs / "study3" / name
+    run.mkdir(parents=True)
+    run.joinpath("meta.json").write_text(
+        json.dumps(
+            {
+                "config_hash": config_hash,
+                "status": "completed",
+                "git": {"commit": commit, "dirty": dirty},
+            }
+        )
+    )
+    return run
+
+
+def test_engineering_reruns_of_another_gpu_code_are_moved_aside_then_recovered(tmp_path):
+    if not in_history(OTHER):
+        pytest.skip("study 3's qualified commit is not in this history")
+    runs = tmp_path / "runs"
+    keep = rerun_dir(runs, "keep-a1", "d1ce7a92e45b", HEAD["commit"])
+    old = rerun_dir(runs, "old-a1", "d1ce7a92e45b", OTHER)
+    dirty = rerun_dir(runs, "dirty-a1", "d1ce7a92e45b", HEAD["commit"], dirty=True)
+    rerun_dir(runs, "other-config-a1", "3b4601aa846f", OTHER)
+    stale = camp.stale_reruns(runs, "study3", "d1ce7a92e45b", HEAD["sha256"])
+    assert stale == sorted([old, dirty])
+    assert keep not in stale
+    plain = camp.engineering_launch(Path("e.yaml"), False, HEAD["sha256"])
+    assert plain == ["scripts/launch.py", "e.yaml", "--max-attempts", "1"]
+    moved = camp.engineering_launch(Path("e.yaml"), True, HEAD["sha256"])
+    assert moved[:4] == plain and moved[4] == "--recovery"
+    for run_dir in stale:  # as eng-launch moves them: aside, never deleted
+        camp.move_aside(runs, run_dir.relative_to(runs).as_posix())
+    assert sorted(p.name.rsplit("-a1-", 1)[0] for p in (runs / "aside").iterdir()) == [
+        "study3--dirty",
+        "study3--old",
+    ]
+    assert keep.exists()
+
+
+def test_the_engineering_campaign_hashes_are_the_launchers(where, tmp_path):
+    plan = pod1(where)
+    step = next(s for s in steps(plan) if s.name == "engineering/launch")
+    name = Path(step.argv[step.argv.index("--campaign-file") + 1]).stem
+    path = tmp_path / f"{name}.yaml"
+    path.write_text(plan.campaigns[name])
+    assert camp.campaign_hashes(path) == [
+        (r.experiment, r.config_hash) for r in load_campaign(path)[1]
+    ]
+    assert {h for _, h in camp.campaign_hashes(path)} == STUDY3_F_HASHES
+
+
+DRIVER = r"""
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("c", sys.argv[1])
+camp = importlib.util.module_from_spec(spec); sys.modules["c"] = camp; spec.loader.exec_module(camp)
+tmp = Path(sys.argv[2])
+slow = camp.Step("one/slow", ("-c", "import time; time.sleep(120)"), timeout=300)
+touch = f"import pathlib; pathlib.Path(r'{tmp}/closed').touch()"
+close = camp.Step("close/deadline", ("-c", touch), kind="deadline", always=True)
+plan = camp.Plan(pod="t", archive_id="t", out=tmp / "c", runs=tmp / "r", data=tmp / "d",
+                 checkpoints=tmp / "k", commit="c" * 40, gpu_code="e" * 64, n=None,
+                 blocks=[camp.Block("one", (slow,)), camp.Block("close", (close,))])
+(tmp / "c").mkdir()
+camp.install_sigterm()
+camp.execute(plan, python=[sys.executable], cwd=tmp, env={})
+"""
+
+
+def test_sigterm_to_the_driver_runs_the_close(tmp_path):
+    script = tmp_path / "driver.py"
+    script.write_text(DRIVER)
+    process = subprocess.Popen(
+        [sys.executable, str(script), str(REPO_ROOT / camp.SELF), str(tmp_path)], env={**os.environ}
+    )
+    journal = tmp_path / "c" / "journal.jsonl"
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and not (
+        journal.exists() and '"step": "one/slow"' in journal.read_text()
+    ):
+        time.sleep(0.2)
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(timeout=60) == camp.STOPPED
+    assert (tmp_path / "closed").exists()
+    assert camp.read_journal(journal)["one/slow"] == "interrupted"  # a restart runs it again
+
+
+def test_a_checkpoint_archived_earlier_counts_only_with_its_recorded_sha(tmp_path, bucket):
+    runs, ckpt = tmp_path / "runs", tmp_path / "ckpt"
+    journal_of(
+        runs, "f", [{"event": "start", "run": "low/s1", "run_id": "r-a1", "experiment": "study5"}]
+    )
+    (runs / "study5" / "r-a1").mkdir(parents=True)
+    ckpt.mkdir()
+    digest = hashlib.sha256(b"weights").hexdigest()
+    (runs / "study5" / "r-a1" / "summary.json").write_text(
+        json.dumps({"endpoint_checkpoint": {"sha256": digest}})
+    )
+    (bucket / "study5/t/checkpoints").mkdir(parents=True)
+    (bucket / "study5/t/checkpoints/r-a1.pt").write_bytes(b"weights")
+    inventories = bucket / "study5/t/inventories"
+    inventories.mkdir(parents=True)
+    header = "path\tsize\tsha256\tmd5_b64\turl\tstatus\n"
+    argv = [
+        "checkpoint",
+        "--runs",
+        str(runs),
+        "--campaign",
+        "f",
+        "--label",
+        "low/s1",
+        "--dir",
+        str(ckpt),
+        "--inventory",
+        str(tmp_path / "new-out" / "ck.tsv"),
+        "--remote",
+        "study5/t/checkpoints",
+        "--inventories-remote",
+        "study5/t/inventories",
+    ]
+    (inventories / "ck.tsv").write_text(header + f"r-a1.pt\t7\t{'0' * 64}\tx\tu\tok\n")
+    assert camp.main(argv) == 1  # the archive shows another sha256
+    (inventories / "ck.tsv").write_text(header + f"r-a1.pt\t7\t{digest}\tx\tu\tok\n")
+    for p in (tmp_path / "new-out").rglob("*"):
+        p.is_file() and p.unlink()
+    assert camp.main(argv) == 0

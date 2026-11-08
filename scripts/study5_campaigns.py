@@ -64,7 +64,9 @@ controls at η_l (experiments/study5_control_order; experiments/study5_control_v
 seed 50000 + ((s - 50000 + 1) mod 6)), then the ladder's rungs ``isotropic``, ``linear_no_d`` and
 ``linear`` (``scripts/study5_ladder.py``, on the seed's fresh F run at η_l; ``linear_shuffled_d``
 runs only on a later decision). ``check-published`` also requires the record to hold exactly the
-plan's seeds in order, its n and the plan's commit and GPU code; a mismatch stops the campaign
+plan's seeds in order, its n and the plan's GPU code identity, and its sha256 the published
+copy's (the receipt's and the sidecar's); its commit is information only. A mismatch stops the
+campaign
 before any F run. No labeling: labels are opened only after every fresh run has
 ended, in a separate step.
 
@@ -84,12 +86,17 @@ each attempt's output in ``logs/``). Started again with the same arguments from 
 and, inside a block, every step that ended, every launch whose runs all completed (by the
 launcher's journal) and every step whose outputs exist; a step left started without an end (the
 Pod stopped) runs again. A gate's record is kept only by its verdict (``gate_problem``): the
-engineering check equal for reruns of the plan's commit, the surrogate checks passed, each under
-the plan's commit (clean) and GPU code identity; otherwise it is moved aside beside itself
-(``<record>.aside-<UTC>``, never deleted) and the gate runs again. A predictions record that is
-not of the plan's seeds, n and code fails its step: a stop. So a stopped campaign goes on from a
-new --out with the same --archive-id: records that stand are kept, completed runs are not
-launched again, identical archives are no conflict. A ladder rung's partial run directory is
+engineering check equal for reruns of the plan's GPU code from a clean checkout, the surrogate
+checks passed, each written under the plan's GPU code identity from a clean checkout (a commit
+is compared by its GPU code identity, never by itself); otherwise it is moved aside beside itself
+(``<record>.aside-<UTC>``, never deleted) and the gate runs again. The engineering reruns of
+another GPU code are moved aside too (``eng-launch``, to ``RUNS_DIR/aside/``, never deleted), as
+the launcher would reuse them by their config hash, and the cells run again in their one recovery
+round. A predictions record that does not stand fails its step: a stop. So a stopped campaign goes
+on from a new --out with the same --archive-id, from the same commit or a later one of the same
+GPU code: records that stand are kept, completed runs are not launched again, identical archives
+are no conflict. SIGTERM to the driver kills the running step (a restart runs it again) and runs
+the close. A ladder rung's partial run directory is
 first moved aside
 (``RUNS_DIR/aside/``), never reused. A launcher run the Pod stopped is settled by the launcher.
 
@@ -152,6 +159,7 @@ STUDY3_STREAMS_INVENTORY = "runs/archive/inventory-2026-11-05-study3-confirmatio
 SKIPPED = ("wandb", "judge", "judge-superseded")  # never fetched from study 3's run folders
 CHECKPOINTS = Path("/root/ckpt/study5")
 IDENTITY_FILE = "docs/study5-code-identity.json"
+RECEIPT_NAME = "predictions-receipt.json"  # beside the predictions record
 CLOSE = "close"
 END_MINUTES = 15  # the deadline after the close: the watcher stops the Pod
 MARGIN = 60
@@ -605,8 +613,16 @@ def pod1_plan(
         }
         for eta in (ETA_L, ETA_U)
     ]
-    _, eng = b.launch(
-        "engineering", "engineering", cells, minutes="engineering-runs", on_fail="stop"
+    # The reruns are reused only when they ran under the plan's GPU code: the launcher reuses a
+    # completed run of the same config hash from any campaign (eng-launch)
+    eng_file = b.launcher("engineering", "engineering", cells)
+    eng = Path(eng_file).stem
+    b.step(
+        "engineering/launch",
+        b.own("eng-launch", "--runs", b.runs, "--campaign-file", eng_file, "--gpu-code", gpu_code),
+        kind="launch",
+        on_fail="stop",
+        minutes="engineering-runs",
     )
     check = b.record("engineering-check.json")
     labels = [label(cell) for cell in cells]
@@ -753,7 +769,7 @@ def pod2_plan(
 
     b.begin()  # the predictions record, in the bucket and verified before any fresh F run
     record = b.record("predictions-record.json")
-    receipt = b.record("predictions-receipt.json")
+    receipt = b.record(RECEIPT_NAME)
     b.step(
         "predictions/record",
         b.own(
@@ -798,8 +814,6 @@ def pod2_plan(
             record,
             "--receipt",
             receipt,
-            "--commit",
-            commit,
             "--gpu-code",
             gpu_code,
             "--seeds",
@@ -1171,10 +1185,11 @@ def _blocks(plan: Plan, status: dict[str, str], run: dict[str, Any]) -> bool:
 
 
 def gate_problem(kind: str, path: Path, plan: Plan) -> str | None:
-    """Why a gate's existing record does not stand for the plan, or None: its verdict (the
-    engineering check equal, the surrogate checks passed; the predictions record of exactly
-    the plan's seeds in order) and its code, the plan's commit from a clean checkout and the
-    plan's GPU code identity (recorded, or of the recorded commit)."""
+    """Why a gate's existing record does not stand for the plan, or None. Its verdict (the
+    engineering check equal, the surrogate checks passed; the predictions record of exactly the
+    plan's seeds in order and as published) and its code: the plan's GPU code identity, from a
+    clean checkout. A commit is compared by its GPU code identity, never by itself: a later
+    commit that changes no GPU path keeps every gate."""
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -1182,50 +1197,67 @@ def gate_problem(kind: str, path: Path, plan: Plan) -> str | None:
     if not isinstance(record, dict):
         return "not a record"
     if kind == "predictions":
-        return predictions_problem(record, fresh_seeds(plan.n), plan.commit, plan.gpu_code)
+        return predictions_problem(record, fresh_seeds(plan.n), plan.gpu_code) or (
+            published_problem(path, path.parent / RECEIPT_NAME, required=False)
+        )
     if kind == "engineering":
         if record.get("equal") is not True:
             return "the engineering check found a difference"
-        for pair in record.get("pairs") or []:
-            if pair.get("rerun_commit") != plan.commit or pair.get("rerun_dirty") is not False:
-                return f"rerun {pair.get('rerun')} is not of the plan's commit, clean"
         if not record.get("pairs"):
             return "the engineering check holds no pair"
+        for pair in record["pairs"]:
+            if pair.get("rerun_dirty") is not False:
+                return f"rerun {pair.get('rerun')} was not run from a clean checkout"
+            if identity_of(pair.get("rerun_commit")) != plan.gpu_code:
+                return f"rerun {pair.get('rerun')} ran under another GPU code"
     elif kind == "surrogate":
         if record.get("passes") is not True:
             return "the surrogate checks did not pass"
     else:
         raise ValueError(f"unknown gate {kind!r}")
-    return code_problem(record, plan.commit, plan.gpu_code)
+    return code_problem(record, plan.gpu_code)
 
 
-def code_problem(record: dict[str, Any], commit: str, gpu_code: str) -> str | None:
-    """The record's code against the plan's: the commit (``code.commit``, else ``git.commit``)
-    from a clean checkout (``git.dirty`` false where recorded) and the GPU code identity
-    (``code.gpu_code_sha256``, else that of the recorded commit)."""
+_IDENTITIES: dict[str, str | None] = {}
+
+
+def identity_of(commit: Any) -> str | None:
+    """The GPU code identity of ``commit`` in this checkout's history; None when it cannot be
+    told (no commit, or one this checkout cannot place)."""
+    if not isinstance(commit, str) or not commit:
+        return None
+    if commit not in _IDENTITIES:
+        try:
+            _IDENTITIES[commit] = code_identity.gpu_code_identity(commit)["sha256"]
+        except Exception:
+            _IDENTITIES[commit] = None
+    return _IDENTITIES[commit]
+
+
+def code_problem(record: dict[str, Any], gpu_code: str) -> str | None:
+    """The record's code against the plan's: a clean checkout (``git.dirty`` false where
+    recorded) and the GPU code identity of its commit (``code.commit``, else ``git.commit``;
+    one this checkout can place), with which a recorded ``code.gpu_code_sha256`` agrees."""
     code = record.get("code") if isinstance(record.get("code"), dict) else {}
     git = record.get("git") if isinstance(record.get("git"), dict) else {}
-    found = code.get("commit") or git.get("commit")
-    if found != commit:
-        return f"its commit {str(found)[:12]} is not the plan's {commit[:12]}"
     if "dirty" in git and git["dirty"] is not False:
         return "it was written from a checkout that was not clean"
-    identity = code.get("gpu_code_sha256")
-    if identity is None:
-        try:
-            identity = code_identity.gpu_code_identity(found)["sha256"]
-        except Exception:  # a commit this checkout cannot place
-            return f"the GPU code of its commit {str(found)[:12]} cannot be told"
-    if identity != gpu_code:
+    commit = code.get("commit") or git.get("commit")
+    found = identity_of(commit)
+    if found is None:
+        return f"the GPU code of its commit {str(commit)[:12]} cannot be told"
+    recorded = code.get("gpu_code_sha256")
+    if recorded is not None and recorded != found:
+        return "its recorded GPU code is not its commit's"
+    if found != gpu_code:
         return "its GPU code identity is not the plan's"
     return None
 
 
-def predictions_problem(
-    record: dict[str, Any], seeds: list[int], commit: str, gpu_code: str
-) -> str | None:
-    """The predictions record against the plan: its kind, exactly the plan's seeds in order,
-    its n, and its code (``code.commit``, ``code.gpu_code_sha256``) the plan's."""
+def predictions_problem(record: dict[str, Any], seeds: list[int], gpu_code: str) -> str | None:
+    """The predictions record against the plan: its kind, exactly the plan's seeds in order, its
+    n and its GPU code identity (``code.gpu_code_sha256``) the plan's. Its commit
+    (``code.commit``) is information: a later commit of the same GPU code keeps it."""
     if record.get("kind") != "study5-predictions":
         return "not a predictions record"
     if record.get("seeds") != list(seeds) or record.get("n") != len(seeds):
@@ -1235,9 +1267,25 @@ def predictions_problem(
         )
     if [e.get("seed") for e in record.get("predictions") or []] != list(seeds):
         return "its predictions are not the plan's seeds, in order"
-    code = record.get("code") or {}
-    if code.get("commit") != commit or code.get("gpu_code_sha256") != gpu_code:
-        return "its code is not the plan's commit and GPU code"
+    if (record.get("code") or {}).get("gpu_code_sha256") != gpu_code:
+        return "its GPU code identity is not the plan's"
+    return None
+
+
+def published_problem(record: Path, receipt: Path, *, required: bool = True) -> str | None:
+    """The record against its publication: its sha256 that of the bucket copy (the receipt's,
+    written after the copy was read back) and its sidecar's. With ``required`` false, a record
+    not yet published has no problem here."""
+    if not receipt.is_file():
+        return "it is not published (no receipt)" if required else None
+    try:
+        published = json.loads(receipt.read_text(encoding="utf-8")).get("sha256")
+        sidecar = record.with_name(record.name + ".sha256").read_text(encoding="utf-8")
+    except (OSError, ValueError, AttributeError) as exc:
+        return f"its receipt or sidecar is unreadable ({type(exc).__name__})"
+    digest = sha256_of(record)
+    if published != digest or sidecar != f"{digest}  {record.name}\n":
+        return "its sha256 is not the published copy's"
     return None
 
 
@@ -1270,8 +1318,17 @@ def archive(inventory: Path, prefix: str, root: Path, paths: list[str]) -> dict[
     """``scripts/archive.py INVENTORY PREFIX ROOT PATH...`` as its own process (every object's
     size and MD5 checked, the inventory appended); the files and their verified count."""
     done = subprocess.run(
-        [sys.executable, str(REPO / "scripts" / "archive.py"), str(inventory), prefix, str(root),
-         *paths], capture_output=True, text=True)  # fmt: skip
+        [
+            sys.executable,
+            str(REPO / "scripts" / "archive.py"),
+            str(inventory),
+            prefix,
+            str(root),
+            *paths,
+        ],
+        capture_output=True,
+        text=True,
+    )
     lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
     if not lines:
         raise StepError(f"scripts/archive.py failed (exit {done.returncode})")
@@ -1614,6 +1671,60 @@ def cmd_fetch_run(args) -> int:
     return 0
 
 
+def stale_reruns(runs: Path, experiment: str, config_hash: str, gpu_code: str) -> list[Path]:
+    """The run directories of one config that did not run under ``gpu_code`` from a clean
+    checkout (``meta.json``'s git state and its commit's GPU code identity)."""
+    out = []
+    for run_dir in sorted(p for p in (runs / experiment).glob("*") if p.is_dir()):
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # the launcher settles a run without a readable meta.json
+        if meta.get("config_hash") != config_hash:
+            continue
+        git = meta.get("git") or {}
+        if git.get("dirty") is not False or identity_of(git.get("commit")) != gpu_code:
+            out.append(run_dir)
+    return out
+
+
+def campaign_hashes(campaign_file: Path) -> list[tuple[str, str]]:
+    """Each run's experiment and config hash in a launcher campaign, as the launcher computes
+    them (its cell's config with its overrides, then ``seed=N``)."""
+    from zero_field_refusal.config import config_hash
+    from zero_field_refusal.protocol import load_run_config
+
+    data = yaml.safe_load(campaign_file.read_text(encoding="utf-8"))
+    out = []
+    for cell in data["cells"]:
+        for seed in cell["seeds"]:
+            cfg = load_run_config(cell["config"], [*cell.get("overrides", []), f"seed={seed}"])
+            out.append((str(cfg.experiment), config_hash(cfg)))
+    return out
+
+
+def engineering_launch(campaign_file: Path, moved: bool, gpu_code: str) -> list[str]:
+    """The launcher's command for the engineering reruns: plain, or, once a stale rerun was
+    moved aside (its start is then a used attempt), the cells' one recovery round."""
+    argv = ["scripts/launch.py", str(campaign_file), "--max-attempts", "1"]
+    if moved:
+        argv += ["--recovery", f"reruns under GPU code {gpu_code[:12]}"]
+    return argv
+
+
+def cmd_eng_launch(args) -> int:
+    """The engineering reruns: a rerun of another GPU code (or of an unclean checkout) is moved
+    aside to ``RUNS_DIR/aside/`` (never deleted, never reused), then the launcher runs."""
+    moved = False
+    for experiment, found in campaign_hashes(args.campaign_file):
+        for run_dir in stale_reruns(args.runs, experiment, found, args.gpu_code):
+            target = move_aside(args.runs, run_dir.relative_to(args.runs).as_posix())
+            print(f"moved aside {run_dir.name}: not of GPU code {args.gpu_code[:12]} ({target})")
+            moved = True
+    argv = engineering_launch(args.campaign_file, moved, args.gpu_code)
+    return subprocess.run([sys.executable, str(REPO / argv[0]), *argv[1:]], cwd=REPO).returncode
+
+
 def cmd_with_runs(args) -> int:
     command = list(args.command)
     if command and command[0] == "--":
@@ -1715,9 +1826,8 @@ def cmd_checkpoint(args) -> int:
         if recorded is None:
             print(f"no checkpoint of {run_id}")
             return 0
-        url = f"{artifact_remote()}/{args.remote}/{path.name}"
-        if json.loads(gcloud(["objects", "list", url, "--format=json"])):
-            print(f"checkpoint {run_id} archived earlier and removed from the disk")
+        if archived_earlier(args, path.name, recorded):
+            print(f"checkpoint {run_id} archived earlier, sha256 {recorded}, removed from the disk")
             return 0
         raise StepError(f"{path.name}: recorded by its run but neither on the disk nor archived")
     if not isinstance(recorded, str):
@@ -1730,6 +1840,34 @@ def cmd_checkpoint(args) -> int:
     remove_checkpoint(path, args.dir, digest, read_inventory(args.inventory))
     print(f"checkpoint {run_id} sha256 {digest} archived, verified and removed")
     return 0
+
+
+def archived_earlier(args, name: str, recorded: str) -> bool:
+    """Whether the checkpoint ``name`` is in the bucket with the sha256 its run recorded: its
+    object exists and the inventory of its archive (this --out's, else the copy archived
+    beside the others) shows it verified with that sha256."""
+    base = artifact_remote()
+    if not json.loads(gcloud(["objects", "list", f"{base}/{args.remote}/{name}", "--format=json"])):
+        return False
+    inventory = args.inventory
+    if not inventory.is_file():
+        inventory = args.inventory.parent / ".staging" / f"remote-{args.inventory.name}"
+        inventory.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            gcloud(
+                [
+                    "cp",
+                    "--quiet",
+                    f"{base}/{args.inventories_remote}/{args.inventory.name}",
+                    str(inventory),
+                ]
+            )
+        except StepError:
+            raise StepError(f"{name}: archived, but no inventory shows its sha256") from None
+    rows = [r for r in read_inventory(inventory) if r.get("path") == name]
+    if not rows or any(r.get("status") != "ok" or r.get("sha256") != recorded for r in rows):
+        raise StepError(f"{name}: the archived object is not shown verified with its run's sha256")
+    return True
 
 
 def cmd_predictions(args) -> int:
@@ -1790,22 +1928,19 @@ def cmd_publish(args) -> int:
 
 
 def cmd_check_published(args) -> int:
-    """Before any fresh F run: the record is the one published (its sha256 in the receipt and
-    its sidecar), of exactly the plan's seeds in order and n, under the plan's commit and GPU
-    code."""
-    if not args.receipt.is_file() or not args.record.is_file():
-        raise StepError("the predictions record or its receipt is missing: no fresh run starts")
-    receipt = json.loads(args.receipt.read_text())
-    digest = sha256_of(args.record)
-    sidecar = args.record.with_name(args.record.name + ".sha256").read_text(encoding="utf-8")
-    if receipt.get("sha256") != digest or sidecar != f"{digest}  {args.record.name}\n":
-        raise StepError("the predictions record is not the one published")
-    problem = predictions_problem(
-        json.loads(args.record.read_text(encoding="utf-8")), args.seeds, args.commit, args.gpu_code
-    )
+    """Before any fresh F run: the record is the one published (its sha256 that of the bucket
+    copy, in the receipt and its sidecar), of exactly the plan's seeds in order and n, under the
+    plan's GPU code identity."""
+    if not args.record.is_file():
+        raise StepError("the predictions record is missing: no fresh run starts")
+    problem = published_problem(args.record, args.receipt)
+    if problem is None:
+        record = json.loads(args.record.read_text(encoding="utf-8"))
+        problem = predictions_problem(record, args.seeds, args.gpu_code)
     if problem is not None:
         raise StepError(f"the predictions record does not stand for this plan: {problem}")
-    print(f"published {args.record.name} sha256 {digest} created {receipt.get('created')}")
+    created = json.loads(args.receipt.read_text(encoding="utf-8")).get("created")
+    print(f"published {args.record.name} sha256 {sha256_of(args.record)} created {created}")
     return 0
 
 
@@ -1859,6 +1994,17 @@ def show(plan: Plan) -> None:
             print(f"  [{step.on_fail}] {step.name}: {' '.join(step.argv)}")
 
 
+def install_sigterm() -> None:
+    """SIGTERM to the driver raises SystemExit: the running step's process group is killed (its
+    start stays without an end: a restart runs it again), and the close, its deadline last, runs
+    in ``execute``'s ``finally``."""
+
+    def stop(signum, frame):
+        raise SystemExit(STOPPED)
+
+    signal.signal(signal.SIGTERM, stop)
+
+
 def cmd_pod(args) -> int:
     commit = git_state(REPO).get("commit") or "unknown"
     try:
@@ -1901,6 +2047,7 @@ def cmd_pod(args) -> int:
         "DATA_DIR": str(plan.data),
         "PYTHONUNBUFFERED": "1",
     }
+    install_sigterm()
     code = execute(plan, python=[sys.executable], cwd=REPO, env=env)
     print(f"== {_now()} {plan.pod} {'completed' if code == COMPLETED else 'stopped'}")
     return code
@@ -1927,6 +2074,10 @@ def parser_of() -> argparse.ArgumentParser:
     p = sub.add_parser("fetch-run")
     p.add_argument("--run-id", required=True)
     p.add_argument("--dest", type=Path, required=True)
+    p = sub.add_parser("eng-launch")
+    p.add_argument("--runs", type=Path, required=True)
+    p.add_argument("--campaign-file", type=Path, required=True)
+    p.add_argument("--gpu-code", required=True)
     p = sub.add_parser("with-runs")
     p.add_argument("--runs", type=Path, required=True)
     p.add_argument("--campaign", required=True)
@@ -1972,7 +2123,6 @@ def parser_of() -> argparse.ArgumentParser:
     p = sub.add_parser("check-published")
     p.add_argument("--record", type=Path, required=True)
     p.add_argument("--receipt", type=Path, required=True)
-    p.add_argument("--commit", required=True)
     p.add_argument("--gpu-code", required=True)
     p.add_argument("--seeds", type=int, nargs="+", required=True)
     return parser
@@ -1985,6 +2135,7 @@ COMMANDS = {
     "fetch-streams": cmd_fetch_streams,
     "fetch-run": cmd_fetch_run,
     "with-runs": cmd_with_runs,
+    "eng-launch": cmd_eng_launch,
     "archive": cmd_archive,
     "snapshot": cmd_snapshot,
     "receipt": cmd_receipt,
