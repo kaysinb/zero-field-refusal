@@ -4,14 +4,15 @@
 
     python scripts/study5_campaigns.py pod1 --out DIR --archive-id ID [--surrogate SPEC]
         [--dry-run]
-    python scripts/study5_campaigns.py pod2 --out DIR --archive-id ID [--n 40|24]
+    python scripts/study5_campaigns.py pod2 --out DIR --archive-id ID [--n 40|24 (the committed)]
         --engineering-check RECORD --surrogate-checks RECORD --retrospective RECORD
         [--surrogate SPEC] [--checkpoints DIR] [--dry-run]
 
 On a Pod: ``project-run "$SRC" python scripts/study5_campaigns.py pod1 ...``, detached. The other
 commands (``deadline``, ``fetch-streams``, ``fetch-run``, ``with-runs``, ``archive``,
-``snapshot``, ``receipt``, ``check-checkpoints``, ``checkpoint``, ``predictions``, ``publish``,
-``check-published``) are the steps the drivers run; each prints numbers, ids, paths and hashes
+``snapshot``, ``receipt``, ``check-checkpoints``, ``checkpoint``, ``completion``,
+``export-checkpoints``, ``predictions``, ``publish``, ``check-published``) are the steps the
+drivers run; each prints numbers, ids, paths and hashes
 only, and exits 0 on success, 1 otherwise.
 
 **The plan.** A campaign is a plan: blocks of steps, each step a command line (its argv) with
@@ -28,9 +29,13 @@ its process group is killed and the step has failed, under its rule. A block end
 its records to the bucket, verified
 (``scripts/archive.py``: every object's size and MD5; each inventory archived too and read back),
 a snapshot of the campaign's journal and logs, and the block's receipt. A last block, ``close``,
-run at every end, after a stop and on any exception of the driver (its deadline in a
-``finally``), archives the plan, the launcher campaigns and the receipts and sets the deadline 15
-minutes ahead, so that the watcher stops the Pod and nothing is left running.
+run at every end, after a stop and on any exception of the driver or SIGTERM (its deadline in a
+``finally``): on pod 2 it first sets a window for, and attempts, the export of every recorded
+endpoint checkpoint not yet verified in the archive (``export-checkpoints``: uploaded, verified
+against the run's recorded sha256; a failure that remains is in its record and printed with the
+path, the sha256 and the error, and the close goes on); then it archives the plan, the launcher
+campaigns, the receipts and that record and sets the deadline 15 minutes ahead, so that the
+watcher stops the Pod and nothing is left running.
 
 **Pod 1** (order steps 1-2 of the registration): ``engineering``: seed 10403's streams fetched
 from the bucket; study 3's archived records of its F runs at both rates (the run ids from study
@@ -61,17 +66,20 @@ endpoint checkpoint); the surrogate r at its endpoint from that checkpoint
 (``scripts/study5_surrogate_endpoint.py``); the line scan of its endpoint, a run of its own from
 the checkpoint (``scripts/study5_scan.py``, experiment ``study5_scan``; a partial run directory
 is moved aside before it runs again); then the checkpoint removed; then the F run at η_u (the same
-config), each F run in a launcher campaign of its own. The checkpoint is archived and verified
-right after the η_l run (``checkpoint --keep``), so that a Pod stop, which wipes the container
-disk, loses none: the endpoint's r and the scan fetch it back from that archive, its sha256
-checked, when it is gone (``with-runs --restore-*``). A failure of the endpoint's r or of the
+config), each F run in a launcher campaign of its own; after the last seed, the completion record
+(``completion``: every fresh run the launcher journals show as started, with its end and
+outcome, written only when no started one lacks an end; kept only while the journals still say
+the same), which the analysis requires before any fresh label. The checkpoint is archived and
+verified right after the η_l run (``checkpoint --keep``), so that a Pod stop, which wipes the
+container disk, loses none: the endpoint's r and the scan fetch it back from that archive, its
+sha256 checked, when it is gone (``with-runs --restore-*``). A failure of the endpoint's r or of the
 scan is the seed's, recorded; it takes nothing from the η_l run. Each
 endpoint checkpoint is archived, verified and then removed from the container disk by
 ``remove_checkpoint``, which refuses any path but that run's own ``<dir>/<run id>.pt``; a seed's
 runs start only while at most one checkpoint is on the disk (``check-checkpoints``), so it holds
 at most two. ``controls``: seeds 50000-50005 (those of the campaign's seeds): the two crossed
 controls at η_l (experiments/study5_control_order; experiments/study5_control_v0 with v₀ from
-seed 50000 + ((s - 50000 + 1) mod 6)), then the ladder's rungs ``isotropic``, ``linear_no_d`` and
+seed 50000 + ((s - 50000 + 1) mod 6)), then the ladder's rungs ``gaussian_d``, ``linear_no_d`` and
 ``linear`` (``scripts/study5_ladder.py``, on the seed's fresh F run at η_l; ``linear_shuffled_d``
 runs only on a later decision). ``check-published`` also requires the record to hold exactly the
 plan's seeds in order, its n and the plan's GPU code identity, and its sha256 the published
@@ -89,10 +97,22 @@ checkpoint count, every archive and every deadline. The checkpoint step refuses 
 whose run records no sha256 for it (the file stays, and the next seed's count stops the
 campaign). A failed step is not run again by a restart; a stop recorded stops again.
 
+**Attempts.** Each execution of the driver is an attempt with its own id (``new_attempt``: the UTC
+time and a short random suffix; in the journal's ``driver`` line). Every file that can change
+between attempts goes to the bucket under ``study5/<ID>/attempts/<attempt>/``: the launcher
+journals and logs, the directories of runs without an end, a scan or ladder run before its
+record, the gates' records and the completion record (``runs/``), the snapshots, the plan, the
+campaigns and the receipts (``campaign/``), every inventory (``inventories/``). What is written
+once keeps its stable place: the records of the scripts, the streams, the directory of a run its
+journal shows ended, a scan or ladder run with its record, the checkpoints (and their
+inventories, named by the run), the predictions record. So a later attempt never writes an
+object an earlier one wrote; one it finds already there is checked identical (``archive.py
+--no-clobber``), never replaced.
+
 **Resumable.** The driver keeps ``journal.jsonl`` in --out (a start and an end line per step;
-each attempt's output in ``logs/``). Started again with the same arguments from the same commit
-(the plan must equal ``plan.json``), it skips a block whose receipt exists (its archive verified)
-and, inside a block, every step that ended, every launch whose runs all completed (by the
+each run of a step's output in ``logs/``). Started again with the same arguments from the same
+commit (the plan must equal ``plan.json``), it skips a block whose receipt exists (its archive
+verified) and, inside a block, every step that ended, every launch whose runs all completed (by the
 launcher's journal) and every step whose outputs exist; a step left started without an end (the
 Pod stopped) runs again. A gate's record is kept only by its verdict (``gate_problem``): the
 engineering check equal for reruns of the plan's GPU code from a clean checkout, the surrogate
@@ -115,14 +135,18 @@ records. Runs go to RUNS_DIR, the records of the study-5 scripts to
 ``RUNS_DIR/study5_records/<ID>/``; the endpoint checkpoints to --checkpoints (default
 ``/root/ckpt/study5``, the container disk). In the bucket (``ARTIFACT_REMOTE``, read from the
 environment; the archive key ``ARTIFACT_GCS_KEY`` too; neither is written anywhere):
-``study5/<ID>/runs``, ``checkpoints``, ``predictions``, ``campaign`` and ``inventories``, and the
-fresh streams under ``data/`` as every stream. Before it starts, the driver checks the checkout
+``study5/<ID>/runs``, ``checkpoints``, ``predictions``, ``inventories`` (the checkpoints') and
+``attempts/<attempt>/`` (``runs``, ``campaign``, ``inventories``: "Attempts"), and the fresh
+streams under ``data/`` as every stream. Before it starts, the driver checks the checkout
 is clean and that its GPU code is the one ``docs/study5-code-identity.json`` records.
 
 **Pod 2's preflight** (every start) also requires, each given by path: the registration at the
 checkout's commit ``Status: `registered``` and naming the sha256 of the committed
 ``docs/study5-fixation.json`` and of the retrospective record (``--retrospective``, of that
-fixation record); pod 1's engineering-check record (``--engineering-check``) equal for reruns
+fixation record); the n chosen before generation, ``docs/study5-confirmatory-seeds.json`` at that
+commit (``{"n", "seeds"}``: 40 seeds 50000-50039 or 24 seeds 50000-50023), its sha256 named in the
+registration there and the plan's fresh seeds exactly its seeds (``--n`` defaults to its n;
+another is refused); pod 1's engineering-check record (``--engineering-check``) equal for reruns
 under the plan's GPU code identity; pod 1's surrogate-checks record (``--surrogate-checks``)
 passed, under that identity, of the plan's surrogate (the same sha256). Both plans name one
 surrogate spec (``--surrogate``, default ``configs/study5/surrogate.yaml``, a path in the
@@ -142,6 +166,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -168,7 +193,7 @@ BATCH, UPDATES = 20, 25
 FRESH_FIRST = 50000
 N_CHOICES = (40, 24)
 CONTROL_SEEDS = tuple(range(50000, 50006))
-RUNGS = ("isotropic", "linear_no_d", "linear")  # linear_shuffled_d: only on a later decision
+RUNGS = ("gaussian_d", "linear_no_d", "linear")  # linear_shuffled_d: only on a later decision
 SCAN_EXPERIMENT = "study5_scan"  # line_scan.EXPERIMENT: the scan runs' directory under RUNS_DIR
 ENGINEERING_SEED = 10403
 STUDY3_CONFIG = "experiments/study3"
@@ -183,12 +208,16 @@ IDENTITY_FILE = "docs/study5-code-identity.json"
 REGISTRATION = "docs/study5-preregistration.md"
 FIXATION = "docs/study5-fixation.json"
 REGISTERED = re.compile(r"^Status: `registered`", re.MULTILINE)
+# The n chosen before generation and its seeds, committed; the registration names its sha256
+SEEDS_FILE = "docs/study5-confirmatory-seeds.json"
 # The surrogate's spec (scripts/study5_surrogate_checks.py, study5_predict.py and
 # study5_surrogate_endpoint.py take it by --surrogate): a second set, if the checks at θ₀ fail,
 # goes in a new file of the checkout, named here by --surrogate of both plans
 SURROGATE = "configs/study5/surrogate.yaml"
 RECEIPT_NAME = "predictions-receipt.json"  # beside the predictions record
 CLOSE = "close"
+# Replaced in a step's argv by the execution attempt's id when the step runs (``execute``)
+ATTEMPT = "{attempt}"
 END_MINUTES = 15  # the deadline after the close: the watcher stops the Pod
 MARGIN = 60
 COMPLETED, ERROR, STOPPED = 0, 1, 3
@@ -196,8 +225,9 @@ _ID = re.compile(r"[a-z0-9][a-z0-9-]{0,23}")
 # Minutes per step. Measured on study 3's L40S Pod where a unit cost exists: an F run 6.9; an
 # evaluation without training 3.1; a K-only point 1.5; five scan points (five evaluations) 15.5;
 # a stream 91.7 s per 1000 responses (1500 per seed: 500 training, 1000 for v₀); the predictor
-# 1.7 per seed; a ladder rung three K-only points and one evaluation, 7.6; an endpoint
-# checkpoint's save 0.5. Assumed where none is measured, as named. They set each block's and each
+# 1.7 per seed; a ladder rung three K-only points, two more for the matched-K step (K at c₁ and
+# at most one refinement c₂, ladder.refine) and one evaluation, 10.6; an endpoint checkpoint's
+# save 0.5. Assumed where none is measured, as named. They set each block's and each
 # seed group's deadline (2 × the sum + MARGIN) and each step's timeout (timeout_of).
 F_RUN, EVALUATION, K_POINT, SCAN, CKPT_SAVE = 6.9, 3.1, 1.5, 15.5, 0.5
 SCAN_LOAD = 2.0  # assumed: two models loaded, a 5.24 GB checkpoint hashed and read, the panels
@@ -222,7 +252,7 @@ MINUTES = {
     "checkpoint": 4.0,  # assumed: a 5.24 GB checkpoint hashed and uploaded at about 25 MB/s
     "checkpoint-remove": 0.5,  # assumed: the checkpoint hashed again, then removed
     "controls": 2 * F_RUN,
-    "rung": 3 * K_POINT + EVALUATION,
+    "rung": 5 * K_POINT + EVALUATION,
     "archive": 1.0,  # assumed: a seed's run directories and records, a few MB
     "small": 0.5,
 }
@@ -258,7 +288,7 @@ class Step:
     always: bool = False  # run at every start (the close)
     minutes: float = 1.0
     timeout: int | None = None  # seconds; past it the step is killed and counts as failed
-    gate: str = ""  # engineering | surrogate | predictions: its record kept only by its verdict
+    gate: str = ""  # engineering | surrogate | predictions | completion: kept only by its verdict
     kept_if_runs: tuple[str, ...] = ()  # "<campaign>\t<label>": done when each run completed
 
 
@@ -395,6 +425,9 @@ class Builder:
         self.runs, self.data, self.checkpoints = Path(runs), Path(data), Path(checkpoints)
         self.records = self.runs / "study5_records" / archive_id
         self.base = f"study5/{archive_id}"
+        # the execution attempt's own places (``ATTEMPT`` is replaced when a step runs): every
+        # mutable file goes there, so that a later attempt never writes an earlier one's object
+        self.attempt = f"{self.base}/attempts/{ATTEMPT}"
         self.campaigns: dict[str, str] = {}
         self.blocks: list[Block] = []
         self.inventories: list[str] = []
@@ -446,9 +479,16 @@ class Builder:
         streams: int | None = None,
         group: str = "",
         kind: str = "archive",
+        mutable=(),
+        run_dirs=(),
+        attempt_remote: str | None = None,
     ) -> Step:
         """An archive step; ``kind`` ``archive`` runs also after a stop and in a skipped group
-        (it archives what exists), ``run`` only when its group goes on (a seed's streams)."""
+        (it archives what exists), ``run`` only when its group goes on (a seed's streams).
+        ``paths`` are written once and go to ``remote``; ``mutable`` paths (a gate's record) and
+        a ``run_dirs`` entry ``(dir, record)`` whose record does not exist yet (a partial run)
+        go to ``attempt_remote``, as do the launcher campaigns' journals and the directories of
+        their runs that have no end (``cmd_archive``)."""
         inventory = self.out / "inventories" / f"{name.replace('/', '--')}.tsv"
         self.inventories.append(str(inventory))
         argv = [
@@ -460,10 +500,16 @@ class Builder:
             "--root",
             root,
             "--inventories-remote",
-            f"{self.base}/inventories",
+            f"{self.attempt}/inventories",
         ]
+        if attempt_remote is not None:
+            argv += ["--attempt-remote", attempt_remote]
         for path in paths:
             argv += ["--path", path]
+        for path in mutable:
+            argv += ["--mutable-path", path]
+        for path, record in run_dirs:
+            argv += ["--run-dir", f"{path}={record}"]
         campaigns = (campaign,) if isinstance(campaign, str) else tuple(campaign or ())
         for name_ in campaigns:
             argv += ["--campaign", name_]
@@ -488,6 +534,8 @@ class Builder:
         paths=(),
         campaign: str | tuple[str, ...] | None = None,
         group: str = "",
+        mutable=(),
+        run_dirs=(),
     ) -> Step:
         return self.archive(
             name,
@@ -496,6 +544,9 @@ class Builder:
             paths=paths,
             campaign=campaign,
             group=group,
+            mutable=mutable,
+            run_dirs=run_dirs,
+            attempt_remote=f"{self.attempt}/runs",
         )
 
     def record(self, *parts: str) -> Path:
@@ -519,9 +570,9 @@ class Builder:
                 "--label",
                 block,
                 "--remote",
-                f"{self.base}/campaign",
+                f"{self.attempt}/campaign",
                 "--inventories-remote",
-                f"{self.base}/inventories",
+                f"{self.attempt}/inventories",
             ),
             kind="archive",
             on_fail="stop",
@@ -563,8 +614,29 @@ class Builder:
             timeout=timeout_of(MINUTES["small"]),
         )
 
-    def close(self) -> None:
+    def close(self, checkpoints: tuple[tuple[str, str], ...] = ()) -> None:
+        """The close: with ``checkpoints`` (each fresh η_l run's launcher campaign and label),
+        first a deadline window for their export, then the export of every recorded endpoint
+        checkpoint not yet verified in the archive (``cmd_export_checkpoints``; its record in
+        ``close/``); then the plan, the campaigns, the receipts and that record to the bucket,
+        and the deadline 15 minutes ahead."""
         self.current = []
+        include = ["plan.json", "campaigns", "receipts"]
+        if checkpoints:
+            # set in order, before the export: the close's own deadline comes last
+            self.step(f"{CLOSE}/export-deadline",
+                      self.own("deadline", "--minutes",
+                               deadline_minutes(2 * MINUTES["checkpoint"])),
+                      on_fail="record", always=True)  # fmt: skip
+            argv = ["export-checkpoints", "--runs", self.runs, "--dir", self.checkpoints,
+                    "--remote", f"{self.base}/checkpoints", "--inventories-remote",
+                    f"{self.base}/inventories", "--inventories", self.out / "inventories",
+                    "--record", self.out / CLOSE / f"checkpoints-{ATTEMPT}.json"]  # fmt: skip
+            for campaign, run_label in checkpoints:
+                argv += ["--run", f"{campaign}={run_label}"]
+            self.step(f"{CLOSE}/checkpoints", self.own(*argv), on_fail="record", always=True,
+                      minutes=2 * MINUTES["checkpoint"])  # fmt: skip
+            include.append(CLOSE)
         self.step(
             f"{CLOSE}/archive",
             self.own(
@@ -574,16 +646,11 @@ class Builder:
                 "--label",
                 CLOSE,
                 "--unique",
-                "--include",
-                "plan.json",
-                "--include",
-                "campaigns",
-                "--include",
-                "receipts",
+                *(x for name in include for x in ("--include", name)),
                 "--remote",
-                f"{self.base}/campaign",
+                f"{self.attempt}/campaign",
                 "--inventories-remote",
-                f"{self.base}/inventories",
+                f"{self.attempt}/inventories",
             ),
             kind="archive",
             on_fail="record",
@@ -707,7 +774,7 @@ def pod1_plan(
         minutes="engineering-check",
         gate="engineering",
     )
-    b.runs_archive("engineering/archive", paths=(b.rel(check),), campaign=eng)
+    b.runs_archive("engineering/archive", mutable=(b.rel(check),), campaign=eng)
     b.end("engineering")
 
     b.begin()  # θ₀'s evaluation on the 521 prompts: the analysis needs it, so a failure stops
@@ -739,7 +806,7 @@ def pod1_plan(
         minutes="surrogate",
         gate="surrogate",
     )
-    b.runs_archive("surrogate/archive", paths=(b.rel(checks),))
+    b.runs_archive("surrogate/archive", mutable=(b.rel(checks),))
     b.end("surrogate")
 
     b.begin()  # the retrospective predictor on study 3's 60 A-F seeds
@@ -904,6 +971,7 @@ def pod2_plan(
         on_fail="stop",
     )
     fresh: dict[int, tuple[str, str]] = {}
+    uppers: list[str] = []
     for seed in seeds:
         group = f"s{seed}"
         lower = {
@@ -1003,12 +1071,25 @@ def pod2_plan(
         _, upper_name = b.launch(
             f"fresh-upper-{group}", "fresh", [upper], minutes="fresh-upper", group=group
         )
+        uppers.append(upper_name)
         b.runs_archive(
             f"fresh/{group}/archive",
-            paths=(b.rel(endpoint), b.rel(scan), f"{SCAN_EXPERIMENT}/{scan_id}"),
+            paths=(b.rel(endpoint), b.rel(scan)),
+            run_dirs=((f"{SCAN_EXPERIMENT}/{scan_id}", b.rel(scan)),),
             campaign=(name, upper_name),
             group=group,
         )
+    # every fresh run that started has ended: the record of their ends, before any fresh label
+    completion = b.record("fresh-completion.json")
+    lowers = [fresh[s][0] for s in seeds]
+    b.step(
+        "fresh/completion",
+        b.own("completion", "--runs", b.runs, "--out", completion,
+              *(x for c in (*lowers, *uppers) for x in ("--campaign", c))),
+        outputs=(str(completion),),
+        gate="completion",
+    )  # fmt: skip
+    b.runs_archive("fresh/completion-archive", mutable=(b.rel(completion),))
     b.end("fresh")
 
     b.begin()  # the crossed controls and the ladder, seeds 50000-50005
@@ -1030,7 +1111,7 @@ def pod2_plan(
             f"controls-{group}", "controls", [order, v0], minutes="controls", group=group
         )
         name, lower = fresh[seed]
-        ladder_paths = []
+        ladder_paths, ladder_runs = [], []
         for rung in RUNGS:
             out_record = b.record("ladder", f"s{seed}-{rung}.json")
             run_id = f"s5-{b.id}-ladder-{rung}-s{seed}"
@@ -1062,12 +1143,12 @@ def pod2_plan(
                 group=group,
                 minutes="rung",
             )
-            ladder_paths += [b.rel(out_record), f"study5_ladder/{run_id}"]
-        b.runs_archive(
-            f"controls/{group}/archive", paths=ladder_paths, campaign=controls, group=group
-        )
+            ladder_paths.append(b.rel(out_record))
+            ladder_runs.append((f"study5_ladder/{run_id}", b.rel(out_record)))
+        b.runs_archive(f"controls/{group}/archive", paths=ladder_paths, run_dirs=ladder_runs,
+                       campaign=controls, group=group)  # fmt: skip
     b.end("controls")
-    b.close()
+    b.close(checkpoints=tuple(fresh[s] for s in seeds))
     return b.plan(commit, gpu_code, n, spec)
 
 
@@ -1080,6 +1161,16 @@ def _now() -> str:
 
 def _stamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def new_attempt() -> str:
+    """An execution attempt's id: the UTC time and a short random suffix."""
+    return f"{_stamp().lower()}-{secrets.token_hex(3)}"
+
+
+def attempt_argv(argv: tuple[str, ...], attempt: str) -> list[str]:
+    """A step's argv with ``ATTEMPT`` replaced by the attempt's id."""
+    return [arg.replace(ATTEMPT, attempt) for arg in argv]
 
 
 def append(journal: Path, entry: dict[str, Any]) -> None:
@@ -1173,8 +1264,10 @@ def run_step(
     python: list[str],
     cwd: Path,
     env: dict[str, str],
+    attempt: str = "",
 ) -> str:
-    """Run ``step`` unless its journal or its outputs say it is done; its outcome. A gate's
+    """Run ``step`` unless its journal or its outputs say it is done; its outcome (its argv's
+    ``ATTEMPT`` the execution attempt's id). A gate's
     record is kept only by its verdict, for the plan's commit and GPU code (``gate_problem``):
     otherwise an engineering or surrogate record is moved aside and the step runs again, and a
     predictions record fails the step."""
@@ -1213,7 +1306,8 @@ def run_step(
     log = _attempt_log(logs, step)
     append(journal, {"event": "start", "step": step.name, "log": log.name})
     print(f"== {_now()} start {step.name}", flush=True)
-    code = _run([*python, *step.argv], cwd=cwd, env=env, log=log, timeout=step.timeout)
+    argv = attempt_argv(step.argv, attempt)
+    code = _run([*python, *argv], cwd=cwd, env=env, log=log, timeout=step.timeout)
     outcome = "done" if code == 0 else "failed"
     if code != 0 and step.exists_ok and EXISTS in log.read_text(encoding="utf-8", errors="replace"):
         outcome = "kept"
@@ -1235,16 +1329,20 @@ def _final(status: dict[str, str]) -> bool:
 
 def execute(plan: Plan, *, python: list[str], cwd: Path, env: dict[str, str]) -> int:
     """Run the plan's blocks in order (module docstring, "Failures", "Resumable"); then the close,
-    whatever ends the blocks (an exception too): its deadline last, in a ``finally``. COMPLETED,
-    or STOPPED when a stop rule fired."""
+    whatever ends the blocks (an exception too): its deadline last, in a ``finally``. Each
+    execution is an attempt of its own (``new_attempt``, in the journal's ``driver`` line): its
+    mutable files go to the bucket under its id. COMPLETED, or STOPPED when a stop rule fired."""
     journal, logs = plan.out / "journal.jsonl", plan.out / "logs"
-    run = {"plan": plan, "journal": journal, "logs": logs, "python": python, "cwd": cwd, "env": env}
+    attempt = new_attempt()
+    run = {"plan": plan, "journal": journal, "logs": logs, "python": python, "cwd": cwd, "env": env,
+           "attempt": attempt}  # fmt: skip
     close = next((b for b in plan.blocks if b.name == CLOSE), Block(CLOSE, ()))
     status: dict[str, str] = {}
     stopped = False
     try:
         status = read_journal(journal)
-        append(journal, {"event": "driver", "pod": plan.pod, "commit": plan.commit})
+        append(journal, {"event": "driver", "pod": plan.pod, "commit": plan.commit,
+                         "attempt": attempt})  # fmt: skip
         stopped = _blocks(plan, status, run)
     finally:
         deadlines = [s for s in close.steps if s.kind == "deadline"]
@@ -1259,7 +1357,7 @@ def execute(plan: Plan, *, python: list[str], cwd: Path, env: dict[str, str]) ->
                 except Exception as exc:  # the journal itself may be unwritable
                     print(f"== close deadline through the journal failed ({exc}); set directly")
                     _run(
-                        [*python, *step.argv],
+                        [*python, *attempt_argv(step.argv, attempt)],
                         cwd=cwd,
                         env=env,
                         log=Path(tempfile.mkstemp(suffix=".log")[1]),
@@ -1348,6 +1446,12 @@ def gate_problem(kind: str, path: Path, plan: Plan) -> str | None:
     elif kind == "surrogate":
         if record.get("passes") is not True:
             return "the surrogate checks did not pass"
+    elif kind == "completion":  # it stands while the launcher journals still say the same
+        try:
+            runs = completion_runs(plan.runs, list(record.get("campaigns") or []))
+        except StepError as exc:
+            return str(exc)
+        return None if runs == record.get("runs") else "the fresh runs' journals changed since"
     else:
         raise ValueError(f"unknown gate {kind!r}")
     return code_problem(record, plan.gpu_code)
@@ -1514,13 +1618,25 @@ def journal_events(runs: Path, campaign: str) -> list[dict[str, Any]]:
 def campaign_paths(runs: Path, campaign: str) -> list[str]:
     """The run directories a launcher campaign started and its logs, those that exist, relative
     to RUNS_DIR."""
-    found = {f"launch/{campaign}.jsonl", f"launch/{campaign}"}
-    for entry in journal_events(runs, campaign):
+    return sorted(set().union(*campaign_parts(runs, campaign)))
+
+
+def campaign_parts(runs: Path, campaign: str) -> tuple[list[str], list[str]]:
+    """A launcher campaign's paths that exist, relative to RUNS_DIR, as (written once, mutable):
+    the directory of a run its journal shows ended is written once; its journal, its logs and the
+    directory of a run without an end (cut off, settled later) can still change."""
+    events = journal_events(runs, campaign)
+    ended = {e.get("run_id") for e in events if e.get("event") == "end"}
+    once, mutable = set(), {f"launch/{campaign}.jsonl", f"launch/{campaign}"}
+    for entry in events:
         if entry.get("event") == "start" and isinstance(entry.get("run_id"), str):
             experiment = entry.get("experiment")
             if isinstance(experiment, str):
-                found.add(f"{safe_rel(experiment)}/{safe_rel(entry['run_id'])}")
-    return sorted(p for p in found if (runs / p).exists())
+                rel = f"{safe_rel(experiment)}/{safe_rel(entry['run_id'])}"
+                (once if entry["run_id"] in ended else mutable).add(rel)
+    mutable -= once
+    return (sorted(p for p in once if (runs / p).exists()),
+            sorted(p for p in mutable if (runs / p).exists()))  # fmt: skip
 
 
 def _start_of(runs: Path, campaign: str, run_id: str) -> dict[str, Any]:
@@ -1631,36 +1747,50 @@ def readback(url: str, expected: str) -> None:
 
 
 def archive_paths(
-    root: Path, remote: str, paths: list[str], inventory: Path, inventories_remote: str
+    root: Path,
+    remote: str,
+    paths: list[str],
+    inventory: Path,
+    inventories_remote: str,
+    *,
+    mutable: list[str] = (),
+    attempt_remote: str | None = None,
+    remote_name: str | None = None,
 ) -> int:
-    """Archive ``paths`` under ``root`` to ``ARTIFACT_REMOTE/<remote>``, verified, then the
-    inventory itself to ``<inventories_remote>``, read back; the inventory is in place only once
-    both hold. The number of files archived."""
+    """Archive ``paths`` under ``root`` to ``ARTIFACT_REMOTE/<remote>`` and ``mutable`` to
+    ``<attempt_remote>`` (the attempt's own place), every object verified (``scripts/archive.py
+    --no-clobber``), then the inventory itself to ``<inventories_remote>/<remote_name>`` (its own
+    name by default), read back; the inventory is in place only once both hold. The number of
+    files archived."""
     base = artifact_remote()
-    present = [p for p in dict.fromkeys(safe_rel(p) for p in paths) if (root / p).exists()]
+    if mutable and attempt_remote is None:
+        raise StepError("mutable paths need the attempt's place (--attempt-remote)")
+    groups = []
+    for prefix, rels in ((remote, paths), (attempt_remote, mutable)):
+        present = [p for p in dict.fromkeys(safe_rel(p) for p in rels) if (root / p).exists()]
+        if present:
+            groups.append((prefix, present))
+    name = remote_name or inventory.name
     staging = inventory.parent / ".staging"
     staging.mkdir(parents=True, exist_ok=True)
-    staged = staging / inventory.name
+    staged = staging / name
     staged.unlink(missing_ok=True)
     files = 0
-    if present:
-        result = archive(staged, f"{base}/{remote}", root, present)
+    for prefix, present in groups:
+        result = archive(staged, f"{base}/{prefix}", root, present)
         if result["mismatched"]:
             raise StepError(f"{result['mismatched']} of {result['files']} objects do not match")
-        files = result["files"]
-    else:
+        files += result["files"]
+    if not groups:
         staged.write_text("path\tsize\tsha256\tmd5_b64\turl\tstatus\n", encoding="utf-8")
-    copy = archive(
-        staging / f"{inventory.stem}.self.tsv",
-        f"{base}/{inventories_remote}",
-        staging,
-        [inventory.name],
-    )
+    self_inventory = staging / f"{Path(name).stem}.self.tsv"
+    self_inventory.unlink(missing_ok=True)
+    copy = archive(self_inventory, f"{base}/{inventories_remote}", staging, [name])
     if copy["mismatched"]:
-        raise StepError(f"the inventory {inventory.name} does not match its copy")
-    readback(f"{base}/{inventories_remote}/{inventory.name}", sha256_of(staged))
+        raise StepError(f"the inventory {name} does not match its copy")
+    readback(f"{base}/{inventories_remote}/{name}", sha256_of(staged))
     os.replace(staged, inventory)
-    (staging / f"{inventory.stem}.self.tsv").unlink(missing_ok=True)
+    self_inventory.unlink(missing_ok=True)
     return files
 
 
@@ -1878,15 +2008,28 @@ def cmd_with_runs(args) -> int:
 
 
 def cmd_archive(args) -> int:
-    paths = list(args.path or [])
+    """Written-once files to ``--remote`` (records, streams, the directories of ended runs and of
+    scan or ladder runs whose record exists); mutable ones to ``--attempt-remote`` (``--mutable-
+    path``, a ``--run-dir`` whose record does not exist yet, the launcher journals and logs, the
+    directories of runs without an end), so that a later attempt never writes an earlier one's
+    object (``archive_paths``)."""
+    paths, mutable = list(args.path or []), list(args.mutable_path or [])
+    for given in args.run_dir or []:
+        rel, _, record = given.partition("=")
+        if not record:
+            raise StepError(f"--run-dir {given}: DIR=RECORD, relative to the root")
+        (paths if (args.root / safe_rel(record)).is_file() else mutable).append(rel)
     for campaign in args.campaign or []:
-        paths += campaign_paths(args.runs, campaign)
+        once, changing = campaign_parts(args.runs, campaign)
+        paths += once
+        mutable += changing
     if args.streams is not None:
         paths += stream_dirs(args.root, args.streams)
     if args.inventory.exists():
         print(f"kept {args.inventory.name}")
         return 0
-    files = archive_paths(args.root, args.remote, paths, args.inventory, args.inventories_remote)
+    files = archive_paths(args.root, args.remote, paths, args.inventory, args.inventories_remote,
+                          mutable=mutable, attempt_remote=args.attempt_remote)  # fmt: skip
     print(f"archived {files} files under {args.remote} ({args.inventory.name})")
     return 0
 
@@ -1985,7 +2128,8 @@ def cmd_checkpoint(args) -> int:
     if recorded != digest:
         raise StepError(f"{path.name}: its sha256 is not the one its run recorded")
     if not args.inventory.exists():
-        archive_paths(args.dir, args.remote, [path.name], args.inventory, args.inventories_remote)
+        archive_paths(args.dir, args.remote, [path.name], args.inventory, args.inventories_remote,
+                      remote_name=checkpoint_inventory(path.name))  # fmt: skip
     rows = [r for r in read_inventory(args.inventory) if r.get("path") == path.name]
     if not rows or any(r.get("status") != "ok" or r.get("sha256") != digest for r in rows):
         raise StepError(f"{path.name}: the archive does not show it verified")
@@ -2024,23 +2168,30 @@ def restore_checkpoint(args) -> None:
     print(f"checkpoint {run_id} restored from its archive, sha256 {recorded}")
 
 
+def checkpoint_inventory(name: str) -> str:
+    """The bucket name of a checkpoint archive's inventory, by the checkpoint (``<run id>.pt``):
+    one run's checkpoint, written once, so the inventory never changes either."""
+    return f"checkpoint-{Path(name).stem}.tsv"
+
+
 def archived_earlier(args, name: str, recorded: str) -> bool:
     """Whether the checkpoint ``name`` is in the bucket with the sha256 its run recorded: its
-    object exists and the inventory of its archive (this --out's, else the copy archived
-    beside the others) shows it verified with that sha256."""
+    object exists and the inventory of its archive (this --out's when it lists the checkpoint,
+    else the copy archived in the bucket, ``checkpoint_inventory``) shows it verified with that
+    sha256."""
     base = artifact_remote()
     if not json.loads(gcloud(["objects", "list", f"{base}/{args.remote}/{name}", "--format=json"])):
         return False
     inventory = args.inventory
-    if not inventory.is_file():
-        inventory = args.inventory.parent / ".staging" / f"remote-{args.inventory.name}"
+    if not inventory.is_file() or not any(r.get("path") == name for r in read_inventory(inventory)):
+        inventory = args.inventory.parent / ".staging" / f"remote-{checkpoint_inventory(name)}"
         inventory.parent.mkdir(parents=True, exist_ok=True)
         try:
             gcloud(
                 [
                     "cp",
                     "--quiet",
-                    f"{base}/{args.inventories_remote}/{args.inventory.name}",
+                    f"{base}/{args.inventories_remote}/{checkpoint_inventory(name)}",
                     str(inventory),
                 ]
             )
@@ -2126,7 +2277,130 @@ def cmd_check_published(args) -> int:
     return 0
 
 
+def completion_runs(runs: Path, campaigns: list[str]) -> list[dict[str, Any]]:
+    """Every run the launcher campaigns' journals show as started, each with its recorded end
+    and outcome, in journal order; ``StepError`` when a started run has no end."""
+    out, open_ = [], []
+    for campaign in campaigns:
+        events = journal_events(runs, campaign)
+        ends = {e.get("run_id"): e for e in events if e.get("event") == "end"}
+        for start in (e for e in events if e.get("event") == "start"):
+            end = ends.get(start.get("run_id"))
+            if end is None:
+                open_.append(f"{campaign}: {start.get('run_id')}")
+                continue
+            out.append({"campaign": campaign, "run": start.get("run"),
+                        "run_id": start.get("run_id"), "experiment": start.get("experiment"),
+                        "started": start.get("time"), "ended": end.get("time"),
+                        "outcome": end.get("outcome")})  # fmt: skip
+    if open_:
+        raise StepError(f"{len(open_)} started fresh runs have no end (first: {open_[0]}): no "
+                        "completion record")  # fmt: skip
+    return out
+
+
+def cmd_completion(args) -> int:
+    """Pod 2's completion record, once its last fresh group has ended: every fresh run the
+    launcher journals show as started, with its end and outcome; written only when no started
+    fresh run lacks an end. The analysis opens no fresh label written before its time."""
+    runs = completion_runs(args.runs, list(args.campaign))
+    record = {"kind": "study5-fresh-completion", "campaigns": list(args.campaign),
+              "runs": runs, "started": len(runs), "written_utc": _now()}  # fmt: skip
+    digest = write_record(args.out, record)
+    print(f"completion {len(runs)} fresh runs started and ended sha256 {digest}")
+    return 0
+
+
+def cmd_export_checkpoints(args) -> int:
+    """The close's export (a planned shutdown: the end, a stop, SIGTERM): every recorded endpoint
+    checkpoint of the given η_l runs (``--run CAMPAIGN=LABEL``) not yet verified in the archive
+    is uploaded and verified, its sha256 the one its run recorded. Each result goes to the record
+    (``--record``); a failure that remains is printed with the path, the recorded sha256 and the
+    error, and the close goes on (exit 1)."""
+    results = []
+    for given in args.run:
+        campaign, _, run_label = given.partition("=")
+        entry: dict[str, Any] = {"campaign": campaign, "run": run_label}
+        try:
+            run_id, path, recorded = run_checkpoint(args.runs, campaign, run_label, args.dir)
+        except (StepError, OSError, ValueError) as exc:
+            results.append({**entry, "status": "failed", "error": str(exc)})
+            continue
+        if run_id is None or recorded is None:
+            continue  # no run, or no checkpoint recorded: nothing to export
+        entry |= {"run_id": run_id, "path": str(path), "sha256": recorded}
+        local = [i for i in sorted(args.inventories.glob("checkpoint-*.tsv"))
+                 if any(r.get("path") == path.name and r.get("status") == "ok"
+                        and r.get("sha256") == recorded for r in read_inventory(i))]  # fmt: skip
+        try:
+            if local:
+                status = "verified"  # this --out's archive shows it verified
+            elif path.exists():
+                if sha256_of(path) != recorded:
+                    raise StepError("its sha256 on the disk is not the one its run recorded")
+                inventory = args.inventories / f"close-{checkpoint_inventory(path.name)}"
+                inventory.unlink(missing_ok=True)
+                archive_paths(args.dir, args.remote, [path.name], inventory,
+                              args.inventories_remote,
+                              remote_name=checkpoint_inventory(path.name))  # fmt: skip
+                rows = [r for r in read_inventory(inventory) if r.get("path") == path.name]
+                if not rows or any(r.get("status") != "ok" or r.get("sha256") != recorded
+                                   for r in rows):  # fmt: skip
+                    raise StepError("the archive does not show it verified")
+                status = "exported"
+            else:
+                found = argparse.Namespace(remote=args.remote,
+                                           inventory=args.inventories / "none.tsv",
+                                           inventories_remote=args.inventories_remote)  # fmt: skip
+                if not archived_earlier(found, path.name, recorded):
+                    raise StepError("neither on the disk nor in the archive")
+                status = "verified"
+            results.append({**entry, "status": status})
+        except (StepError, OSError, ValueError, subprocess.SubprocessError) as exc:
+            results.append({**entry, "status": "failed", "error": str(exc)})
+    failed = [r for r in results if r["status"] == "failed"]
+    for r in failed:
+        print(f"CHECKPOINT NOT EXPORTED: {r.get('path', r['run'])} sha256 {r.get('sha256')}: "
+              f"{r['error']}")  # fmt: skip
+    write_json(args.record, {"kind": "study5-close-checkpoints", "checkpoints": results,
+                             "failed": len(failed), "written_utc": _now()})  # fmt: skip
+    print(f"checkpoints {len(results)} exported or verified {len(results) - len(failed)} "
+          f"failed {len(failed)}")  # fmt: skip
+    return 1 if failed else 0
+
+
 # ------------------------------------------------------------------ the drivers
+
+
+def seeds_problems(plan: Plan, repo: Path | None = None) -> list[str]:
+    """Pod 2's seeds are the n chosen before generation: ``SEEDS_FILE`` at the plan's commit (the
+    clean checkout's) holds n and its seeds, one of the registration's two choices, its sha256
+    named in the registration there, and the plan's fresh seeds are exactly its seeds."""
+    repo = REPO if repo is None else repo
+    try:
+        data = (repo / SEEDS_FILE).read_bytes()
+        text = (repo / REGISTRATION).read_text(encoding="utf-8")
+        chosen = json.loads(data)
+    except (OSError, ValueError) as exc:
+        return [f"{SEEDS_FILE} or the registration does not read ({type(exc).__name__})"]
+    problems = []
+    n, listed = (chosen.get("n"), chosen.get("seeds")) if isinstance(chosen, dict) else (None, None)
+    if n not in N_CHOICES or listed != fresh_seeds(n):
+        problems.append(f"{SEEDS_FILE} is not n = 40 (50000-50039) or n = 24 (50000-50023)")
+    if hashlib.sha256(data).hexdigest() not in text:
+        problems.append(f"{REGISTRATION} does not name the sha256 of {SEEDS_FILE}")
+    if plan.n != n or listed != fresh_seeds(plan.n):
+        problems.append(f"the plan's n {plan.n} is not the committed choice in {SEEDS_FILE}")
+    return problems
+
+
+def committed_n(repo: Path | None = None) -> int | None:
+    """The n of ``SEEDS_FILE`` (None when it does not read: the preflight then refuses)."""
+    try:
+        found = json.loads(((REPO if repo is None else repo) / SEEDS_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    return found.get("n") if isinstance(found, dict) and found.get("n") in N_CHOICES else None
 
 
 def registration_problems(retrospective: Path | None, repo: Path | None = None) -> list[str]:
@@ -2181,8 +2455,8 @@ def gate_problems(plan: Plan, engineering: Path | None, checks: Path | None) -> 
 
 def preflight(plan: Plan, args: argparse.Namespace | None = None) -> list[str]:
     """What forbids the start: the checkout, its GPU code, the bucket, the key, the folder; for
-    pod 2 also the registration and pod 1's gates (``registration_problems``,
-    ``gate_problems``)."""
+    pod 2 also the registration, the committed seeds and pod 1's gates
+    (``registration_problems``, ``seeds_problems``, ``gate_problems``)."""
     problems = []
     state = git_state(REPO)
     if state.get("dirty") is not False or state.get("commit") != plan.commit:
@@ -2199,6 +2473,7 @@ def preflight(plan: Plan, args: argparse.Namespace | None = None) -> list[str]:
     if plan.pod == "pod2":
         given = vars(args) if args is not None else {}
         problems += registration_problems(given.get("retrospective"))
+        problems += seeds_problems(plan)
         problems += gate_problems(plan, given.get("engineering_check"),
                                   given.get("surrogate_checks"))  # fmt: skip
     return problems
@@ -2261,7 +2536,8 @@ def cmd_pod(args) -> int:
     if args.kind == "pod1":
         plan = pod1_plan(**where, surrogate=args.surrogate)
     else:
-        plan = pod2_plan(**where, checkpoints=args.checkpoints, n=args.n, surrogate=args.surrogate)
+        n = args.n if args.n is not None else committed_n() or N_CHOICES[0]
+        plan = pod2_plan(**where, checkpoints=args.checkpoints, n=n, surrogate=args.surrogate)
     if args.dry_run:
         show(plan)
         return COMPLETED
@@ -2302,7 +2578,7 @@ def parser_of() -> argparse.ArgumentParser:
         p.add_argument("--dry-run", action="store_true")
         p.add_argument("--surrogate", default=SURROGATE)
         if kind == "pod2":
-            p.add_argument("--n", type=int, default=40, choices=N_CHOICES)
+            p.add_argument("--n", type=int, default=None, choices=N_CHOICES)  # SEEDS_FILE's
             p.add_argument("--checkpoints", type=Path, default=CHECKPOINTS)
             p.add_argument("--engineering-check", type=Path)
             p.add_argument("--surrogate-checks", type=Path)
@@ -2338,6 +2614,9 @@ def parser_of() -> argparse.ArgumentParser:
     p.add_argument("--root", type=Path, required=True)
     p.add_argument("--inventories-remote", required=True)
     p.add_argument("--path", action="append")
+    p.add_argument("--mutable-path", action="append")
+    p.add_argument("--run-dir", action="append")  # DIR=RECORD: written once when RECORD exists
+    p.add_argument("--attempt-remote")
     p.add_argument("--campaign", action="append")
     p.add_argument("--runs", type=Path)
     p.add_argument("--streams", type=int)
@@ -2361,6 +2640,16 @@ def parser_of() -> argparse.ArgumentParser:
     for name in ("--campaign", "--label", "--remote", "--inventories-remote"):
         p.add_argument(name, required=True)
     p.add_argument("--keep", action="store_true")  # archived and verified, not removed
+    p = sub.add_parser("completion")
+    p.add_argument("--runs", type=Path, required=True)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--campaign", action="append", required=True)
+    p = sub.add_parser("export-checkpoints")
+    for name in ("--runs", "--dir", "--inventories", "--record"):
+        p.add_argument(name, type=Path, required=True)
+    for name in ("--remote", "--inventories-remote"):
+        p.add_argument(name, required=True)
+    p.add_argument("--run", action="append", default=[])
     p = sub.add_parser("predictions")
     p.add_argument("--records", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
@@ -2390,6 +2679,8 @@ COMMANDS = {
     "receipt": cmd_receipt,
     "check-checkpoints": cmd_check_checkpoints,
     "checkpoint": cmd_checkpoint,
+    "completion": cmd_completion,
+    "export-checkpoints": cmd_export_checkpoints,
     "predictions": cmd_predictions,
     "publish": cmd_publish,
     "check-published": cmd_check_published,

@@ -357,6 +357,7 @@ topics:
   - configs/experiments/study5*.yaml
   - docs/study5-code-identity.json
   - docs/study5-fixation.json
+  - docs/study5-confirmatory-seeds.json
   - src/zero_field_refusal/analysis/record_normalize.py
   - tests/test_study5_campaigns.py
   - tests/test_study5_engineering_check.py

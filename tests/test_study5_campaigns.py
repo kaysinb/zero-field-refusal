@@ -368,12 +368,13 @@ def test_the_preflight_of_pod2_alone_reads_the_registration_and_the_gates(where,
     monkeypatch.setattr(camp, "registration_problems", lambda retro: seen.append(retro) or ["r"])
     monkeypatch.setattr(camp, "gate_problems",
                         lambda plan, eng, checks: seen.append((eng, checks)) or ["g"])  # fmt: skip
+    monkeypatch.setattr(camp, "seeds_problems", lambda plan: seen.append(plan.n) or ["s"])
     args = camp.parser_of().parse_args(
         ["pod2", "--out", "o", "--archive-id", "t2", "--engineering-check", "e.json",
          "--surrogate-checks", "c.json", "--retrospective", "x.json"])  # fmt: skip
     found = camp.preflight(pod2(where, 24), args)
-    assert found[-2:] == ["r", "g"]
-    assert seen == [Path("x.json"), (Path("e.json"), Path("c.json"))]
+    assert found[-3:] == ["r", "s", "g"]
+    assert seen == [Path("x.json"), 24, (Path("e.json"), Path("c.json"))]
     seen.clear()
     assert "r" not in camp.preflight(pod1(where), None) and seen == []
 
@@ -534,7 +535,10 @@ def test_pod2_scans_every_endpoint_in_a_run_of_its_own_before_its_checkpoint_goe
         assert step.on_fail == "record" and step.outputs == (str(record),)
         archive = group[-1]
         paths = [archive.argv[i + 1] for i, a in enumerate(archive.argv) if a == "--path"]
-        assert paths[1:] == [record.relative_to(where["runs"]).as_posix(), f"study5_scan/{run_id}"]
+        assert paths[1:] == [record.relative_to(where["runs"]).as_posix()]
+        # the scan run's directory: written once when its record exists, else the attempt's
+        run_dirs = [archive.argv[i + 1] for i, a in enumerate(archive.argv) if a == "--run-dir"]
+        assert run_dirs == [f"study5_scan/{run_id}={record.relative_to(where['runs'])}"]
 
 
 def test_pod2_controls_and_ladder_on_the_first_six_seeds(where, tmp_path):
@@ -553,7 +557,7 @@ def test_pod2_controls_and_ladder_on_the_first_six_seeds(where, tmp_path):
         assert v0.optimizer.preconditioner.source_seed == camp.source_seed(seed)
         ladders = [s for s in group if "scripts/study5_ladder.py" in s.argv]
         rungs = [s.argv[s.argv.index("--rung") + 1] for s in ladders]
-        assert rungs == ["isotropic", "linear_no_d", "linear"]
+        assert rungs == ["gaussian_d", "linear_no_d", "linear"]
         assert all(s.on_fail == "record" for s in ladders)
         assert group[-1].kind == "archive" and group[-1].on_fail == "stop"
     assert not any("linear_shuffled_d" in " ".join(s.argv) for s in steps(plan))
@@ -851,6 +855,8 @@ assert args[0] == "storage"
 def local(url):
     return store / url.removeprefix("gs://")
 if args[1] == "cp":
+    if os.environ.get("FAKE_GCLOUD_FAIL_UPLOAD") and not args[-2].startswith("gs://"):
+        sys.exit(1)  # an upload that fails (a test's forced failure)
     flags = {a for a in args if a.startswith("--")}
     src, dst = [a for a in args[2:] if not a.startswith("--")]
     def put(source, target):
@@ -908,13 +914,22 @@ def bucket(tmp_path, monkeypatch):
 
 
 def test_archive_puts_the_campaigns_runs_and_its_inventory_in_the_bucket(tmp_path, bucket):
+    """Written-once files under the archive's runs: the records and an ended run's directory;
+    under the attempt's place the mutable ones: the launcher journal, a run without an end, a
+    gate's record and a scan run whose record does not exist yet."""
     runs = tmp_path / "runs"
     journal_of(
-        runs, "c", [{"event": "start", "run": "cell/s1", "run_id": "r-a1", "experiment": "study5"}]
-    )
-    (runs / "study5" / "r-a1").mkdir(parents=True)
-    (runs / "study5" / "r-a1" / "meta.json").write_text("{}")
+        runs, "c", [{"event": "start", "run": "cell/s1", "run_id": "r-a1", "experiment": "study5"},
+                    {"event": "start", "run": "cell/s2", "run_id": "r-b1", "experiment": "study5"},
+                    {"event": "end", "run": "cell/s2", "run_id": "r-b1", "outcome": "done"}]
+    )  # fmt: skip
+    for run_id in ("r-a1", "r-b1"):
+        (runs / "study5" / run_id).mkdir(parents=True)
+        (runs / "study5" / run_id / "meta.json").write_text("{}")
     (runs / "rec.json").write_text("{}")
+    (runs / "gate.json").write_text("{}")
+    (runs / "scan" / "partial").mkdir(parents=True)
+    (runs / "scan" / "partial" / "rows.jsonl").write_text("{}")
     inventory = tmp_path / "c" / "inventories" / "x.tsv"
     argv = [
         "archive",
@@ -930,6 +945,12 @@ def test_archive_puts_the_campaigns_runs_and_its_inventory_in_the_bucket(tmp_pat
         "rec.json",
         "--path",
         "missing.json",
+        "--mutable-path",
+        "gate.json",
+        "--run-dir",
+        "scan/partial=scan-record.json",
+        "--attempt-remote",
+        "study5/t/attempts/a1/runs",
         "--campaign",
         "c",
         "--runs",
@@ -938,14 +959,25 @@ def test_archive_puts_the_campaigns_runs_and_its_inventory_in_the_bucket(tmp_pat
     assert camp.main(argv) == 0
     rows = camp.read_inventory(inventory)
     assert sorted(r["path"] for r in rows) == [
+        "gate.json",
         "launch/c.jsonl",
         "rec.json",
+        "scan/partial/rows.jsonl",
         "study5/r-a1/meta.json",
+        "study5/r-b1/meta.json",
     ]
     assert all(r["status"] == "ok" for r in rows)
-    assert (bucket / "study5/t/runs/study5/r-a1/meta.json").is_file()
+    stable, attempt = bucket / "study5/t/runs", bucket / "study5/t/attempts/a1/runs"
+    for rel in ("rec.json", "study5/r-b1/meta.json"):
+        assert (stable / rel).is_file() and not (attempt / rel).exists(), rel
+    for rel in ("gate.json", "launch/c.jsonl", "scan/partial/rows.jsonl", "study5/r-a1/meta.json"):
+        assert (attempt / rel).is_file() and not (stable / rel).exists(), rel
     assert (bucket / "study5/t/inventories/x.tsv").read_bytes() == inventory.read_bytes()
     assert camp.main(argv) == 0  # done: kept
+    # mutable paths without the attempt's place: refused
+    inventory.unlink()
+    assert camp.main([a for a in argv if a not in ("--attempt-remote",
+                                                    "study5/t/attempts/a1/runs")]) == 1  # fmt: skip
 
 
 def test_checkpoint_is_archived_verified_then_removed(tmp_path, bucket):
@@ -1668,9 +1700,313 @@ def test_a_checkpoint_archived_earlier_counts_only_with_its_recorded_sha(tmp_pat
         "--inventories-remote",
         "study5/t/inventories",
     ]
-    (inventories / "ck.tsv").write_text(header + f"r-a1.pt\t7\t{'0' * 64}\tx\tu\tok\n")
+    # the inventory's bucket copy is named by the run: one checkpoint, written once
+    copy = inventories / "checkpoint-r-a1.tsv"
+    copy.write_text(header + f"r-a1.pt\t7\t{'0' * 64}\tx\tu\tok\n")
     assert camp.main(argv) == 1  # the archive shows another sha256
-    (inventories / "ck.tsv").write_text(header + f"r-a1.pt\t7\t{digest}\tx\tu\tok\n")
+    copy.write_text(header + f"r-a1.pt\t7\t{digest}\tx\tu\tok\n")
     for p in (tmp_path / "new-out").rglob("*"):
         p.is_file() and p.unlink()
     assert camp.main(argv) == 0
+
+
+# ------------------------------------------------------------------ the committed seeds
+
+
+def seeds_repo(tmp_path, chosen: dict, named: bool = True) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    data = (json.dumps(chosen) + "\n").encode()
+    (repo / camp.SEEDS_FILE).write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest() if named else "0" * 64
+    (repo / camp.REGISTRATION).write_text(f"Status: `registered`.\nSeeds file: {digest}\n")
+    return repo
+
+
+@pytest.mark.parametrize(
+    "chosen, n, named, problem",
+    [
+        ({"n": 40, "seeds": list(range(50000, 50040))}, 40, True, None),
+        ({"n": 24, "seeds": list(range(50000, 50024))}, 24, True, None),
+        ({"n": 24, "seeds": list(range(50000, 50024))}, 40, True, "not the committed choice"),
+        ({"n": 40, "seeds": list(range(50000, 50040))}, 24, True, "not the committed choice"),
+        ({"n": 40, "seeds": list(range(50000, 50040))}, 40, False, "does not name the sha256"),
+        ({"n": 40, "seeds": list(range(50001, 50041))}, 40, True, "is not n = 40"),
+        ({"n": 30, "seeds": list(range(50000, 50030))}, 40, True, "is not n = 40"),
+    ],
+)  # fmt: skip
+def test_pod2s_seeds_are_the_committed_choice_named_by_the_registration(
+    where, tmp_path, chosen, n, named, problem
+):
+    """Every pod 2 execution (a restart into a new --out too) checks the n chosen before
+    generation: docs/study5-confirmatory-seeds.json at the plan's commit, its sha256 named in the
+    registration there, the plan's fresh seeds exactly its seeds."""
+    found = camp.seeds_problems(pod2(where, n), seeds_repo(tmp_path, chosen, named))
+    if problem is None:
+        assert found == []
+    else:
+        assert any(problem in f for f in found), found
+    assert any("does not read" in f for f in camp.seeds_problems(pod2(where), tmp_path / "none"))
+
+
+def test_the_committed_seeds_file_is_the_default_choice():
+    chosen = json.loads((REPO_ROOT / camp.SEEDS_FILE).read_text())
+    assert chosen == {"n": 40, "seeds": list(range(50000, 50040))}
+    assert camp.committed_n() == 40
+    assert set(camp.CONTROL_SEEDS) <= set(chosen["seeds"][:24])  # in both choices
+    args = camp.parser_of().parse_args(["pod2", "--out", "o", "--archive-id", "t2"])
+    assert args.n is None  # pod 2's n is the committed one unless given (and then checked)
+
+
+# ------------------------------------------------------------------ the fresh runs' completion
+
+
+def test_the_completion_record_lists_every_started_fresh_run_with_its_end(tmp_path, where):
+    plan = pod2(where, 24)
+    fresh = steps(plan, "fresh")
+    names = [s.name for s in fresh]
+    step = fresh[names.index("fresh/completion")]
+    # after the last fresh group, before the block's snapshot; every fresh launcher campaign
+    assert names.index("fresh/completion") > names.index("fresh/s50023/archive")
+    assert names[names.index("fresh/completion") + 1] == "fresh/completion-archive"
+    campaigns = [step.argv[i + 1] for i, a in enumerate(step.argv) if a == "--campaign"]
+    launched = {Path(s.argv[1]).stem for s in fresh if s.kind == "launch"}
+    assert set(campaigns) == launched and len(campaigns) == 48
+    assert step.gate == "completion" and step.on_fail == "record"
+    archive = fresh[names.index("fresh/completion-archive")]
+    assert archive.argv[archive.argv.index("--mutable-path") + 1] == (
+        "study5_records/t2/fresh-completion.json")  # fmt: skip
+
+    runs, out = tmp_path / "runs", tmp_path / "rec" / "completion.json"
+    journal_of(runs, "lo", [{"event": "start", "run": "lo/s1", "run_id": "a", "time": "t1"},
+                            {"event": "end", "run": "lo/s1", "run_id": "a", "outcome": "done",
+                             "time": "t2"}])  # fmt: skip
+    journal_of(runs, "hi", [{"event": "start", "run": "hi/s1", "run_id": "b", "time": "t3"}])
+    argv = ["completion", "--runs", str(runs), "--out", str(out), "--campaign", "lo",
+            "--campaign", "hi"]  # fmt: skip
+    assert camp.main(argv) == 1 and not out.exists()  # a started run without an end: no record
+    journal_of(runs, "hi", [{"event": "start", "run": "hi/s1", "run_id": "b", "time": "t3"},
+                            {"event": "end", "run": "hi/s1", "run_id": "b", "outcome": "diverged",
+                             "time": "t4"}])  # fmt: skip
+    assert camp.main(argv) == 0
+    record = json.loads(out.read_text())
+    assert record["kind"] == "study5-fresh-completion" and record["started"] == 2
+    assert [(r["campaign"], r["run"], r["run_id"], r["outcome"]) for r in record["runs"]] == [
+        ("lo", "lo/s1", "a", "done"), ("hi", "hi/s1", "b", "diverged")]  # fmt: skip
+    assert camp.main(argv) == 1  # written once
+    # kept while the journals say the same; a recovery round since: set aside, written again
+    gate = fake_plan(tmp_path, [])
+    gate.runs = runs
+    assert camp.gate_problem("completion", out, gate) is None
+    journal_of(runs, "hi", [{"event": "start", "run": "hi/s1", "run_id": "b", "time": "t3"},
+                            {"event": "end", "run": "hi/s1", "run_id": "b", "outcome": "diverged",
+                             "time": "t4"},
+                            {"event": "start", "run": "hi/s1", "run_id": "c", "time": "t5"},
+                            {"event": "end", "run": "hi/s1", "run_id": "c", "outcome": "done",
+                             "time": "t6"}])  # fmt: skip
+    assert "changed" in camp.gate_problem("completion", out, gate)
+
+
+# ------------------------------------------------------------------ the close's export
+
+
+def test_the_close_of_pod2_exports_every_fresh_checkpoint_before_its_deadline(where):
+    plan = pod2(where, 24)
+    close = steps(plan, "close")
+    names = [s.name for s in close]
+    assert names == ["close/export-deadline", "close/checkpoints", "close/archive",
+                     "close/deadline"]  # fmt: skip
+    assert all(s.always for s in close) and close[0].kind == "run"  # in order, before the export
+    export = close[1]
+    runs = [export.argv[i + 1] for i, a in enumerate(export.argv) if a == "--run"]
+    lowers = [s for s in steps(plan, "fresh") if s.name.endswith("/launch-fresh-lower")]
+    assert runs == [f"{Path(s.argv[1]).stem}={s.kept_if_runs[0].split(chr(9))[1]}"
+                    for s in lowers]  # fmt: skip
+    assert export.on_fail == "record"
+    assert "close" in close[2].argv  # its record goes with the plan and the receipts
+    assert [s.name for s in steps(pod1(where), "close")] == ["close/archive", "close/deadline"]
+
+
+def test_the_close_exports_an_unexported_checkpoint_and_reports_a_failure(tmp_path, bucket,
+                                                                          monkeypatch):  # fmt: skip
+    """A planned shutdown with one endpoint checkpoint on the disk and not in the archive: the
+    close uploads it, verifies its sha256 against the run's, and records it; with the upload
+    failing, the failure is in the record and printed with the path, the sha256 and the error,
+    and the close goes on."""
+    runs, ckpt, inventories = tmp_path / "runs", tmp_path / "ckpt", tmp_path / "c" / "inventories"
+    digest = hashlib.sha256(b"weights").hexdigest()
+    for run_id, campaign in (("r-a1", "f1"), ("r-b1", "f2")):
+        journal_of(runs, campaign, [
+            {"event": "start", "run": "low/s1", "run_id": run_id, "experiment": "study5"},
+            {"event": "end", "run": "low/s1", "run_id": run_id, "outcome": "done"}])  # fmt: skip
+        (runs / "study5" / run_id).mkdir(parents=True)
+        (runs / "study5" / run_id / "summary.json").write_text(
+            json.dumps({"endpoint_checkpoint": {"sha256": digest}}))  # fmt: skip
+    ckpt.mkdir()
+    (ckpt / "r-a1.pt").write_bytes(b"weights")
+    # r-b1's checkpoint: archived and verified earlier, gone from the disk
+    (bucket / "study5/t/checkpoints").mkdir(parents=True)
+    (bucket / "study5/t/checkpoints/r-b1.pt").write_bytes(b"weights")
+    (bucket / "study5/t/inventories").mkdir(parents=True)
+    (bucket / "study5/t/inventories/checkpoint-r-b1.tsv").write_text(
+        "path\tsize\tsha256\tmd5_b64\turl\tstatus\n" + f"r-b1.pt\t7\t{digest}\tx\tu\tok\n"
+    )
+
+    def close(record, *extra):
+        return camp.main(["export-checkpoints", "--runs", str(runs), "--dir", str(ckpt),
+                          "--remote", "study5/t/checkpoints", "--inventories-remote",
+                          "study5/t/inventories", "--inventories", str(inventories),
+                          "--record", str(record), "--run", "f1=low/s1", "--run", "f2=low/s1",
+                          *extra])  # fmt: skip
+
+    monkeypatch.setenv("FAKE_GCLOUD_FAIL_UPLOAD", "1")
+    record = tmp_path / "c" / "close" / "checkpoints-1.json"
+    assert close(record) == 1
+    found = json.loads(record.read_text())
+    failed = [c for c in found["checkpoints"] if c["status"] == "failed"]
+    assert found["failed"] == 1 and failed[0]["run_id"] == "r-a1"
+    assert failed[0]["path"] == str(ckpt / "r-a1.pt") and failed[0]["sha256"] == digest
+    assert failed[0]["error"]
+    assert {c["run_id"]: c["status"] for c in found["checkpoints"]}["r-b1"] == "verified"
+    assert not (bucket / "study5/t/checkpoints/r-a1.pt").exists()
+
+    monkeypatch.delenv("FAKE_GCLOUD_FAIL_UPLOAD")
+    record = tmp_path / "c" / "close" / "checkpoints-2.json"
+    assert close(record) == 0
+    found = json.loads(record.read_text())
+    assert {c["run_id"]: c["status"] for c in found["checkpoints"]} == {
+        "r-a1": "exported", "r-b1": "verified"}  # fmt: skip
+    assert (bucket / "study5/t/checkpoints/r-a1.pt").read_bytes() == b"weights"
+    copy = camp.read_inventory(bucket / "study5/t/inventories/checkpoint-r-a1.tsv")
+    assert [(r["path"], r["sha256"], r["status"]) for r in copy] == [("r-a1.pt", digest, "ok")]
+    assert (ckpt / "r-a1.pt").exists()  # exported, never removed by the close
+    # a file on the disk that is not the run's: not exported, reported
+    (ckpt / "r-a1.pt").write_bytes(b"other")
+    (bucket / "study5/t/checkpoints/r-a1.pt").unlink()
+    for path in inventories.glob("*"):
+        path.is_file() and path.unlink()
+    record = tmp_path / "c" / "close" / "checkpoints-3.json"
+    assert close(record) == 1
+    failed = [c for c in json.loads(record.read_text())["checkpoints"] if c["status"] == "failed"]
+    assert "not the one its run recorded" in failed[0]["error"]
+
+
+# ------------------------------------------------------------------ attempts
+
+
+LAUNCH = r"""
+import json, pathlib, sys
+runs, attempt = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+journal = runs / "launch" / "study5-t-one.jsonl"
+journal.parent.mkdir(parents=True, exist_ok=True)
+(runs / "launch" / "study5-t-one").mkdir(exist_ok=True)
+(runs / "launch" / "study5-t-one" / f"log-{attempt}.txt").write_text(f"attempt {attempt}\n")
+def run(run_id, label, end=None, text="x"):
+    d = runs / "study5" / run_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "meta.json").write_text(text)
+    lines = [{"event": "start", "run": label, "run_id": run_id, "experiment": "study5"}]
+    if end:
+        lines.append({"event": "end", "run": label, "run_id": run_id, "outcome": end})
+    with journal.open("a") as out:
+        out.write("".join(json.dumps(x) + "\n" for x in lines))
+records = runs / "study5_records" / "t"
+records.mkdir(parents=True, exist_ok=True)
+scan = runs / "study5_scan" / "s5-t-scan"
+if attempt == 1:
+    run("r-1", "cell/s1", "done")
+    run("r-2", "cell/s2", None, text="cut off")   # the Pod stopped it: no end
+    (records / "gate.json").write_text("first verdict")
+    scan.mkdir(parents=True)
+    (scan / "line_scan.jsonl").write_text("partial")  # cut off: no record
+else:
+    with journal.open("a") as out:   # the launcher settles r-2, its recovery round runs r-3
+        out.write(json.dumps({"event": "end", "run": "cell/s2", "run_id": "r-2",
+                              "outcome": "interrupted"}) + "\n")
+    run("r-3", "cell/s2", "done")
+    (records / "gate.json").write_text("second verdict")  # the gate ran again
+    scan.rename(runs / "aside-scan")                       # moved aside, run again
+    scan.mkdir(parents=True)
+    (scan / "line_scan.jsonl").write_text("whole")
+    (records / "scan.json").write_text("{}")
+"""
+
+
+def attempt_plan(tmp_path, out: Path, attempt: int):
+    """One block as pod 2 builds it (a launch, its archive with a gate's record and a scan run,
+    the snapshot and the receipt) and its close; the deadlines left out."""
+    b = camp.Builder("pod2", "t", out, tmp_path / "runs", tmp_path / "data", tmp_path / "ckpt")
+    script = tmp_path / "launch.py"
+    script.write_text(LAUNCH)
+    b.begin()
+    b.step("one/launch", (str(script), str(b.runs), str(attempt)), kind="launch", on_fail="stop")
+    b.runs_archive("one/archive", paths=("study5_records/t/scan.json",),
+                   mutable=("study5_records/t/gate.json",),
+                   run_dirs=(("study5_scan/s5-t-scan", "study5_records/t/scan.json"),),
+                   campaign="study5-t-one")  # fmt: skip
+    b.end("one")
+    b.close()
+    plan = b.plan(COMMIT, GPU, None, (camp.SURROGATE, "s" * 64))
+    plan.blocks = [camp.Block(x.name, tuple(s for s in x.steps if s.kind != "deadline"))
+                   for x in plan.blocks]  # fmt: skip
+    return plan
+
+
+def objects(store: Path) -> dict[str, bytes]:
+    return {p.relative_to(store).as_posix(): p.read_bytes() for p in store.rglob("*")
+            if p.is_file()}  # fmt: skip
+
+
+def test_the_documented_restart_against_an_archive_an_earlier_attempt_wrote(tmp_path, bucket):
+    """A stop, then the restart of docs/operations.md (a new --out, the same archive id) against
+    the archive the first attempt populated, archive.py --no-clobber throughout: no mismatch, and
+    every object the first attempt wrote is byte-identical afterwards. The launcher journal and
+    its logs, the gate's record rewritten, the scan run cut off then run again, the snapshots, the
+    plan and the inventories all change between the attempts: each attempt's go under its own id;
+    the ended runs' directories and the records written once stay at their stable paths."""
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+    first = attempt_plan(tmp_path, tmp_path / "out-1", 1)
+    camp.prepare(first)  # the plan and its campaigns into --out, as the driver does
+    assert camp.execute(first, python=[sys.executable], cwd=REPO_ROOT, env=env) == camp.COMPLETED
+    assert (first.out / "receipts" / "one.json").is_file()
+    before = objects(bucket)
+    attempts = {k.split("/")[3] for k in before if k.startswith("study5/t/attempts/")}
+    assert len(attempts) == 1
+    assert "study5/t/runs/study5/r-1/meta.json" in before  # ended: written once, stable
+    assert not any(k.startswith("study5/t/runs/study5/r-2") for k in before)  # no end yet
+
+    second = attempt_plan(tmp_path, tmp_path / "out-2", 2)
+    camp.prepare(second)  # the plan and its campaigns into --out, as the driver does
+    assert camp.execute(second, python=[sys.executable], cwd=REPO_ROOT, env=env) == camp.COMPLETED
+    status = camp.read_journal(second.out / "journal.jsonl")
+    assert status["one/archive"] == "done" and status["close/archive"] == "done", status
+    after = objects(bucket)
+    assert {k: after.get(k) for k in before} == before  # the earlier attempt's objects unchanged
+    new = {k.split("/")[3] for k in after if k.startswith("study5/t/attempts/")} - attempts
+    assert len(new) == 1
+    (second_id,) = new
+    for rel in ("runs/launch/study5-t-one.jsonl", "runs/study5_records/t/gate.json",
+                "campaign/snapshots/one/journal.jsonl", "campaign/plan.json"):  # fmt: skip
+        assert f"study5/t/attempts/{second_id}/{rel}" in after, rel
+    assert after["study5/t/runs/study5_scan/s5-t-scan/line_scan.jsonl"] == b"whole"
+    assert after["study5/t/runs/study5/r-3/meta.json"] == b"x"
+    assert after["study5/t/runs/study5/r-2/meta.json"] == b"cut off"  # ended now: stable
+    for inventory in (second.out / "inventories").glob("*.tsv"):
+        assert all(r["status"] == "ok" for r in camp.read_inventory(inventory)), inventory.name
+    drivers = [json.loads(line) for out in (first.out, second.out)
+               for line in (out / "journal.jsonl").read_text().splitlines()
+               if json.loads(line).get("event") == "driver"]  # fmt: skip
+    assert [d["attempt"] for d in drivers] == [*attempts, second_id]
+
+
+def test_an_attempt_id_is_the_utc_time_and_a_random_suffix_and_fills_the_argv():
+    one, two = camp.new_attempt(), camp.new_attempt()
+    assert one != two and len(one.split("-")) == 2 and one.split("-")[0].endswith("z")
+    assert camp.attempt_argv(("--remote", "study5/x/attempts/{attempt}/runs"), one) == [
+        "--remote", f"study5/x/attempts/{one}/runs"]  # fmt: skip
+
+
+def test_a_ladder_rungs_minutes_cover_its_matched_k_step(where):
+    rung = next(s for s in steps(pod2(where)) if s.name == "controls/s50000/ladder-linear")
+    assert rung.minutes == pytest.approx(5 * camp.K_POINT + camp.EVALUATION) == 10.6
+    assert rung.timeout == camp.timeout_of(10.6)
