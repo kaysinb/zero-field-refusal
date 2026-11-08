@@ -1,8 +1,8 @@
 {
  "what": "The GPU code of study 5's runs: the identity of its GPU paths at the commit named, which the engineering check covers.",
  "rule": "zero_field_refusal.code_identity.gpu_code_identity",
- "commit": "e403bcba75049ae7d23fce2e5ae648d87ba5aa94",
- "files": 143,
- "gpu_code_sha256": "17ceceb12608b3703878d970a4dd1cb66ff8ddac42010c6a33ead6b0591ed6fd",
+ "commit": "99059544dd005330a53e64f15eeb18648f053d2d",
+ "files": 144,
+ "gpu_code_sha256": "0188c41ea40199414ef924c3067989b89409684e58d119aa879f522871b84f13",
  "engineering_check": "docs/study5-preregistration.md#protocol: study 3's F runs on seed 10403 at both rates, rerun under this code and compared with study 3's archived records by scripts/study5_engineering_check.py (pod1's first block); a later GPU change needs a new check and a new record here"
 }
