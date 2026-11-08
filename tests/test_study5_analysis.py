@@ -580,7 +580,8 @@ class World:
                          else "safe_non_refusal")  # fmt: skip
                 labels.append({"item_id": f"{condition}/{pid}", **self.identity,
                                "content_sha256": _content_hash(PROMPTS[pid], text),
-                               "label": label})  # fmt: skip
+                               "label": label,
+                               "created_at": "2026-11-11T12:00:00+00:00"})  # fmt: skip
         lines(run_dir / "responses" / f"{SET}.jsonl", responses)
         lines(run_dir / "judge" / "wildguard.jsonl", labels)
         expected = [f"{c}/{pid}" for c in conditions for pid in IDS]
@@ -917,7 +918,7 @@ CHECKS = "study5_records/pod1-x/surrogate-checks.json"
         (ENG, {"pairs": []}, "not equal"),
         (ENG, {"code": {"commit": RERUN, "gpu_code_sha256": "f" * 64}}, "GPU code identity"),
         (ENG, {"pairs": [{"rerun": "x", "rerun_commit": "d" * 40, "rerun_dirty": False}]},
-         "engineering rerun"),
+         f"commit {'d' * 40} not in this checkout's history"),
         (ENG, {"pairs": [{"rerun": "x", "rerun_commit": RERUN, "rerun_dirty": True}]},
          "engineering rerun"),
         (CHECKS, {"passes": False}, "did not pass"),
@@ -1009,8 +1010,13 @@ def test_the_order_violated_gives_no_reading(world) -> None:
         world.runs / "study5_records/pod2-x/predictions-receipt.json",
         created="2026-11-11T00:00:00Z",
     )  # after the first fresh start
-    receipt = world.upper[50001] / "judge" / "wildguard.receipt.json"
-    edit_json(receipt, completed_at="2026-11-10T02:00:00+00:00")  # before the last fresh end
+    # 50001's η_u labeling started before the last fresh end and finished after it
+    run = world.upper[50001]
+    path = run / "judge" / "wildguard.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows[7]["created_at"] = "2026-11-10T02:00:00+00:00"
+    lines(path, rows)
+    edit_json(run / "judge" / "wildguard.receipt.json", labels_sha256=sha(path.read_bytes()))
     out = world.tmp / "analysis.json"
     code, why = call(world.argv(out, "--without-study3"))
     assert code == 0, why
@@ -1018,7 +1024,12 @@ def test_the_order_violated_gives_no_reading(world) -> None:
     test = result["confirmatory"]
     assert test["order_violated"] is True and test["labels_before_runs_ended"] is True
     assert test["reading"] is None and len(test["reading_withheld"]) == 2
-    assert result["labels_order"]["earlier"] == [world.upper[50001].name]
+    order = result["labels_order"]
+    assert order["earlier"] == [run.name] and order["after"] is False
+    assert order["labeling"][run.name] == {"started_at": "2026-11-10T02:00:00+00:00",
+                                           "completed_at": "2026-11-12T00:00:00+00:00"}  # fmt: skip
+    assert order["last_fresh_end"] > order["labeling"][run.name]["started_at"]
+    assert order["labeling"][run.name]["completed_at"] > order["last_fresh_end"]
 
 
 def test_the_runs_roots_of_study5_and_study3_do_not_overlap(world) -> None:

@@ -87,8 +87,10 @@ stream a prefix of the prediction's by content (the same stream, its chunks the 
 prediction's: a run stopped early read fewer); a seed not bound has no h, with the reason
 (``binding: …``), counted under ``binding`` in ``excluded_by_state``. The order of the
 registration: the predictions' bucket copy created before the first fresh start
-(``order_violated`` otherwise), and every fresh run's label receipt completed after the last end
-in pod 2's launcher journals (``labels_order``; ``labels_before_runs_ended`` otherwise); unless
+(``order_violated`` otherwise), and every fresh run's labeling started (the earliest
+``created_at`` of its label rows; its receipt's ``completed_at`` reported beside it) after the
+last end in pod 2's launcher journals (``labels_order``; ``labels_before_runs_ended``
+otherwise); unless
 both are known to hold, the test gives no reading (``reading_withheld``, with why). Every run's
 GPUs as its ``meta.json`` records them are reported (``hardware``), never refused. --runs-root
 and --study3-runs-root must not overlap.
@@ -300,6 +302,7 @@ def run_labels(
                                           f"{receipt['rounds']} labeling rounds of "
                                           f"{LABEL_ROUNDS}")  # fmt: skip
     out: dict[str, Any] = {"receipt_sha256": receipt_sha, "conditions": {},
+                           "started_at": labeling_started(data),
                            "completed_at": receipt.get("completed_at")}  # fmt: skip
     for condition in conditions:
         count = Counter(labels.get(label_item_id(condition, pid)) for pid in ids)
@@ -312,6 +315,21 @@ def run_labels(
             row |= {"refusal": count["refusal"], "safe_non_refusal": count["safe_non_refusal"]}
         out["conditions"][condition] = row
     return out
+
+
+def labeling_started(data: bytes) -> str | None:
+    """When a run's labeling started: the earliest ``created_at`` over its label file's rows
+    (the judge stamps each reply, ``judge.JudgeClient``); None when no row carries one."""
+    stamps = []
+    for line in data.decode("utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        stamp = row.get("created_at") if isinstance(row, dict) else None
+        if _when(stamp) is not None:
+            stamps.append(stamp)
+    return min(stamps, key=_when) if stamps else None
 
 
 class Labels:
@@ -608,7 +626,12 @@ def gate_records(reader: Reader, pod1: Plan, gpu: Any) -> tuple[dict[str, Any], 
     if (eng.get("code") or {}).get("gpu_code_sha256") != gpu:
         refuse("pod 1's engineering check is not of pod 2's GPU code identity")
     for pair in pairs:
-        if pair.get("rerun_dirty") is not False or identity_of(pair.get("rerun_commit")) != gpu:
+        commit = pair.get("rerun_commit")
+        identity = identity_of(commit)
+        if identity is None:
+            refuse(f"pod 1's engineering rerun {pair.get('rerun')}: commit {commit} not in "
+                   "this checkout's history")  # fmt: skip
+        if pair.get("rerun_dirty") is not False or identity != gpu:
             refuse(f"pod 1's engineering rerun {pair.get('rerun')} is not of a clean checkout of "
                    "pod 2's GPU code identity")  # fmt: skip
     path_c, digest_c, checks = found["surrogate/checks"]
@@ -693,17 +716,21 @@ def hardware_of(reader: Reader, run_dir: Path | str) -> Any:
 def labels_order(found: Mapping[Path, Any], pod2_runs: Sequence[Path], last_end: str | None
                  ) -> dict[str, Any]:  # fmt: skip
     """Labels of fresh runs opened only after every fresh run ended (registration, "Seeds and
-    order"): every fresh run's label receipt completed after the last end in pod 2's launcher
-    journals. ``after`` False when one did not, None when it cannot be told."""
+    order"): every fresh run's labeling started (its label rows' earliest ``created_at``) after
+    the last end in pod 2's launcher journals. ``after`` False when one did not, None when it
+    cannot be told; each run's start and its receipt's completion are reported."""
     end = _when(last_end)
-    times = {Path(d).name: found[d].get("completed_at") for d in pod2_runs
-             if isinstance(found.get(d), Mapping)}  # fmt: skip
+    runs = {Path(d).name: found[d] for d in pod2_runs if isinstance(found.get(d), Mapping)}
+    times = {r: f.get("started_at") for r, f in runs.items()}
     earlier = sorted(r for r, t in times.items() if end is not None and _when(t) is not None
                      and _when(t) <= end)  # fmt: skip
     unknown = sorted(r for r, t in times.items() if _when(t) is None)
     after = None if end is None or unknown else not earlier
-    return {"last_fresh_end": last_end, "receipts": len(times), "after": after,
-            "earlier": earlier, "unknown": unknown}  # fmt: skip
+    return {"last_fresh_end": last_end, "runs": len(times), "after": after,
+            "earlier": earlier, "unknown": unknown,
+            "labeling": {r: {"started_at": f.get("started_at"),
+                             "completed_at": f.get("completed_at")}
+                         for r, f in sorted(runs.items())}}  # fmt: skip
 
 
 # ------------------------------------------------------------------ study 3's parts
