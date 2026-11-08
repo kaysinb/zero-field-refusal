@@ -1,5 +1,5 @@
 """Study 5's options of the scheduled run (docs/study5-preregistration.md, "Descriptive
-measurements": the line scans and the crossed controls).
+measurements": the crossed controls). The line scans are runs of their own (``line_scan``).
 
 Each key is absent from the shared configs, so that no existing config changes its hash, and an
 absent key (or null) leaves the run exactly as it was. ``protocol`` lets only the study-5 roles
@@ -16,9 +16,6 @@ carry them (``study5.role``).
   (``preconditioner_seed``, read by ``train._theta0_second_moment``); the stream must already be
   in the data cache. The run records ``inputs.preconditioner_source_seed`` beside the stream's
   identity (``inputs.streams.preconditioner``).
-- ``eval.controls.line_scan.points``: signed coefficients a of the points θ₀ + aΔθ, Δθ = θ_N − θ₀,
-  each evaluated after the run's last scheduled evaluation (``schedule.run_line_scan``) under the
-  condition ``evaluation.line_scan_condition(a)`` (``line_scan_-0.25``, ``line_scan_+0.5``).
 """
 
 from __future__ import annotations
@@ -85,9 +82,3 @@ def preconditioner_seed(cfg: DictConfig) -> int:
     """The seed whose preconditioner stream gives v₀: ``source_seed``, or the run's own."""
     source = preconditioner_source(cfg)
     return cfg.seed if source is None else source
-
-
-def line_scan_points(cfg: DictConfig) -> list[float] | None:
-    """The signed coefficients of the scheduled line scan, in the config's order; None: none."""
-    points = OmegaConf.select(cfg, "eval.controls.line_scan.points", default=None)
-    return None if points is None else [float(a) for a in points]

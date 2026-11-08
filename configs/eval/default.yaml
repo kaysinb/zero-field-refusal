@@ -20,10 +20,6 @@ eval:
       enabled: false
       coefficients: [0.25, 0.5, 1.0]
       signs: [1, -1]
-      # points: absent. Study 5's line scan of a scheduled run (study5.role fresh only): the signed
-      # coefficients a of θ₀ + aΔθ, each evaluated in full after the last evaluation under the
-      # condition line_scan_{a:+g} (schedule.run_line_scan); enabled/coefficients/signs above are
-      # the unscheduled runs'. Absent here so that no config changes its hash.
     random_direction:             # random displacements with the norm of Δθ
       enabled: false
       kinds: [global, per_tensor]

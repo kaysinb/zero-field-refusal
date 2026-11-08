@@ -1,6 +1,7 @@
 """Study 5's options of the scheduled run on CPU (docs/study5-preregistration.md, "Descriptive
-measurements"): the line scan after the last evaluation, the training order of the crossed
-control (b), the preconditioner source of control (c), and the study-5 roles of the protocol.
+measurements"): the training order of the crossed control (b), the preconditioner source of
+control (c), and the study-5 roles of the protocol (the line scan is a run of its own:
+tests/test_line_scan.py).
 Every run is a tiny fixed-policy F run; with every option absent the run is the golden one
 (tests/test_golden_single_process.py)."""
 
@@ -12,26 +13,20 @@ from collections import Counter
 
 import pytest
 import torch
-from omegaconf import OmegaConf
-from test_endpoint_checkpoint import final_models, rng_state, same_rng
-from test_golden_single_process import OVERRIDES, normalize, snapshot
+from test_endpoint_checkpoint import final_models
+from test_golden_single_process import OVERRIDES, snapshot
 from test_schedule import scheduled
 from test_train import env as env  # noqa: F401  (the fixture)
 from test_train import prepare, read_jsonl
 
 from zero_field_refusal import linear_response, schedule, study5_options
-from zero_field_refusal.evaluation import line_scan_condition
 from zero_field_refusal.models import freeze
 from zero_field_refusal.protocol import ProtocolError
-from zero_field_refusal.run_judging import response_conditions
 from zero_field_refusal.runtime import StreamPrefix, extend_stream
 from zero_field_refusal.schedule import run_scheduled
 from zero_field_refusal.teacher import StreamError
-from zero_field_refusal.train import Evaluator
 
 F_RUN = ("optimizer=adam_frozen", *OVERRIDES, "optimizer.preconditioner.batches=3")  # golden F
-POINTS = [-1, -0.5, -0.25, 0.25, 0.5]
-SCAN = f"+eval.controls.line_scan.points=[{','.join(str(a) for a in POINTS)}]"
 
 
 def ready(env, cfg, *, seeds=(0,)):
@@ -45,11 +40,6 @@ def ready(env, cfg, *, seeds=(0,)):
     if StreamPrefix(cfg, env, cfg.seed).available < responses:
         extend_stream(cfg, env, cfg.seed, responses, batch_size=4)
     return cfg
-
-
-def f_run(env, tmp_path, role: str, *overrides: str):
-    return ready(env, scheduled(tmp_path, *F_RUN, f"+study5.role={role}", *overrides,
-                                policy="short"))  # fmt: skip
 
 
 def own_runs_dir(monkeypatch, tmp_path, name: str) -> None:
@@ -76,152 +66,6 @@ def key(sample) -> tuple:
 
 def inputs_of(run_dir) -> dict:
     return json.loads((run_dir / "meta.json").read_text())["inputs"]
-
-
-def run_config(run_dir):
-    return OmegaConf.load(run_dir / "config.yaml")
-
-
-def without(rows: list[str], prefix: str) -> list[str]:
-    return [row for row in rows if not json.loads(row)["condition"].startswith(prefix)]
-
-
-# ------------------------------------------------------------------------------------ line scan
-
-
-def test_line_scan_points_and_restore(env, tmp_path, monkeypatch) -> None:  # noqa: F811
-    """Each point is θ₀ + a(θ₃ − θ₀) exactly, evaluated in full on the step-3 evaluation's
-    prompts; the student holds θ₃ again afterwards, bit for bit, the endpoint checkpoint holds
-    θ₃, and every record but the scan's own rows equals a run without the scan."""
-    torch.set_num_threads(1)
-    models = final_models(monkeypatch)
-    at_points = []  # the trainable parameters at each evaluation of a scan point
-    original = Evaluator.__call__
-
-    def spy(self, model, condition, **kwargs):
-        if condition.startswith("line_scan_"):
-            at_points.append((condition, {n: p.detach().clone() for n, p in
-                                          freeze(model, self.cfg.train.freeze)}))  # fmt: skip
-        return original(self, model, condition, **kwargs)
-
-    monkeypatch.setattr(Evaluator, "__call__", spy)
-    out = {}
-    for name, extra in (("plain", ()), ("scan", (SCAN,))):
-        ckpt = tmp_path / f"ckpt-{name}"
-        cfg = f_run(env, tmp_path, "fresh", f"tracking.endpoint_checkpoint={ckpt}", *extra)
-        own_runs_dir(monkeypatch, tmp_path, name)
-        run_dir = run_scheduled(cfg, env, run_id="f")
-        out[name] = {"dir": run_dir, "records": snapshot(run_dir), "rng": rng_state(),
-                     "student": {n: p.detach().clone() for n, p in
-                                 freeze(models[-1], cfg.train.freeze)},
-                     "ckpt": torch.load(ckpt / "f.pt", weights_only=True)}  # fmt: skip
-    plain, scan = out["plain"], out["scan"]
-
-    conditions = [line_scan_condition(a) for a in POINTS]
-    assert conditions == ["line_scan_-1", "line_scan_-0.5", "line_scan_-0.25", "line_scan_+0.25",
-                          "line_scan_+0.5"]  # fmt: skip
-    assert [c for c, _ in at_points] == conditions  # in the config's order
-    theta0 = dict(freeze(env.new_model(), cfg.train.freeze))
-    end = scan["ckpt"]
-    for (condition, params), a in zip(at_points, POINTS, strict=True):
-        for n, p in params.items():  # θ₀ + aΔθ with Δθ = θ₃ − θ₀ in fp32
-            expected = torch.add(theta0[n].detach(), end[n] - theta0[n].detach(), alpha=a)
-            assert p.dtype == torch.float32 and torch.equal(p, expected), (condition, n)
-        assert not torch.equal(params[n], end[n])
-
-    # restored: the student, the checkpoint, and both equal the run without the scan
-    for n, p in scan["student"].items():
-        assert torch.equal(p, end[n]) and torch.equal(p, plain["student"][n]), n
-        assert torch.equal(plain["ckpt"][n], end[n]), n
-    assert same_rng(plain["rng"], scan["rng"])
-
-    rows = read_jsonl(scan["dir"] / "line_scan.jsonl")
-    assert [(r["a"], r["condition"], r["step"], r["evaluated"]) for r in rows] == [
-        (float(a), c, 3, True) for a, c in zip(POINTS, conditions, strict=True)]  # fmt: skip
-    keys = {"K_benign", "K_harmful", "heldout_nll_per_token", "factual_accuracy",
-            "benchmark_accuracy"}  # fmt: skip
-    assert all(keys <= set(r) for r in rows)
-    summary = json.loads((scan["dir"] / "summary.json").read_text())
-    assert summary.pop("line_scan") == {
-        "points": [float(a) for a in POINTS],
-        "conditions": conditions,
-        "evaluated": conditions,
-    }
-
-    # the same prompts and measures at every point as at step 3
-    got, want = scan["records"], plain["records"]
-    measurements = [json.loads(r) for r in got["observations/measurements"]]
-    per = Counter((r["condition"], r["measure"], r["item_id"]) for r in measurements)
-    step = sorted((m, i) for (c, m, i) in per if c == "step-3")
-    for condition in conditions:
-        assert sorted((m, i) for (c, m, i) in per if c == condition) == step
-    responses = [json.loads(r) for r in got["responses/harmful_evaluation"]]
-    ids = [r["item_id"] for r in responses if r["condition"] == "step-3"]
-    for condition in conditions:
-        assert [r["item_id"] for r in responses if r["condition"] == condition] == ids
-
-    # every other record equals the run without the scan
-    for name in want:
-        if name in ("observations/measurements", "responses/harmful_evaluation"):
-            assert without(got[name], "line_scan_") == want[name], name
-        elif name == "summary":
-            assert json.dumps(normalize(summary), sort_keys=True) == want[name][0]
-        else:
-            assert got[name] == want[name], name
-    assert set(got) == set(want)
-    # the judge reads the scan's conditions after the run's evaluations
-    assert response_conditions(run_config(scan["dir"]), scan["dir"]) == ["step-3", *conditions]
-    assert response_conditions(run_config(plain["dir"]), plain["dir"]) == ["step-3"]
-
-
-def test_a_non_finite_scan_point_is_recorded_and_the_scan_goes_on(
-    env,
-    tmp_path,
-    monkeypatch,  # noqa: F811
-) -> None:
-    from zero_field_refusal.tracking import Diverged
-
-    original = Evaluator.__call__
-
-    def broken(self, model, condition, **kwargs):
-        if condition == "line_scan_-1":
-            raise Diverged("K_benign not finite")
-        return original(self, model, condition, **kwargs)
-
-    monkeypatch.setattr(Evaluator, "__call__", broken)
-    cfg = f_run(env, tmp_path, "fresh", SCAN)
-    run_dir = run_scheduled(cfg, env, run_id="broken")
-    rows = read_jsonl(run_dir / "line_scan.jsonl")
-    assert [r["evaluated"] for r in rows] == [False, True, True, True, True]
-    assert rows[0]["reason"] == "nonfinite_k"
-    conditions = response_conditions(run_config(run_dir), run_dir)
-    assert conditions == ["step-3", *(line_scan_condition(a) for a in POINTS[1:])]
-    summary_path = run_dir / "summary.json"
-    summary = json.loads(summary_path.read_text())
-    partial = {**summary, "line_scan": {**summary["line_scan"], "points": POINTS[:-1]}}
-    summary_path.write_text(json.dumps(partial))  # a scan that stopped before its last point
-    with pytest.raises(ValueError, match="incomplete"):
-        response_conditions(run_config(run_dir), run_dir)
-    summary_path.write_text(json.dumps({k: v for k, v in summary.items() if k != "line_scan"}))
-    with pytest.raises(ValueError, match="incomplete"):
-        response_conditions(run_config(run_dir), run_dir)
-
-
-def test_no_scan_after_an_early_stop(env, tmp_path, monkeypatch) -> None:  # noqa: F811
-    norms = iter([1.0, 50.0])
-    real = schedule._norm
-
-    def norm(tensors):  # a gradient spike at step 1, the weight check stays real
-        first = next(t for t in tensors if t is not None)
-        return next(norms) if first.requires_grad is False and first.grad is None else real(tensors)
-
-    monkeypatch.setattr(schedule, "_norm", norm)
-    cfg = f_run(env, tmp_path, "fresh", SCAN)
-    run_dir = run_scheduled(cfg, env, run_id="spiked")
-    assert json.loads((run_dir / "terminal.json").read_text())["stop"]["reason"] == "gradient_spike"
-    assert not (run_dir / "line_scan.jsonl").exists()
-    summary = json.loads((run_dir / "summary.json").read_text())
-    assert summary["line_scan"]["evaluated"] == [] and "skipped" in summary["line_scan"]
 
 
 # ---------------------------------------------------------------------------------------- order
@@ -361,7 +205,7 @@ def role_config(tmp_path, *overrides: str):
 
 
 @pytest.mark.parametrize("overrides", [
-    ("+study5.role=fresh", SCAN, "tracking.endpoint_checkpoint=/x"),
+    ("+study5.role=fresh", "tracking.endpoint_checkpoint=/x"),
     ("+study5.role=fresh",),
     ("+study5.role=control", "+train.order_seed=3", "tracking.endpoint_checkpoint=/x"),
     ("+study5.role=control", "+optimizer.preconditioner.source_seed=50001"),
@@ -377,16 +221,9 @@ def test_study5_roles_accept_their_keys(tmp_path, overrides) -> None:
     (("+study5.role=control",), "exactly one"),
     (("+study5.role=control", "+train.order_seed=3", "+optimizer.preconditioner.source_seed=1"),
      "exactly one"),
-    (("+study5.role=control", "+train.order_seed=3", SCAN), "line_scan.points"),
     (("+study5.role=control", "+train.order_seed=true"), "train.order_seed"),
-    (("+study5.role=fresh", "+eval.controls.line_scan.points=[0.5,1]"), "line_scan.points"),
-    (("+study5.role=fresh", "+eval.controls.line_scan.points=[0,0.5]"), "line_scan.points"),
-    (("+study5.role=fresh", "+eval.controls.line_scan.points=[0.5,0.5]"), "line_scan.points"),
-    (("+study5.role=fresh", "+eval.controls.line_scan.points=[]"), "line_scan.points"),
-    (("+study5.role=fresh", SCAN, "+eval.k_only=true"), "K-only"),
     (("+study5.role=fresh", "optimizer=adamw", "optimizer.lr=1e-3"), "adam_frozen"),
     (("+train.order_seed=3",), "study-5 role"),
-    ((SCAN,), "study-5 role"),
     (("+optimizer.preconditioner.source_seed=1",), "study-5 role"),
 ])  # fmt: skip
 def test_study5_keys_outside_their_roles_are_refused(tmp_path, overrides, message) -> None:
@@ -401,7 +238,7 @@ def test_study3_roles_are_not_loosened() -> None:
     with pytest.raises(ProtocolError, match="endpoint checkpoint"):
         load_run_config("experiments/study3", ["study3.role=confirmation", *base,
                                                "tracking.endpoint_checkpoint=/x"])  # fmt: skip
-    for extra in ("+train.order_seed=3", "+optimizer.preconditioner.source_seed=1", SCAN,
+    for extra in ("+train.order_seed=3", "+optimizer.preconditioner.source_seed=1",
                   "+study5.role=fresh"):  # fmt: skip
         with pytest.raises(ProtocolError, match="study-5|study3"):
             load_run_config("experiments/study3", ["study3.role=engineering", *base, extra])

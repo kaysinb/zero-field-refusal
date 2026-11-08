@@ -348,6 +348,8 @@ topics:
   - scripts/study5_campaigns.py
   - scripts/study5_engineering_check.py
   - scripts/study5_surrogate_endpoint.py
+  - scripts/study5_scan.py
+  - src/zero_field_refusal/line_scan.py
   - scripts/study5_fixation.py
   - src/zero_field_refusal/analysis/study5_fixation.py
   - src/zero_field_refusal/analysis/study5_analysis.py
@@ -362,6 +364,8 @@ topics:
   - tests/test_study5_surrogate_endpoint.py
   - tests/test_study5_fixation.py
   - tests/test_study5_analysis.py
+  - tests/test_line_scan.py
+  - tests/test_study5_chain.py
 - id: study3_simulation
   title: Study 3's simulation before validation — inputs, fixation, run, verification and record
   source: docs/operations.md#study-3-simulation

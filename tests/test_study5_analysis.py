@@ -440,13 +440,14 @@ class World:
                                {"run_type": "theta0"}, ["theta0"], harmful=5)  # fmt: skip
         self.k = {50000: (5.0, 7.0), 50001: (5.5, 6.4), 50002: (6.5, 7.0), 50003: (3.5, 6.9)}
         self.h = {50000: (40, 80), 50001: (20, 30), 50002: (60, 90), 50003: (10, 70)}
-        self.lower, self.upper = {}, {}
+        self.lower, self.upper, self.scan = {}, {}, {}
         for seed in self.seeds:
-            scan = [line_scan_condition(a) for a in sa.SCAN_POINTS]
             self.lower[seed] = self.run(
-                "pod2", f"fresh-scan-s{seed}", "experiments/study5_scan", seed, 1.3e-05,
-                [f"optimizer.lr={1.3e-05!r}"], {"schedule": {"steps": 25}},
-                ["step-25", *scan], harmful=self.h[seed][0], k=self.k[seed][0])  # fmt: skip
+                "pod2", f"fresh-lower-s{seed}", "experiments/study5", seed, 1.3e-05,
+                ["study5.role=fresh", f"optimizer.lr={1.3e-05!r}"], {"schedule": {"steps": 25}},
+                ["step-25"], harmful=self.h[seed][0], k=self.k[seed][0])  # fmt: skip
+            self.scan[seed] = self.scan_run(seed, harmful=self.h[seed][0] + 1,
+                                            k=self.k[seed][0])  # fmt: skip
             self.upper[seed] = self.run(
                 "pod2", f"fresh-upper-s{seed}", "experiments/study5", seed, 1.83e-05,
                 ["study5.role=fresh", f"optimizer.lr={1.83e-05!r}"], {"schedule": {"steps": 25}},
@@ -477,6 +478,20 @@ class World:
         cfg = {"run_type": "train", "seed": seed, "eval": {"harmful": {"prompt_set": SET}},
                "optimizer": {"name": "adam_frozen", "lr": lr}, **extra}  # fmt: skip
         self.write_run(run_dir, cfg, conditions, harmful=harmful, k=k)
+        return run_dir
+
+    def scan_run(self, seed: int, *, harmful: int, k: float) -> Path:
+        """The η_l run's scan run, as scripts/study5_scan.py writes it, and its record."""
+        run_id = f"s5-pod2-x-scan-s{seed}"
+        out = f"study5_records/pod2-x/scan/s{seed}.json"
+        self.steps["pod2"].append({"name": f"fresh/s{seed}/scan", "outputs": [f"{POD}/{out}"]})
+        scan = [line_scan_condition(a) for a in sa.SCAN_POINTS]
+        dump(self.runs / out, {"kind": "study5-scan", "seed": seed, "experiment": "study5_scan",
+                               "run_id": run_id, "f_run": {"run_id": self.lower[seed].name},
+                               "evaluated": scan})  # fmt: skip
+        run_dir = self.runs / "study5_scan" / run_id
+        cfg = {"run_type": "study5_scan", "seed": seed, "eval": {"harmful": {"prompt_set": SET}}}
+        self.write_run(run_dir, cfg, scan, harmful=harmful, k=k)
         return run_dir
 
     def metrics(self, k: float) -> dict:
@@ -517,7 +532,8 @@ class World:
                 run_dir / "evaluations.jsonl",
                 [{"step": 25, "condition": "step-25", **self.metrics(k)}],
             )
-            scan = [c for c in conditions if c.startswith("line_scan_")]
+        elif cfg["run_type"] == "study5_scan":
+            scan = list(conditions)
             if scan:
                 rows = [
                     {
@@ -751,8 +767,8 @@ def test_the_cli_writes_the_analysis_once_numbers_only(world, capsys) -> None:
     assert result["predictions"]["created"] == "2026-11-10T00:00:00Z"
     assert result["predictions"]["first_start"].startswith("2026-11-10T")
     assert result["predictions"]["created_before_first_start"] is True
-    assert f"runs:study5/{world.lower[50000].name}/summary.json" in result["inputs"]
-    assert f"runs:study5/{world.lower[50000].name}/line_scan.jsonl" in result["inputs"]
+    assert f"runs:study5_scan/{world.scan[50000].name}/summary.json" in result["inputs"]
+    assert f"runs:study5_scan/{world.scan[50000].name}/line_scan.jsonl" in result["inputs"]
     theta0 = result["descriptive"]["theta0"]["classes"]
     assert theta0["harmful"] == pytest.approx(5 / 521) and theta0["refusal"] == pytest.approx(
         300 / 521)  # fmt: skip
@@ -790,6 +806,29 @@ def test_a_missing_label_file_is_reported_by_name_and_leaves_that_seed_only(worl
     )
     # the line scan of 50001's η_l run is unaffected by its η_u labels
     assert result["descriptive"]["line_scans"]["odd"]["+0.5"]["harmful"]["n"] == 4
+
+
+def test_a_missing_scan_is_missing_by_name_and_the_seed_stays_elsewhere(world) -> None:
+    """Seed 50001's scan record is gone, seed 50002's scan run was cut off (its summary never
+    written): their points are missing by name, and both seeds stay in every quantity that does
+    not need those points (the outcome, the endpoint and θ₀'s points)."""
+    (world.runs / "study5_records/pod2-x/scan/s50001.json").unlink()
+    (world.scan[50002] / "summary.json").unlink()
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, "--without-study3"))
+    assert code == 0, why
+    result = json.loads(out.read_text())
+    scans = result["descriptive"]["line_scans"]
+    assert scans["per_seed"]["50001"]["-1"]["harmful"] == {
+        "missing": "a=-1: line_scan_-1: scan: no record (s50001.json)"}  # fmt: skip
+    assert scans["per_seed"]["50002"]["+0.5"]["harmful"]["missing"].startswith(
+        "a=+0.5: labels: ValueError")  # fmt: skip
+    assert scans["per_seed"]["50001"]["+1"]["harmful"] == pytest.approx(20 / 521)
+    assert scans["points"]["+1"]["harmful"]["n"] == 4 and scans["points"]["+0"]["harmful"]["n"] == 4
+    assert scans["odd"]["+1"]["harmful"]["n"] == 2  # a = −1 missing for 50001 and 50002
+    assert {e["seed"] for e in scans["odd"]["+1"]["harmful"]["excluded"]} == {50001, 50002}
+    by_seed = {o["seed"]: o for o in result["outcomes"]}
+    assert by_seed[50001]["h"] is not None  # the outcome needs no scan point
 
 
 def test_a_predictions_record_that_is_not_the_published_one_is_refused(world) -> None:
@@ -971,11 +1010,10 @@ def test_the_cli_is_analysis_code_outside_the_gpu_identity() -> None:
         assert is_gpu_path(f"src/zero_field_refusal/analysis/{name}") is False
 
 
-def test_the_scan_points_are_the_configs() -> None:
-    from omegaconf import OmegaConf
+def test_the_scan_points_are_the_scan_runs() -> None:
+    from zero_field_refusal import line_scan
 
-    cfg = OmegaConf.load(REPO_ROOT / "configs" / "experiments" / "study5_scan.yaml")
-    assert tuple(float(a) for a in cfg.eval.controls.line_scan.points) == sa.SCAN_POINTS
+    assert sa.SCAN_POINTS == line_scan.POINTS
 
 
 def test_study3s_parts_through_study3s_gated_reader(tmp_path, monkeypatch, capsys) -> None:

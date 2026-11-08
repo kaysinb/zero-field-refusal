@@ -31,25 +31,31 @@ them (``study5/<ID>/runs/`` of each restored under it: the run directories, ``la
 ``study5_records/<ID>/``), with the label files the labeling wrote into the run directories.
 --pod1 and --pod2 are the two campaign folders (``plan.json`` and ``campaigns/*.yaml``, each
 campaign's sha256 the plan's). From the plans: pod2's n and seeds (the fixation record's fresh
-seeds, or its n = 24 alternative), each fresh seed's F runs at η_l (experiments/study5_scan) and
-η_u (experiments/study5 at η_u), the controls (study5_control_order, study5_control_v0), θ₀'s
+seeds, or its n = 24 alternative), each fresh seed's F runs at η_l and η_u (experiments/study5,
+``study5.role=fresh``), the controls (study5_control_order, study5_control_v0), θ₀'s
 evaluation (pod1, experiments/study5_theta0), and the records each step wrote (``predictions/
 record``, ``predictions/publish``, ``streams/s<seed>/features``, ``fresh/s<seed>/surrogate-
-endpoint``, ``controls/s<seed>/ladder-<rung>``; pod1's ``retrospective/s<seed>/predict`` and
-``features``), their Pod paths read relative to the plan's ``runs``. A run is its launcher
-campaign's last end of its label (``launch/<campaign>.jsonl``) with the outcome ``done`` or
-``diverged`` (its records then decide), its folder the start's experiment and run id; its config
-must give the cell's seed, rate and ``adam_frozen``. The prompt sets come from ``DATA_DIR``.
+endpoint``, ``fresh/s<seed>/scan``, ``controls/s<seed>/ladder-<rung>``; pod1's
+``retrospective/s<seed>/predict`` and ``features``), their Pod paths read relative to the plan's
+``runs``. A seed's line scan is its scan run (the record's experiment and run id, the record of
+the seed's η_l run): h(+1) is the η_l run's step-25 evaluation, h(0) θ₀'s run, each other point
+its row of the scan run (``line_scan.jsonl``) and its labels; a point not evaluated, a scan run
+missing or not labeled leaves those points missing by name, the seed in every other quantity. A
+run is its launcher campaign's last end of its label (``launch/<campaign>.jsonl``) with the
+outcome ``done`` or ``diverged`` (its records then decide), its folder the start's experiment and
+run id; its config must give the cell's seed, rate and ``adam_frozen``. The prompt sets come
+from ``DATA_DIR``.
 
 **Labels.** A study-5 run's labels are read as study 2 reads a run (``study2_labels``' checks,
 composed as ``study3_labels._read_run`` composes them: the recorded prompts, exactly the
 responses expected, the judging receipt of this judge for exactly the run's items, the label file
 by its sha256, every record checked, study 2's rounds rule) over the conditions
-``run_judging.response_conditions`` gives the run: ``step-25`` and its line-scan points for an η_l
-run, ``ladder_<rung>`` for a rung's run, ``theta0`` for θ₀. ``study2_labels.read_endpoint_labels``
-itself reads ``scheduled_conditions`` alone and would refuse a run with a line scan, a ladder
-rung's or θ₀'s. WildGuard alone gives the outcome; per condition the counts of the three classes
-(refusal, safe non-refusal, harmful compliance) and the missing labels, of 521.
+``run_judging.response_conditions`` gives the run: ``step-25`` for a fresh or control F run, the
+points ``line_scan_{a:+g}`` for a scan run, ``ladder_<rung>`` for a rung's run, ``theta0`` for θ₀.
+``study2_labels.read_endpoint_labels`` itself reads ``scheduled_conditions`` alone and would refuse
+a scan run's, a ladder rung's or θ₀'s. WildGuard alone gives the outcome; per condition the counts
+of the three classes (refusal, safe non-refusal, harmful compliance) and the missing labels, of
+521.
 
 **Study 3's parts** (the retrospective and the extreme blocks) are read as the fixation record
 read them: study 3's analysis freeze of candidate 1 (``study3_freeze.read_freeze``, no problem),
@@ -133,6 +139,7 @@ KIND, VERSION = "study5-analysis", 1
 FIXATION = "docs/study5-fixation.json"
 ETA_L, ETA_U = 1.3e-05, 1.83e-05  # study 3's candidate-1 rates of F (scripts/study5_campaigns.py)
 ENDPOINT = "step-25"
+FRESH, FRESH_ROLE = "experiments/study5", "study5.role=fresh"  # the fresh F runs' cells
 THETA0 = "theta0"
 DONE = ("done", "diverged")  # a launcher end after which the run's records decide
 WILDGUARD, LLAMA_GUARD = "wildguard", "llama_guard"
@@ -413,8 +420,8 @@ def completed(reader: Reader, runs: Path, found: tuple[str, str] | None,
 
 
 def f_run(reader: Reader, run_dir: Path | str, seed: int, lr: float) -> dict[str, Any] | str:
-    """An F run's records: its stop, its step-25 evaluation row and its line-scan rows; its config
-    the cell's seed, rate and optimizer. The reason when they do not read."""
+    """An F run's records: its stop and its step-25 evaluation row; its config the cell's seed,
+    rate and optimizer. The reason when they do not read."""
     if isinstance(run_dir, str):
         return run_dir
     try:
@@ -425,14 +432,52 @@ def f_run(reader: Reader, run_dir: Path | str, seed: int, lr: float) -> dict[str
         terminal = reader.json(run_dir / "terminal.json")
         rows = (reader.jsonl(run_dir / "evaluations.jsonl")
                 if (run_dir / "evaluations.jsonl").is_file() else [])  # fmt: skip
-        scan = (reader.jsonl(run_dir / "line_scan.jsonl")
-                if (run_dir / "line_scan.jsonl").is_file() else [])  # fmt: skip
     except (OSError, ValueError, KeyError, TypeError) as exc:
         return f"{Path(run_dir).name}: its records do not read ({type(exc).__name__})"
     endpoint = [r for r in rows if r.get("condition") == ENDPOINT]
     return {"run_dir": run_dir, "run_id": run_dir.name, "seed": seed, "lr": lr,
             "stop": (terminal.get("stop") or {}).get("reason"), "steps": terminal.get("steps"),
-            "row": endpoint[0] if len(endpoint) == 1 else None, "scan": scan}  # fmt: skip
+            "row": endpoint[0] if len(endpoint) == 1 else None}  # fmt: skip
+
+
+def scan_rows(reader: Reader, run_dir: Path) -> dict[float, dict[str, Any]]:
+    """A scan run's rows (``line_scan.run_scan``) by point a; ``OSError``/``ValueError`` when
+    they do not read."""
+    rows = reader.jsonl(Path(run_dir) / "line_scan.jsonl")
+    return {float(r["a"]): r for r in rows if isinstance(r.get("a"), int | float)}
+
+
+def scan_points(reader: Reader, labels: Labels, found: Mapping[str, Any] | str, runs: Path,
+                lower_id: str) -> dict[float, Any]:  # fmt: skip
+    """The scan's points of one seed, a ∈ ``SCAN_POINTS``: each point's values, or the reason it
+    is missing, by name (``found``: the seed's scan record, or why there is none)."""
+    out: dict[float, Any] = {}
+    run_dir: Path | None = None
+    why = found if isinstance(found, str) else None
+    if why is None and (found.get("f_run") or {}).get("run_id") != lower_id:
+        why = "scan: the record is not of the seed's η_l run"
+    if why is None:
+        run_dir = runs / str(found.get("experiment")) / str(found.get("run_id"))
+        if not run_dir.is_dir():
+            why = "scan: its run directory is missing"
+    rows: dict[float, dict[str, Any]] = {}
+    if why is None:
+        try:
+            rows = scan_rows(reader, run_dir)
+        except (OSError, ValueError) as exc:
+            why = f"scan: its rows do not read ({type(exc).__name__})"
+    for a in sa.SCAN_POINTS:
+        condition = line_scan_condition(a)
+        row = rows.get(a)
+        if why is not None:
+            out[a] = f"{condition}: {why}"
+        elif row is None:
+            out[a] = f"{condition}: no scan row"
+        elif not row.get("evaluated"):
+            out[a] = f"{condition}: not evaluated ({row.get('reason')})"
+        else:
+            out[a] = sa.point_values(labels.at(run_dir, condition), row)
+    return out
 
 
 def record(reader: Reader, path: Path | None, kind: str, seed: int | None,
@@ -864,9 +909,8 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     outcomes, h, refusal, per_scan, own, control = [], {}, {}, {}, {}, {"order": {}, "v0": {}}
     lower_ids: dict[int, str | None] = {}  # the η_l run's id
     for seed in seeds:
-        lo_dir = completed(reader, runs, pod2.find("experiments/study5_scan", seed, ETA_L), "η_l")
-        hi_dir = completed(reader, runs, pod2.find("experiments/study5", seed, ETA_U,
-                                                   ("study5.role=fresh",)), "η_u")  # fmt: skip
+        lo_dir = completed(reader, runs, pod2.find(FRESH, seed, ETA_L, (FRESH_ROLE,)), "η_l")
+        hi_dir = completed(reader, runs, pod2.find(FRESH, seed, ETA_U, (FRESH_ROLE,)), "η_u")
         lo, hi = f_run(reader, lo_dir, seed, ETA_L), f_run(reader, hi_dir, seed, ETA_U)
         endpoints, missing, run_labels_ = [], [], {}
         for found in (lo, hi):
@@ -882,7 +926,8 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         refusal[seed] = (result["classes"]["refusal"] if result["classes"] is not None
                          else result["reason"])  # fmt: skip
         outcomes.append({**result, "p": p[seed]})
-        # the line scan of the η_l run: a = 0 θ₀, a = +1 its endpoint
+        # the line scan of the η_l run's endpoint, from its scan run: a = 0 θ₀, a = +1 the η_l
+        # run's step-25 evaluation
         if isinstance(lo, str):
             per_scan[seed] = lo
             own[seed] = lo
@@ -892,18 +937,9 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         endpoint = sa.point_values(labels.at(lo["run_dir"], ENDPOINT), lo["row"] or
                                    "no step-25 evaluation")  # fmt: skip
         own[seed] = endpoint
-        points: dict[float, Any] = {0.0: theta0_point, 1.0: endpoint}
-        rows = {float(r.get("a")): r for r in lo["scan"] if isinstance(r.get("a"), int | float)}
-        for a in sa.SCAN_POINTS:
-            condition = line_scan_condition(a)
-            row = rows.get(a)
-            if row is None:
-                points[a] = f"{condition}: no scan row"
-            elif not row.get("evaluated"):
-                points[a] = f"{condition}: not evaluated ({row.get('reason')})"
-            else:
-                points[a] = sa.point_values(labels.at(lo["run_dir"], condition), row)
-        per_scan[seed] = points
+        scan = record(reader, pod2.output(f"fresh/s{seed}/scan"), "study5-scan", seed, "scan")
+        per_scan[seed] = {0.0: theta0_point, 1.0: endpoint,
+                          **scan_points(reader, labels, scan, runs, lo["run_id"])}  # fmt: skip
     for seed in controls_seeds:
         for kind, config in (("order", "experiments/study5_control_order"),
                              ("v0", "experiments/study5_control_v0")):  # fmt: skip

@@ -99,7 +99,13 @@ from omegaconf import DictConfig, OmegaConf
 
 from .analysis.evidence import JUDGE_DIR, TRAINED, label_item_id, label_path
 from .analysis.stage_a import TrajectoryError, load_trajectory
-from .evaluation import LADDER_RUN_TYPE, ladder_condition, line_scan_condition, random_condition
+from .evaluation import (
+    LADDER_RUN_TYPE,
+    SCAN_RUN_TYPE,
+    ladder_condition,
+    line_scan_condition,
+    random_condition,
+)
 from .judge import IDENTITY_FIELDS, JudgeClient, count_unparseable
 
 THETA0 = "theta0"  # the condition of a θ₀ evaluation (train.evaluate_theta0)
@@ -174,14 +180,14 @@ def scheduled_conditions(
 
 
 def line_scan_conditions(run_dir: Path) -> list[str]:
-    """The conditions of study 5's line-scan points a scheduled run evaluated
-    (``schedule.run_line_scan``), in order, from ``<run dir>/line_scan.jsonl``: none without the
-    file. A point whose K was not finite answered nothing and is not one of them. The scan must be
-    complete: the summary's ``line_scan`` (written after the last point) names the same points
-    and the same evaluated conditions as the rows, else the run is refused."""
+    """The conditions of the points a study-5 scan run evaluated (``line_scan.run_scan``), in
+    order, from ``<run dir>/line_scan.jsonl``. A point whose K was not finite answered nothing and
+    is not one of them. The scan must be whole: the summary's ``line_scan`` (written after the
+    last point) names the same points and the same evaluated conditions as the rows, else the run
+    is refused; so is a scan run without the rows."""
     path = Path(run_dir) / "line_scan.jsonl"
     if not path.is_file():
-        return []
+        raise ValueError(f"{path}: a scan run without its rows; its scan did not finish")
     rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     conditions = [row["condition"] for row in rows if row["evaluated"]]
     summary_path = Path(run_dir) / "summary.json"
@@ -218,19 +224,21 @@ def ladder_conditions(run_dir: Path) -> list[str]:
 def response_conditions(cfg: DictConfig, run_dir: Path | None = None) -> list[str]:
     """The conditions under which a run answers its harmful prompt set. A study-2 run
     (``is_scheduled``) needs ``run_dir``: its conditions are its recorded evaluations
-    (``scheduled_conditions``), none for a run that stopped before the first, followed by its
-    line-scan points (``line_scan_conditions``). So does a study-5 ladder rung's evaluation run
-    (run type ``evaluation.LADDER_RUN_TYPE``): ``ladder_conditions``."""
-    if cfg.get("run_type", "train") == THETA0:
+    (``scheduled_conditions``), none for a run that stopped before the first. So do a study-5
+    ladder rung's evaluation run (run type ``evaluation.LADDER_RUN_TYPE``: ``ladder_conditions``)
+    and a study-5 scan run (``evaluation.SCAN_RUN_TYPE``: ``line_scan_conditions``)."""
+    run_type = cfg.get("run_type", "train")
+    if run_type == THETA0:
         return [THETA0]
-    if cfg.get("run_type", "train") == LADDER_RUN_TYPE:
+    if run_type in (LADDER_RUN_TYPE, SCAN_RUN_TYPE):
         if run_dir is None:
-            raise ValueError("the conditions of a ladder rung's run need its run directory")
-        return ladder_conditions(run_dir)
+            raise ValueError(f"the conditions of a {run_type} run need its run directory")
+        return (ladder_conditions if run_type == LADDER_RUN_TYPE
+                else line_scan_conditions)(run_dir)  # fmt: skip
     if is_scheduled(cfg):
         if run_dir is None:
             raise ValueError("the conditions of a scheduled (study 2) run need its run directory")
-        return scheduled_conditions(run_dir) + line_scan_conditions(run_dir)
+        return scheduled_conditions(run_dir)
     conditions = [TRAINED]
     controls = cfg.eval.controls
     if controls.line_scan.enabled:

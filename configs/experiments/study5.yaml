@@ -21,8 +21,10 @@ defaults:
 experiment: study5
 protocol_version: 2                 # decisions.md, "Protocol versions"
 study5:
-  role: ???                         # fresh (the fresh seeds' F runs, experiments/study5_scan at
-                                    # η_l) or control (experiments/study5_control_order,
+  role: ???                         # fresh (the fresh seeds' F runs at both rates, plain F
+                                    # runs; η_l's saves its endpoint checkpoint for the scan run,
+                                    # scripts/study5_scan.py) or control
+                                    # (experiments/study5_control_order,
                                     # experiments/study5_control_v0)
 teacher:
   stream: appendable

@@ -53,10 +53,13 @@ record of p per seed, seeds in order, each seed's record by its sha256, with its
 it (``<record>.sha256``); it is refused unless every seed has its prediction. It is copied to the
 bucket, read back and compared, and the object's creation time is recorded in a receipt; only
 then: ``fresh``, which first checks the receipt against the record (``check-published``), then
-per seed the F run at η_l (experiments/study5_scan: the line scan and the endpoint checkpoint),
-the surrogate r at its endpoint from that checkpoint (``scripts/study5_surrogate_endpoint.py``; a
-failure is the seed's, recorded), its checkpoint archived, then the F run at η_u
-(experiments/study5, ``study5.role=fresh``), each in a launcher campaign of its own. Each
+per seed: the F run at η_l (experiments/study5, ``study5.role=fresh``: a plain F run with its
+endpoint checkpoint); the surrogate r at its endpoint from that checkpoint
+(``scripts/study5_surrogate_endpoint.py``); the line scan of its endpoint, a run of its own from
+the checkpoint (``scripts/study5_scan.py``, experiment ``study5_scan``; a partial run directory
+is moved aside before it runs again); its checkpoint archived and removed; then the F run at η_u
+(the same config), each F run in a launcher campaign of its own. A failure of the endpoint's r or
+of the scan is the seed's, recorded; it takes nothing from the η_l run. Each
 endpoint checkpoint is archived, verified and then removed from the container disk by
 ``remove_checkpoint``, which refuses any path but that run's own ``<dir>/<run id>.pt``; a seed's
 runs start only while at most one checkpoint is on the disk (``check-checkpoints``), so it holds
@@ -150,6 +153,7 @@ FRESH_FIRST = 50000
 N_CHOICES = (40, 24)
 CONTROL_SEEDS = tuple(range(50000, 50006))
 RUNGS = ("isotropic", "linear_no_d", "linear")  # linear_shuffled_d: only on a later decision
+SCAN_EXPERIMENT = "study5_scan"  # line_scan.EXPERIMENT: the scan runs' directory under RUNS_DIR
 ENGINEERING_SEED = 10403
 STUDY3_CONFIG = "experiments/study3"
 STUDY3_F = ("optimizer=adam_frozen", f"train.batch_size={BATCH}")
@@ -167,12 +171,13 @@ MARGIN = 60
 COMPLETED, ERROR, STOPPED = 0, 1, 3
 _ID = re.compile(r"[a-z0-9][a-z0-9-]{0,23}")
 # Minutes per step. Measured on study 3's L40S Pod where a unit cost exists: an F run 6.9; an
-# evaluation without training 3.1; a K-only point 1.5; five scan points 15.5; a stream 91.7 s per
-# 1000 responses (1500 per seed: 500 training, 1000 for v₀); the predictor 1.7 per seed; a
-# ladder rung three K-only points and one evaluation, 7.6; an endpoint checkpoint's save 0.5.
-# Assumed where none is measured, as named. They set each block's and each seed group's deadline
-# (2 × the sum + MARGIN) and each step's timeout (timeout_of).
+# evaluation without training 3.1; a K-only point 1.5; five scan points (five evaluations) 15.5;
+# a stream 91.7 s per 1000 responses (1500 per seed: 500 training, 1000 for v₀); the predictor
+# 1.7 per seed; a ladder rung three K-only points and one evaluation, 7.6; an endpoint
+# checkpoint's save 0.5. Assumed where none is measured, as named. They set each block's and each
+# seed group's deadline (2 × the sum + MARGIN) and each step's timeout (timeout_of).
 F_RUN, EVALUATION, K_POINT, SCAN, CKPT_SAVE = 6.9, 3.1, 1.5, 15.5, 0.5
+SCAN_LOAD = 2.0  # assumed: two models loaded, a 5.24 GB checkpoint hashed and read, the panels
 STREAM_PER_RESPONSE = 91.7 / 60 / 1000
 MINUTES = {
     "fetch-seed": 1.0,  # assumed: one seed's two streams, about 10 MB
@@ -186,7 +191,8 @@ MINUTES = {
     "features": 0.5,  # assumed: no model, 500 responses decoded
     "training-stream": 500 * STREAM_PER_RESPONSE,
     "preconditioner-stream": 1000 * STREAM_PER_RESPONSE,
-    "fresh-lower": F_RUN + SCAN + CKPT_SAVE,
+    "fresh-lower": F_RUN + CKPT_SAVE,
+    "scan": SCAN + SCAN_LOAD,
     "fresh-upper": F_RUN,
     # assumed, ≈ 1 min: a 5.24 GB checkpoint hashed and read, the surrogate's 2 × 1200 rows
     "surrogate-endpoint": 1.0,
@@ -310,9 +316,12 @@ def retro_args(seed: int) -> tuple[str, ...]:
     return (STUDY3_CONFIG, *STUDY3_F, rate(ETA_L), "study3.role=confirmation", f"seed={seed}")
 
 
+FRESH = ("experiments/study5", "study5.role=fresh")  # a fresh seed's plain F run
+
+
 def fresh_args(seed: int) -> tuple[str, ...]:
-    """A fresh seed's F run at η_l (its scan; its checkpoint's directory is not in its config)."""
-    return ("experiments/study5_scan", rate(ETA_L), f"seed={seed}")
+    """A fresh seed's F run at η_l (its checkpoint's directory is not in its config)."""
+    return (*FRESH, rate(ETA_L), f"seed={seed}")
 
 
 def label(cell: dict[str, Any]) -> str:
@@ -721,7 +730,7 @@ def pod2_plan(
     """Pod 2's plan (module docstring, "Pod 2")."""
     seeds = fresh_seeds(n)
     b = Builder("pod2", archive_id, out, runs, data, checkpoints)
-    teacher = ("scripts/generate_teacher.py", "experiments/study5_scan", rate(ETA_L))
+    teacher = ("scripts/generate_teacher.py", *FRESH, rate(ETA_L))
 
     b.begin()  # streams, then the predictor and the features of every fresh seed
     for seed in seeds:
@@ -808,7 +817,7 @@ def pod2_plan(
     b.inventories.append(str(b.out / "inventories" / "predictions.tsv"))
     b.end("predictions")
 
-    b.begin()  # the fresh F runs: η_l with its scan and checkpoint, then η_u
+    b.begin()  # the fresh F runs: η_l with its checkpoint, its endpoint's r and scan, then η_u
     b.step(
         "fresh/check-published",
         b.own(
@@ -828,15 +837,15 @@ def pod2_plan(
     for seed in seeds:
         group = f"s{seed}"
         lower = {
-            "name": f"s5-fresh-scan-{ETA_L!r}-s{seed}",
-            "config": "experiments/study5_scan",
-            "overrides": [rate(ETA_L), f"tracking.endpoint_checkpoint={b.checkpoints}"],
+            "name": f"s5-fresh-{ETA_L!r}-s{seed}",
+            "config": FRESH[0],
+            "overrides": [*FRESH[1:], rate(ETA_L), f"tracking.endpoint_checkpoint={b.checkpoints}"],
             "seeds": [seed],
         }
         upper = {
             "name": f"s5-fresh-{ETA_U!r}-s{seed}",
-            "config": "experiments/study5",
-            "overrides": ["study5.role=fresh", rate(ETA_U)],
+            "config": FRESH[0],
+            "overrides": [*FRESH[1:], rate(ETA_U)],
             "seeds": [seed],
         }
         b.step(
@@ -847,7 +856,7 @@ def pod2_plan(
         )
         # η_l alone first: its checkpoint is archived and removed before η_u starts
         _, name = b.launch(
-            f"fresh-scan-{group}", "fresh", [lower], minutes="fresh-lower", group=group
+            f"fresh-lower-{group}", "fresh", [lower], minutes="fresh-lower", group=group
         )
         fresh[seed] = (name, label(lower))
         # r at the η_l run's endpoint, from its checkpoint, before the file is archived and
@@ -874,6 +883,38 @@ def pod2_plan(
             outputs=(str(endpoint),),
             group=group,
             minutes="surrogate-endpoint",
+        )
+        # the line scan of the η_l run's endpoint, a run of its own from the checkpoint; a
+        # partial run directory (the Pod cut it off) is moved aside before it runs again
+        scan = b.record("scan", f"s{seed}.json")
+        scan_id = f"s5-{b.id}-scan-s{seed}"
+        b.step(
+            f"fresh/{group}/scan",
+            b.own(
+                "with-runs",
+                "--runs",
+                b.runs,
+                "--campaign",
+                name,
+                "--aside",
+                f"{SCAN_EXPERIMENT}/{scan_id}",
+                "--unless",
+                scan,
+                "--",
+                "scripts/study5_scan.py",
+                *fresh_args(seed),
+                "--f-run",
+                f"{{run:{label(lower)}}}",
+                "--checkpoints",
+                b.checkpoints,
+                "--out",
+                scan,
+                "--run-id",
+                scan_id,
+            ),
+            outputs=(str(scan),),
+            group=group,
+            minutes="scan",
         )
         b.step(
             f"fresh/{group}/checkpoint",
@@ -903,7 +944,7 @@ def pod2_plan(
         )
         b.runs_archive(
             f"fresh/{group}/archive",
-            paths=(b.rel(endpoint),),
+            paths=(b.rel(endpoint), b.rel(scan), f"{SCAN_EXPERIMENT}/{scan_id}"),
             campaign=(name, upper_name),
             group=group,
         )

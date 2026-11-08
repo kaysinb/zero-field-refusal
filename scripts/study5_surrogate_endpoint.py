@@ -5,10 +5,11 @@ one JSON record.
     python scripts/study5_surrogate_endpoint.py CONFIG --f-run RUN_DIR --checkpoints DIR
         --out RECORD.json [--surrogate SPEC] [--panel-size N] [key=value ...]
 
-CONFIG and the overrides are those of the seed's fresh F run at η_l (``experiments/study5_scan``,
-its rate and its ``seed``; ``study5.role`` fresh); RUN_DIR is that run's directory
+CONFIG and the overrides are those of the seed's fresh F run at η_l (``experiments/study5``,
+``study5.role=fresh``, its rate and its ``seed``); RUN_DIR is that run's directory
 (``ladder.read_f_run``: its config hash, all its ``train.steps`` updates), and its endpoint
-checkpoint is ``DIR/<run id>.pt``, the file the run saved (``tracking.endpoint_checkpoint``). In
+checkpoint is ``DIR/<run id>.pt``, the file the run saved (``tracking.endpoint_checkpoint``;
+``line_scan.checkpoint_of`` and ``line_scan.endpoint_state``, as the scan run reads it). In
 order: the run's recorded checkpoint (``inputs.endpoint_checkpoint``: sha256, step, names) and
 θ₀'s hash (``inputs.theta0_trainable_sha256``), both required; the checkpoint's sha256 against
 the recorded one; θ₀'s model, its trainable tensors hashed against the run's θ₀; then the
@@ -37,38 +38,16 @@ from pathlib import Path
 
 import torch
 
-from zero_field_refusal import ladder, linear_response, surrogate
+from zero_field_refusal import ladder, line_scan, linear_response, surrogate
 from zero_field_refusal.models import freeze
 from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.runtime import configure_numerics, device_name, environment
-from zero_field_refusal.tensor_hash import file_sha256, tensors_sha256
+from zero_field_refusal.tensor_hash import tensors_sha256
 from zero_field_refusal.tracking import git_state
 
 
 def ids_sha256(ids: list[str]) -> str:
     return hashlib.sha256(json.dumps(ids).encode()).hexdigest()
-
-
-def checkpoint_of(f_run_dir: Path, f_run: dict, checkpoints: Path, steps: int) -> dict:
-    """The run's endpoint checkpoint as it recorded it, its file ``checkpoints/<run id>.pt``
-    checked against the recorded sha256 and step; ``ValueError`` otherwise."""
-    recorded = f_run.get("endpoint_checkpoint")
-    if not isinstance(recorded, dict) or not isinstance(recorded.get("sha256"), str):
-        raise ValueError(f"{f_run_dir.name}: the run records no endpoint checkpoint")
-    if recorded.get("step") != steps:
-        raise ValueError(f"{f_run_dir.name}: its checkpoint is of step {recorded.get('step')}, "
-                         f"not {steps}")  # fmt: skip
-    if not isinstance(f_run.get("theta0_trainable_sha256"), str):
-        raise ValueError(f"{f_run_dir.name}: the run records no hash of θ₀'s trainable tensors")
-    path = Path(checkpoints) / f"{f_run['run_id']}.pt"
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"{path}: no checkpoint file of the run")
-    digest = file_sha256(path)
-    if digest != recorded["sha256"]:
-        raise ValueError(f"{path.name}: sha256 {digest}, not the run's recorded "
-                         f"{recorded['sha256']}")  # fmt: skip
-    return {"path": path, "sha256": digest, "step": recorded["step"],
-            "names_sha256": recorded.get("names_sha256")}  # fmt: skip
 
 
 def panels_of(env, spec: surrogate.SurrogateSpec, panel_size: int = 100) -> dict:
@@ -93,19 +72,10 @@ def run(cfg, env, f_run: dict, checkpoint: dict, spec: surrogate.SurrogateSpec, 
     if theta0_sha != f_run["theta0_trainable_sha256"]:
         raise ValueError(f"θ₀'s trainable tensors hash to {theta0_sha}, not the run's "
                          f"{f_run['theta0_trainable_sha256']}")  # fmt: skip
-    names = [name for name, _ in trainable]
-    names_sha = hashlib.sha256(json.dumps(names).encode()).hexdigest()
-    if checkpoint["names_sha256"] is not None and checkpoint["names_sha256"] != names_sha:
-        raise ValueError("the checkpoint's recorded names are not the trainable set's")
-    state = torch.load(checkpoint["path"], map_location="cpu", weights_only=True)
-    if sorted(state) != sorted(names):
-        raise ValueError(f"the checkpoint holds {len(state)} tensors, not exactly the "
-                         f"{len(names)} trainable ones")  # fmt: skip
+    names_sha = line_scan.names_sha256([name for name, _ in trainable])
+    state = line_scan.endpoint_state(checkpoint, trainable)  # exactly the trainable set's
     with torch.no_grad():
         for name, p in trainable:
-            if state[name].shape != p.shape or state[name].dtype != p.dtype:
-                raise ValueError(f"{name}: the checkpoint's tensor is not the parameter's shape "
-                                 "and dtype")  # fmt: skip
             p.copy_(state[name])
     del state
     endpoint_sha = tensors_sha256(trainable)
@@ -191,7 +161,8 @@ def main(argv: list[str] | None = None) -> int:
         linear_response.require_frozen_adam(cfg)
         ladder.require_fresh(cfg)
         f_run = ladder.read_f_run(args.f_run, cfg)  # its config hash this config's
-        checkpoint = checkpoint_of(args.f_run, f_run, args.checkpoints, int(cfg.train.steps))
+        checkpoint = line_scan.checkpoint_of(args.f_run, f_run, args.checkpoints,
+                                             int(cfg.train.steps))  # fmt: skip
     except (ValueError, OSError) as exc:
         print(exc)
         return 1

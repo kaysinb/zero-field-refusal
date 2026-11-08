@@ -130,20 +130,19 @@ def test_study5_equals_study3s_f_configuration_but_for_its_identity():
         )
         drop = ("experiment", "study3", "study5")
         assert plain(study5, *drop) == plain(study3, *drop)
-    scan = load_config("experiments/study5_scan", ["optimizer.lr=1.83e-05", "seed=50000"])
-    drop = ("experiment", "study5", "eval.controls.line_scan.points")
-    assert plain(scan, *drop) == plain(study5, *drop)  # study5 above: the last rate, η_u
-    assert scan.eval.controls.line_scan.points == [-1, -0.5, -0.25, 0.25, 0.5]
-    assert scan.study5.role == "fresh" and scan.optimizer.name == "adam_frozen"
-    assert scan.train.batch_size == 20 and scan.train.steps == 25
+    assert study5.study5.role == "fresh" and study5.optimizer.name == "adam_frozen"
+    assert study5.train.batch_size == 20 and study5.train.steps == 25
+    assert study5.eval.controls.line_scan.get("points") is None  # the scan is a run of its own
+    assert not (REPO_ROOT / "configs" / "experiments" / "study5_scan.yaml").exists()
     assert camp.ETA_L == 1.3e-05 and camp.ETA_U == 1.83e-05
 
 
 def test_every_study5_config_passes_the_protocol():
     cases = [
         (
-            "experiments/study5_scan",
+            "experiments/study5",
             [
+                "study5.role=fresh",
                 "optimizer.lr=1.3e-05",
                 "seed=50000",
                 "tracking.endpoint_checkpoint=/root/ckpt/study5",
@@ -298,28 +297,31 @@ def test_pod2_fresh_runs_per_seed(where, tmp_path):
             "check-checkpoints",
             "scripts/launch.py",
             "with-runs",
+            "with-runs",
             "checkpoint",
             "scripts/launch.py",
             "archive",
         ]
-        assert group[1].on_fail == "stop" and group[6].on_fail == "stop"
+        assert [s.name.rsplit("/", 1)[-1] for s in group[2:6]] == [
+            "launch-fresh-lower", "surrogate-endpoint", "scan", "checkpoint"]  # fmt: skip
+        assert group[1].on_fail == "stop" and group[7].on_fail == "stop"
         assert group[1].argv[-2:] == ("--max", "1")
-        # η_l alone, r at its endpoint, its checkpoint archived and removed, then η_u: the
-        # archive covers both runs and the endpoint's record
+        # η_l alone, r at its endpoint, its scan run, its checkpoint archived and removed, then
+        # η_u: the archive covers both runs, the scan run and the two records
         (low,) = campaign_runs(plan, tmp_path, Path(group[2].argv[1]).stem)
-        (high,) = campaign_runs(plan, tmp_path, Path(group[5].argv[1]).stem)
-        assert (low.config, low.seed) == ("experiments/study5_scan", seed)
+        (high,) = campaign_runs(plan, tmp_path, Path(group[6].argv[1]).stem)
+        assert (low.config, low.seed) == ("experiments/study5", seed)
         assert (high.config, high.seed) == ("experiments/study5", seed)
-        assert group[4].argv[group[4].argv.index("--label") + 1] == low.label
-        archived = [group[6].argv[i + 1] for i, a in enumerate(group[6].argv) if a == "--campaign"]
-        assert archived == [Path(group[2].argv[1]).stem, Path(group[5].argv[1]).stem]
+        assert group[5].argv[group[5].argv.index("--label") + 1] == low.label
+        archived = [group[7].argv[i + 1] for i, a in enumerate(group[7].argv) if a == "--campaign"]
+        assert archived == [Path(group[2].argv[1]).stem, Path(group[6].argv[1]).stem]
         assert group[2].kept_if_runs == (f"{Path(group[2].argv[1]).stem}\t{low.label}",)
         lower, upper = (load_run_config(r.config, list(r.overrides)) for r in (low, high))
         assert lower.optimizer.lr == 1.3e-05 and upper.optimizer.lr == 1.83e-05
         assert lower.tracking.endpoint_checkpoint == "/root/ckpt/study5"
         assert upper.tracking.endpoint_checkpoint is None
-        assert upper.eval.controls.line_scan.get("points") is None
         assert lower.study5.role == upper.study5.role == "fresh"
+        assert config_hash(lower) != config_hash(upper)  # the same config but for the rate
 
 
 @pytest.mark.parametrize("n", [40, 24])
@@ -332,7 +334,7 @@ def test_pod2_scores_the_surrogate_at_every_endpoint_before_its_checkpoint_goes(
     for seed in camp.fresh_seeds(n):
         group = [s for s in fresh if s.group == f"s{seed}"]
         names = [s.name for s in group]
-        launch = names.index(f"fresh/s{seed}/launch-fresh-scan")
+        launch = names.index(f"fresh/s{seed}/launch-fresh-lower")
         endpoint = names.index(f"fresh/s{seed}/surrogate-endpoint")
         checkpoint = names.index(f"fresh/s{seed}/checkpoint")
         assert launch < endpoint < checkpoint
@@ -343,7 +345,7 @@ def test_pod2_scores_the_surrogate_at_every_endpoint_before_its_checkpoint_goes(
                                  "--campaign") and step.argv[5] == lower  # fmt: skip
         command = step.argv[step.argv.index("--") + 1 :]
         assert command[0] == "scripts/study5_surrogate_endpoint.py"
-        assert command[1:4] == camp.fresh_args(seed)
+        assert tuple(command[1:5]) == camp.fresh_args(seed)
         label = group[checkpoint].argv[group[checkpoint].argv.index("--label") + 1]
         assert command[command.index("--f-run") + 1] == f"{{run:{label}}}"
         assert command[command.index("--checkpoints") + 1] == str(where["checkpoints"])
@@ -353,7 +355,44 @@ def test_pod2_scores_the_surrogate_at_every_endpoint_before_its_checkpoint_goes(
         assert step.timeout == camp.timeout_of(1.0)
         archive = group[-1]
         paths = [archive.argv[i + 1] for i, a in enumerate(archive.argv) if a == "--path"]
-        assert paths == [record.relative_to(where["runs"]).as_posix()]
+        assert paths[0] == record.relative_to(where["runs"]).as_posix()
+
+
+@pytest.mark.parametrize("n", [40, 24])
+def test_pod2_scans_every_endpoint_in_a_run_of_its_own_before_its_checkpoint_goes(where, n):
+    """In every fresh group: the line scan of the η_l run's endpoint (scripts/study5_scan.py on
+    that run and its checkpoint), after its r and before the checkpoint step archives and removes
+    the file; a partial scan run is moved aside before a rerun; a failure is recorded, not a
+    stop; its record and its run directory are archived with the runs."""
+    plan = pod2(where, n)
+    fresh = steps(plan, "fresh")
+    for seed in camp.fresh_seeds(n):
+        group = [s for s in fresh if s.group == f"s{seed}"]
+        names = [s.name for s in group]
+        endpoint = names.index(f"fresh/s{seed}/surrogate-endpoint")
+        scan = names.index(f"fresh/s{seed}/scan")
+        checkpoint = names.index(f"fresh/s{seed}/checkpoint")
+        assert endpoint < scan < checkpoint
+        step = group[scan]
+        lower = Path(group[names.index(f"fresh/s{seed}/launch-fresh-lower")].argv[1]).stem
+        record = where["runs"] / "study5_records" / "t2" / "scan" / f"s{seed}.json"
+        run_id = f"s5-t2-scan-s{seed}"
+        assert step.argv[:6] == (camp.SELF, "with-runs", "--runs", str(where["runs"]),
+                                 "--campaign", lower)  # fmt: skip
+        assert step.argv[step.argv.index("--aside") + 1] == f"study5_scan/{run_id}"
+        assert step.argv[step.argv.index("--unless") + 1] == str(record)
+        command = step.argv[step.argv.index("--") + 1 :]
+        assert command[0] == "scripts/study5_scan.py"
+        assert tuple(command[1:5]) == camp.fresh_args(seed)
+        label = group[checkpoint].argv[group[checkpoint].argv.index("--label") + 1]
+        assert command[command.index("--f-run") + 1] == f"{{run:{label}}}"
+        assert command[command.index("--checkpoints") + 1] == str(where["checkpoints"])
+        assert command[command.index("--out") + 1] == str(record)
+        assert command[command.index("--run-id") + 1] == run_id
+        assert step.on_fail == "record" and step.outputs == (str(record),)
+        archive = group[-1]
+        paths = [archive.argv[i + 1] for i, a in enumerate(archive.argv) if a == "--path"]
+        assert paths[1:] == [record.relative_to(where["runs"]).as_posix(), f"study5_scan/{run_id}"]
 
 
 def test_pod2_controls_and_ladder_on_the_first_six_seeds(where, tmp_path):
@@ -904,8 +943,8 @@ def test_dry_run_prints_the_plan_and_writes_nothing(tmp_path, capsys, monkeypatc
         camp.main(["pod2", "--out", str(out), "--archive-id", "t", "--n", "24", "--dry-run"]) == 0
     )
     printed = capsys.readouterr().out
-    assert "block fresh" in printed and "s5-fresh-scan-1.3e-05-s50024" not in printed
-    assert "study5-t-fresh-scan-s50023.yaml" in printed and not out.exists()
+    assert "block fresh" in printed and "s5-fresh-1.3e-05-s50024" not in printed
+    assert "study5-t-fresh-lower-s50023.yaml" in printed and not out.exists()
     with pytest.raises(SystemExit):
         camp.main(["pod2", "--out", str(out), "--archive-id", "t", "--n", "30", "--dry-run"])
 
@@ -1186,9 +1225,12 @@ def test_every_planned_step_has_a_timeout_and_every_group_sets_its_deadline_firs
                     members = [s for s in block.steps if s.group == step.group and s is not step]
                     assert window == camp.deadline_minutes(sum(s.minutes for s in members))
                 assert step.timeout <= 60 * window, step.name  # a hung step ends in its window
-    lower = next(s for s in steps(pod2(where)) if s.name == "fresh/s50000/launch-fresh-scan")
-    assert lower.minutes == pytest.approx(6.9 + 15.5 + 0.5)
+    lower = next(s for s in steps(pod2(where)) if s.name == "fresh/s50000/launch-fresh-lower")
+    assert lower.minutes == pytest.approx(6.9 + 0.5)
     assert lower.timeout == camp.timeout_of(lower.minutes)
+    scan = next(s for s in steps(pod2(where)) if s.name == "fresh/s50000/scan")
+    assert scan.minutes == pytest.approx(15.5 + 2.0)  # five evaluations and the loading
+    assert scan.timeout == camp.timeout_of(scan.minutes) == 60 * (3 * 17.5 + 20)
 
 
 def test_a_step_past_its_timeout_is_killed_and_fails(tmp_path):
