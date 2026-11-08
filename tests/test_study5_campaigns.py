@@ -224,12 +224,13 @@ def test_pod1_engineering_reruns_study3s_f_runs_and_stops_on_any_failure(where, 
 def test_pod1_theta0_surrogate_and_retrospective(where, tmp_path):
     plan = pod1(where)
     theta0 = [s for s in steps(plan, "theta0") if s.kind == "launch"]
-    assert len(theta0) == 1 and theta0[0].on_fail == "record"
+    assert len(theta0) == 1 and theta0[0].on_fail == "stop"  # the analysis needs θ₀
     (run,) = campaign_runs(plan, tmp_path, Path(theta0[0].argv[1]).stem)
     assert run.entry == "theta0" and run.config == "experiments/study5_theta0"
     surrogate = [s for s in steps(plan, "surrogate") if s.kind == "run"]
     assert [s.argv[0] for s in surrogate] == ["scripts/study5_surrogate_checks.py"]
     assert surrogate[0].on_fail == "stop"
+    assert surrogate[0].argv[-2:] == ("--surrogate", "configs/study5/surrogate.yaml")
     retro = steps(plan, "retrospective")
     seeds, _ = camp.study3_cohort()
     fetch = retro[1]
@@ -248,6 +249,133 @@ def test_pod1_theta0_surrogate_and_retrospective(where, tmp_path):
             "study3.role=confirmation",
         )
         assert step.on_fail == "record"
+
+
+def surrogate_steps(plan):
+    """The steps that read the surrogate: the checks, the predictor, the endpoint's r."""
+    names = ("study5_surrogate_checks.py", "study5_predict.py", "study5_surrogate_endpoint.py")
+    return [s for s in steps(plan) if any(n in a for a in s.argv for n in names)]
+
+
+def test_both_plans_name_one_surrogate_spec_and_pass_it_on(where, tmp_path, monkeypatch):
+    """One surrogate spec per plan (--surrogate, a file of the checkout), its sha256 in the plan,
+    given to the checks, every predictor and every endpoint's r; a second set is another file."""
+    from zero_field_refusal.surrogate import load_spec
+
+    default = load_spec(REPO_ROOT / "configs" / "study5" / "surrogate.yaml").sha256
+    for plan, count in ((pod1(where), 1 + 60), (pod2(where, 24), 2 * 24)):
+        found = surrogate_steps(plan)
+        assert len(found) == count
+        for step in found:
+            assert step.argv[step.argv.index("--surrogate") + 1] == "configs/study5/surrogate.yaml"
+        assert (plan.surrogate, plan.surrogate_sha256) == ("configs/study5/surrogate.yaml", default)
+        assert plan.to_json()["surrogate_sha256"] == default
+    # a second set: a new file in the checkout, named by --surrogate of both plans
+    repo = tmp_path / "repo"
+    second = repo / "configs" / "study5" / "surrogate-2.yaml"
+    second.parent.mkdir(parents=True)
+    text = (REPO_ROOT / "configs" / "study5" / "surrogate.yaml").read_text()
+    second.write_text(text.replace("version: 1", "version: 2"))
+    monkeypatch.setattr(camp, "REPO", repo)
+    plan = camp.pod2_plan(archive_id="t2", commit=COMMIT, gpu_code=GPU, n=24,
+                          surrogate="configs/study5/surrogate-2.yaml", **where)  # fmt: skip
+    assert plan.surrogate_sha256 == load_spec(second).sha256 != default
+    for step in surrogate_steps(plan):
+        assert step.argv[step.argv.index("--surrogate") + 1] == "configs/study5/surrogate-2.yaml"
+    for bad in ("/abs/surrogate.yaml", "../surrogate.yaml", "configs/study5/none.yaml"):
+        with pytest.raises(ValueError, match="--surrogate"):
+            camp.pod2_plan(archive_id="t2", commit=COMMIT, gpu_code=GPU, n=24, surrogate=bad,
+                           **where)  # fmt: skip
+
+
+def registered(
+    tmp_path, *, status="registered", name_fixation=True, name_retro=True, retro_fixation=None
+):
+    """A checkout with a registration, a fixation record and a retrospective record."""
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True, exist_ok=True)
+    fixation = repo / "docs" / "study5-fixation.json"
+    fixation.write_text('{"kind": "study5-fixation"}\n')
+    fixation_sha = hashlib.sha256(fixation.read_bytes()).hexdigest()
+    retro = tmp_path / "retrospective.json"
+    fixed = {"sha256": retro_fixation or fixation_sha}
+    retro.write_text(json.dumps({"kind": "study5-retrospective", "fixation": fixed}))
+    retro_sha = hashlib.sha256(retro.read_bytes()).hexdigest()
+    lines = [f"Status: `{status}`. It binds from this commit.", "", "## Question"]
+    if name_fixation:
+        lines.append(f"The fixation record's sha256: {fixation_sha}.")
+    if name_retro:
+        lines.append(f"The retrospective record's sha256: {retro_sha}.")
+    (repo / "docs" / "study5-preregistration.md").write_text("\n".join(lines) + "\n")
+    return repo, retro
+
+
+@pytest.mark.parametrize(
+    "case, problem",
+    [
+        ({}, None),
+        ({"status": "draft"}, "not registered"),
+        ({"name_fixation": False}, "sha256 of docs/study5-fixation.json"),
+        ({"name_retro": False}, "retrospective record's sha256"),
+        ({"retro_fixation": "0" * 64}, "not of the committed fixation record"),
+    ],
+)
+def test_pod2_starts_only_after_the_registration(tmp_path, case, problem):
+    repo, retro = registered(tmp_path, **case)
+    found = camp.registration_problems(retro, repo=repo)
+    assert found == [] if problem is None else any(problem in f for f in found), found
+    assert any("--retrospective" in f for f in camp.registration_problems(None, repo=repo))
+    assert camp.registration_problems(retro, repo=REPO_ROOT)  # this checkout: not registered yet
+
+
+def test_pod2_starts_only_on_pod1s_gates(where, tmp_path):
+    from zero_field_refusal.surrogate import load_spec
+
+    plan = pod2(where, 24)
+    plan.gpu_code = HEAD["sha256"]
+    spec = load_spec(REPO_ROOT / "configs" / "study5" / "surrogate.yaml").sha256
+    eng, checks = tmp_path / "eng.json", tmp_path / "checks.json"
+
+    def checks_record(**extra):
+        return {"kind": "study5-surrogate-checks", "passes": True, "surrogate_sha256": spec,
+                "git": {"commit": HEAD["commit"], "dirty": False}, **extra}  # fmt: skip
+
+    eng.write_text(json.dumps(engineering_record()))
+    checks.write_text(json.dumps(checks_record()))
+    assert camp.gate_problems(plan, eng, checks) == []
+    for record, problem in (
+        (engineering_record(equal=False), "difference"),
+        (engineering_record(gpu="f" * 64), "GPU code"),
+        (engineering_record(dirty=True), "clean checkout"),
+    ):
+        eng.write_text(json.dumps(record))
+        assert any(problem in f for f in camp.gate_problems(plan, eng, checks)), problem
+    eng.write_text(json.dumps(engineering_record()))
+    for record, problem in (
+        (checks_record(passes=False), "did not pass"),
+        (checks_record(surrogate_sha256="0" * 64), "not of configs/study5/surrogate.yaml"),
+        (checks_record(git={"commit": HEAD["commit"], "dirty": True}), "not clean"),
+    ):
+        checks.write_text(json.dumps(record))
+        assert any(problem in f for f in camp.gate_problems(plan, eng, checks)), problem
+    found = camp.gate_problems(plan, None, None)
+    assert any("--engineering-check" in f for f in found)
+    assert any("--surrogate-checks" in f for f in found)
+
+
+def test_the_preflight_of_pod2_alone_reads_the_registration_and_the_gates(where, monkeypatch):
+    seen = []
+    monkeypatch.setattr(camp, "registration_problems", lambda retro: seen.append(retro) or ["r"])
+    monkeypatch.setattr(camp, "gate_problems",
+                        lambda plan, eng, checks: seen.append((eng, checks)) or ["g"])  # fmt: skip
+    args = camp.parser_of().parse_args(
+        ["pod2", "--out", "o", "--archive-id", "t2", "--engineering-check", "e.json",
+         "--surrogate-checks", "c.json", "--retrospective", "x.json"])  # fmt: skip
+    found = camp.preflight(pod2(where, 24), args)
+    assert found[-2:] == ["r", "g"]
+    assert seen == [Path("x.json"), (Path("e.json"), Path("c.json"))]
+    seen.clear()
+    assert "r" not in camp.preflight(pod1(where), None) and seen == []
 
 
 # ------------------------------------------------------------------ pod 2

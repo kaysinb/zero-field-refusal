@@ -2,9 +2,11 @@
 (docs/study5-preregistration.md, "Seeds and order", "The confirmatory test"; docs/operations.md,
 "Study 5 campaigns").
 
-    python scripts/study5_campaigns.py pod1 --out DIR --archive-id ID [--dry-run]
+    python scripts/study5_campaigns.py pod1 --out DIR --archive-id ID [--surrogate SPEC]
+        [--dry-run]
     python scripts/study5_campaigns.py pod2 --out DIR --archive-id ID [--n 40|24]
-        [--checkpoints DIR] [--dry-run]
+        --engineering-check RECORD --surrogate-checks RECORD --retrospective RECORD
+        [--surrogate SPEC] [--checkpoints DIR] [--dry-run]
 
 On a Pod: ``project-run "$SRC" python scripts/study5_campaigns.py pod1 ...``, detached. The other
 commands (``deadline``, ``fetch-streams``, ``fetch-run``, ``with-runs``, ``archive``,
@@ -37,7 +39,8 @@ fetched); the two runs rerun with this checkout under study 3's own config
 (experiments/study3, ``study3.role=confirmation``: the config hashes of the archived runs); and
 ``scripts/study5_engineering_check.py``, archived against rerun. Any failure here stops the
 campaign before anything else runs. ``theta0``: θ₀'s evaluation on the 521 prompts
-(experiments/study5_theta0, the launcher's ``theta0`` entry). ``surrogate``:
+(experiments/study5_theta0, the launcher's ``theta0`` entry; the analysis needs it, so its failure
+stops the campaign). ``surrogate``:
 ``scripts/study5_surrogate_checks.py``; any non-zero exit stops the campaign (exit 2: the sets are
 then changed once, by the researcher, before any extraction). ``retrospective``: the streams of
 study 3's 60 A-F confirmation seeds (its freeze's A-F cohort, in its order) fetched into DATA_DIR
@@ -77,12 +80,11 @@ ended, in a separate step.
 **Failures.** Every run goes through ``scripts/launch.py FILE --max-attempts 1`` (one attempt; a
 rerun is a recovery round of the run's own, zero_field_refusal.launch, "Recovery rounds"). A step
 that fails or exits non-zero is recorded in the journal and the campaign goes on to the next seed
-where the step is per seed, except where the plan stops: the engineering check, the surrogate
-checks, the fetch of study 3's streams, the predictions record and its publication, the checkpoint
-count, every archive and every deadline. The checkpoint step refuses a checkpoint whose run
-records no sha256 for it (the file stays, and the next seed's count stops the campaign). A failed
-step is not run again by a restart; a stop
-recorded stops again.
+where the step is per seed, except where the plan stops: the engineering check, θ₀'s run, the
+surrogate checks, the fetch of study 3's streams, the predictions record and its publication, the
+checkpoint count, every archive and every deadline. The checkpoint step refuses a checkpoint
+whose run records no sha256 for it (the file stays, and the next seed's count stops the
+campaign). A failed step is not run again by a restart; a stop recorded stops again.
 
 **Resumable.** The driver keeps ``journal.jsonl`` in --out (a start and an end line per step;
 each attempt's output in ``logs/``). Started again with the same arguments from the same commit
@@ -113,6 +115,17 @@ environment; the archive key ``ARTIFACT_GCS_KEY`` too; neither is written anywhe
 ``study5/<ID>/runs``, ``checkpoints``, ``predictions``, ``campaign`` and ``inventories``, and the
 fresh streams under ``data/`` as every stream. Before it starts, the driver checks the checkout
 is clean and that its GPU code is the one ``docs/study5-code-identity.json`` records.
+
+**Pod 2's preflight** (every start) also requires, each given by path: the registration at the
+checkout's commit ``Status: `registered``` and naming the sha256 of the committed
+``docs/study5-fixation.json`` and of the retrospective record (``--retrospective``, of that
+fixation record); pod 1's engineering-check record (``--engineering-check``) equal for reruns
+under the plan's GPU code identity; pod 1's surrogate-checks record (``--surrogate-checks``)
+passed, under that identity, of the plan's surrogate (the same sha256). Both plans name one
+surrogate spec (``--surrogate``, default ``configs/study5/surrogate.yaml``, a path in the
+checkout) and its sha256, and pass it to the checks, the predictor and the endpoint's r. A second
+set, after failed checks, is a new file there: a GPU path, so a new
+``docs/study5-code-identity.json`` and the engineering check again come first.
 """
 
 from __future__ import annotations
@@ -164,6 +177,13 @@ STUDY3_STREAMS_INVENTORY = "runs/archive/inventory-2026-11-05-study3-confirmatio
 SKIPPED = ("wandb", "judge", "judge-superseded")  # never fetched from study 3's run folders
 CHECKPOINTS = Path("/root/ckpt/study5")
 IDENTITY_FILE = "docs/study5-code-identity.json"
+REGISTRATION = "docs/study5-preregistration.md"
+FIXATION = "docs/study5-fixation.json"
+REGISTERED = re.compile(r"^Status: `registered`", re.MULTILINE)
+# The surrogate's spec (scripts/study5_surrogate_checks.py, study5_predict.py and
+# study5_surrogate_endpoint.py take it by --surrogate): a second set, if the checks at θ₀ fail,
+# goes in a new file of the checkout, named here by --surrogate of both plans
+SURROGATE = "configs/study5/surrogate.yaml"
 RECEIPT_NAME = "predictions-receipt.json"  # beside the predictions record
 CLOSE = "close"
 END_MINUTES = 15  # the deadline after the close: the watcher stops the Pod
@@ -257,6 +277,8 @@ class Plan:
     n: int | None
     blocks: list[Block]
     campaigns: dict[str, str] = field(default_factory=dict)  # launcher campaign name -> YAML
+    surrogate: str = SURROGATE  # the surrogate's spec, relative to the checkout
+    surrogate_sha256: str = ""  # its sha256 (surrogate.load_spec)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -269,6 +291,8 @@ class Plan:
             "commit": self.commit,
             "gpu_code": self.gpu_code,
             "n": self.n,
+            "surrogate": self.surrogate,
+            "surrogate_sha256": self.surrogate_sha256,
             "blocks": [
                 {"name": b.name, "steps": [asdict(s) for s in b.steps]} for b in self.blocks
             ],
@@ -292,6 +316,20 @@ def study3_cohort(repo: Path = REPO) -> tuple[list[int], list[str]]:
         raise StepError(f"seed {ENGINEERING_SEED} is not in study 3's A-F cohort")
     runs = [engineering["arms"]["F"][side] for side in ("lo", "hi")]
     return seeds, runs
+
+
+def surrogate_spec(path: str, repo: Path | None = None) -> tuple[str, str]:
+    """The surrogate's spec as the plan names it: a path relative to the checkout (``SURROGATE``,
+    or a second set's new file), and its sha256 (``surrogate.load_spec``)."""
+    from zero_field_refusal.surrogate import load_spec
+
+    repo = REPO if repo is None else repo
+    rel = PurePosixPath(path)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise ValueError(f"--surrogate {path}: a path inside the checkout, relative to it")
+    if not (repo / rel).is_file():
+        raise ValueError(f"--surrogate {path}: no such file in the checkout")
+    return rel.as_posix(), load_spec(repo / rel).sha256
 
 
 def fresh_seeds(n: int) -> list[int]:
@@ -556,7 +594,8 @@ class Builder:
         )
         self.blocks.append(Block(CLOSE, tuple(self.current)))
 
-    def plan(self, commit: str, gpu_code: str, n: int | None) -> Plan:
+    def plan(self, commit: str, gpu_code: str, n: int | None,
+             surrogate: tuple[str, str]) -> Plan:  # fmt: skip
         return Plan(
             pod=self.pod,
             archive_id=self.id,
@@ -569,6 +608,8 @@ class Builder:
             n=n,
             blocks=self.blocks,
             campaigns=self.campaigns,
+            surrogate=surrogate[0],
+            surrogate_sha256=surrogate[1],
         )
 
     def fetch_streams(self, name: str, seeds: list[int], minutes: str) -> Step:
@@ -600,8 +641,10 @@ def pod1_plan(
     commit: str,
     gpu_code: str,
     repo: Path = REPO,
+    surrogate: str = SURROGATE,
 ) -> Plan:
     """Pod 1's plan (module docstring, "Pod 1")."""
+    spec = surrogate_spec(surrogate)
     b = Builder("pod1", archive_id, out, runs, data, checkpoints)
     seeds, f_runs = study3_cohort(repo)
 
@@ -663,7 +706,7 @@ def pod1_plan(
     b.runs_archive("engineering/archive", paths=(b.rel(check),), campaign=eng)
     b.end("engineering")
 
-    b.begin()  # θ₀'s evaluation on the 521 prompts
+    b.begin()  # θ₀'s evaluation on the 521 prompts: the analysis needs it, so a failure stops
     cell = {
         "name": f"s5-theta0-s{FRESH_FIRST}",
         "config": "experiments/study5_theta0",
@@ -671,7 +714,7 @@ def pod1_plan(
         "overrides": [],
         "seeds": [FRESH_FIRST],
     }
-    _, theta0 = b.launch("theta0", "theta0", [cell], minutes="theta0")
+    _, theta0 = b.launch("theta0", "theta0", [cell], minutes="theta0", on_fail="stop")
     b.runs_archive("theta0/archive", campaign=theta0)
     b.end("theta0")
 
@@ -679,7 +722,14 @@ def pod1_plan(
     checks = b.record("surrogate-checks.json")
     b.step(
         "surrogate/checks",
-        ("scripts/study5_surrogate_checks.py", "experiments/study5_theta0", "--out", checks),
+        (
+            "scripts/study5_surrogate_checks.py",
+            "experiments/study5_theta0",
+            "--out",
+            checks,
+            "--surrogate",
+            spec[0],
+        ),  # fmt: skip
         on_fail="stop",
         outputs=(str(checks),),
         minutes="surrogate",
@@ -696,7 +746,14 @@ def pod1_plan(
         features = b.record("features", "retro", f"s{seed}.json")
         b.step(
             f"retrospective/{group}/predict",
-            ("scripts/study5_predict.py", *retro_args(seed), "--out", predict),
+            (
+                "scripts/study5_predict.py",
+                *retro_args(seed),
+                "--out",
+                predict,
+                "--surrogate",
+                spec[0],
+            ),  # fmt: skip
             outputs=(str(predict),),
             group=group,
             minutes="predict",
@@ -713,7 +770,7 @@ def pod1_plan(
         )
     b.end("retrospective")
     b.close()
-    return b.plan(commit, gpu_code, None)
+    return b.plan(commit, gpu_code, None, spec)
 
 
 def pod2_plan(
@@ -726,9 +783,11 @@ def pod2_plan(
     commit: str,
     gpu_code: str,
     n: int = 40,
+    surrogate: str = SURROGATE,
 ) -> Plan:
     """Pod 2's plan (module docstring, "Pod 2")."""
     seeds = fresh_seeds(n)
+    spec = surrogate_spec(surrogate)
     b = Builder("pod2", archive_id, out, runs, data, checkpoints)
     teacher = ("scripts/generate_teacher.py", *FRESH, rate(ETA_L))
 
@@ -762,7 +821,14 @@ def pod2_plan(
         features = b.record("features", "fresh", f"s{seed}.json")
         b.step(
             f"streams/{group}/predict",
-            ("scripts/study5_predict.py", *fresh_args(seed), "--out", predict),
+            (
+                "scripts/study5_predict.py",
+                *fresh_args(seed),
+                "--out",
+                predict,
+                "--surrogate",
+                spec[0],
+            ),  # fmt: skip
             outputs=(str(predict),),
             group=group,
             minutes="predict",
@@ -879,6 +945,8 @@ def pod2_plan(
                 b.checkpoints,
                 "--out",
                 endpoint,
+                "--surrogate",
+                spec[0],
             ),
             outputs=(str(endpoint),),
             group=group,
@@ -1007,7 +1075,7 @@ def pod2_plan(
         )
     b.end("controls")
     b.close()
-    return b.plan(commit, gpu_code, n)
+    return b.plan(commit, gpu_code, n, spec)
 
 
 # ------------------------------------------------------------------ the executor
@@ -2021,8 +2089,60 @@ def cmd_check_published(args) -> int:
 # ------------------------------------------------------------------ the drivers
 
 
-def preflight(plan: Plan) -> list[str]:
-    """What forbids the start: the checkout, its GPU code, the bucket, the key, the folder."""
+def registration_problems(retrospective: Path | None, repo: Path | None = None) -> list[str]:
+    """Pod 2 starts only after the registration (its order, steps 3-4): the registration at the
+    checkout's commit says ``Status: `registered``` and names the sha256 of the committed fixation
+    record and of the retrospective record (``--retrospective``, of that fixation record)."""
+    repo, problems = REPO if repo is None else repo, []
+    try:
+        text = (repo / REGISTRATION).read_text(encoding="utf-8")
+        fixation = sha256_of(repo / FIXATION)
+    except OSError as exc:
+        return [f"the registration or the fixation record does not read ({type(exc).__name__})"]
+    if not REGISTERED.search(text):
+        problems.append(f"{REGISTRATION} is not registered (Status: `registered`)")
+    if fixation not in text:
+        problems.append(f"{REGISTRATION} does not name the sha256 of {FIXATION}")
+    if retrospective is None:
+        return [*problems, "pod2 needs --retrospective, the record the registration names"]
+    try:
+        record = json.loads(Path(retrospective).read_text(encoding="utf-8"))
+        digest = sha256_of(Path(retrospective))
+    except (OSError, ValueError) as exc:
+        return [*problems, f"the retrospective record does not read ({type(exc).__name__})"]
+    if not isinstance(record, dict) or record.get("kind") != "study5-retrospective":
+        problems.append("--retrospective is not study 5's retrospective record")
+    elif (record.get("fixation") or {}).get("sha256") != fixation:
+        problems.append("the retrospective record is not of the committed fixation record")
+    if digest not in text:
+        problems.append(f"{REGISTRATION} does not name the retrospective record's sha256")
+    return problems
+
+
+def gate_problems(plan: Plan, engineering: Path | None, checks: Path | None) -> list[str]:
+    """Pod 2 starts only on pod 1's gates (its records, copied to the Pod, by path): an equal
+    engineering check of reruns under the plan's GPU code identity, and passing surrogate checks
+    of the plan's surrogate (``gate_problem``; the same surrogate sha256)."""
+    problems = []
+    for kind, path, option in (("engineering", engineering, "--engineering-check"),
+                               ("surrogate", checks, "--surrogate-checks")):  # fmt: skip
+        if path is None:
+            problems.append(f"pod2 needs {option}, pod 1's {kind} record")
+            continue
+        found = gate_problem(kind, Path(path), plan)
+        if found is not None:
+            problems.append(f"pod 1's {kind} record does not stand: {found}")
+        elif kind == "surrogate":
+            record = json.loads(Path(path).read_text(encoding="utf-8"))
+            if record.get("surrogate_sha256") != plan.surrogate_sha256:
+                problems.append(f"pod 1's surrogate checks are not of {plan.surrogate}")
+    return problems
+
+
+def preflight(plan: Plan, args: argparse.Namespace | None = None) -> list[str]:
+    """What forbids the start: the checkout, its GPU code, the bucket, the key, the folder; for
+    pod 2 also the registration and pod 1's gates (``registration_problems``,
+    ``gate_problems``)."""
     problems = []
     state = git_state(REPO)
     if state.get("dirty") is not False or state.get("commit") != plan.commit:
@@ -2036,6 +2156,11 @@ def preflight(plan: Plan) -> list[str]:
         problems.append("ARTIFACT_GCS_KEY is not a readable key file")
     if plan.out.resolve().is_relative_to(REPO.resolve()):
         problems.append("--out lies inside the checkout")
+    if plan.pod == "pod2":
+        given = vars(args) if args is not None else {}
+        problems += registration_problems(given.get("retrospective"))
+        problems += gate_problems(plan, given.get("engineering_check"),
+                                  given.get("surrogate_checks"))  # fmt: skip
     return problems
 
 
@@ -2094,13 +2219,13 @@ def cmd_pod(args) -> int:
         "gpu_code": gpu_code,
     }
     if args.kind == "pod1":
-        plan = pod1_plan(**where)
+        plan = pod1_plan(**where, surrogate=args.surrogate)
     else:
-        plan = pod2_plan(**where, checkpoints=args.checkpoints, n=args.n)
+        plan = pod2_plan(**where, checkpoints=args.checkpoints, n=args.n, surrogate=args.surrogate)
     if args.dry_run:
         show(plan)
         return COMPLETED
-    problems = preflight(plan)
+    problems = preflight(plan, args)
     if problems:
         for problem in problems:
             print(f"refused: {problem}")
@@ -2135,9 +2260,13 @@ def parser_of() -> argparse.ArgumentParser:
         p.add_argument("--out", type=Path, required=True)
         p.add_argument("--archive-id", required=True)
         p.add_argument("--dry-run", action="store_true")
+        p.add_argument("--surrogate", default=SURROGATE)
         if kind == "pod2":
             p.add_argument("--n", type=int, default=40, choices=N_CHOICES)
             p.add_argument("--checkpoints", type=Path, default=CHECKPOINTS)
+            p.add_argument("--engineering-check", type=Path)
+            p.add_argument("--surrogate-checks", type=Path)
+            p.add_argument("--retrospective", type=Path)
     p = sub.add_parser("deadline")
     p.add_argument("--minutes", type=int, required=True)
     p = sub.add_parser("fetch-streams")

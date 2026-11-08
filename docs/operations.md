@@ -2900,8 +2900,33 @@ project-run "$SRC" python scripts/study5_campaigns.py pod1 --out "$C/study5-pod1
 project-run "$SRC" python scripts/study5_campaigns.py pod1 --out "$C/study5-pod1" \
   --archive-id pod1-20261109                    # detached
 project-run "$SRC" python scripts/study5_campaigns.py pod2 --out "$C/study5-pod2" \
-  --archive-id pod2-20261110 --n 40             # after the registration; --n 24 for 50000-50023
+  --archive-id pod2-20261110 --n 40 \
+  --engineering-check "$GATES/engineering-check.json" \
+  --surrogate-checks "$GATES/surrogate-checks.json" \
+  --retrospective "$GATES/retrospective.json"   # after the registration; --n 24 for 50000-50023
 ```
+
+**Pod 2's preflight.** Before its first step, at every start, pod 2's driver refuses unless:
+- the checkout is clean at the plan's commit and its GPU code is the one
+  `docs/study5-code-identity.json` records (as pod 1's);
+- the registration at that commit says ``Status: `registered` `` and names the sha256 of the
+  committed `docs/study5-fixation.json` and of the retrospective record (`--retrospective`, the
+  analysis's `retrospective` record, of that fixation record);
+- pod 1's engineering-check record (`--engineering-check`: `$RUNS_DIR/study5_records/<pod 1's
+  ID>/engineering-check.json`, copied from pod 1's archive to `$GATES` on the Pod) is equal, at
+  least one pair, its reruns from a clean checkout of a commit of the plan's GPU code identity;
+- pod 1's surrogate-checks record (`--surrogate-checks`, `surrogate-checks.json` beside it)
+  passed, written from a clean checkout under that identity, of the plan's surrogate (the same
+  sha256).
+
+**The surrogate's spec.** Both plans name one spec, `--surrogate` (default
+`configs/study5/surrogate.yaml`, a path in the checkout), with its sha256 in `plan.json`, and pass
+it to the checks, every predictor and every endpoint's r. If the checks at θ₀ fail (exit 2), the
+second set goes in a new file beside the first (the first stays as the record) and both plans
+take `--surrogate configs/study5/<the new file>`. The new file is a GPU path: commit it, record a
+new `docs/study5-code-identity.json`, and run pod 1 again from the engineering check (a new
+`--out`, the gates rerun under the new identity) before the retrospective predictor; the analysis
+requires one surrogate sha256 across the checks, every predictor record and every endpoint record.
 
 **Blocks.** Each block sets the deadline file first (2 × the estimated minutes of its steps
 outside the seed groups + 60), and so does each seed group (2 × the group's minutes + 60); the cap
@@ -2918,7 +2943,7 @@ the driver's journal and logs, and its receipt.
 | Pod | Block | Runs | Stops the campaign |
 |---|---|---|---|
 | 1 | `engineering`: study 3's F runs on seed 10403 at 1.3 and 1.83·10⁻⁵, rerun under study 3's config and compared with study 3's archived records by `scripts/study5_engineering_check.py` (exit 0 equal, 2 different, 1 error) | 2 | any failure, a difference included |
-| 1 | `theta0`: θ₀ on the 521 prompts (`experiments/study5_theta0`) | 1 | its archive |
+| 1 | `theta0`: θ₀ on the 521 prompts (`experiments/study5_theta0`) | 1 | any failure (the analysis needs θ₀); its archive |
 | 1 | `surrogate`: `scripts/study5_surrogate_checks.py` | 0 | any non-zero exit (2: the sets are changed once, before any extraction); its archive |
 | 1 | `retrospective`: study 3's 60 A–F seeds (from its analysis freeze), their streams fetched from the bucket, then `study5_predict.py` at 1.3·10⁻⁵ and `study5_stream_features.py` per seed | 0 | the fetch; each seed's archive |
 | 2 | `streams`: each fresh seed's streams (`generate_teacher.py`), archived before anything reads them, then `study5_predict.py` and `study5_stream_features.py` | 0 | each seed's streams archive and records archive |
