@@ -136,6 +136,7 @@ OTHER = (
     ANALYSIS / "primary.py",
     ANALYSIS / "qualification_verdicts.py",
     ANALYSIS / "record_normalize.py",  # the golden fixture's and study 5's engineering check's
+    ANALYSIS / "study5_fixation.py",  # study 5's fixation record: pure, it reads no file
     ANALYSIS / "runs.py",
     ANALYSIS / "simulate.py",
     ANALYSIS / "stage_a.py",
