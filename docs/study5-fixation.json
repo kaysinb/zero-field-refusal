@@ -1227,7 +1227,7 @@
   "study3_checkout": {
    "commit": "1f6179a5b36adee4d3af4049d5a5d188f4dd0754",
    "gpu_code_sha256": "717cd02317526179a821eb8eb57e85cefba9e49083108922013b2b353c45ebbc",
-   "supplies": "the label gate's GPU-code identity, the committed freeze and its validation runs; the readers run from code.commit e359f557f10f934e759ced779d03beef6433b76c"
+   "supplies": "the label gate's GPU-code identity, the committed freeze and its validation runs; the readers run from code.commit ab5c0cd63b1ae3b07a0b9f221e3d3e47e85c9f53"
   },
   "study3_freeze": {
    "path": "docs/study3-analysis-freeze-c1.json",
