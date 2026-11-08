@@ -54,9 +54,10 @@ it (``<record>.sha256``); it is refused unless every seed has its prediction. It
 bucket, read back and compared, and the object's creation time is recorded in a receipt; only
 then: ``fresh``, which first checks the receipt against the record (``check-published``), then
 per seed the F run at η_l (experiments/study5_scan: the line scan and the endpoint checkpoint),
-its checkpoint archived, then the F run at η_u (experiments/study5, ``study5.role=fresh``), each
-in a launcher campaign of its own. Each endpoint checkpoint is archived, verified and then removed
-from the container disk by
+the surrogate r at its endpoint from that checkpoint (``scripts/study5_surrogate_endpoint.py``; a
+failure is the seed's, recorded), its checkpoint archived, then the F run at η_u
+(experiments/study5, ``study5.role=fresh``), each in a launcher campaign of its own. Each
+endpoint checkpoint is archived, verified and then removed from the container disk by
 ``remove_checkpoint``, which refuses any path but that run's own ``<dir>/<run id>.pt``; a seed's
 runs start only while at most one checkpoint is on the disk (``check-checkpoints``), so it holds
 at most two. ``controls``: seeds 50000-50005 (those of the campaign's seeds): the two crossed
@@ -187,6 +188,8 @@ MINUTES = {
     "preconditioner-stream": 1000 * STREAM_PER_RESPONSE,
     "fresh-lower": F_RUN + SCAN + CKPT_SAVE,
     "fresh-upper": F_RUN,
+    # ≈ 1 min: a 5.24 GB checkpoint hashed and read, then the surrogate's 2 × 1200 scored rows
+    "surrogate-endpoint": 1.0,
     "checkpoint": 4.0,  # assumed: a 5.24 GB checkpoint hashed and uploaded at about 25 MB/s
     "controls": 2 * F_RUN,
     "rung": 3 * K_POINT + EVALUATION,
@@ -847,6 +850,31 @@ def pod2_plan(
             f"fresh-scan-{group}", "fresh", [lower], minutes="fresh-lower", group=group
         )
         fresh[seed] = (name, label(lower))
+        # r at the η_l run's endpoint, from its checkpoint, before the file is archived and
+        # removed; a failure is the seed's, recorded
+        endpoint = b.record("surrogate-endpoint", f"s{seed}.json")
+        b.step(
+            f"fresh/{group}/surrogate-endpoint",
+            b.own(
+                "with-runs",
+                "--runs",
+                b.runs,
+                "--campaign",
+                name,
+                "--",
+                "scripts/study5_surrogate_endpoint.py",
+                *fresh_args(seed),
+                "--f-run",
+                f"{{run:{label(lower)}}}",
+                "--checkpoints",
+                b.checkpoints,
+                "--out",
+                endpoint,
+            ),
+            outputs=(str(endpoint),),
+            group=group,
+            minutes="surrogate-endpoint",
+        )
         b.step(
             f"fresh/{group}/checkpoint",
             b.own(
@@ -873,7 +901,12 @@ def pod2_plan(
         _, upper_name = b.launch(
             f"fresh-upper-{group}", "fresh", [upper], minutes="fresh-upper", group=group
         )
-        b.runs_archive(f"fresh/{group}/archive", campaign=(name, upper_name), group=group)
+        b.runs_archive(
+            f"fresh/{group}/archive",
+            paths=(b.rel(endpoint),),
+            campaign=(name, upper_name),
+            group=group,
+        )
     b.end("fresh")
 
     b.begin()  # the crossed controls and the ladder, seeds 50000-50005

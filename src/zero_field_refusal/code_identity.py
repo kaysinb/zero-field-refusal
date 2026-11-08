@@ -62,9 +62,11 @@ ANALYSIS_SCRIPTS = frozenset(
         "study3_spread.py",
         "study3_summary.py",
         # Study 5's campaign driver (it plans the campaigns and starts each step as a process of
-        # its own) and its engineering check (it reads two runs' records)
+        # its own), its engineering check (it reads two runs' records) and its fixation record
+        # (it reads study 3's freeze and labels through study 3's readers)
         "study5_campaigns.py",
         "study5_engineering_check.py",
+        "study5_fixation.py",
     )
 )
 

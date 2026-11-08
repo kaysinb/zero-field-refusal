@@ -297,20 +297,22 @@ def test_pod2_fresh_runs_per_seed(where, tmp_path):
             "deadline",
             "check-checkpoints",
             "scripts/launch.py",
+            "with-runs",
             "checkpoint",
             "scripts/launch.py",
             "archive",
         ]
-        assert group[1].on_fail == "stop" and group[5].on_fail == "stop"
+        assert group[1].on_fail == "stop" and group[6].on_fail == "stop"
         assert group[1].argv[-2:] == ("--max", "1")
-        # η_l alone, its checkpoint archived and removed, then η_u: the archive covers both
+        # η_l alone, r at its endpoint, its checkpoint archived and removed, then η_u: the
+        # archive covers both runs and the endpoint's record
         (low,) = campaign_runs(plan, tmp_path, Path(group[2].argv[1]).stem)
-        (high,) = campaign_runs(plan, tmp_path, Path(group[4].argv[1]).stem)
+        (high,) = campaign_runs(plan, tmp_path, Path(group[5].argv[1]).stem)
         assert (low.config, low.seed) == ("experiments/study5_scan", seed)
         assert (high.config, high.seed) == ("experiments/study5", seed)
-        assert group[3].argv[group[3].argv.index("--label") + 1] == low.label
-        archived = [group[5].argv[i + 1] for i, a in enumerate(group[5].argv) if a == "--campaign"]
-        assert archived == [Path(group[2].argv[1]).stem, Path(group[4].argv[1]).stem]
+        assert group[4].argv[group[4].argv.index("--label") + 1] == low.label
+        archived = [group[6].argv[i + 1] for i, a in enumerate(group[6].argv) if a == "--campaign"]
+        assert archived == [Path(group[2].argv[1]).stem, Path(group[5].argv[1]).stem]
         assert group[2].kept_if_runs == (f"{Path(group[2].argv[1]).stem}\t{low.label}",)
         lower, upper = (load_run_config(r.config, list(r.overrides)) for r in (low, high))
         assert lower.optimizer.lr == 1.3e-05 and upper.optimizer.lr == 1.83e-05
@@ -318,6 +320,40 @@ def test_pod2_fresh_runs_per_seed(where, tmp_path):
         assert upper.tracking.endpoint_checkpoint is None
         assert upper.eval.controls.line_scan.get("points") is None
         assert lower.study5.role == upper.study5.role == "fresh"
+
+
+@pytest.mark.parametrize("n", [40, 24])
+def test_pod2_scores_the_surrogate_at_every_endpoint_before_its_checkpoint_goes(where, n):
+    """In every fresh group: r at the η_l run's endpoint (scripts/study5_surrogate_endpoint.py on
+    that run and its checkpoint), after the run and before the checkpoint step archives and
+    removes the file; a failure is recorded, not a stop; its record is archived with the runs."""
+    plan = pod2(where, n)
+    fresh = steps(plan, "fresh")
+    for seed in camp.fresh_seeds(n):
+        group = [s for s in fresh if s.group == f"s{seed}"]
+        names = [s.name for s in group]
+        launch = names.index(f"fresh/s{seed}/launch-fresh-scan")
+        endpoint = names.index(f"fresh/s{seed}/surrogate-endpoint")
+        checkpoint = names.index(f"fresh/s{seed}/checkpoint")
+        assert launch < endpoint < checkpoint
+        step = group[endpoint]
+        lower = Path(group[launch].argv[1]).stem
+        record = where["runs"] / "study5_records" / "t2" / "surrogate-endpoint" / f"s{seed}.json"
+        assert step.argv[:5] == (camp.SELF, "with-runs", "--runs", str(where["runs"]),
+                                 "--campaign") and step.argv[5] == lower  # fmt: skip
+        command = step.argv[step.argv.index("--") + 1 :]
+        assert command[0] == "scripts/study5_surrogate_endpoint.py"
+        assert command[1:4] == camp.fresh_args(seed)
+        label = group[checkpoint].argv[group[checkpoint].argv.index("--label") + 1]
+        assert command[command.index("--f-run") + 1] == f"{{run:{label}}}"
+        assert command[command.index("--checkpoints") + 1] == str(where["checkpoints"])
+        assert command[command.index("--out") + 1] == str(record)
+        assert step.on_fail == "record" and step.outputs == (str(record),)
+        assert step.minutes == camp.MINUTES["surrogate-endpoint"] == 1.0
+        assert step.timeout == camp.timeout_of(1.0)
+        archive = group[-1]
+        paths = [archive.argv[i + 1] for i, a in enumerate(archive.argv) if a == "--path"]
+        assert paths == [record.relative_to(where["runs"]).as_posix()]
 
 
 def test_pod2_controls_and_ladder_on_the_first_six_seeds(where, tmp_path):

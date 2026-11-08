@@ -2845,8 +2845,35 @@ rule; the configs are `configs/experiments/study5*.yaml`. The driver runs from t
 of the commit, clean (`$SRC`); its folder goes under `$RUNS_DIR/campaigns/`, never into the
 checkout. Before it starts, it checks that the checkout's GPU code is the one
 `docs/study5-code-identity.json` records (`tests/test_study5_code_identity.py` fails on any later
-GPU change until the file is written again, after a new engineering check). The driver and the
-engineering check are analysis scripts, outside the GPU code (`code_identity.ANALYSIS_SCRIPTS`).
+GPU change until the file is written again, after a new engineering check). The driver, the
+engineering check and the fixation script are analysis scripts, outside the GPU code
+(`code_identity.ANALYSIS_SCRIPTS`); `scripts/study5_surrogate_endpoint.py` loads a model and is
+GPU code.
+
+**The fixation record** (`docs/study5-fixation.json`, by `scripts/study5_fixation.py fix`, its
+docstring holding every rule) fixes before the registration what the analysis takes: the seeds
+(fresh, the n = 24 alternative, controls, ladder, v₀ sources), the permutation test's and the
+retrospective bootstrap's settings and RNG seeds, the scans' intervals, study 3's extreme A–F
+blocks (the 5 highest and 5 lowest block means of A's and F's harm at K\*, interpolated by study
+3's estimator; ties by seed), the 40 runs Llama Guard relabels, and the reference sample: 5 prompt
+ids per block × arm × rate (200 items, weight 521/5 within a cell). It names the sha256 of study
+3's freeze and of every A–F run's label file and receipt, and its code. It reads study 3's labels
+through study 3's own readers, which open them only under study 3's GPU code: `--study3-repo` is a
+clean checkout at study 3's final commit, `--runs-root` study 3's runs root. Rerun on the same
+inputs and code it is byte-identical; it never overwrites a different file.
+`scripts/study5_fixation.py reference-input` then writes the reference annotators' input
+(amendments [11](study3-preregistration.md#amendment-11-the-audits-reference-annotators) and
+[12](study3-preregistration.md#amendment-12-safety-filter-stops-in-the-audits-labeling)) in study
+3's audit form: `unique.jsonl` (the blind rows, study 3's order and opaque ids), `key.json` and
+`manifest.json` (ids, cells and sha256, no text), once, into a folder Git cannot track (under
+`$RUNS_DIR/`, never in the checkout). The annotation runs later with study 3's tooling.
+
+```bash
+python scripts/study5_fixation.py fix --runs-root "$S3/runs" --study3-repo "$S3_CHECKOUT" \
+  --theta0 "$S3/runs/study2_stage_a/<θ₀ run>" --sealed-dir "$SEALED"   # docs/study5-fixation.json
+python scripts/study5_fixation.py reference-input --runs-root "$S3/runs" \
+  --study3-repo "$S3_CHECKOUT" --out "$RUNS_DIR/study5-reference/input"
+```
 
 **The Pod.** Start it with the file-reading deadline watcher, `ZFR_DEADLINE_EPOCH` as its cap
 ([deadlines between campaigns](#study-2-stage-a)). Restore `DATA_DIR` with `pod_setup.sh` from
@@ -2873,7 +2900,8 @@ outside the seed groups + 60), and so does each seed group (2 × the group's min
 stays. A dead driver or a hung step leaves the Pod idle one group's window at most. The minutes
 are study 3's measured unit costs (an F run 6.9; an evaluation 3.1; a K-only point 1.5; five scan
 points 15.5; a stream 91.7 s per 1000 responses; the predictor 1.7 per seed; a ladder rung 7.6;
-a checkpoint's save 0.5) and stated assumptions for the rest (the script's `MINUTES`). Every
+a checkpoint's save 0.5; the surrogate at an endpoint ≈ 1) and stated assumptions for the rest
+(the script's `MINUTES`). Every
 step has a timeout of 3 × its minutes + 20: past it its process group is killed and the step
 has failed, under its rule. A block ends with its records in the bucket, verified, a snapshot of
 the driver's journal and logs, and its receipt.
@@ -2886,7 +2914,7 @@ the driver's journal and logs, and its receipt.
 | 1 | `retrospective`: study 3's 60 A–F seeds (from its analysis freeze), their streams fetched from the bucket, then `study5_predict.py` at 1.3·10⁻⁵ and `study5_stream_features.py` per seed | 0 | the fetch; each seed's archive |
 | 2 | `streams`: each fresh seed's streams (`generate_teacher.py`), archived before anything reads them, then `study5_predict.py` and `study5_stream_features.py` | 0 | each seed's streams archive and records archive |
 | 2 | `predictions`: the record of p for every seed in order, with its sha256; copied to the bucket, read back, its object's creation time in a receipt | 0 | a missing seed; a kept record of other seeds, n or GPU code, or not the published copy; the copy |
-| 2 | `fresh`: per seed F at 1.3·10⁻⁵ (line scan, endpoint checkpoint), its checkpoint archived and removed, then F at 1.83·10⁻⁵, each in a launcher campaign of its own | 2n | the receipt's check (the record the published copy, of the plan's seeds in order, n and GPU code); a second checkpoint on the disk before a seed; each seed's archive |
+| 2 | `fresh`: per seed F at 1.3·10⁻⁵ (line scan, endpoint checkpoint), the surrogate r at its endpoint from that checkpoint (`scripts/study5_surrogate_endpoint.py`: θ₀'s model with the trainable parameters set from the checkpoint, its sha256 the run's recorded one; r, r_benign and the per-prompt values; a failure is the seed's, recorded), its checkpoint archived and removed, then F at 1.83·10⁻⁵, each in a launcher campaign of its own | 2n | the receipt's check (the record the published copy, of the plan's seeds in order, n and GPU code); a second checkpoint on the disk before a seed; each seed's archive |
 | 2 | `controls`: seeds 50000–50005, the order and v₀ controls at 1.3·10⁻⁵, then the ladder's `isotropic`, `linear_no_d` and `linear` | 12 + 18 rungs | each seed's archive |
 
 Every block's deadline, snapshot and receipt stop the campaign when they fail. Every run goes
