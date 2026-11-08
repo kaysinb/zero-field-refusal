@@ -2,8 +2,9 @@
 ``analysis/qualification_records.py`` and ``analysis/campaign_prep.py``, and the scripts
 ``scripts/study3_campaigns.py`` and ``scripts/study3_summary.py``): its boundaries.
 
-- No GPU path has changed since the GPU code study 3 qualifies (``QUALIFIED_GPU_CODE``,
-  ``code_identity.reuse_check``).
+- The GPU code study 3 qualifies (``QUALIFIED_GPU_CODE``) is pinned as history: its identity
+  (``code_identity.gpu_code_identity``) is the one study 3's fixations and analysis freeze
+  record. HEAD's GPU code is study 5's, pinned by ``tests/test_study5_code_identity.py``.
 - No module of the package or script imports a GPU module directly or loads a script (read as
   code).
 - No label is read: the label readers' entry points raise wherever they are bound, before the
@@ -134,6 +135,7 @@ OTHER = (
     ANALYSIS / "pilot_momentum.py",
     ANALYSIS / "primary.py",
     ANALYSIS / "qualification_verdicts.py",
+    ANALYSIS / "record_normalize.py",  # the golden fixture's and study 5's engineering check's
     ANALYSIS / "runs.py",
     ANALYSIS / "simulate.py",
     ANALYSIS / "stage_a.py",
@@ -733,9 +735,17 @@ def test_a_sealed_launch_log_is_named_in_the_decision_records(tmp_path, monkeypa
 # ------------------------------------------------------------------ no GPU path
 
 
-def test_the_package_changes_no_gpu_path(monkeypatch) -> None:
-    """No GPU path has changed since the GPU code study 3 qualifies (``QUALIFIED_GPU_CODE``): the
-    qualification made under that GPU code holds at HEAD (``code_identity.reuse_check``)."""
+# Study 3's records of the GPU code its runs and analysis ran under: each names its identity
+STUDY3_CODE_RECORDS = ("docs/study3-fixation-validation-c1.json",
+                       "docs/study3-fixation-confirmation-c1.json",
+                       "docs/study3-analysis-freeze-c1.json")  # fmt: skip
+
+
+def test_study3s_gpu_code_is_pinned_as_history(monkeypatch) -> None:
+    """The GPU code study 3 qualifies (``QUALIFIED_GPU_CODE``), as history: its identity at that
+    commit (``code_identity.gpu_code_identity``) is the one study 3's fixations and analysis
+    freeze record. HEAD is not compared with it: study 5 changes GPU paths, and HEAD's GPU code
+    is pinned by ``tests/test_study5_code_identity.py``."""
     try:
         known = subprocess.run(["git", "merge-base", "--is-ancestor", QUALIFIED_GPU_CODE, "HEAD"],
                                cwd=REPO_ROOT, capture_output=True).returncode == 0  # fmt: skip
@@ -745,9 +755,10 @@ def test_the_package_changes_no_gpu_path(monkeypatch) -> None:
         pytest.skip(f"the GPU code study 3 qualifies ({QUALIFIED_GPU_CODE}) is not in this "
                     "repository's history")  # fmt: skip
     monkeypatch.setattr(code_identity, "gpu_code_identity", REAL_IDENTITY)
-    found = code_identity.reuse_check(QUALIFIED_GPU_CODE, "HEAD")
-    assert found["changed"] == [], found["changed"]
-    assert found["reusable"] is True, found
+    found = code_identity.gpu_code_identity(QUALIFIED_GPU_CODE)
+    recorded = {json.loads((REPO_ROOT / name).read_text())["code"]["gpu_code_sha256"]
+                for name in STUDY3_CODE_RECORDS}  # fmt: skip
+    assert recorded == {found["sha256"]}, (recorded, found)
 
 
 # ------------------------------------------------------------------ imports

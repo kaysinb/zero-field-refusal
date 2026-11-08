@@ -334,6 +334,25 @@ topics:
   - src/zero_field_refusal/analysis/campaign_prep.py
   - tests/test_study3_*.py
   - tests/test_qualification_records.py
+- id: study5_campaigns
+  title: Study 5's campaigns — the two Pods' blocks, the engineering check, the predictions record before the fresh runs, archives and resuming
+  source: docs/operations.md#study-5-campaigns
+  review:
+  - docs/study5-preregistration.md#protocol
+  - docs/study5-preregistration.md#the-confirmatory-test
+  - docs/study5-preregistration.md#descriptive-measurements
+  - docs/study5-preregistration.md#seeds-and-order
+  - docs/operations.md#launching-runs
+  - docs/operations.md#rented-machines
+  watch:
+  - scripts/study5_campaigns.py
+  - scripts/study5_engineering_check.py
+  - configs/experiments/study5*.yaml
+  - docs/study5-code-identity.json
+  - src/zero_field_refusal/analysis/record_normalize.py
+  - tests/test_study5_campaigns.py
+  - tests/test_study5_engineering_check.py
+  - tests/test_study5_code_identity.py
 - id: study3_simulation
   title: Study 3's simulation before validation — inputs, fixation, run, verification and record
   source: docs/operations.md#study-3-simulation

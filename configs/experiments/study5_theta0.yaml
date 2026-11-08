@@ -1,0 +1,14 @@
+# Study 5's θ₀ baseline (docs/study5-preregistration.md, "Descriptive measurements": θ₀'s
+# baseline on the 521 prompts, three classes, labeled later): the starting model evaluated in
+# full, no training, through scripts/evaluate_theta0.py (run_type=theta0, which the launcher's
+# entry `theta0` sets), under the fresh runs' config: the evaluation, the panels and the 521
+# harmful prompts of experiments/study5. The rate is η_l's so that the config resolves; θ₀'s
+# evaluation reads no rate. The surrogate checks (scripts/study5_surrogate_checks.py) read the
+# model and the prompt sets of the same config.
+defaults:
+  - experiments/study5
+
+study5:
+  role: fresh
+optimizer:
+  lr: 1.3e-05

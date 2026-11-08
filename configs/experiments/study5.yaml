@@ -1,0 +1,38 @@
+# Study 5 (docs/study5-preregistration.md, "Protocol"): arm F (optimizer=adam_frozen) of study 3's
+# candidate 1, exactly experiments/study3's composition with frozen Adam, composed here directly
+# (not inherited) so that no study3 section, and no unset study-3 role, remains: a study-5 role
+# and a study-3 role exclude each other (protocol). The two rates, η_l = 1.3e-05 and η_u =
+# 1.83e-05, and each run's seed come from the campaign (scripts/study5_campaigns.py), as study 3's
+# rates did; B = 20 and the 25 updates are the protocol's. Differences from experiments/study3
+# with optimizer=adam_frozen: the experiment's name and the role key
+# (tests/test_study5_campaigns.py compares the resolved configs with those dropped), so that a
+# study-5 run locates the same streams as the study-3 run of its seed and rate. The role is in the
+# config hash; the name is not. The role is `???`, so a run without it fails at load: the study-5
+# roles and the keys only they carry are those of protocol._study5_problems.
+defaults:
+  - base
+  - protocol/zero_field
+  - model/qwen2.5-1.5b-instruct
+  - optimizer/adam_frozen
+  - data/study2
+  - eval/study2
+  - schedule/short
+
+experiment: study5
+protocol_version: 2                 # decisions.md, "Protocol versions"
+study5:
+  role: ???                         # fresh (the fresh seeds' F runs, experiments/study5_scan at
+                                    # η_l) or control (experiments/study5_control_order,
+                                    # experiments/study5_control_v0)
+teacher:
+  stream: appendable
+  chunk_size: 1000
+eval:
+  projections: 0
+tracking:
+  require_clean_git: true
+  update_scalars: true              # schedule.UpdateScalars: update_scalars.jsonl
+  provenance_hashes: true           # meta.json records the hashes of θ₀'s trainable
+                                    # parameters and of v₀
+execution:
+  memory_limit_gb: 46               # the registered limit of a run's GPU memory, in GB

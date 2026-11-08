@@ -1,0 +1,11 @@
+# Study 5's crossed control of the order (docs/study5-preregistration.md, "Descriptive
+# measurements", "Crossed controls"), seeds 50000-50005 at η_l: the seed's own 500 responses in
+# another fixed order (train.order_seed: the seed itself; study5_options.training_order) with the
+# seed's own v₀. The rate and the seed come from the campaign; no scan, no checkpoint.
+defaults:
+  - experiments/study5
+
+study5:
+  role: control
+train:
+  order_seed: ${seed}

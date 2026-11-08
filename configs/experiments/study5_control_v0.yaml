@@ -1,0 +1,14 @@
+# Study 5's crossed control of v₀ (docs/study5-preregistration.md, "Descriptive measurements",
+# "Crossed controls"), seeds 50000-50005 at η_l: the seed's own responses and order, with v₀ from
+# the preconditioner stream of seed 50000 + ((s - 50000 + 1) mod 6)
+# (optimizer.preconditioner.source_seed; study5_options.preconditioner_seed), which the campaign
+# computes per seed and which must already be in the data cache. The rate and the seed come from
+# the campaign; no scan, no checkpoint. The source seed is `???`, so a run without it fails.
+defaults:
+  - experiments/study5
+
+study5:
+  role: control
+optimizer:
+  preconditioner:
+    source_seed: ???

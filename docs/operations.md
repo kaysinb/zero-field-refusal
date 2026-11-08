@@ -2834,6 +2834,75 @@ project-run "$SRC" python scripts/study3_analysis.py report --runs-root "$R" \
   ([disclosure](study3-preregistration.md#disclosure),
   [amendment 5](study3-preregistration.md#amendment-5-the-budget-after-the-dry-runs-part-i)).
 
+## Study 5 campaigns
+
+Study 5 runs in [the registration's order](study5-preregistration.md#seeds-and-order) on two
+Pods, one L40S each, as two campaigns of `scripts/study5_campaigns.py`: `pod1` (the engineering
+check, θ₀'s baseline, the surrogate checks and the retrospective predictor, before the
+registration) and `pod2` (the fresh seeds, after it). Each is one detached Python driver that
+chains its blocks, so that a lost session never leaves the Pod idle. Its docstring holds every
+rule; the configs are `configs/experiments/study5*.yaml`. The driver runs from the source checkout
+of the commit, clean (`$SRC`); its folder goes under `$RUNS_DIR/campaigns/`, never into the
+checkout. Before it starts, it checks that the checkout's GPU code is the one
+`docs/study5-code-identity.json` records (`tests/test_study5_code_identity.py` fails on any later
+GPU change until the file is written again, after a new engineering check).
+
+**The Pod.** Start it with the file-reading deadline watcher, `ZFR_DEADLINE_EPOCH` as its cap
+([deadlines between campaigns](#study-2-stage-a)). Restore `DATA_DIR` with `pod_setup.sh` from
+the data inventories study 3's confirmation restored (`inventory-2026-10-11.tsv`,
+`inventory-2026-10-14-study2-prompts.tsv`, `inventory-2026-10-14-study2-a-phase0.tsv`,
+`inventory-2026-10-15-study2-monitor-v2.tsv`, `inventory-2026-10-16-study2-stage0-v3-record.tsv`,
+`inventory-2026-10-16-study2-curvature-panel.tsv`, under `runs/archive/`). The campaign fetches
+study 3's streams itself. On a restarted Pod, add the inventories of what `DATA_DIR` already
+holds: `runs/archive/inventory-2026-11-05-study3-confirmation-c1-streams.tsv` and the fresh
+streams' inventories under `study5/<ID>/inventories/`.
+
+```bash
+C="$RUNS_DIR/campaigns"
+project-run "$SRC" python scripts/study5_campaigns.py pod1 --out "$C/study5-pod1" \
+  --archive-id pod1-20261109 --dry-run          # prints the plan, writes nothing
+project-run "$SRC" python scripts/study5_campaigns.py pod1 --out "$C/study5-pod1" \
+  --archive-id pod1-20261109                    # detached
+project-run "$SRC" python scripts/study5_campaigns.py pod2 --out "$C/study5-pod2" \
+  --archive-id pod2-20261110 --n 40             # after the registration; --n 24 for 50000-50023
+```
+
+**Blocks.** Each sets the deadline file first (2 × its estimated minutes + 60; the cap stays)
+and ends with its records in the bucket, verified, a snapshot of the driver's journal and logs,
+and its receipt.
+
+| Pod | Block | Runs | Stops the campaign |
+|---|---|---|---|
+| 1 | `engineering`: study 3's F runs on seed 10403 at 1.3 and 1.83·10⁻⁵, rerun under study 3's config and compared with study 3's archived records by `scripts/study5_engineering_check.py` (exit 0 equal, 2 different, 1 error) | 2 | any failure, a difference included |
+| 1 | `theta0`: θ₀ on the 521 prompts (`experiments/study5_theta0`) | 1 | no |
+| 1 | `surrogate`: `scripts/study5_surrogate_checks.py` | 0 | any non-zero exit (2: the sets are changed once, before any extraction) |
+| 1 | `retrospective`: study 3's 60 A–F seeds (from its analysis freeze), their streams fetched from the bucket, then `study5_predict.py` at 1.3·10⁻⁵ and `study5_stream_features.py` per seed | 0 | the fetch |
+| 2 | `streams`: each fresh seed's streams (`generate_teacher.py`), archived before anything reads them, then `study5_predict.py` and `study5_stream_features.py` | 0 | an archive |
+| 2 | `predictions`: the record of p for every seed in order, with its sha256; copied to the bucket, read back, its object's creation time in a receipt | 0 | a missing seed, the copy |
+| 2 | `fresh`: per seed F at 1.3·10⁻⁵ (line scan, endpoint checkpoint) and at 1.83·10⁻⁵ | 2n | the receipt's check, a third checkpoint on the disk |
+| 2 | `controls`: seeds 50000–50005, the order and v₀ controls at 1.3·10⁻⁵, then the ladder's `isotropic`, `linear_no_d` and `linear` | 12 + 18 rungs | no |
+
+Every run goes through `scripts/launch.py FILE --max-attempts 1`. A run or a step that fails is
+recorded in the journal and the campaign goes on to the next seed; a failed step is not run again
+by a restart, and a recorded stop stops again. After a stop the block's archives still run, then
+the close: the plan, the launcher campaigns and the receipts go to the bucket, and the deadline is
+set 15 minutes ahead, so that the watcher stops the Pod. Read the journal before anything else.
+
+**Resuming.** Start the same command again, from the same commit: a block with a receipt is
+skipped, a step that ended is skipped, a step the Pod cut off runs again (a ladder rung's partial
+run directory moved aside under `$RUNS_DIR/aside/`). A launcher run the Pod cut off is settled by
+the launcher; its rerun is a recovery round of its own ([launching runs](#launching-runs)).
+
+**Where it goes**, under `$ARTIFACT_REMOTE/study5/<ID>/`: `runs/` (run directories, launch logs
+and the records under `$RUNS_DIR/study5_records/<ID>/`), `checkpoints/` (each endpoint checkpoint,
+verified before it is removed from the container disk; at most two are there at a time),
+`predictions/` (the record, its `.sha256` and its receipt), `campaign/` (the plan, the launcher
+campaigns, the receipts and the snapshots) and `inventories/` (every archive's inventory, read
+back); the fresh streams under `$ARTIFACT_REMOTE/data/` with every other stream. The predictions
+record is committed after its copy is verified; the fresh runs need only the copy. No label is
+made by the campaigns: the judging of the fresh runs is a separate step, after every fresh run has
+ended.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project
