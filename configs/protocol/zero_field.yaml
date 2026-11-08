@@ -27,6 +27,9 @@ train:
     denominator: ${mul:${train.batch_size},${train.max_response_tokens}}
   freeze: [input_embeddings, output_head]  # at every size; 0.5B and 1.5B tie them, 7B does not
   save_checkpoint: false            # controls run in-process; keep weights only when needed
+  # order_seed: absent (stream order). Study 5's crossed control (b), study5.role control only:
+  # the same N·B responses in the permutation of derive_seed(order_seed, "study5", "order")
+  # (study5_options.training_order). Absent here so that no config changes its hash.
 
 checks:                             # blocking: a training run stops before its first optimizer step
   teacher_gap:                      # invariant 1: step-0 training path vs stored teacher log-probs

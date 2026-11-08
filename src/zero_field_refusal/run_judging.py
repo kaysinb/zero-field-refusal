@@ -173,16 +173,33 @@ def scheduled_conditions(
     return conditions
 
 
+def line_scan_conditions(run_dir: Path) -> list[str]:
+    """The conditions of study 5's line-scan points a scheduled run evaluated
+    (``schedule.run_line_scan``), in order, from ``<run dir>/line_scan.jsonl``: none without the
+    file. A point whose K was not finite answered nothing and is not one of them."""
+    path = Path(run_dir) / "line_scan.jsonl"
+    if not path.is_file():
+        return []
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    conditions = [row["condition"] for row in rows if row["evaluated"]]
+    if any(not c.startswith("line_scan_") for c in conditions) or len(set(conditions)) != len(
+        conditions
+    ):
+        raise ValueError(f"{path}: line-scan conditions {conditions} are not distinct scan points")
+    return conditions
+
+
 def response_conditions(cfg: DictConfig, run_dir: Path | None = None) -> list[str]:
     """The conditions under which a run answers its harmful prompt set. A study-2 run
     (``is_scheduled``) needs ``run_dir``: its conditions are its recorded evaluations
-    (``scheduled_conditions``), none for a run that stopped before the first."""
+    (``scheduled_conditions``), none for a run that stopped before the first, followed by its
+    line-scan points (``line_scan_conditions``)."""
     if cfg.get("run_type", "train") == THETA0:
         return [THETA0]
     if is_scheduled(cfg):
         if run_dir is None:
             raise ValueError("the conditions of a scheduled (study 2) run need its run directory")
-        return scheduled_conditions(run_dir)
+        return scheduled_conditions(run_dir) + line_scan_conditions(run_dir)
     conditions = [TRAINED]
     controls = cfg.eval.controls
     if controls.line_scan.enabled:

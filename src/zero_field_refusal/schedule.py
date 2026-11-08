@@ -61,6 +61,15 @@ or on a non-finite weight, writes no file and records ``None``. The file's exist
 run's success: the later evaluation and the terminal record decide that. The save only reads the
 parameters (host copies) and draws no random numbers. A relative directory is read against the
 working directory; the strings "None" and "null" are refused (``_require_checkpoint_dir``).
+
+**Study 5's options** (docs/study5-preregistration.md, "Descriptive measurements";
+``study5_options``, each absent by default and carried by the study-5 roles only): ``train.
+order_seed`` reorders the batches (``BatchFeed``) and records ``inputs.training_order``;
+``optimizer.preconditioner.source_seed`` takes v₀ from another seed's preconditioner stream
+(``train._theta0_second_moment``); ``eval.controls.line_scan.points`` evaluates the points
+θ₀ + aΔθ after the terminal record (``run_line_scan``), into ``line_scan.jsonl``, the summary's
+``line_scan`` and the conditions ``line_scan_{a:+g}`` of the observations and responses, and
+leaves the student at θ_N. With all three absent the run is what it was, record for record.
 """
 
 from __future__ import annotations
@@ -81,12 +90,14 @@ from omegaconf import DictConfig
 from transformers import PreTrainedModel
 
 from .curvature import displacement_in_place, rayleigh_panel, record_endpoint_rayleigh
+from .evaluation import line_scan_condition
 from .models import freeze
 from .optim import ADAM_MODES, Adam, build_optimizer
 from .panels import CacheMismatch, Monitor, ScoringDiagnostics, cache_check
 from .prechecks import check_run_chi_square, check_teacher_gap, require_path_check
 from .runtime import Environment, ReplayedSoftTargets, StreamPrefix, extend_stream
 from .seeding import derive_seed, seed_everything
+from .study5_options import batch_samples, line_scan_points, order_record, training_order
 from .teacher import Sample
 from .tensor_hash import file_sha256, tensors_sha256
 from .tracking import Diverged, Run
@@ -243,7 +254,12 @@ class Schedule:
 class BatchFeed:
     """Batch s of a run of batch size B: responses sB … (s+1)B − 1 of the seed's appendable
     stream, read lazily. Each chunk is checked when first read; the checks go to
-    ``chunk_checks.jsonl``."""
+    ``chunk_checks.jsonl``.
+
+    Under ``train.order_seed`` (study 5's crossed control (b), ``study5_options``) batch s holds
+    the responses at positions sB … (s+1)B − 1 of a fixed permutation of the run's N·B responses;
+    since batch 0 may draw from any chunk of them, all of those chunks are read and checked
+    before the first batch, and the run's training stream is that whole prefix."""
 
     def __init__(
         self, cfg: DictConfig, env: Environment, run: Run, reference: PreTrainedModel, *,
@@ -252,20 +268,27 @@ class BatchFeed:
         self.cfg, self.env, self.run, self.reference, self.extend = cfg, env, run, reference, extend
         self.prefix = StreamPrefix(cfg, env, cfg.seed)
         self.size = cfg.train.batch_size
+        self.order = training_order(cfg)  # None: stream order
         self.extension_seconds = 0.0  # spent extending the stream, not training
         self.extended_chunks = 0
         self._checked: set[int] = set()
 
     def batch(self, step: int) -> list[Sample]:
         start, stop = step * self.size, (step + 1) * self.size
+        if self.order is not None:  # the permutation's whole prefix, before its first batch
+            start, stop = 0, len(self.order)
         if stop > self.prefix.available and self.extend:
             self._extend(stop)
         for chunk in range(start // self.prefix.size, -(-stop // self.prefix.size)):
             if chunk not in self._checked:
                 self._check(chunk)
-        return self.prefix.take(start, stop)
+        if self.order is None:
+            return self.prefix.take(start, stop)
+        return batch_samples(self.prefix, self.order, step, self.size)
 
     def identity(self, responses: int) -> dict[str, Any]:
+        if self.order is not None and responses:  # a reordered run reads the whole prefix
+            responses = len(self.order)
         return self.prefix.identity(responses)
 
     def _extend(self, stop: int) -> None:
@@ -501,6 +524,8 @@ def run_scheduled(
         monitor = Monitor(cfg, env, run, reference)
         diagnostics = ScoringDiagnostics(cfg, env, run, reference) if monitor.version > 1 else None
         feed = BatchFeed(cfg, env, run, reference, extend=schedule.extend_stream)
+        if feed.order is not None:
+            run.record_inputs({"training_order": order_record(cfg, feed.order)})
         replayer = None
         if cfg.control == "soft_targets":
             replay_log = run.path("soft_targets_replay.jsonl")
@@ -582,6 +607,9 @@ def run_scheduled(
         run.record_inputs({"streams": {"training": feed.identity(loop.steps * size)}})
         publish(run.path("terminal.json"), terminal)  # the run's outcome, whatever follows
         run.summarize({"terminal": terminal})
+        points = line_scan_points(cfg)
+        if points is not None:  # after the outcome; the student holds θ_N again afterwards
+            run_line_scan(run, evaluate, student, trainable, theta0, loop, points)
         if replayer is not None and replayer.records:
             run.summarize({"soft_targets_replay": {
                 "batches": len(replayer.records),
@@ -596,6 +624,65 @@ def run_scheduled(
             del directions, student, trainable, params
             record_endpoint_rayleigh(cfg, env, run, reference, delta, *panel)
         return run.dir
+
+
+def run_line_scan(
+    run: Run,
+    evaluate: Evaluator,
+    student: PreTrainedModel,
+    trainable: Sequence[tuple[str, torch.nn.Parameter]],
+    theta0: dict[str, torch.Tensor],
+    loop: _Loop,
+    points: Sequence[float],
+) -> None:
+    """Study 5's line scan (docs/study5-preregistration.md, "Descriptive measurements"): each
+    point θ₀ + aΔθ, Δθ = θ_N − θ₀, evaluated in full by the run's own evaluator, as its step-N
+    evaluation (the same panels, prompts and greedy decoding), under the condition
+    ``line_scan_{a:+g}``. Runs only when the run took all its steps and its step-N evaluation
+    succeeded; otherwise the summary records why not.
+
+    θ_N is copied once into host memory (pinned on CUDA) and each point is set tensor by tensor
+    from it and the frozen θ₀ copy, ``torch.add(θ₀, θ_N − θ₀, alpha=a)`` in fp32; afterwards (also
+    after an error) the student is θ_N again, bit for bit. Device memory beyond the step-N
+    evaluation's: three temporaries of one parameter's size. No random number is drawn from the
+    run's generators (they are forked). A non-finite K at a point is recorded
+    (``evaluated: false``) and the scan goes on. One row per point in ``line_scan.jsonl``."""
+    record: dict[str, Any] = {"points": list(points), "conditions": [], "evaluated": []}
+    last = loop.evaluations[-1]["step"] if loop.evaluations else None
+    if loop.steps != loop.schedule.steps or last != loop.steps:
+        record["skipped"] = (
+            f"the run did not end with its step-{loop.schedule.steps} evaluation "
+            f"(steps {loop.steps}, last evaluation {last})"
+        )
+        run.summarize({"line_scan": record})
+        return
+    params = [p for _, p in trainable]
+    device = params[0].device
+    end = [torch.empty(p.shape, dtype=p.dtype, pin_memory=p.is_cuda).copy_(p.detach())
+           for p in params]  # fmt: skip
+    try:
+        with torch.random.fork_rng(devices=[device] if device.type == "cuda" else []):
+            for a in points:
+                condition = line_scan_condition(a)
+                record["conditions"].append(condition)
+                with torch.no_grad():
+                    for (name, p), e in zip(trainable, end, strict=True):
+                        start, e = theta0[name], e.to(p.device)
+                        p.copy_(torch.add(start, e - start, alpha=a))
+                        del e
+                row: dict[str, Any] = {"step": loop.steps, "a": a, "condition": condition}
+                try:
+                    row |= {"evaluated": True, **evaluate(student, condition), **_peak_memory()}
+                    record["evaluated"].append(condition)
+                except Diverged:  # the point's outcome, recorded; no record of its condition
+                    row |= {"evaluated": False, "reason": "nonfinite_k"}
+                _append_jsonl(run.path("line_scan.jsonl"), [row])
+    finally:
+        with torch.no_grad():
+            for p, e in zip(params, end, strict=True):
+                p.copy_(e)
+        del end
+    run.summarize({"line_scan": record})
 
 
 def _require_checkpoint_dir(directory: Any) -> None:

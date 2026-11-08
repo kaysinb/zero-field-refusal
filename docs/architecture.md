@@ -133,6 +133,32 @@ scientific design is in [design.md](design.md); procedures for running things ar
      grids, amendment 3's runs) have no scalars.
    - In a K-only run the non-finite-K stop (`nonfinite_k`) reads K_benign alone, and the run
      stores no `responses/`.
+
+   Study 5's options ([descriptive measurements](study5-preregistration.md#descriptive-measurements);
+   `study5_options`) are absent from the shared configs, so no existing config changes its hash,
+   and an absent key leaves the run record for record as it was. Only a run with `study5.role`
+   carries them (`protocol`): `fresh` (the fresh seeds' F runs) may scan its line, `control` (the
+   crossed controls) sets exactly one of the two controls' keys; both are fixed-policy F runs and
+   may save the endpoint checkpoint (`tracking.endpoint_checkpoint`). A study-3 run takes none.
+   - `train.order_seed` (control (b)): the same N·B responses of the seed's stream in the fixed
+     permutation drawn from `derive_seed(order_seed, "study5", "order")`; batch s holds positions
+     sB … (s+1)B − 1 of it (`study5_options.batch_samples`, which `linear_response` calls too, so
+     the predictor's batches are the reordered run's). Every chunk of the N·B responses is read
+     and checked before the first batch. `meta.json` records `inputs.training_order` (the seed,
+     the count and the permutation's sha256); `inputs.streams.training` is the N·B prefix.
+   - `optimizer.preconditioner.source_seed` (control (c)): v₀ from that seed's preconditioner
+     stream, read from the data cache (a missing stream stops the run before training; a run
+     never generates another seed's stream); `inputs.preconditioner_source_seed` beside the
+     stream's identity `inputs.streams.preconditioner`. The predictor follows it.
+   - `eval.controls.line_scan.points` (the line scans): signed coefficients a ≠ 0, 1. After the
+     terminal record of a run that took all its steps and evaluated its last one, each point
+     θ₀ + aΔθ (Δθ = θ_N − θ₀, set tensor by tensor from the frozen θ₀ copy and a host copy of θ_N)
+     is evaluated in full by the run's evaluator (K on both panels, utility, the greedy responses)
+     under the condition `line_scan_{a:+g}` (`line_scan_-0.25`, `line_scan_+0.5`), one row per
+     point in `line_scan.jsonl` (`evaluated: false` for a non-finite K) and the summary's
+     `line_scan`. The student is θ_N again afterwards, bit for bit; the endpoint checkpoint was
+     saved before. The judge reads the scan's conditions after the run's evaluations
+     (`run_judging.line_scan_conditions`).
 5. **Judge.** The judge labels stored responses in a separate step, batched across runs. The judge
    model and the rubric version are recorded with every label. A run's labels from the judge
    `<name>` (`configs/judge/<name>.yaml`) live in `<run dir>/judge/<name>.jsonl`, in the record
@@ -197,6 +223,7 @@ Implemented:
 | `code_identity` | study 2, amendment 4: the GPU-code identity, a sha256 over every GPU path of a commit (the code a GPU run executes: `src/` outside `analysis/` but with `analysis/stage_a.py`, `scripts/` but the analysis scripts and `scripts/diagnostics/`, `configs/`, `docker/`, the dependency manifests and the files that build the image), the GPU paths two commits differ in, and the reuse check by which a qualification holds at a later commit |
 | `drift` | study 2, amendment 4: the first-step drift diagnostic, descriptive: seed 2300's stream of 64 batches, each gradient transformed by the first update of SGD, AdamW, FA and pre-warmed AdamW (bit for bit `optim.Adam`'s first step), the unbiased mean and trace estimates, the cosine between two fixed halves and the cross-optimizer cosines, one optimizer at a time with float64 reductions; its streams prepared as the regular runs' |
 | `surrogate` | study 5: the refusal-propensity surrogate r(θ) of its registration ([the surrogate and the predictor](study5-preregistration.md#the-surrogate-and-the-predictor)) (`configs/study5/surrogate.yaml`, identified by the sha256 of its canonical JSON): rows of the prompt's chat encoding followed by a fixed continuation's ids (no special token), scored on the training path in fp32; the per-prompt differences, r, its gradient over the trainable set (two passes: per-row log-probabilities, then the rows weighted by ∂r/∂log p and backpropagated), and the checks at θ₀ (`scripts/study5_surrogate_checks.py`) |
+| `study5_options` | study 5's options of the scheduled run ([descriptive measurements](study5-preregistration.md#descriptive-measurements)): the training order of `train.order_seed` and the batches under it (shared by the run's batch feed and `linear_response`), the preconditioner seed of `optimizer.preconditioner.source_seed`, and the line-scan points `eval.controls.line_scan.points`; the scan itself is `schedule.run_line_scan` |
 | `linear_response` | study 5: the linear-response predictor of its registration ([the surrogate and the predictor](study5-preregistration.md#the-surrogate-and-the-predictor)) for arm F: the momentum weights c_t of frozen Adam with bias correction, the linear displacement δ̂ = −η Σ_t c_t D⊙g_t (D = (√v₀ + ε)⁻¹) and p = −η Σ_t c_t ⟨g_t, D⊙∇r⟩ reduced in float64 without storing the g_t; its inputs from the F run's own code path at θ₀ (v₀ by `train`'s θ₀ second-moment estimate with its hash as the run records it, the run's batches as `schedule`'s batch feed reads them from the appendable stream, each g_t by `train.accumulate_gradient`) and one record per seed (`scripts/study5_predict.py`) |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes under their own run ids; qualifying completed runs skipped, diverged runs left, technical failures retried up to three attempts (or `max_attempts`); one label alone with `only` (study 3's qualification driver, `scripts/qualify.py`); the launch journal written one locked, fsynced line at a time, a torn line repaired and named by a `torn` record on the next append, and refused until a `torn_resolved` record names it (`scripts/launch.py --resolve-torn`), by the launcher and by `scripts/qualify.py` but for its two journal repairs, with exit 12 |
@@ -482,7 +509,10 @@ paths are defined in [operations](operations.md#containers).
   - `protocol_version` in `configs/base.yaml` is part of the hash. Bump it on any change to code or
     data that alters results, so the launcher never skips a cell computed by older code.
   - `tracking.update_scalars` records only, outside the hash like the rest of `tracking`;
-    `eval.k_only` is inside it, since it changes what a run evaluates.
+    `eval.k_only` is inside it, since it changes what a run evaluates. So are study 5's
+    `train.order_seed`, `optimizer.preconditioner.source_seed` and
+    `eval.controls.line_scan.points`, which the shared configs leave out (absent, not null) so
+    that no existing config changes its hash ([above](#data-flow)).
   - **The GPU-code identity** (`code_identity`) is a second identity, of code rather than of a
     config: amendment 4's numerical qualification holds for the GPU code its runs and check
     executed, and a later commit reuses it only after a recorded check that no GPU path changed.

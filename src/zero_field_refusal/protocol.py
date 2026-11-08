@@ -9,6 +9,7 @@ The rules mirror docs/architecture.md ("Zero-field invariants") and docs/preregi
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -43,6 +44,11 @@ PATH_FIELD_LEVEL = 0.975
 ATTENTION = ("sdpa", "eager")
 # Study 3's roles whose runs may save the step-25 checkpoint (tracking.endpoint_checkpoint)
 STUDY3_CHECKPOINT_ROLES = ("numerical", "engineering")
+# Study 5's roles (study5.role): the fresh seeds' F runs, which may scan their line, and the
+# crossed controls; both may save the endpoint checkpoint. The keys only they carry:
+STUDY5_ROLES = ("fresh", "control")
+STUDY5_KEYS = ("train.order_seed", "optimizer.preconditioner.source_seed",
+               "eval.controls.line_scan.points")  # fmt: skip
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 REQUIRED = (
@@ -272,7 +278,72 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
                 f"tracking.endpoint_checkpoint: a study-3 run of role {role!r} saves no "
                 f"endpoint checkpoint (only {STUDY3_CHECKPOINT_ROLES} do), got {checkpoint!r}"
             )
+    return problems + _study5_problems(cfg)
+
+
+def _study5_problems(cfg: DictConfig) -> list[str]:
+    """Study 5's roles (``study5.role``, docs/study5-preregistration.md, "Descriptive
+    measurements") and the keys only they carry (``study5_options``): a ``fresh`` F run may scan
+    its line (``eval.controls.line_scan.points``), a ``control`` run sets exactly one of
+    ``train.order_seed`` and ``optimizer.preconditioner.source_seed``; both may save the endpoint
+    checkpoint. Every study-5 run is a fixed-policy scheduled F run; no other run carries a
+    study-5 key."""
+    role = OmegaConf.select(cfg, "study5.role", default=None)
+    present = {key: OmegaConf.select(cfg, key, default=None) for key in STUDY5_KEYS}
+    present = {key: value for key, value in present.items() if value is not None}
+    if OmegaConf.select(cfg, "study5", default=None) is None:
+        return [f"{key}: carried by a study-5 role only (study5.role), got {value!r}"
+                for key, value in present.items()]  # fmt: skip
+    if OmegaConf.select(cfg, "study3", default=None) is not None:
+        return ["study5: a study-3 run (study3.role) takes no study-5 role"]
+    if role not in STUDY5_ROLES:
+        return [f"study5.role: expected one of {STUDY5_ROLES}, got {role!r}"]
+    problems = []
+    if OmegaConf.select(cfg, "optimizer.name", default=None) != "adam_frozen":
+        problems.append("optimizer.name: a study-5 run is arm F (adam_frozen), got "
+                        f"{OmegaConf.select(cfg, 'optimizer.name', default=None)!r}")  # fmt: skip
+    if OmegaConf.select(cfg, "schedule.policy", default=None) != "fixed":
+        problems.append("schedule.policy: a study-5 run is a fixed-policy scheduled run")
+    for key in ("train.order_seed", "optimizer.preconditioner.source_seed"):
+        value = present.get(key)
+        if value is not None and not (isinstance(value, int) and not isinstance(value, bool)
+                                      and value >= 0):  # fmt: skip
+            problems.append(f"{key}: expected a non-negative integer seed, got {value!r}")
+    controls = [key for key in ("train.order_seed", "optimizer.preconditioner.source_seed")
+                if key in present]  # fmt: skip
+    points = "eval.controls.line_scan.points"
+    if role == "fresh":
+        problems += [f"{key}: a control's key; a study-5 run of role 'fresh' takes none"
+                     for key in controls]  # fmt: skip
+        if points in present:
+            problems += _line_scan_problems(present[points])
+            if OmegaConf.select(cfg, "eval.k_only", default=False) is not False:
+                problems.append(f"{points}: a scan point answers the judged prompts; a K-only "
+                                "run answers none")  # fmt: skip
+    else:  # control
+        if len(controls) != 1:
+            problems.append("study5.role: a control sets exactly one of train.order_seed and "
+                            f"optimizer.preconditioner.source_seed, got {controls}")  # fmt: skip
+        if points in present:
+            problems.append(f"{points}: scanned by the runs of role 'fresh' only")
     return problems
+
+
+def _line_scan_problems(points: Any) -> list[str]:
+    """The scan's signed coefficients: a non-empty list of distinct finite numbers, neither 0
+    (θ₀'s own evaluation) nor 1 (the endpoint, evaluated at the last step), with distinct
+    condition names (``evaluation.line_scan_condition``: ``line_scan_{a:+g}``)."""
+    key = "eval.controls.line_scan.points"
+    if not isinstance(points, ListConfig | list) or not points:
+        return [f"{key}: expected a non-empty list of coefficients, got {points!r}"]
+    numbers = [a for a in points if isinstance(a, int | float) and not isinstance(a, bool)]
+    if len(numbers) != len(points) or not all(math.isfinite(a) for a in numbers):
+        return [f"{key}: expected finite numbers, got {list(points)!r}"]
+    if any(a in (0, 1) for a in numbers):
+        return [f"{key}: 0 is θ₀ and 1 the endpoint, neither is a scan point, got {list(points)}"]
+    if len({f"{a:+g}" for a in numbers}) != len(numbers):
+        return [f"{key}: the points must be distinct, got {list(points)}"]
+    return []
 
 
 def _schedule_problems(cfg: DictConfig, layout: Any, steps: Any) -> list[str]:

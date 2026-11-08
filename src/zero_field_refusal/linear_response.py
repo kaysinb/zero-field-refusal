@@ -19,8 +19,9 @@ The inputs come from the F run's own machinery, so that they are the run's:
   preconditioner stream, its batches, the attention backends of ``runtime.V0_SDPA_BACKENDS``
   (``theta0_second_moment``); its hash as the run records it (``v0_sha256``);
 - step t's batch as ``schedule.BatchFeed`` reads it: responses (t−1)B … tB − 1 of the seed's
-  appendable training stream (``runtime.StreamPrefix``) (``feed_batches``), with the stream's
-  identity as the run records it;
+  appendable training stream (``runtime.StreamPrefix``), or of its permutation under
+  ``train.order_seed`` (``study5_options.batch_samples``, the function the run calls)
+  (``feed_batches``), with the stream's identity as the run records it;
 - g_t from ``train.accumulate_gradient``: the protocol's loss and denominator over the trainable
   set of ``models.freeze`` (``step_gradients``).
 
@@ -39,6 +40,7 @@ from transformers import PreTrainedModel
 
 from .optim import ADAM_MODES
 from .runtime import Environment, StreamPrefix
+from .study5_options import batch_samples, training_order
 from .teacher import Sample, stream_layout
 from .tensor_hash import tensors_sha256
 from .tracking import _merge
@@ -155,11 +157,12 @@ def v0_sha256(
 
 def feed_batches(cfg: DictConfig, env: Environment) -> tuple[list[list[Sample]], dict[str, Any]]:
     """The run's ``train.steps`` batches as ``schedule.BatchFeed`` reads them (batch s: responses
-    sB … (s+1)B − 1 of the seed's appendable stream; the stream must hold them, nothing is
+    sB … (s+1)B − 1 of the seed's appendable stream, or of the permutation of
+    ``train.order_seed``: ``study5_options.batch_samples``; the stream must hold them, nothing is
     generated), and the stream's identity as the run records it."""
     prefix, size = StreamPrefix(cfg, env, cfg.seed), int(cfg.train.batch_size)
-    steps = int(cfg.train.steps)
-    batches = [prefix.take(s * size, (s + 1) * size) for s in range(steps)]
+    steps, order = int(cfg.train.steps), training_order(cfg)
+    batches = [batch_samples(prefix, order, s, size) for s in range(steps)]
     return batches, prefix.identity(steps * size)
 
 

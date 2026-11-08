@@ -50,6 +50,7 @@ from .runtime import (
     locate_stream,
 )
 from .seeding import derive_seed, seed_everything
+from .study5_options import preconditioner_seed, preconditioner_source
 from .teacher import (
     Sample,
     StreamError,
@@ -497,10 +498,26 @@ def _theta0_second_moment(
     backends ``runtime.V0_SDPA_BACKENDS``, so that the launcher run and the harness's parts compute
     one v₀ (docs/study3-preregistration.md, "The bridge's conditions"). Training stays on the
     production backend: the flags in force before are in force after, also after an exception.
+
+    With ``optimizer.preconditioner.source_seed`` (study 5's crossed control (c),
+    ``study5_options``) the stream is that seed's, read from the data cache, never generated; the
+    run records the source seed beside the stream's identity.
     """
-    stream, manifest = load_stream_for(cfg, env, "preconditioner", cfg.seed)
+    source = preconditioner_source(cfg)
+    seed = preconditioner_seed(cfg)
+    if source is not None:
+        _, path, _ = locate_stream(cfg, env, "preconditioner", seed)
+        if not path.is_dir():
+            raise StreamError(
+                f"optimizer.preconditioner.source_seed={source}: seed {source}'s preconditioner "
+                f"stream is not in the data cache ({path}); generate it first "
+                "(scripts/generate_teacher.py), a run never generates another seed's stream"
+            )
+    stream, manifest = load_stream_for(cfg, env, "preconditioner", seed)
     run.summarize({"stream/preconditioner": manifest["sha256"]})
     run.record_inputs({"streams": {"preconditioner": _identity(manifest)}})
+    if source is not None:
+        run.record_inputs({"preconditioner_source_seed": source})
     pre = cfg.optimizer.preconditioner
     batches = list(chunks(stream, pre.batch_size))
     if len(batches) != pre.batches or any(len(b) != pre.batch_size for b in batches):

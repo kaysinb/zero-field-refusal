@@ -15,3 +15,6 @@ optimizer:
     batches: 50
     batch_size: ${train.batch_size}  # batch gradients at the training batch size, as in Adam
     responses: ${mul:${optimizer.preconditioner.batches},${optimizer.preconditioner.batch_size}}
+    # source_seed: absent (the run's own seed). Study 5's crossed control (c), study5.role
+    # control only: v₀ from that seed's preconditioner stream, which must already be in the data
+    # cache (study5_options.preconditioner_seed). Absent here so that no config changes its hash.
