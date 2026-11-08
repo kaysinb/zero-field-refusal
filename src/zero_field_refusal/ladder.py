@@ -30,7 +30,8 @@ neighbours to K\\* (``K_STAR``, study 3's candidate-1 comparison point, in the u
 (every K below K\\*) or by ÷2 below the smallest (every K above), at most ``EXTENSIONS`` times;
 still not bracketed, the rung is ``not_bracketed`` with every value and is not evaluated. A K that
 is not finite and positive stops the rung (``invalid_k``). A K that does not increase strictly
-with c is recorded (``monotone``); the pair is then the bracketing pair nearest to K\\*: the one
+with c is recorded (``monotone``). When more than one pair brackets K\\* (a non-monotone K, or a K
+exactly equal to K\\* at a grid point), the pair is the bracketing pair nearest to K\\*: the one
 holding the evaluated K nearest to K\\* in ln K (ties: the other end's distance, then the smaller
 c).
 
