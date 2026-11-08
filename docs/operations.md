@@ -2858,8 +2858,15 @@ blocks (the 5 highest and 5 lowest block means of A's and F's harm at K\*, inter
 3's estimator; ties by seed), the 40 runs Llama Guard relabels, and the reference sample: 5 prompt
 ids per block × arm × rate (200 items, weight 521/5 within a cell). It names the sha256 of study
 3's freeze and of every A–F run's label file and receipt, and its code. It reads study 3's labels
-through study 3's own readers, which open them only under study 3's GPU code: `--study3-repo` is a
-clean checkout at study 3's final commit, `--runs-root` study 3's runs root. Rerun on the same
+through study 3's own readers, run from this checkout (the record's `code.commit`); study 3's label
+gate opens them only under study 3's GPU code, so `--study3-repo`, a clean checkout at study 3's
+final commit, supplies the gate's GPU-code identity, the committed freeze and its validation runs
+(the record's `inputs.study3_checkout`); `--runs-root` is study 3's runs root. The record also
+names the sha256 of every file of the labeling's ledger, and states how the state's run records
+and θ₀'s run are bound (the freeze's sha256, each cell's run id and rate). It fixes the judges'
+high–low contrast as the reference's estimator: per cell the harmful share over all 521 responses
+by each judge, the group the unweighted mean of its 20 cells, high minus low; the block mean at
+K\* only selects the blocks. The prompt sets come from `DATA_DIR`. Rerun on the same
 inputs and code it is byte-identical; it never overwrites a different file.
 `scripts/study5_fixation.py reference-input` then writes the reference annotators' input
 (amendments [11](study3-preregistration.md#amendment-11-the-audits-reference-annotators) and
@@ -2869,6 +2876,7 @@ inputs and code it is byte-identical; it never overwrites a different file.
 `$RUNS_DIR/`, never in the checkout). The annotation runs later with study 3's tooling.
 
 ```bash
+export DATA_DIR="$DATA"   # the prompt sets (study 3's data root); or a checkout with data/
 python scripts/study5_fixation.py fix --runs-root "$S3/runs" --study3-repo "$S3_CHECKOUT" \
   --theta0 "$S3/runs/study2_stage_a/<θ₀ run>" --sealed-dir "$SEALED"   # docs/study5-fixation.json
 python scripts/study5_fixation.py reference-input --runs-root "$S3/runs" \
@@ -2900,8 +2908,8 @@ outside the seed groups + 60), and so does each seed group (2 × the group's min
 stays. A dead driver or a hung step leaves the Pod idle one group's window at most. The minutes
 are study 3's measured unit costs (an F run 6.9; an evaluation 3.1; a K-only point 1.5; five scan
 points 15.5; a stream 91.7 s per 1000 responses; the predictor 1.7 per seed; a ladder rung 7.6;
-a checkpoint's save 0.5; the surrogate at an endpoint ≈ 1) and stated assumptions for the rest
-(the script's `MINUTES`). Every
+a checkpoint's save 0.5) and stated assumptions for the rest (the script's `MINUTES`; among
+them the surrogate at an endpoint, ≈ 1, assumed). Every
 step has a timeout of 3 × its minutes + 20: past it its process group is killed and the step
 has failed, under its rule. A block ends with its records in the bucket, verified, a snapshot of
 the driver's journal and logs, and its receipt.

@@ -188,7 +188,7 @@ MINUTES = {
     "preconditioner-stream": 1000 * STREAM_PER_RESPONSE,
     "fresh-lower": F_RUN + SCAN + CKPT_SAVE,
     "fresh-upper": F_RUN,
-    # ≈ 1 min: a 5.24 GB checkpoint hashed and read, then the surrogate's 2 × 1200 scored rows
+    # assumed, ≈ 1 min: a 5.24 GB checkpoint hashed and read, the surrogate's 2 × 1200 rows
     "surrogate-endpoint": 1.0,
     "checkpoint": 4.0,  # assumed: a 5.24 GB checkpoint hashed and uploaded at about 25 MB/s
     "controls": 2 * F_RUN,

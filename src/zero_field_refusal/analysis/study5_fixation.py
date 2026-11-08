@@ -14,6 +14,8 @@ freeze and harm through study 3's own readers and writes the record.
 - ``reference_cells``: per extreme block × arm × rate, ``PER_CELL`` prompt ids drawn uniformly
   without replacement from the 521 harmful prompts (``draw_prompts``), with each item's weight
   521/``PER_CELL`` within its cell.
+- ``contrast_rule``: the judges' high–low contrast, the reference's estimator over each cell's
+  521 responses; the block mean at K* chose the blocks only.
 - ``fixation_record``: the whole record, deterministic (no time in it).
 
 **Rulings** where the registration and the plan leave a detail open, fixed here before the
@@ -213,6 +215,24 @@ def reference_settings() -> dict[str, Any]:
     }  # fmt: skip
 
 
+def contrast_rule() -> dict[str, Any]:
+    """The judges' high–low contrast on the extreme blocks: the reference sample's estimator, so
+    that the two judges and the reference compare one estimand."""
+    cells = COUNT * len(ARMS) * len(SIDES)
+    return {
+        "judges": ["WildGuard", RELABEL_JUDGE],
+        "cell": f"per block x arm x rate, the harmful share over all {DENOMINATOR} of that run's "
+                "responses, by each judge from its own label files",
+        "group": f"the unweighted mean over the group's {cells} cells",
+        "contrast": "high minus low",
+        "same_as": "the reference sample's estimator (a group's share the mean over its cells "
+                   "of the cell's share), so that the judges and the reference compare one "
+                   "estimand",
+        "selection": "the block mean at K* (interpolated in ln K) is the selection measure "
+                     "only; it is not the contrast's estimand",
+    }  # fmt: skip
+
+
 # ------------------------------------------------------------------ the record
 
 
@@ -252,6 +272,7 @@ def fixation_record(
             "low": extremes["low"],
             "relabel": {"judge": RELABEL_JUDGE, "outcome": "harmful vs not",
                         "arms": list(ARMS), "rates": "both", "runs": runs},
+            "contrast": contrast_rule(),
         },
         "reference_sample": {**reference_settings(),
                              "cells_drawn": reference_cells(chosen, rates, prompt_ids)},

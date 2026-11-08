@@ -7,11 +7,14 @@ measurements"; the computations are ``analysis.study5_fixation``'s).
     python scripts/study5_fixation.py reference-input --runs-root DIR --study3-repo DIR
         --out FOLDER [--fixation docs/study5-fixation.json]
 
---runs-root is study 3's runs root (its ``study3/`` runs, ``study3-final/c1/``); --study3-repo a
-clean checkout whose HEAD's GPU code is the one study 3's analysis freeze records: study 3's
-readers open its labels only under that code (``study3_labels``, "The points"), and read its
-committed freeze there; --theta0 θ₀'s evaluation run (``study3_progress.read_state``);
---sealed-dir the labeling's sealed directory, whose ledger accepts the labels.
+--runs-root is study 3's runs root (its ``study3/`` runs, ``study3-final/c1/``). --study3-repo is
+a clean checkout whose HEAD's GPU code is the one study 3's analysis freeze records: it supplies
+the gate's GPU-code identity (study 3's label gate opens the final point only under that code,
+``study3_labels``, "The points"), the committed freeze and, through the freeze, its validation
+runs; the readers themselves run from this checkout, the record's ``code.commit``. --theta0 is
+θ₀'s evaluation run (``study3_progress.read_state``); --sealed-dir the labeling's sealed
+directory, whose ledger accepts the labels. The prompt sets are read from ``DATA_DIR`` (or the
+checkout's ``data/``).
 
 **fix** writes the fixation record (``study5_fixation.fixation_record``) from this checkout with
 its ``src/``, ``scripts/`` and ``configs/`` committed unchanged; the record's ``code`` is the last
@@ -24,7 +27,8 @@ record keeps it:
 3. the harm of every run of those blocks through the final analysis's label reader
    (``study3_final.cohort_harm``, one gated reading), and the sha256 of each run's label file and
    receipt as the ledger's acceptance binds them (``study3_label_cli.label_hashes``; the receipt's
-   must be the reading's);
+   must be the reading's), and the sha256 of every file of the labeling's ledger
+   (``<sealed dir>/study3-ledger/``, hashed, never parsed here);
 4. the block means at K* (``study3_estimates._arm``, study 3's per-arm interpolation), the 5
    highest and 5 lowest blocks, the 40 runs Llama Guard relabels, and, for each of those runs, its
    521 prompt ids in its prompt order (``run_judging.prompt_ids`` of its config's harmful set, as
@@ -71,12 +75,13 @@ from zero_field_refusal.analysis import study3_audit, study3_final
 from zero_field_refusal.analysis import study5_fixation as fx
 from zero_field_refusal.analysis.study2_label_cli import harmful_prompts, in_tracked_tree
 from zero_field_refusal.analysis.study3_freeze import freeze_name, read_freeze
-from zero_field_refusal.analysis.study3_label_cli import label_hashes
+from zero_field_refusal.analysis.study3_label_cli import LEDGER, label_hashes
 from zero_field_refusal.analysis.study3_labels import (
     JUDGE,
     LabelingProblem,
     LedgerError,
     SealedPoint,
+    sealed_dir_of,
 )
 from zero_field_refusal.analysis.study3_progress import read_state
 from zero_field_refusal.analysis.study3_records import EXPERIMENT, under_sealed
@@ -144,10 +149,23 @@ def clean_commit(command: str, repo: Path, what: str) -> str:
 
 
 def study3_checkout(command: str, repo: Path) -> dict[str, Any]:
-    """The checkout study 3's readers run under: clean, its HEAD's GPU code that of the freeze."""
+    """Study 3's checkout: clean, its HEAD's GPU code that of the freeze. It supplies the label
+    gate's GPU-code identity, the committed freeze and the freeze's validation runs; the readers
+    run from this checkout."""
     commit = clean_commit(command, repo, "study 3's checkout (--study3-repo)")
     identity = code_identity.gpu_code_identity(commit, Path(repo))
     return {"commit": commit, "gpu_code_sha256": identity["sha256"]}
+
+
+def ledger_hashes(command: str, sealed_dir: Path) -> dict[str, Any]:
+    """The sha256 of every file of the labeling's ledger, by its name (hashed, never parsed)."""
+    folder = Path(sealed_dir) / LEDGER
+    files = sorted(p for p in folder.iterdir() if p.is_file()) if folder.is_dir() else []
+    if not files:
+        refuse(command, f"the labeling's ledger {LEDGER}/ holds no file")
+    found = {p.name: sha256(p.read_bytes()) for p in files}
+    return {"path": LEDGER, "root": "sealed_dir", "count": len(found),
+            "sha256": sha256(encoded(found)), "files": found}  # fmt: skip
 
 
 def rel_to(path: Path, base: Path) -> str:
@@ -205,14 +223,14 @@ def rates_of(freeze: Mapping[str, Any], endpoints: Sequence[Any]) -> dict[str, f
 def fix(args: argparse.Namespace) -> int:
     root, study3_repo = Path(args.runs_root), Path(args.study3_repo)
     code = record_code("fix", REPO)
-    readers = study3_checkout("fix", study3_repo)
+    checkout = study3_checkout("fix", study3_repo)
     freeze, problems = read_freeze(CANDIDATE, runs_root=root, repo=study3_repo)
     if freeze is None:
         refuse("fix", f"study 3's analysis freeze has {len(problems)} problem(s): "
                + "; ".join(problems))  # fmt: skip
     expected = freeze["code"]["gpu_code_sha256"]
-    if readers["gpu_code_sha256"] != expected:
-        refuse("fix", f"study 3's checkout runs GPU code {readers['gpu_code_sha256'][:12]}, "
+    if checkout["gpu_code_sha256"] != expected:
+        refuse("fix", f"study 3's checkout runs GPU code {checkout['gpu_code_sha256'][:12]}, "
                f"not the freeze's {expected[:12]}: its readers open no label under another "
                "code")  # fmt: skip
     try:
@@ -222,6 +240,7 @@ def fix(args: argparse.Namespace) -> int:
         refuse("fix", f"study 3's state cannot be read ({type(exc).__name__})")
     rates = rates_of(freeze, endpoints)
     harm = af_harm(freeze, root, study3_repo, args.sealed_dir)
+    ledger = ledger_hashes("fix", sealed_dir_of(root, args.sealed_dir))
     labels = {}
     for run in sorted(harm):
         hashes = label_hashes(root / EXPERIMENT / run, JUDGE)
@@ -237,6 +256,9 @@ def fix(args: argparse.Namespace) -> int:
     for run in fx.relabel_runs(chosen):
         try:
             ids, configs[run] = run_prompt_ids(root / EXPERIMENT / run)
+        except FileNotFoundError:
+            refuse("fix", f"{run}: its config or its harmful prompt set is not found: the prompt "
+                   "sets are read from DATA_DIR (or the checkout's data/); set it")  # fmt: skip
         except (OSError, ValueError, KeyError) as exc:
             refuse("fix", f"{run}: its prompt ids cannot be read ({type(exc).__name__})")
         if population is not None and ids != population:
@@ -246,8 +268,18 @@ def fix(args: argparse.Namespace) -> int:
     inputs = {
         "study3_freeze": {"path": freeze_name(CANDIDATE), "sha256": sha256(freeze_data),
                           "root": "study3 checkout"},
-        "study3_readers": readers,
-        "theta0": {"run": rel_to(args.theta0, root), "root": "runs"},
+        "study3_checkout": {**checkout,
+                            "supplies": "the label gate's GPU-code identity, the committed freeze "
+                                        "and its validation runs; the readers run from "
+                                        f"code.commit {code['commit']}"},
+        "state": {"bound_by": "the freeze's sha256 (its blocks' run ids, weights and code) and, "
+                              "per cell, the run id and the lr the state's records give it, "
+                              "recorded in reference_sample.cells_drawn; the state's run records "
+                              "are not hashed one by one"},
+        "theta0": {"run": rel_to(args.theta0, root), "root": "runs",
+                   "bound_by": "its run id (the state's baseline for its utility checks); no "
+                               "value of it enters the record"},
+        "ledger": ledger,
         "labels": {"judge": JUDGE, "sealed_dir": Path(args.sealed_dir).name if args.sealed_dir
                    else "sealed", "count": len(labels), "sha256": sha256(encoded(labels)),
                    "runs": labels},

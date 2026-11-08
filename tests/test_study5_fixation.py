@@ -170,6 +170,10 @@ class Fixation(Audit):
                    lambda run_dir, judge: {"labels_sha256": "e" * 64,
                                            "receipt_sha256": "f" * 64})  # fmt: skip
         mp.setattr(self.fix, "run_prompt_ids", lambda run_dir: (list(IDS), "d" * 64))
+        ledger = self.root / "sealed" / "study3-ledger"
+        ledger.mkdir(parents=True)
+        (ledger / "batch-b1.json").write_text("{}\n")
+        (ledger / "acceptance-b1.json").write_text("{}\n")
         self.out = self.here / "docs" / "study5-fixation.json"
         self.theta0 = self.root / "study2_stage_a" / "theta0-run"
 
@@ -345,3 +349,45 @@ def test_the_script_is_analysis_code_outside_the_gpu_identity() -> None:
         REPO_ROOT / "src/zero_field_refusal/analysis/study5_fixation.py",
         "zero_field_refusal.analysis.study5_fixation",
     )
+
+
+def test_the_record_fixes_the_judges_contrast_and_binds_its_inputs(fixation) -> None:
+    """The judges' high-low contrast is the reference's estimator, per cell over all 521
+    responses; the block mean at K* chose the blocks only. The study 3 checkout is named as what
+    it supplies, the sealed ledger by its files' sha256, and the state's records and θ₀'s run by
+    what binds them."""
+    fixation.fixed()
+    record = json.loads(fixation.out.read_bytes())
+    contrast = record["extreme_blocks"]["contrast"]
+    assert contrast["judges"] == ["WildGuard", "Llama-Guard-3-8B"]
+    assert "all 521" in contrast["cell"] and "own label files" in contrast["cell"]
+    assert "unweighted mean over the group's 20 cells" in contrast["group"]
+    assert contrast["contrast"] == "high minus low"
+    assert "the reference sample's estimator" in contrast["same_as"]
+    assert "selection measure only" in contrast["selection"]
+    assert record["extreme_blocks"]["count"] * 4 == 20
+    inputs = record["inputs"]
+    assert "study3_readers" not in inputs
+    checkout = inputs["study3_checkout"]
+    assert set(checkout) == {"commit", "gpu_code_sha256", "supplies"}
+    assert "GPU-code identity" in checkout["supplies"] and str(record["code"]["commit"]) in (
+        checkout["supplies"])  # fmt: skip
+    ledger = inputs["ledger"]
+    folder = fixation.root / "sealed" / "study3-ledger"
+    assert ledger["files"] == {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                               for p in sorted(folder.iterdir())}  # fmt: skip
+    assert ledger["count"] == 2
+    assert "freeze" in inputs["state"]["bound_by"] and "lr" in inputs["state"]["bound_by"]
+    assert "run id" in inputs["theta0"]["bound_by"]
+
+
+def test_fix_names_data_dir_when_the_prompt_set_is_missing(fixation, monkeypatch) -> None:
+    def missing(run_dir):
+        raise FileNotFoundError("no prompt set")
+
+    monkeypatch.setattr(fixation.fix, "run_prompt_ids", missing)
+    code, _, why = fixation.call_fix("fix", *fixation.common(), "--theta0", fixation.theta0,
+                                     "--sealed-dir", fixation.root / "sealed",
+                                     "--out", fixation.out)  # fmt: skip
+    assert code not in (0, None) and "DATA_DIR" in why
+    assert not fixation.out.exists()
