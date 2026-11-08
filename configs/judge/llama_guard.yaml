@@ -1,0 +1,10 @@
+# Second judge for study 5's descriptive relabelling of study 3's extreme blocks: Llama-Guard-3-8B
+# served by vLLM, harmful or not only (no refusal label). Same endpoint variables as WildGuard:
+# JUDGE_API_BASE and JUDGE_API_KEY. The repository is gated (accepted licence and HF_TOKEN).
+defaults: [judge/default]
+
+judge:
+  backend: llama_guard
+  model: meta-llama/Llama-Guard-3-8B   # the name the server serves it under
+  revision: 7327bd9f6efbbe6101dc6cc4736302b3cbb6e425  # Hub commit of weights, tokenizer and template
+  rubric_version: null

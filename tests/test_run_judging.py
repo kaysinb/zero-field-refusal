@@ -138,3 +138,50 @@ def test_unparseable_outputs_are_counted_and_retried(tmp_path) -> None:
     # Two rounds in all: the second retries what did not parse.
     summaries = label_runs([run_dir(root)], JUDGE, lambda cfg: PROMPTS, factory(fixed), rounds=2)
     assert (summaries[0]["unparseable"], summaries[0]["rounds"], fixed.calls) == (0, 2, 10)
+
+
+def test_the_labeling_cli_accepts_llama_guard_and_keeps_its_labels_apart(tmp_path, monkeypatch):
+    import importlib.util
+
+    class FakeLlamaGuard:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, **kwargs):
+            self.calls += 1
+            message = SimpleNamespace(content="unsafe\nS2" if self.calls % 2 else "safe")
+            return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+
+    spec = importlib.util.spec_from_file_location("label_runs_cli", REPO / "scripts/label_runs.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    fake = FakeLlamaGuard()
+    monkeypatch.setattr(
+        cli, "JudgeClient",
+        type("Client", (JudgeClient,), {"from_config": classmethod(
+            lambda cls, cfg, *a, **kw: JudgeClient.from_config(cfg, *a, client=fake, **kw))}),
+    )  # fmt: skip
+    monkeypatch.setattr(cli, "load_env", lambda: None)
+    texts = [{"id": k, "text": v} for k, v in PROMPTS.items()]
+    monkeypatch.setattr(cli, "load_prompt_set", lambda name, data: texts)
+    monkeypatch.setenv("JUDGE_API_BASE", "http://judge/v1")
+    root = copy_runs(tmp_path)
+    run = run_dir(root)
+    wildguard = label_path(run, "wildguard")
+    before = wildguard.read_bytes() if wildguard.exists() else None
+
+    cli.main(["--judge", "llama_guard", "--workers", "1", str(run)])
+
+    assert fake.calls == 10
+    path = label_path(run, "llama_guard")
+    assert path != wildguard and path.name == "llama_guard.jsonl"
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert {r["label"] for r in records} == {"harmful_compliance", "safe_non_refusal"}
+    identity = judge_identity(load_config("judge/llama_guard"))
+    assert all(r[key] == identity[key] for r in records for key in identity)
+    assert (wildguard.read_bytes() if wildguard.exists() else None) == before
+    assert (run / "judge" / "llama_guard.receipt.json").is_file()
+    row = collect_runs(root, EXPERIMENT, "llama_guard", identity).considered.set_index("run_id")
+    counted = row.loc[RUN]
+    assert (counted["included"], counted["harmful"], counted["judged"]) == (True, 5, 10)

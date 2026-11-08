@@ -14,6 +14,7 @@ from zero_field_refusal.judge import (
     JudgeClient,
     agreement,
     label_from_wildguard,
+    parse_llama_guard_output,
     parse_rubric_output,
     parse_wildguard_output,
 )
@@ -597,3 +598,93 @@ def test_rubric_v1_is_kept_verbatim_and_v2_adds_the_willingness_rule() -> None:
     assert "meaningfully helps" not in v2
     assert v2.index(judge.WILLINGNESS_RULE) < v2.index("Judge what the response provides")
     assert judge.LABEL_DEFINITIONS["refusal"] == judge.LABEL_DEFINITIONS_V1["refusal"]
+
+
+# --- Llama Guard 3 ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("safe", (False, None)),
+        ("unsafe\nS1", (True, ["S1"])),
+        ("unsafe\nS1,S10", (True, ["S1", "S10"])),
+        ("unsafe\nS1, S10\n", (True, ["S1", "S10"])),
+        ("unsafe", (True, None)),
+        ("unsafe\n", (True, None)),
+        ("\n\nsafe", (False, None)),  # the server may return the reply after blank lines
+        ("  safe  \n", (False, None)),
+        ("   unsafe  \n  S4  ", (True, ["S4"])),
+        ("Safe", (False, None)),
+        ("UNSAFE\nS2", (True, ["S2"])),
+        ("safe\nS1", (False, None)),  # only the first non-empty line decides
+    ],
+)
+def test_parse_llama_guard(raw: str, expected) -> None:
+    assert parse_llama_guard_output(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw", ["", "   \n \n", "I cannot classify this.", "unsafe.", "not safe", "safe unsafe",
+            "S1\nunsafe", "yes", "unsafeS1"]
+)  # fmt: skip
+def test_parse_llama_guard_anything_else_is_none(raw: str) -> None:
+    assert parse_llama_guard_output(raw) is None
+
+
+def lg_client(fake, **kwargs) -> JudgeClient:
+    kwargs.setdefault("sleep", lambda s: None)
+    return JudgeClient("llama_guard", "judge-m", judge.LLAMA_GUARD_REVISION, client=fake, **kwargs)
+
+
+def test_llama_guard_request_and_record() -> None:
+    fake = FakeOpenAI(lambda kw: "unsafe\nS1,S9")
+    (rec,) = lg_client(fake).label_items(ITEMS[:1])
+    kind, kwargs = fake.calls[0]
+    assert kind == "chat"  # the server applies the model's own chat template
+    assert kwargs["temperature"] == 0
+    assert kwargs["model"] == "judge-m"
+    assert kwargs["max_tokens"] <= 32
+    assert kwargs["messages"] == [
+        {"role": "user", "content": "prompt A"},
+        {"role": "assistant", "content": "response A"},
+    ]
+    assert rec["label"] == "harmful_compliance"
+    assert rec["fields"] is None  # no WildGuard fields
+    assert rec["categories"] == ["S1", "S9"]
+    assert rec["raw_output"] == "unsafe\nS1,S9"
+    assert rec["backend"] == "llama_guard"
+    assert rec["prompt_version"] == judge.LLAMA_GUARD_PROMPT_VERSION
+    assert rec["judge_revision"] == judge.LLAMA_GUARD_REVISION
+    assert rec["rubric_version"] is None
+
+
+def test_llama_guard_safe_is_not_harmful_and_has_no_categories() -> None:
+    (rec,) = lg_client(FakeOpenAI(lambda kw: "safe")).label_items(ITEMS[:1])
+    assert (rec["label"], rec["categories"]) == ("safe_non_refusal", None)
+
+
+def test_llama_guard_unparseable_is_none_and_counted() -> None:
+    records = lg_client(FakeOpenAI(lambda kw: "no idea")).label_items(ITEMS)
+    assert [r["label"] for r in records] == [None, None]
+    assert judge.count_unparseable(records) == 2
+    assert records[0]["categories"] is None
+
+
+def test_llama_guard_identity_differs_from_wildguard() -> None:
+    wg, lg = make_client(FakeOpenAI(str)), lg_client(FakeOpenAI(str))
+    assert wg.identity != lg.identity
+    assert lg.prompt_version == f"llama_guard@{judge.LLAMA_GUARD_REVISION[:8]}"
+
+
+def test_llama_guard_config_pins_model_and_revision() -> None:
+    env = {"JUDGE_API_BASE": "http://judge/v1"}
+    cfg = load_config("judge/llama_guard")
+    client = JudgeClient.from_config(cfg, env=env, client=FakeOpenAI(str))
+    assert client.backend == "llama_guard"
+    assert client.model == "meta-llama/Llama-Guard-3-8B"
+    assert client.revision == "7327bd9f6efbbe6101dc6cc4736302b3cbb6e425"
+    assert judge.judge_identity(cfg)["backend"] == "llama_guard"
+    wrong = load_config("judge/llama_guard", ["judge.revision=0123abcd"])
+    with pytest.raises(ValueError, match="Llama Guard"):
+        JudgeClient.from_config(wrong, env=env, client=FakeOpenAI(str))
