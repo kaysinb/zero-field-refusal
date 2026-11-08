@@ -2919,6 +2919,10 @@ project-run "$SRC" python scripts/study5_campaigns.py pod2 --out "$C/study5-pod2
   passed, written from a clean checkout under that identity, of the plan's surrogate (the same
   sha256).
 
+`$GATES` is a folder on the Pod, outside the checkout, holding the two records from pod 1's
+archive and the retrospective record written by the analysis's `retrospective` before the
+registration. A refusal names what does not stand; nothing has run.
+
 **The surrogate's spec.** Both plans name one spec, `--surrogate` (default
 `configs/study5/surrogate.yaml`, a path in the checkout), with its sha256 in `plan.json`, and pass
 it to the checks, every predictor and every endpoint's r. If the checks at θ₀ fail (exit 2), the
@@ -2935,9 +2939,11 @@ are study 3's measured unit costs (an F run 6.9; an evaluation 3.1; a K-only poi
 points 15.5; a stream 91.7 s per 1000 responses; the predictor 1.7 per seed; a ladder rung 7.6;
 a checkpoint's save 0.5) and stated assumptions for the rest (the script's `MINUTES`; among
 them the surrogate at an endpoint, ≈ 1, and the scan run's loading, ≈ 2: two models, the
-checkpoint hashed and read, the panels). Every
-step has a timeout of 3 × its minutes + 20: past it its process group is killed and the step
-has failed, under its rule. A block ends with its records in the bucket, verified, a snapshot of
+checkpoint hashed and read, the panels). A fresh seed's group: the checkpoint count 0.5, η_l
+7.4 (an F run and its checkpoint's save), r 1, the scan 17.5 (five evaluations and the loading),
+the checkpoint 4, η_u 6.9, its archive 1: 38.3 minutes, a window of 137. Every step has a
+timeout of 3 × its minutes + 20 (the scan's 72.5 minutes): past it its process group is killed
+and the step has failed, under its rule. A block ends with its records in the bucket, verified, a snapshot of
 the driver's journal and logs, and its receipt.
 
 | Pod | Block | Runs | Stops the campaign |
@@ -2962,8 +2968,9 @@ the driver too. Read the journal before anything else.
 **Resuming.** Start the same command again, from the same commit: a block with a receipt is
 skipped, a step that ended is skipped, a step the Pod cut off runs again (a ladder rung's or a
 scan's partial run directory moved aside under `$RUNS_DIR/aside/`). A scan cut off and not run
-again leaves its points missing by name; it takes nothing from the η_l run, whose outcome stands. A launcher run the Pod cut off is settled by
-the launcher; its rerun is a recovery round of its own ([launching runs](#launching-runs)).
+again leaves its points missing by name; it takes nothing from the η_l run, whose outcome
+stands. A launcher run the Pod cut off is settled by the launcher; its rerun is a recovery round
+of its own ([launching runs](#launching-runs)).
 
 **After a stop.** Fix the cause, then start the campaign with a new `--out` and the same
 `--archive-id`. What stands is kept:
