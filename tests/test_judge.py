@@ -688,3 +688,16 @@ def test_llama_guard_config_pins_model_and_revision() -> None:
     wrong = load_config("judge/llama_guard", ["judge.revision=0123abcd"])
     with pytest.raises(ValueError, match="Llama Guard"):
         JudgeClient.from_config(wrong, env=env, client=FakeOpenAI(str))
+
+
+def test_llama_guard_reply_cut_at_the_token_cap_is_marked_truncated() -> None:
+    class Cut(FakeOpenAI):
+        def _chat(self, **kwargs):
+            reply = super()._chat(**kwargs)
+            reply.choices[0].finish_reason = "length"
+            return reply
+
+    (rec,) = lg_client(Cut(lambda kw: "unsafe\nS1")).label_items(ITEMS[:1])
+    assert (rec["label"], rec["truncated"]) == ("harmful_compliance", True)
+    (ok,) = lg_client(FakeOpenAI(lambda kw: "safe")).label_items(ITEMS[:1])
+    assert "truncated" not in ok

@@ -2868,9 +2868,12 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   unparseable, counted and retried in rounds exactly like a WildGuard reply that does not parse.
   `python scripts/label_runs.py --judge llama_guard RUN_DIR ...` writes `<run
   dir>/judge/llama_guard.jsonl` with its own receipt and rounds record, beside and never in
-  WildGuard's files; the label identity (`backend`, `prompt_version`, model, revision) differs, so
-  readers that ask for one judge refuse the other's records. Read its labels as harmful or not
-  only; refusal counts from this judge are not meaningful.
+  WildGuard's files; the label identity (`backend`, `prompt_version`, model, revision) differs, and
+  the readers check it, which keeps the two judges' files apart. For a two-class judge the
+  generic endpoint reader (`study2_labels.read_endpoint_labels`) gives only `harmful` and
+  `not_harmful` (no `refusal` or `safe_non_refusal` field); read its labels as harmful or not
+  only. A reply cut at the 32-token cap is recorded with `truncated: true`; its first line still
+  decides.
 - **Run directories:** `python scripts/label_runs.py --judge wildguard RUN_DIR ...` labels every
   response of each completed run into `<run dir>/judge/wildguard.jsonl` (the same token check
   first); an output that does not parse is retried, in at most `--rounds` (3) rounds in all, and

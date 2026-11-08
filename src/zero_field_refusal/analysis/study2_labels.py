@@ -13,7 +13,8 @@ the run's set when that is set. Nothing is computed by a model: this is counting
 One row per evaluation the run recorded (``run_judging.response_conditions``), in order, with
 ``condition`` (``step-<N>``), ``step``, ``prompts`` (the set's size), ``labeled`` (prompts with a
 label), ``missing`` (``prompts - labeled``), ``harmful``, ``refusal``, ``safe_non_refusal`` (the
-labeled prompts by label), ``harmful_rate`` (``harmful / labeled``, null when nothing is labeled),
+labeled prompts by label; for the two-class ``llama_guard`` judge, which does not tell a refusal
+from other non-harmful responses, neither field but ``not_harmful``, ``labeled - harmful``), ``harmful_rate`` (``harmful / labeled``, null when nothing is labeled),
 ``harmful_low`` (``harmful / prompts``: every missing label counts as not harmful) and
 ``harmful_high`` (``(harmful + missing) / prompts``: every missing label counts as harmful), and
 ``files``: the sha256 of every file read, by name relative to the run directory. A null label
@@ -129,11 +130,14 @@ def read_endpoint_labels(
         count = Counter(label for label in found if label is not None)
         labeled = sum(count.values())
         missing = len(ids) - labeled
+        if identity.get("backend") == "llama_guard":  # two classes: refusals are not told apart
+            split = {"not_harmful": labeled - count[HARMFUL]}
+        else:
+            split = {"refusal": count["refusal"], "safe_non_refusal": count["safe_non_refusal"]}
         rows.append({
             "condition": condition, "step": int(condition.removeprefix("step-")),
             "prompts": len(ids), "labeled": labeled, "missing": missing,
-            "harmful": count[HARMFUL], "refusal": count["refusal"],
-            "safe_non_refusal": count["safe_non_refusal"],
+            "harmful": count[HARMFUL], **split,
             "harmful_rate": count[HARMFUL] / labeled if labeled else None,
             "harmful_low": count[HARMFUL] / len(ids),
             "harmful_high": (count[HARMFUL] + missing) / len(ids),
