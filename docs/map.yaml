@@ -335,7 +335,7 @@ topics:
   - tests/test_study3_*.py
   - tests/test_qualification_records.py
 - id: study5_campaigns
-  title: Study 5's campaigns — the two Pods' blocks, the engineering check, the predictions record before the fresh runs, the surrogate at the endpoints, the fixation record and the reference input, archives and resuming
+  title: Study 5's campaigns — the two Pods' blocks, the engineering check, the predictions record before the fresh runs, the surrogate at the endpoints, the fixation record, the reference input and the analysis, archives and resuming
   source: docs/operations.md#study-5-campaigns
   review:
   - docs/study5-preregistration.md#protocol
@@ -350,6 +350,8 @@ topics:
   - scripts/study5_surrogate_endpoint.py
   - scripts/study5_fixation.py
   - src/zero_field_refusal/analysis/study5_fixation.py
+  - src/zero_field_refusal/analysis/study5_analysis.py
+  - src/zero_field_refusal/analysis/study5_analysis_cli.py
   - configs/experiments/study5*.yaml
   - docs/study5-code-identity.json
   - docs/study5-fixation.json
@@ -359,6 +361,7 @@ topics:
   - tests/test_study5_code_identity.py
   - tests/test_study5_surrogate_endpoint.py
   - tests/test_study5_fixation.py
+  - tests/test_study5_analysis.py
 - id: study3_simulation
   title: Study 3's simulation before validation — inputs, fixation, run, verification and record
   source: docs/operations.md#study-3-simulation

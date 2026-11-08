@@ -2999,6 +2999,34 @@ record is committed after its copy is verified; the fresh runs need only the cop
 made by the campaigns: the judging of the fresh runs is a separate step, after every fresh run has
 ended.
 
+**The analysis** runs on a CPU once both Pods' `runs/` are restored under one local `$RUNS_DIR`
+and the runs are labeled (WildGuard in each run directory; Llama Guard on the 40 relabeled study-3
+runs), through `python -m zero_field_refusal.analysis.study5_analysis_cli` (its docstring holds
+every rule; the computations are `analysis/study5_analysis.py`'s). It sits in the analysis
+package, outside the GPU code identity, so adding it left `docs/study5-code-identity.json`
+standing. It reads the two campaign folders (`plan.json` and the launcher campaigns, each by the
+plan's sha256), the fixation record, the predictions record (refused unless its sha256 is the
+receipt's and the sidecar's) and the label files. A study-5 run's labels are read with study 2's
+checks over `run_judging.response_conditions` (`step-25` for the outcome, the scan and ladder
+conditions apart); `study2_labels.read_endpoint_labels` reads `step-<N>` alone and refuses a run
+with a line scan. Each seed's h is study 3's support rule and interpolation in ln K
+(`study3_blocks.arm_support`, `study3_estimates._arm`) on the seed's two F runs. Study 3's parts
+go through study 3's final reader with `--study3-runs-root`, `--study3-repo` and
+`--study3-sealed-dir` as for the fixation record, its freeze and receipts the record's; the
+reference sample from the reference input's key and each annotator's labels in study 3's
+audit-label form (`{item_id: label | null}`). It writes one `analysis.json`, never over an
+existing file, with every input's sha256, and prints numbers only. A missing run, record or label
+file of a seed is named in every quantity it leaves; the seed counts nowhere there.
+
+```bash
+export DATA_DIR="$DATA"   # the prompt sets
+python -m zero_field_refusal.analysis.study5_analysis_cli --runs-root "$RUNS_DIR" \
+  --pod1 "$C/study5-pod1" --pod2 "$C/study5-pod2" --out "$RUNS_DIR/study5-final/analysis.json" \
+  --study3-runs-root "$S3/runs" --study3-repo "$S3_CHECKOUT" --study3-sealed-dir "$SEALED" \
+  --reference-input "$RUNS_DIR/study5-reference/input" \
+  --reference sonnet=SONNET.json --reference grok=GROK.json
+```
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project
