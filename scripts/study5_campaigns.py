@@ -60,9 +60,12 @@ per seed: the F run at η_l (experiments/study5, ``study5.role=fresh``: a plain 
 endpoint checkpoint); the surrogate r at its endpoint from that checkpoint
 (``scripts/study5_surrogate_endpoint.py``); the line scan of its endpoint, a run of its own from
 the checkpoint (``scripts/study5_scan.py``, experiment ``study5_scan``; a partial run directory
-is moved aside before it runs again); its checkpoint archived and removed; then the F run at η_u
-(the same config), each F run in a launcher campaign of its own. A failure of the endpoint's r or
-of the scan is the seed's, recorded; it takes nothing from the η_l run. Each
+is moved aside before it runs again); then the checkpoint removed; then the F run at η_u (the same
+config), each F run in a launcher campaign of its own. The checkpoint is archived and verified
+right after the η_l run (``checkpoint --keep``), so that a Pod stop, which wipes the container
+disk, loses none: the endpoint's r and the scan fetch it back from that archive, its sha256
+checked, when it is gone (``with-runs --restore-*``). A failure of the endpoint's r or of the
+scan is the seed's, recorded; it takes nothing from the η_l run. Each
 endpoint checkpoint is archived, verified and then removed from the container disk by
 ``remove_checkpoint``, which refuses any path but that run's own ``<dir>/<run id>.pt``; a seed's
 runs start only while at most one checkpoint is on the disk (``check-checkpoints``), so it holds
@@ -217,6 +220,7 @@ MINUTES = {
     # assumed, ≈ 1 min: a 5.24 GB checkpoint hashed and read, the surrogate's 2 × 1200 rows
     "surrogate-endpoint": 1.0,
     "checkpoint": 4.0,  # assumed: a 5.24 GB checkpoint hashed and uploaded at about 25 MB/s
+    "checkpoint-remove": 0.5,  # assumed: the checkpoint hashed again, then removed
     "controls": 2 * F_RUN,
     "rung": 3 * K_POINT + EVALUATION,
     "archive": 1.0,  # assumed: a seed's run directories and records, a few MB
@@ -920,22 +924,32 @@ def pod2_plan(
             on_fail="stop",
             group=group,
         )
-        # η_l alone first: its checkpoint is archived and removed before η_u starts
+        # η_l alone first; its checkpoint archived and verified at once (a Pod stop wipes the
+        # container disk), then r at its endpoint and its scan, each restoring the checkpoint
+        # from that archive when it is gone, then the local file removed, before η_u starts
         _, name = b.launch(
             f"fresh-lower-{group}", "fresh", [lower], minutes="fresh-lower", group=group
         )
         fresh[seed] = (name, label(lower))
-        # r at the η_l run's endpoint, from its checkpoint, before the file is archived and
-        # removed; a failure is the seed's, recorded
+        inventory = b.out / "inventories" / f"checkpoint-{group}.tsv"
+        where = ("--runs", b.runs, "--campaign", name)
+        store = ("--remote", f"{b.base}/checkpoints", "--inventories-remote",
+                 f"{b.base}/inventories")  # fmt: skip
+        checkpoint = ("checkpoint", *where, "--label", label(lower), "--dir", b.checkpoints,
+                      "--inventory", inventory, *store)  # fmt: skip
+        b.step(f"fresh/{group}/checkpoint-archive", b.own(*checkpoint, "--keep"), group=group,
+               minutes="checkpoint")  # fmt: skip
+        restore = ("--restore-label", label(lower), "--restore-dir", b.checkpoints,
+                   "--restore-remote", f"{b.base}/checkpoints", "--restore-inventory", inventory,
+                   "--restore-inventories-remote", f"{b.base}/inventories")  # fmt: skip
+        # r at the η_l run's endpoint, from its checkpoint; a failure is the seed's, recorded
         endpoint = b.record("surrogate-endpoint", f"s{seed}.json")
         b.step(
             f"fresh/{group}/surrogate-endpoint",
             b.own(
                 "with-runs",
-                "--runs",
-                b.runs,
-                "--campaign",
-                name,
+                *where,
+                *restore,
                 "--",
                 "scripts/study5_surrogate_endpoint.py",
                 *fresh_args(seed),
@@ -960,14 +974,12 @@ def pod2_plan(
             f"fresh/{group}/scan",
             b.own(
                 "with-runs",
-                "--runs",
-                b.runs,
-                "--campaign",
-                name,
+                *where,
                 "--aside",
                 f"{SCAN_EXPERIMENT}/{scan_id}",
                 "--unless",
                 scan,
+                *restore,
                 "--",
                 "scripts/study5_scan.py",
                 *fresh_args(seed),
@@ -984,28 +996,9 @@ def pod2_plan(
             group=group,
             minutes="scan",
         )
-        b.step(
-            f"fresh/{group}/checkpoint",
-            b.own(
-                "checkpoint",
-                "--runs",
-                b.runs,
-                "--campaign",
-                name,
-                "--label",
-                label(lower),
-                "--dir",
-                b.checkpoints,
-                "--inventory",
-                b.out / "inventories" / f"checkpoint-{group}.tsv",
-                "--remote",
-                f"{b.base}/checkpoints",
-                "--inventories-remote",
-                f"{b.base}/inventories",
-            ),
-            group=group,
-            minutes="checkpoint",
-        )
+        # the local file removed (guarded: archived and verified, its recorded sha256)
+        b.step(f"fresh/{group}/checkpoint", b.own(*checkpoint), group=group,
+               minutes="checkpoint-remove")  # fmt: skip
         b.inventories.append(str(b.out / "inventories" / f"checkpoint-{group}.tsv"))  # if any
         _, upper_name = b.launch(
             f"fresh-upper-{group}", "fresh", [upper], minutes="fresh-upper", group=group
@@ -1873,10 +1866,13 @@ def cmd_with_runs(args) -> int:
         command = command[1:]
     if not command:
         raise StepError("with-runs needs a script after --")
-    if args.aside and not (args.unless and Path(args.unless).exists()):
+    done = bool(args.unless and Path(args.unless).exists())
+    if args.aside and not done:
         moved = move_aside(args.runs, args.aside)
         if moved is not None:
             print(f"moved aside {args.aside} to {moved.relative_to(args.runs)}")
+    if args.restore_label and not done:  # after a Pod stop: the checkpoint from its archive
+        restore_checkpoint(args)
     argv = substituted(command, args.runs, args.campaign)
     return subprocess.run([sys.executable, str(REPO / argv[0]), *argv[1:]], cwd=REPO).returncode
 
@@ -1949,21 +1945,32 @@ def cmd_check_checkpoints(args) -> int:
     return 0 if len(found) <= args.max else 1
 
 
-def cmd_checkpoint(args) -> int:
-    """The η_l run's endpoint checkpoint archived, verified, then removed from the disk. It is
-    refused while the run's summary records no sha256 for it (the file stays). A checkpoint no
-    longer on the disk must be in the bucket when the run recorded one."""
-    run_id = latest_run_id(args.runs, args.campaign, args.label)
+def run_checkpoint(runs: Path, campaign: str, run_label: str,
+                   directory: Path) -> tuple[str | None, Path | None, str | None]:  # fmt: skip
+    """The label's latest run id, its checkpoint's path on the disk and the sha256 its run's
+    summary records for it (None where there is none)."""
+    run_id = latest_run_id(runs, campaign, run_label)
     if run_id is None:
-        print(f"no run of {args.label}: no checkpoint")
-        return 0
-    path = args.dir / f"{safe_rel(run_id)}.pt"
-    summary = args.runs / safe_rel(_start_of(args.runs, args.campaign, run_id)["experiment"])
+        return None, None, None
+    path = Path(directory) / f"{safe_rel(run_id)}.pt"
+    summary = runs / safe_rel(_start_of(runs, campaign, run_id)["experiment"])
     summary = summary / run_id / "summary.json"
     record = None
     if summary.is_file():
         record = json.loads(summary.read_text(encoding="utf-8")).get("endpoint_checkpoint")
-    recorded = record.get("sha256") if isinstance(record, dict) else None
+    return run_id, path, record.get("sha256") if isinstance(record, dict) else None
+
+
+def cmd_checkpoint(args) -> int:
+    """The η_l run's endpoint checkpoint archived and verified, then (without ``--keep``)
+    removed from the disk. It is refused while the run's summary records no sha256 for it (the
+    file stays). A checkpoint no longer on the disk must be in the bucket when the run recorded
+    one. The group archives it right after its run (``--keep``) and removes it after the scan,
+    so that a Pod stop in between loses no checkpoint (``restore_checkpoint``)."""
+    run_id, path, recorded = run_checkpoint(args.runs, args.campaign, args.label, args.dir)
+    if run_id is None:
+        print(f"no run of {args.label}: no checkpoint")
+        return 0
     if not path.exists():
         if recorded is None:
             print(f"no checkpoint of {run_id}")
@@ -1979,9 +1986,42 @@ def cmd_checkpoint(args) -> int:
         raise StepError(f"{path.name}: its sha256 is not the one its run recorded")
     if not args.inventory.exists():
         archive_paths(args.dir, args.remote, [path.name], args.inventory, args.inventories_remote)
+    rows = [r for r in read_inventory(args.inventory) if r.get("path") == path.name]
+    if not rows or any(r.get("status") != "ok" or r.get("sha256") != digest for r in rows):
+        raise StepError(f"{path.name}: the archive does not show it verified")
+    if args.keep:
+        print(f"checkpoint {run_id} sha256 {digest} archived and verified; kept on the disk")
+        return 0
     remove_checkpoint(path, args.dir, digest, read_inventory(args.inventory))
     print(f"checkpoint {run_id} sha256 {digest} archived, verified and removed")
     return 0
+
+
+def restore_checkpoint(args) -> None:
+    """Before the endpoint's r or the scan: the η_l run's checkpoint on the disk, or, after a Pod
+    stop wiped the container disk, fetched back from its verified archive (the object and its
+    archive's inventory showing the run's recorded sha256, ``archived_earlier``), its sha256
+    checked before it is put in place. Nothing to do without a run or a recorded sha256 (the
+    script then refuses)."""
+    run_id, path, recorded = run_checkpoint(args.runs, args.campaign, args.restore_label,
+                                            args.restore_dir)  # fmt: skip
+    if run_id is None or recorded is None or path.exists():
+        return
+    found = argparse.Namespace(remote=args.restore_remote, inventory=args.restore_inventory,
+                               inventories_remote=args.restore_inventories_remote)  # fmt: skip
+    if not archived_earlier(found, path.name, recorded):
+        raise StepError(f"{path.name}: not on the disk and not in the bucket")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f".{path.name}.restore")
+    partial.unlink(missing_ok=True)
+    gcloud(
+        ["cp", "--quiet", f"{artifact_remote()}/{args.restore_remote}/{path.name}", str(partial)]
+    )
+    if sha256_of(partial) != recorded:
+        partial.unlink()
+        raise StepError(f"{path.name}: the copy fetched back is not of its run's sha256")
+    os.replace(partial, path)
+    print(f"checkpoint {run_id} restored from its archive, sha256 {recorded}")
 
 
 def archived_earlier(args, name: str, recorded: str) -> bool:
@@ -2286,6 +2326,11 @@ def parser_of() -> argparse.ArgumentParser:
     p.add_argument("--campaign", required=True)
     p.add_argument("--aside")
     p.add_argument("--unless")
+    p.add_argument("--restore-label")  # the η_l run whose checkpoint must be on the disk
+    p.add_argument("--restore-dir", type=Path)
+    p.add_argument("--restore-remote")
+    p.add_argument("--restore-inventory", type=Path)
+    p.add_argument("--restore-inventories-remote")
     p.add_argument("command", nargs=argparse.REMAINDER)
     p = sub.add_parser("archive")
     p.add_argument("--inventory", type=Path, required=True)
@@ -2315,6 +2360,7 @@ def parser_of() -> argparse.ArgumentParser:
         p.add_argument(name, type=Path, required=True)
     for name in ("--campaign", "--label", "--remote", "--inventories-remote"):
         p.add_argument(name, required=True)
+    p.add_argument("--keep", action="store_true")  # archived and verified, not removed
     p = sub.add_parser("predictions")
     p.add_argument("--records", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)

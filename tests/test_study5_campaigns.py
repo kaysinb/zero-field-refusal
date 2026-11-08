@@ -424,25 +424,39 @@ def test_pod2_fresh_runs_per_seed(where, tmp_path):
             "deadline",
             "check-checkpoints",
             "scripts/launch.py",
+            "checkpoint",
             "with-runs",
             "with-runs",
             "checkpoint",
             "scripts/launch.py",
             "archive",
         ]
-        assert [s.name.rsplit("/", 1)[-1] for s in group[2:6]] == [
-            "launch-fresh-lower", "surrogate-endpoint", "scan", "checkpoint"]  # fmt: skip
-        assert group[1].on_fail == "stop" and group[7].on_fail == "stop"
+        assert [s.name.rsplit("/", 1)[-1] for s in group[2:7]] == [
+            "launch-fresh-lower", "checkpoint-archive", "surrogate-endpoint", "scan",
+            "checkpoint"]  # fmt: skip
+        assert group[1].on_fail == "stop" and group[8].on_fail == "stop"
         assert group[1].argv[-2:] == ("--max", "1")
-        # η_l alone, r at its endpoint, its scan run, its checkpoint archived and removed, then
-        # η_u: the archive covers both runs, the scan run and the two records
+        # η_l alone; its checkpoint archived and verified at once (kept), r at its endpoint and
+        # its scan run, each restoring the checkpoint from the archive when it is gone, the
+        # local file removed, then η_u: the archive covers both runs, the scan and two records
         (low,) = campaign_runs(plan, tmp_path, Path(group[2].argv[1]).stem)
-        (high,) = campaign_runs(plan, tmp_path, Path(group[6].argv[1]).stem)
+        (high,) = campaign_runs(plan, tmp_path, Path(group[7].argv[1]).stem)
         assert (low.config, low.seed) == ("experiments/study5", seed)
         assert (high.config, high.seed) == ("experiments/study5", seed)
-        assert group[5].argv[group[5].argv.index("--label") + 1] == low.label
-        archived = [group[7].argv[i + 1] for i, a in enumerate(group[7].argv) if a == "--campaign"]
-        assert archived == [Path(group[2].argv[1]).stem, Path(group[6].argv[1]).stem]
+        keep, remove = group[3], group[6]
+        assert keep.argv[-1] == "--keep" and "--keep" not in remove.argv
+        assert keep.argv[:-1] == remove.argv  # the same checkpoint, archive and inventory
+        assert remove.argv[remove.argv.index("--label") + 1] == low.label
+        inventory = remove.argv[remove.argv.index("--inventory") + 1]
+        for step in group[4:6]:
+            argv = step.argv
+            assert argv[argv.index("--restore-label") + 1] == low.label
+            assert argv[argv.index("--restore-dir") + 1] == str(where["checkpoints"])
+            assert argv[argv.index("--restore-inventory") + 1] == inventory
+            assert argv[argv.index("--restore-remote") + 1] == "study5/t2/checkpoints"
+            assert argv.index("--restore-label") < argv.index("--")
+        archived = [group[8].argv[i + 1] for i, a in enumerate(group[8].argv) if a == "--campaign"]
+        assert archived == [Path(group[2].argv[1]).stem, Path(group[7].argv[1]).stem]
         assert group[2].kept_if_runs == (f"{Path(group[2].argv[1]).stem}\t{low.label}",)
         lower, upper = (load_run_config(r.config, list(r.overrides)) for r in (low, high))
         assert lower.optimizer.lr == 1.3e-05 and upper.optimizer.lr == 1.83e-05
@@ -975,6 +989,61 @@ def test_checkpoint_is_archived_verified_then_removed(tmp_path, bucket):
     assert camp.main(argv) == 0  # nothing left to do
 
 
+def test_a_checkpoint_kept_after_its_archive_is_restored_after_a_pod_stop(tmp_path, bucket):
+    """The group's order: the checkpoint archived and verified right after the η_l run (kept);
+    the Pod stops and the container disk is wiped; the scan's step fetches it back from the
+    archive, its sha256 checked, then runs; the last checkpoint step removes it. A fetched copy
+    of another sha256 is refused and never put in place."""
+    runs, ckpt = tmp_path / "runs", tmp_path / "ckpt"
+    journal_of(
+        runs,
+        "f",
+        [
+            {"event": "start", "run": "low/s1", "run_id": "r-a1", "experiment": "study5"},
+            {"event": "end", "run": "low/s1", "run_id": "r-a1", "outcome": "done"},
+        ],
+    )
+    (runs / "study5" / "r-a1").mkdir(parents=True)
+    ckpt.mkdir()
+    (ckpt / "r-a1.pt").write_bytes(b"weights")
+    digest = hashlib.sha256(b"weights").hexdigest()
+    (runs / "study5" / "r-a1" / "summary.json").write_text(
+        json.dumps({"endpoint_checkpoint": {"path": str(ckpt / "r-a1.pt"), "sha256": digest}})
+    )
+    inventory = tmp_path / "inv" / "ck.tsv"
+    store = ["--remote", "study5/t/checkpoints", "--inventories-remote", "study5/t/inventories"]
+    checkpoint = ["checkpoint", "--runs", str(runs), "--campaign", "f", "--label", "low/s1",
+                  "--dir", str(ckpt), "--inventory", str(inventory), *store]  # fmt: skip
+    assert camp.main([*checkpoint, "--keep"]) == 0
+    assert (ckpt / "r-a1.pt").read_bytes() == b"weights"  # kept on the disk
+    assert (bucket / "study5/t/checkpoints/r-a1.pt").read_bytes() == b"weights"
+
+    (ckpt / "r-a1.pt").unlink()  # the Pod stopped: the container disk is wiped
+    seen = tmp_path / "seen"
+    script = tmp_path / "scan.py"
+    script.write_text(f"import pathlib, sys; pathlib.Path(r'{seen}').write_bytes("
+                      f"pathlib.Path(r'{ckpt}/r-a1.pt').read_bytes())\n")  # fmt: skip
+    restore = ["--restore-label", "low/s1", "--restore-dir", str(ckpt), "--restore-remote",
+               "study5/t/checkpoints", "--restore-inventory", str(inventory),
+               "--restore-inventories-remote", "study5/t/inventories"]  # fmt: skip
+    with_runs = ["with-runs", "--runs", str(runs), "--campaign", "f", *restore, "--",
+                 str(script)]  # fmt: skip
+    assert camp.main(with_runs) == 0
+    assert seen.read_bytes() == b"weights" and (ckpt / "r-a1.pt").read_bytes() == b"weights"
+    assert camp.main(checkpoint) == 0  # removed after the scan, guarded as before
+    assert not (ckpt / "r-a1.pt").exists()
+
+    # an archived object that is not the run's sha256: refused, nothing put in place
+    (bucket / "study5/t/checkpoints/r-a1.pt").write_bytes(b"other weights")
+    seen.unlink()
+    assert camp.main(with_runs) == 1
+    assert not (ckpt / "r-a1.pt").exists() and not seen.exists()
+    assert not list(ckpt.glob(".*restore"))
+    # nothing in the bucket at all
+    (bucket / "study5/t/checkpoints/r-a1.pt").unlink()
+    assert camp.main(with_runs) == 1 and not seen.exists()
+
+
 def test_publish_then_check_published(tmp_path, bucket):
     record = tmp_path / "r" / "predictions-record.json"
     camp.write_record(record, predictions_of([50000]))
@@ -1362,12 +1431,20 @@ def test_every_planned_step_has_a_timeout_and_every_group_sets_its_deadline_firs
 
 
 def test_a_step_past_its_timeout_is_killed_and_fails(tmp_path):
-    slow = camp.Step("one/slow", py("import time; time.sleep(60)"), on_fail="record", timeout=1)
+    """A step that outlives its timeout: its process is gone afterwards (killed, not waited
+    out), the journal records the timeout and the campaign goes on. No wall-clock bound beyond
+    a generous one: the child would sleep 600 s."""
+    pid_file = tmp_path / "pid"
+    child = f"import os, time; open(r'{pid_file}', 'w').write(str(os.getpid())); time.sleep(600)"
+    slow = camp.Step("one/slow", py(child), on_fail="record", timeout=10)
     after = camp.Step("one/after", mark(tmp_path, "after"))
     plan = fake_plan(tmp_path, [camp.Block("one", (slow, after)), camp.Block("close", ())])
     started = time.monotonic()
     assert run_plan(plan, tmp_path) == camp.COMPLETED
-    assert time.monotonic() - started < 30
+    assert time.monotonic() - started < 300
+    pid = int(pid_file.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)  # killed with its process group
     assert camp.read_journal(plan.out / "journal.jsonl")["one/slow"] == "failed"
     assert '"exit": "timeout"' in (plan.out / "journal.jsonl").read_text()
     assert marks(tmp_path) == ["after"]
