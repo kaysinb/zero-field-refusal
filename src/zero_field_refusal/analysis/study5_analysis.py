@@ -4,11 +4,14 @@ Nothing here reads a file, a response or a label: ``analysis.study5_analysis_cli
 campaigns' records and the label files and passes their numbers in.
 
 - ``spearman``, ``permutation_p``, ``confirmatory``: Spearman ρ(p_s, h_s) by average ranks, the
-  one-sided permutation p-value under the record's count, seed and formula, the minimum rule and
-  the registration's reading.
+  one-sided permutation p-value under the record's count, seed and formula (the null: p_s and h_s
+  independent, h_s exchangeable across the supported seeds; the alternative a negative
+  association), the minimum rule, the registration's reading, and no inference while a seed is
+  technically unresolved (``confirmatory``).
 - ``bootstrap_interval``: the retrospective's block bootstrap, seeds resampled with replacement.
 - ``endpoint_of``, ``f_support``, ``shares_at_kstar``, ``seed_outcome``: the outcome h_s and the
-  three classes at K*, by study 3's own functions. ``endpoint_of`` makes a study-5 F run a study-3
+  three classes at K*, by study 3's own functions; ``subset_share``: h_s on a subset of the 521
+  prompts (the surrogate-overlap check). ``endpoint_of`` makes a study-5 F run a study-3
   ``Endpoint`` (its state as ``study3_records`` decides a regular run's); ``f_support`` asks study
   3's ``study3_blocks.arm_support`` (its support rule, its weight in ln K) and, when supported,
   builds the block exactly as study 3's freeze holds one, ``{"seed", "arms": {"F": {"lo", "hi",
@@ -63,7 +66,7 @@ from typing import Any
 import numpy as np
 from scipy import stats
 
-from .study3_blocks import arm_support
+from .study3_blocks import arm_support, interpolated
 from .study3_estimates import DENOMINATOR, _arm
 from .study3_records import (
     GROSS_COLLAPSE,
@@ -76,6 +79,7 @@ from .study3_records import (
     _loss,
 )
 from .study3_search import CANDIDATES
+from .study5_fixation import ALTERNATIVE, NULL  # the test's hypotheses, as the record states
 
 K_STAR = CANDIDATES[1]["targets"]["star"]  # study 3's candidate-1 comparison point: 6.00
 ARM = "F"
@@ -86,7 +90,8 @@ METRICS = ("K_benign", "K_harmful", *UTILITY_KEYS)
 SCAN_MEASURES = (*CLASSES, *METRICS)
 SCAN_POINTS = (-1.0, -0.5, -0.25, 0.25, 0.5)  # registered; a = +1 the endpoint, a = 0 θ₀
 PART_POINTS = (0.25, 0.5, 1.0)
-RUNGS = ("isotropic", "linear_no_d", "linear", "linear_shuffled_d")  # evaluation.LADDER_RUNGS
+RUNGS = ("gaussian_d", "linear_no_d", "linear", "linear_shuffled_d")  # evaluation.LADDER_RUNGS
+LADDER_SEEDS = tuple(range(50000, 50006))  # the six seeds the shuffled-D trigger is decided on
 TRIGGER_PP = 0.02  # the registered 2 pp between δ̂_s and the linear response without D
 STEPS = 25  # the protocol's updates
 NONFINITE = {"missing": "nonfinite"}
@@ -95,9 +100,11 @@ TIE = 1e-12
 STEPS_STOP = "steps"  # the stop of a run that took all its updates
 READINGS = {
     "predicts": "a quantity computed at θ₀ from a seed's own streams before training predicts "
-                "which fresh stream erodes refusals more",
-    "does_not_predict": "this first-order prediction does not predict harm on fresh streams",
+                "which fresh streams yield more judge-rated harm, among the supported seeds",
+    "does_not_predict": "this first-order prediction did not establish the predicted negative "
+                        "association with judge-rated harm on fresh streams",
 }  # fmt: skip
+STATUSES = ("tested", "descriptive", "withheld", "undefined")
 
 Value = float | str  # a number, or the reason it is missing
 
@@ -126,7 +133,8 @@ def spearman(x: Sequence[float], y: Sequence[float]) -> float:
 
 def permutation_p(x: Sequence[float], y: Sequence[float], *, permutations: int,
                   seed: int) -> dict[str, Any]:  # fmt: skip
-    """The one-sided permutation p-value of ρ(x, y) against ρ ≥ 0: ``numpy.random.default_rng
+    """The one-sided permutation p-value of ρ(x, y) for a negative association, under the null
+    that x and y are independent (y exchangeable across the seeds): ``numpy.random.default_rng
     (seed)`` permutes y over the seeds ``permutations`` times, and p = (1 + #{ρ_perm ≤ ρ_obs}) /
     (1 + permutations) (module docstring, ``TIE``). Returns ``rho``, ``count`` and
     ``p_value``."""
@@ -173,33 +181,57 @@ def association(x: Mapping[int, Value], y: Mapping[int, Value], seeds: Sequence[
 
 
 def confirmatory(p: Mapping[int, Value], h: Mapping[int, Value], seeds: Sequence[int],
-                 test: Mapping[str, Any]) -> dict[str, Any]:  # fmt: skip
+                 test: Mapping[str, Any], *, unresolved: Mapping[int, str] | None = None,
+                 withheld: Sequence[str] = ()) -> dict[str, Any]:  # fmt: skip
     """The confirmatory test (registration, "The confirmatory test"; the record's
-    ``permutation_test``): ρ(p_s, h_s) over the supported fresh seeds; under the record's minimum
-    ``descriptive`` with no p-value and no reading; otherwise the permutation p-value and the
-    registered reading, "predicts" for ρ < 0 with p < α."""
+    ``permutation_test``): ρ(p_s, h_s) over the supported fresh seeds.
+
+    The support rule is the only registered exclusion. While any of the seeds is technically
+    unresolved (``unresolved``: seed → reason; a run missing or not ended, a binding mismatch, a
+    label receipt missing or pending, a required input that does not read) or a rule of the order
+    does not hold (``withheld``: reasons), there is no confirmatory inference: ``status``
+    ``withheld``, no ρ, p-value or reading, ``reading_withheld`` naming every unresolved seed with
+    its reason and every other reason; ρ over the resolved supported seeds only under
+    ``descriptive_partial``, without a p-value. With every seed resolved: under the record's
+    minimum ``descriptive`` (no p-value, no reading); otherwise ``tested``: the permutation
+    p-value and the registered reading, "predicts" for ρ < 0 with p < α."""
     count = int(test["permutations"])
     if test["p_value"] != f"(1 + #{{rho_perm <= rho_obs}}) / (1 + {count})":
         raise ValueError(f"the record's p-value formula {test['p_value']!r} is not the one "
                          "implemented")  # fmt: skip
-    if not str(test["alternative"]).startswith("one-sided against rho >= 0"):
-        raise ValueError(f"the record's alternative {test['alternative']!r} is not implemented")
-    used, xs, ys, excluded = pair(p, h, seeds, ("p", "h"))
+    if test.get("alternative") != ALTERNATIVE or test.get("null") != NULL:
+        raise ValueError(f"the record's hypotheses ({test.get('null')!r}; "
+                         f"{test.get('alternative')!r}) are not the ones implemented")  # fmt: skip
+    unresolved = {int(s): str(why) for s, why in (unresolved or {}).items()}
+    used, xs, ys, excluded = pair({s: v for s, v in p.items() if s not in unresolved}, h, seeds,
+                                  ("p", "h"))  # fmt: skip
+    for entry in excluded:
+        if entry["seed"] in unresolved:
+            entry["reason"] = f"technically unresolved: {unresolved[entry['seed']]}"
     rho = spearman(xs, ys) if len(used) >= 2 else math.nan
     out: dict[str, Any] = {
-        "statistic": test["statistic"], "n": len(used), "rho": _finite(rho), "seeds": used,
-        "excluded": excluded, "alpha": test["alpha"],
-        "min_supported_seeds": test["min_supported_seeds"], "descriptive": True,
-        "permutations": None, "seed": None, "count": None, "p_value": None, "reading": None,
+        "statistic": test["statistic"], "null": test["null"], "alternative": test["alternative"],
+        "n": len(used), "rho": _finite(rho), "seeds": used, "excluded": excluded,
+        "alpha": test["alpha"], "min_supported_seeds": test["min_supported_seeds"],
+        "descriptive": True, "status": "descriptive", "permutations": None, "seed": None,
+        "count": None, "p_value": None, "reading": None,
     }  # fmt: skip
+    if unresolved or withheld:
+        reasons = [{"seed": int(s), "reason": why} for s, why in sorted(unresolved.items())]
+        reasons += [{"seed": None, "reason": str(why)} for why in withheld]
+        return out | {"status": "withheld", "rho": None, "reading_withheld": reasons,
+                      "descriptive_partial": {"of": ["p", "h"], "n": len(used),
+                                              "rho": _finite(rho), "seeds": used,
+                                              "p_value": None}}  # fmt: skip
     if len(used) < int(test["min_supported_seeds"]):
         return out
     if math.isnan(rho):
-        return out | {"undefined": "ρ is undefined: a side is constant"}
+        return out | {"status": "undefined", "undefined": "ρ is undefined: a side is constant"}
     found = permutation_p(xs, ys, permutations=count, seed=int(test["seed"]))
     predicts = found["rho"] < 0 and found["p_value"] < float(test["alpha"])
-    return out | {"descriptive": False, "permutations": count, "seed": int(test["seed"]),
-                  "count": found["count"], "p_value": found["p_value"],
+    return out | {"descriptive": False, "status": "tested", "permutations": count,
+                  "seed": int(test["seed"]), "count": found["count"],
+                  "p_value": found["p_value"],
                   "reading": READINGS["predicts" if predicts else "does_not_predict"]}  # fmt: skip
 
 
@@ -329,6 +361,25 @@ def seed_outcome(seed: int, endpoints: Sequence[Endpoint], missing: Sequence[str
     return out | {"h": classes["harmful"], "classes": classes}
 
 
+def subset_share(block: Mapping[str, Any] | None, counts: Mapping[str, Mapping[str, int]]
+                 ) -> float:  # fmt: skip
+    """h_s on a subset of the 521 prompts: each run's harmful share over the subset's ``n``
+    prompts (a missing label not harmful), interpolated with the supported block's weight in ln K
+    exactly as ``shares_at_kstar`` does over the 521 (``study3_blocks.interpolated``).
+    ``counts``: run id → the subset's ``n``, ``harmful`` and ``missing``. ``ValueError`` without a
+    block or with a run's counts absent."""
+    if block is None:
+        raise ValueError("no supported block")
+    entry = block["arms"][ARM]
+    shares = []
+    for end in ("lo", "hi"):
+        found = counts.get(entry[end])
+        if not isinstance(found, Mapping) or not found.get("n"):
+            raise ValueError(f"{entry[end]}: no counts on the subset")
+        shares.append(found["harmful"] / found["n"])
+    return interpolated(shares[0], shares[1], entry["w"])
+
+
 def class_shares(counts: Mapping[str, int] | str) -> dict[str, Value]:
     """One run's three classes at one condition, over 521 (a missing label in none)."""
     if not isinstance(counts, Mapping):
@@ -444,14 +495,17 @@ def ladder_table(records: Mapping[int, Mapping[str, Mapping[str, Any] | str]],
                  h: Mapping[int, Value], seeds: Sequence[int], rungs: Sequence[str],
                  level: float = 0.95) -> dict[str, Any]:  # fmt: skip
     """The ladder (registration, "Ladder"): per seed and rung its status, c₀, the chosen c and
-    pair, every (c, K_benign), the full evaluation's K and utilities (each number as recorded, a
-    non-finite one ``NONFINITE``), the three classes at that point (``labels`` of the condition
-    ``ladder_<rung>``) beside the seed's h_s; the rungs not evaluated (``not_bracketed``,
-    ``invalid_k``, ``nonfinite_k``) and the records missing; and ``shuffled_d_trigger``, the
-    registered quantity that decides whether ``linear_shuffled_d`` runs: the mean over the six
-    seeds of the harm of ``linear`` (δ̂_s) minus ``linear_no_d`` at the K*-matched point and
-    whether its magnitude exceeds 2 pp (``trigger``), with the per-seed values as description
-    (numbers only: the decision is the researcher's)."""
+    pair, every (c, K_benign), the matched-K step (c₁, c₂, their K, ``out_of_tolerance``: a rung
+    outside ±10 % of K* is reported at its measured K, not adjusted), the full evaluation's K and
+    utilities (each number as recorded, a non-finite one ``NONFINITE``), the three classes at
+    that point (``labels`` of the condition ``ladder_<rung>``) beside the seed's h_s; the rungs
+    not evaluated (``not_bracketed``, ``invalid_k``, ``nonfinite_k``) and the records missing;
+    and ``shuffled_d_trigger``, the registered quantity that decides whether
+    ``linear_shuffled_d`` runs: the mean over the six seeds 50000–50005 (``LADDER_SEEDS``) of the
+    harm of ``linear`` (δ̂_s) minus ``linear_no_d`` at the evaluated point, matched or flagged.
+    ``decision`` is ``undecided`` (``trigger`` None) unless all six paired differences exist;
+    then the mean decides: ``runs`` when its magnitude exceeds 2 pp, else ``does_not_run``. The
+    per-seed values are description."""
     rows, not_evaluated, missing = [], [], []
     harm: dict[tuple[int, str], Value] = {}
     for s in seeds:
@@ -469,6 +523,9 @@ def ladder_table(records: Mapping[int, Mapping[str, Mapping[str, Any] | str]],
                 "pair": finite_tree(search.get("pair")), "choice": search.get("choice"),
                 "extensions": search.get("extensions"), "monotone": search.get("monotone"),
                 "scales": finite_tree([dict(x) for x in search.get("scales") or []]),
+                **{k: as_finite((record.get("matched_k") or {}).get(k))
+                   for k in ("c1", "K1", "c2", "K2")},
+                "out_of_tolerance": record.get("out_of_tolerance"),
                 **{m: as_finite((evaluation or {}).get(m)) for m in METRICS},
                 "classes": None, "labels": None, "h_s": _json_value(h.get(s, "no value")),
             }  # fmt: skip
@@ -501,32 +558,45 @@ def ladder_table(records: Mapping[int, Mapping[str, Mapping[str, Any] | str]],
         )
     mean = summary(differences, seeds, level)
     exceeds = abs(mean["mean"]) > TRIGGER_PP if mean["mean"] is not None else None
-    trigger = {"rule": "the harm of linear minus linear_no_d at the K*-matched point, in the mean "
-                       "over the six seeds; the rung linear_shuffled_d runs only if its magnitude "
-                       "exceeds 2 pp; the per-seed values are description",
+    absent = [s for s in LADDER_SEEDS if not _is_number(differences.get(s))]
+    decided = not absent and set(seeds) == set(LADDER_SEEDS)
+    trigger = {"rule": "the harm of linear minus linear_no_d at each seed's evaluated point "
+                       "(matched to K* within 10 %, or flagged), in the mean over the six seeds "
+                       "50000-50005; undecided unless all six differences exist; the rung "
+                       "linear_shuffled_d runs only if the mean's magnitude exceeds 2 pp; the "
+                       "per-seed values are description",
                "per_seed": per_seed, "mean": mean, "mean_exceeds_2pp": exceeds,
-               "trigger": exceeds, "seeds_in_mean": mean["n"],
-               "all_seeds": mean["n"] == len(seeds)}  # fmt: skip
+               "decision": ("undecided" if not decided else "runs" if exceeds
+                            else "does_not_run"),
+               "trigger": exceeds if decided else None, "missing_seeds": absent,
+               "seeds_in_mean": mean["n"], "all_seeds": decided}  # fmt: skip
     return {"rows": rows, "not_evaluated": not_evaluated, "missing": missing,
             "shuffled_d_trigger": trigger}  # fmt: skip
 
 
-def excluded_by_state(outcomes: Sequence[Mapping[str, Any]]) -> dict[str, int]:
-    """The fresh seeds without h by why: ``binding`` (its p not bound to its η_l run: the
-    prediction's record, v₀, θ₀ or training stream not the run's), ``unsupported`` (a failed
-    endpoint or a support condition: study 3's scientific route), ``open`` (a run missing or not
-    ended), ``unresolved`` (technical), ``labels_missing`` (supported, a run's labels not
-    read)."""
-    counts = dict.fromkeys(("binding", "unsupported", "open", "unresolved", "labels_missing"), 0)
+UNRESOLVED_KINDS = ("binding", "runs", "technical", "labels")
+
+
+def seeds_by_state(outcomes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The fresh seeds by state, the two kinds apart. ``supported``: h_s. ``excluded_unsupported``:
+    the registered exclusion alone (study 3's support rule: a failed endpoint or a support
+    condition; no h_s, reported, not replaced). ``technically_unresolved``: no scientific
+    exclusion, while any is the test gives no inference (``confirmatory``), by kind (``kind`` of
+    the outcome): ``binding`` (p not bound to an endpoint: its predict record, v₀, θ₀ or
+    training stream not the run's), ``runs`` (a run missing, not ended or unreadable: study 3's
+    open state), ``technical`` (study 3's unresolved state), ``labels`` (supported, a run's
+    labels missing, pending or unreadable)."""
+    unresolved = dict.fromkeys(UNRESOLVED_KINDS, 0)
+    out: dict[str, Any] = {"supported": 0, "excluded_unsupported": 0,
+                           "technically_unresolved": unresolved}  # fmt: skip
     for o in outcomes:
-        if o["h"] is not None:
-            continue
-        if o.get("binding"):
-            counts["binding"] += 1
-            continue
-        key = o["support"]["state"] if o["block"] is None else "labels_missing"
-        counts[key] = counts.get(key, 0) + 1
-    return counts
+        if o.get("unresolved"):
+            out["technically_unresolved"][o["unresolved"]] += 1
+        elif o["h"] is not None:
+            out["supported"] += 1
+        else:
+            out["excluded_unsupported"] += 1
+    return out
 
 
 # ------------------------------------------------------------------ study 3's extreme blocks

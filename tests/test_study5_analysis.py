@@ -91,6 +91,41 @@ def test_a_negative_association_reads_as_a_prediction() -> None:
     assert flipped["p_value"] > 0.05 and flipped["reading"] == sa.READINGS["does_not_predict"]
 
 
+def test_an_unresolved_seed_withholds_the_inference_and_partial_rho_is_descriptive() -> None:
+    """Only the support rule excludes; any technical gap leaves the seed unresolved and, while
+    any is, there is no confirmatory inference: no ρ, no p-value, no reading, every unresolved
+    seed named with its reason; ρ over the resolved supported seeds under descriptive_partial
+    alone. With all seeds resolved the test runs (``tested``), even with unsupported seeds."""
+    seeds = list(range(50000, 50024))
+    p = {s: float(i) for i, s in enumerate(seeds)}
+    h = {s: 0.4 - 0.01 * i for i, s in enumerate(seeds)}
+    found = sa.confirmatory(p, h, seeds, small_test(2_000))
+    assert found["status"] == "tested" and found["p_value"] is not None
+    assert found["null"] == sa.NULL and found["alternative"] == sa.ALTERNATIVE
+    h[50003] = "unsupported: too wide"  # the registered exclusion: still a test
+    assert sa.confirmatory(p, h, seeds, small_test(2_000))["status"] == "tested"
+    unresolved = {50005: "runs: η_u: no completed run", 50007: "binding: η_u: its v₀"}
+    found = sa.confirmatory(p, h, seeds, small_test(2_000), unresolved=unresolved)
+    assert found["status"] == "withheld" and found["descriptive"] is True
+    assert (found["rho"], found["p_value"], found["reading"]) == (None, None, None)
+    assert found["reading_withheld"] == [
+        {"seed": 50005, "reason": "runs: η_u: no completed run"},
+        {"seed": 50007, "reason": "binding: η_u: its v₀"},
+    ]
+    partial = found["descriptive_partial"]
+    assert partial["n"] == 21 and partial["p_value"] is None and partial["rho"] == pytest.approx(-1)
+    assert {50003, 50005, 50007} == {e["seed"] for e in found["excluded"]}
+    assert [e["reason"] for e in found["excluded"] if e["seed"] == 50005] == [
+        "technically unresolved: runs: η_u: no completed run"]  # fmt: skip
+    # a rule of the order that does not hold withholds it too
+    found = sa.confirmatory(p, h, seeds, small_test(2_000), withheld=["no completion record"])
+    assert found["status"] == "withheld" and found["reading_withheld"] == [
+        {"seed": None, "reason": "no completion record"}]  # fmt: skip
+    # the record's hypotheses must be the implemented ones
+    with pytest.raises(ValueError, match="hypotheses"):
+        sa.confirmatory(p, h, seeds, {**small_test(2_000), "alternative": "against rho >= 0"})
+
+
 def test_the_readings_are_the_registrations_sentences() -> None:
     text = " ".join((REPO_ROOT / "docs" / "study5-preregistration.md").read_text().split())
     for sentence in sa.READINGS.values():
@@ -104,7 +139,7 @@ def test_below_the_minimum_the_result_is_descriptive() -> None:
     for s in seeds[19:]:
         h[s] = "unsupported: too wide"
     found = sa.confirmatory(p, h, seeds, TEST)
-    assert found["n"] == 19 and found["descriptive"] is True
+    assert found["n"] == 19 and found["descriptive"] is True and found["status"] == "descriptive"
     assert found["p_value"] is None and found["reading"] is None
     assert found["rho"] == pytest.approx(-1.0)
     assert len(found["excluded"]) == 21
@@ -296,13 +331,15 @@ def ladder_record(rung: str, status: str, c: float | None) -> dict:
                        "pair": None if c is None else {"c": [2.0, 4.0], "K_benign": [5.0, 9.0]},
                        "choice": None if c is None else "only", "extensions": 0,
                        "monotone": True},
+            "matched_k": None if c is None else {"c1": c, "K1": 6.9, "c2": c * 0.9, "K2": 6.3},
+            "out_of_tolerance": None if c is None else False,
             "evaluation": None if status != "evaluated" else row(6.0)}  # fmt: skip
 
 
 def test_the_ladder_table_lists_a_not_bracketed_rung() -> None:
     records = {
         50000: {
-            "isotropic": ladder_record("isotropic", "not_bracketed", None),
+            "gaussian_d": ladder_record("gaussian_d", "not_bracketed", None),
             "linear_no_d": ladder_record("linear_no_d", "evaluated", 2.6),
             "linear": "no ladder record (ladder/s50000-linear.json)",
         }
@@ -313,14 +350,49 @@ def test_the_ladder_table_lists_a_not_bracketed_rung() -> None:
     assert rows["linear_no_d"]["classes"]["harmful"] == pytest.approx(52 / 521)
     assert rows["linear_no_d"]["h_s"] == 0.08 and rows["linear_no_d"]["c"] == 2.6
     assert rows["linear_no_d"]["K_benign"] == 6.0
-    assert rows["isotropic"]["classes"] is None and rows["isotropic"]["status"] == "not_bracketed"
-    assert rows["isotropic"]["scales"][1] == {"c": 2.0, "K_benign": 5.0}
+    assert (rows["linear_no_d"]["c1"], rows["linear_no_d"]["K1"]) == (2.6, 6.9)
+    assert rows["linear_no_d"]["K2"] == 6.3 and rows["linear_no_d"]["out_of_tolerance"] is False
+    assert rows["gaussian_d"]["c1"] is None and rows["gaussian_d"]["out_of_tolerance"] is None
+    assert rows["gaussian_d"]["classes"] is None and rows["gaussian_d"]["status"] == "not_bracketed"
+    assert rows["gaussian_d"]["scales"][1] == {"c": 2.0, "K_benign": 5.0}
     assert found["not_evaluated"] == [
-        {"seed": 50000, "rung": "isotropic", "status": "not_bracketed"}
+        {"seed": 50000, "rung": "gaussian_d", "status": "not_bracketed"}
     ]
     assert found["missing"] == [
         {"seed": 50000, "rung": "linear", "reason": "no ladder record (ladder/s50000-linear.json)"}
     ]
+
+
+def test_the_shuffled_d_trigger_is_undecided_unless_all_six_differences_exist() -> None:
+    seeds = list(sa.LADDER_SEEDS)
+    records = {s: {r: ladder_record(r, "evaluated", 2.6) for r in ("linear_no_d", "linear")}
+               for s in seeds}  # fmt: skip
+    labels = {(s, "linear"): counts(60, 300) for s in seeds}
+    labels |= {(s, "linear_no_d"): counts(40, 300) for s in seeds}
+    rungs = ["linear_no_d", "linear"]
+    found = sa.ladder_table(records, labels, {}, seeds, rungs)["shuffled_d_trigger"]
+    assert found["decision"] == "runs" and found["trigger"] is True and found["all_seeds"]
+    assert found["mean"]["mean"] == pytest.approx(20 / 521) and found["missing_seeds"] == []
+    small = {(s, r): counts(41 if r == "linear" else 40, 300) for s in seeds for r in rungs}
+    found = sa.ladder_table(records, small, {}, seeds, rungs)["shuffled_d_trigger"]
+    assert found["decision"] == "does_not_run" and found["trigger"] is False
+    del labels[(50004, "linear")]  # one difference missing: undecided, whatever the mean
+    found = sa.ladder_table(records, labels, {}, seeds, rungs)["shuffled_d_trigger"]
+    assert found["decision"] == "undecided" and found["trigger"] is None
+    assert found["missing_seeds"] == [50004] and found["mean_exceeds_2pp"] is True
+    found = sa.ladder_table(records, labels, {}, seeds[:1], rungs)["shuffled_d_trigger"]
+    assert found["decision"] == "undecided" and found["missing_seeds"] == seeds[1:]
+
+
+def test_h_on_a_subset_of_prompts_by_the_same_interpolation() -> None:
+    block = {"seed": 1, "arms": {"F": {"lo": "a", "hi": "b", "w": 0.25, "width": 0.3}}}
+    counts_ = {"a": {"n": 482, "harmful": 40, "missing": 2}, "b": {"n": 482, "harmful": 80,
+                                                                    "missing": 0}}  # fmt: skip
+    assert sa.subset_share(block, counts_) == pytest.approx(0.75 * 40 / 482 + 0.25 * 80 / 482)
+    with pytest.raises(ValueError, match="no counts"):
+        sa.subset_share(block, {"a": counts_["a"]})
+    with pytest.raises(ValueError, match="no supported block"):
+        sa.subset_share(None, counts_)
 
 
 # ------------------------------------------------------------------ the extreme blocks
@@ -438,6 +510,13 @@ class World:
                                   "alternative": {"n": 2, "seeds": [50000, 50001]},
                                   "controls": [50000], "ladder": [50000]}  # fmt: skip
         self.fixation["permutation_test"] = small_test(2000, minimum=3)
+        # the overlap: the last 39 judged prompts (each run's labels there safe non-refusals)
+        self.overlap = IDS[-39:]
+        self.fixation["surrogate_overlap"] = {
+            **FIXATION["surrogate_overlap"],
+            "evaluation_ids_same_or_close": self.overlap,
+        }
+        self.chosen = (json.dumps({"n": 4, "seeds": self.seeds}) + "\n").encode()
         self.fixation_path = tmp / "fixation.json"
         self.steps: dict[str, list] = {"pod1": [], "pod2": []}
         self.campaigns: dict[str, dict[str, list]] = {"pod1": {}, "pod2": {}}
@@ -465,6 +544,7 @@ class World:
                      ["step-25"], harmful=50 if kind == "order" else 45, k=5.2)  # fmt: skip
         self.ladder()
         self.records()
+        self.completion()
 
     # -------------------------------------------------------------- runs
 
@@ -602,7 +682,7 @@ class World:
     def ladder(self) -> None:
         f_run = self.lower[50000].name
         rungs = (
-            ("isotropic", "invalid_k", 0),
+            ("gaussian_d", "invalid_k", 0),
             ("linear_no_d", "evaluated", 33),
             ("linear", "evaluated", 50),
             ("linear_shuffled_d", "evaluated", 40),
@@ -706,6 +786,34 @@ class World:
             self.steps["pod1"].append({"name": step, "outputs": [f"{POD}/{rel}"]})
             dump(self.runs / rel, value)
 
+    def completion(self, written: str = "2026-11-11T00:00:00+00:00", drop: int = 0) -> None:
+        """Pod 2's completion record, as the campaign writes it after the last fresh group:
+        every fresh run of its launcher journals with its end (``drop`` the last ones left out)."""
+        rel = "study5_records/pod2-x/fresh-completion.json"
+        if not any(s["name"] == "fresh/completion" for s in self.steps["pod2"]):
+            self.steps["pod2"].append({"name": "fresh/completion", "outputs": [f"{POD}/{rel}"]})
+        listed = []
+        for name, cells in self.campaigns["pod2"].items():
+            if not any(c["config"] == "experiments/study5" for c in cells):
+                continue
+            journal = self.runs / "launch" / f"{name}.jsonl"
+            events = [json.loads(x) for x in journal.read_text().splitlines()]
+            ends = {e["run_id"]: e for e in events if e["event"] == "end"}
+            listed += [{"campaign": name, "run": e["run"], "run_id": e["run_id"],
+                        "experiment": e["experiment"], "started": e["time"],
+                        "ended": ends[e["run_id"]]["time"],
+                        "outcome": ends[e["run_id"]]["outcome"]}
+                       for e in events if e["event"] == "start"]  # fmt: skip
+        dump(
+            self.runs / rel,
+            {
+                "kind": "study5-fresh-completion",
+                "campaigns": [],
+                "runs": listed[: len(listed) - drop],
+                "written_utc": written,
+            },
+        )
+
     def plans(self) -> None:
         for pod in ("pod1", "pod2"):
             folder = self.tmp / pod
@@ -742,9 +850,12 @@ def world(tmp_path, monkeypatch) -> World:
     monkeypatch.setattr(cli, "own_code", lambda: dict(CODE))
     monkeypatch.setattr(cli, "identity_of", lambda commit: GPU if commit == RERUN else None)
     found = World(tmp_path)
-    # the registration at the analysis's commit names the fixation record it reads
+    # the registration at the analysis's commit names the fixation record it reads and the
+    # committed seeds (four here)
+    monkeypatch.setattr(cli, "seeds_file_bytes", lambda: found.chosen)
     monkeypatch.setattr(cli, "registration_text", lambda: (
-        "Status: `registered`.\n" + sha(found.fixation_path.read_bytes())))  # fmt: skip
+        "Status: `registered`.\n" + sha(found.fixation_path.read_bytes()) + "\n"
+        + sha(found.chosen)))  # fmt: skip
     return found
 
 
@@ -781,7 +892,16 @@ def test_the_cli_writes_the_analysis_once_numbers_only(world, capsys) -> None:
     ]
     test = result["confirmatory"]
     assert test["n"] == 2 and test["descriptive"] is True and test["p_value"] is None
+    assert test["status"] == "descriptive"  # every seed resolved, fewer than the minimum
     assert {e["seed"] for e in test["excluded"]} == {50002, 50003}
+    assert result["technically_unresolved"] == []
+    assert result["confirmatory_seeds"]["problems"] == [] and result["completion"]["stands"]
+    # the surrogate-overlap check: h on the 482 prompts not in the overlap, ρ, no test
+    overlap = result["descriptive"]["surrogate_overlap"]
+    assert overlap["computed"] and overlap["prompts"] == 482 and overlap["excluded_prompts"] == 39
+    assert overlap["h"]["50000"] == pytest.approx((1 - w) * 40 / 482 + w * 80 / 482, abs=1e-15)
+    assert overlap["association"]["n"] == 2 and "p_value" not in overlap["association"]
+    assert overlap["h"]["50002"] == {"missing": "unsupported: no bracket"}
     # the line scan: θ₀ at 0, the endpoint at +1, the scan conditions between
     scan = result["descriptive"]["line_scans"]["per_seed"]["50000"]
     assert scan["+0"]["harmful"] == pytest.approx(5 / 521)
@@ -792,18 +912,21 @@ def test_the_cli_writes_the_analysis_once_numbers_only(world, capsys) -> None:
     assert odd["n"] == 4 and odd["mean"] == pytest.approx(-1 / 521)
     controls = result["descriptive"]["controls"]
     assert controls["order"]["per_seed"]["harmful"]["50000"] == pytest.approx(10 / 521)
-    assert test["excluded_by_state"] == {"binding": 0, "unsupported": 2, "open": 0,
-                                         "unresolved": 0, "labels_missing": 0}  # fmt: skip
+    assert test["seeds_by_state"] == {
+        "supported": 2,
+        "excluded_unsupported": 2,
+        "technically_unresolved": {"binding": 0, "runs": 0, "technical": 0, "labels": 0},
+    }
     # the ladder: every rung the plan has, an invalid_k rung's NaN and ±inf kept as missing
     ladder = result["descriptive"]["ladder"]
-    assert ladder["not_evaluated"] == [{"seed": 50000, "rung": "isotropic", "status": "invalid_k"}]
+    assert ladder["not_evaluated"] == [{"seed": 50000, "rung": "gaussian_d", "status": "invalid_k"}]
     rows = {r["rung"]: r for r in ladder["rows"]}
-    assert list(rows) == ["isotropic", "linear_no_d", "linear", "linear_shuffled_d"]
+    assert list(rows) == ["gaussian_d", "linear_no_d", "linear", "linear_shuffled_d"]
     nonfinite = {"missing": "nonfinite"}
-    assert rows["isotropic"]["scales"] == [{"c": 1.0, "K_benign": 3.0},
+    assert rows["gaussian_d"]["scales"] == [{"c": 1.0, "K_benign": 3.0},
                                            {"c": 2.0, "K_benign": nonfinite},
                                            {"c": nonfinite, "K_benign": nonfinite}]  # fmt: skip
-    assert rows["isotropic"]["c0"] == nonfinite
+    assert rows["gaussian_d"]["c0"] == nonfinite
     assert rows["linear"]["classes"]["harmful"] == pytest.approx(50 / 521)
     assert rows["linear_shuffled_d"]["classes"]["harmful"] == pytest.approx(40 / 521)
     assert rows["linear"]["h_s"] == by_seed[50000]["h"]
@@ -811,8 +934,11 @@ def test_the_cli_writes_the_analysis_once_numbers_only(world, capsys) -> None:
     assert trigger["per_seed"] == [{"seed": 50000, "difference": pytest.approx(17 / 521),
                                     "exceeds_2pp": True}]  # fmt: skip
     assert trigger["mean"]["mean"] == pytest.approx(17 / 521) and trigger["mean_exceeds_2pp"]
-    assert trigger["trigger"] is True and "mean over the six seeds" in trigger["rule"]
-    assert trigger["seeds_in_mean"] == 1 and trigger["all_seeds"] is True
+    assert "mean over the six seeds" in trigger["rule"] and trigger["seeds_in_mean"] == 1
+    # one of the six seeds here: undecided, whatever the mean
+    assert trigger["decision"] == "undecided" and trigger["trigger"] is None
+    assert trigger["all_seeds"] is False and trigger["missing_seeds"] == [50001, 50002, 50003,
+                                                                          50004, 50005]  # fmt: skip
     # the bucket copy's creation time precedes the first run start of pod2's journals
     assert result["predictions"]["created"] == "2026-11-10T00:00:00Z"
     assert result["predictions"]["first_start"].startswith("2026-11-10T")
@@ -903,6 +1029,7 @@ def test_pod1s_gates_are_reported_and_bind_the_analysis(world) -> None:
     assert result["hardware"]["runs"][world.lower[50000].name] == ["NVIDIA L40S"]
     assert result["hardware"]["runs"][world.scan[50000].name] == ["NVIDIA L40S"]
     assert result["labels_order"]["after"] is True and result["labels_order"]["earlier"] == []
+    assert result["labels_order"]["completion_written"] == "2026-11-11T00:00:00+00:00"
     assert result["confirmatory"]["order_violated"] is False
     assert "reading_withheld" not in result["confirmatory"]
 
@@ -969,6 +1096,7 @@ def test_the_analysis_reads_the_fixation_record_the_registration_names(world, mo
     assert code == 1 and "not the one the registration names" in message and not out.exists()
 
 
+@pytest.mark.parametrize("end", ["lower", "upper"])
 @pytest.mark.parametrize(
     "change, bound",
     [
@@ -982,8 +1110,10 @@ def test_the_analysis_reads_the_fixation_record_the_registration_names(world, mo
         ({"record": "other"}, False),  # the predict record is not the one the entry names
     ],
 )  # fmt: skip
-def test_p_is_bound_to_the_eta_l_run_it_is_paired_with(world, change, bound) -> None:
-    run = world.lower[50000]
+def test_p_is_bound_to_both_runs_it_is_paired_with(world, change, bound, end) -> None:
+    """A binding mismatch on either endpoint leaves the seed technically unresolved (its reason
+    reported, the reading withheld), never excluded as unsupported."""
+    run = getattr(world, end)[50000]
     if "record" in change:
         edit_json(world.runs / "study5_records/pod2-x/predictions/fresh/s50000.json", p=0.5)
     else:
@@ -995,14 +1125,24 @@ def test_p_is_bound_to_the_eta_l_run_it_is_paired_with(world, change, bound) -> 
     assert code == 0, why
     result = json.loads(out.read_text())
     by_seed = {o["seed"]: o for o in result["outcomes"]}
-    counts = result["confirmatory"]["excluded_by_state"]
+    test = result["confirmatory"]
+    counts = test["seeds_by_state"]
     if bound:
         assert by_seed[50000]["h"] is not None and by_seed[50000]["binding"] is None
-        assert counts["binding"] == 0
+        assert counts["technically_unresolved"]["binding"] == 0 and test["status"] == "descriptive"
     else:
-        assert by_seed[50000]["h"] is None and by_seed[50000]["reason"].startswith("binding: ")
-        assert counts["binding"] == 1
-        assert 50000 in {e["seed"] for e in result["confirmatory"]["excluded"]}
+        name = "η_l" if end == "lower" else "η_u"
+        assert by_seed[50000]["h"] is None
+        # the predict record is both endpoints': the first named is η_l's
+        first = "η_l" if "record" in change else name
+        assert by_seed[50000]["reason"].startswith(f"binding: {first}: ")
+        assert by_seed[50000]["unresolved"] == "binding"
+        assert counts["technically_unresolved"]["binding"] == 1
+        assert counts["excluded_unsupported"] == 2  # 50002 and 50003 alone
+        assert 50000 not in {u["seed"] for u in result["unsupported"]}
+        assert result["technically_unresolved"][0]["seed"] == 50000
+        assert test["status"] == "withheld" and test["reading"] is None
+        assert test["reading_withheld"][0]["seed"] == 50000
 
 
 def test_the_order_violated_gives_no_reading(world) -> None:
@@ -1010,7 +1150,7 @@ def test_the_order_violated_gives_no_reading(world) -> None:
         world.runs / "study5_records/pod2-x/predictions-receipt.json",
         created="2026-11-11T00:00:00Z",
     )  # after the first fresh start
-    # 50001's η_u labeling started before the last fresh end and finished after it
+    # 50001's η_u labeling started before pod 2's completion record and finished after it
     run = world.upper[50001]
     path = run / "judge" / "wildguard.jsonl"
     rows = [json.loads(line) for line in path.read_text().splitlines()]
@@ -1024,12 +1164,13 @@ def test_the_order_violated_gives_no_reading(world) -> None:
     test = result["confirmatory"]
     assert test["order_violated"] is True and test["labels_before_runs_ended"] is True
     assert test["reading"] is None and len(test["reading_withheld"]) == 2
+    assert test["status"] == "withheld" and test["p_value"] is None
     order = result["labels_order"]
     assert order["earlier"] == [run.name] and order["after"] is False
     assert order["labeling"][run.name] == {"started_at": "2026-11-10T02:00:00+00:00",
                                            "completed_at": "2026-11-12T00:00:00+00:00"}  # fmt: skip
-    assert order["last_fresh_end"] > order["labeling"][run.name]["started_at"]
-    assert order["labeling"][run.name]["completed_at"] > order["last_fresh_end"]
+    assert order["completion_written"] > order["labeling"][run.name]["started_at"]
+    assert order["labeling"][run.name]["completed_at"] > order["completion_written"]
 
 
 def test_the_runs_roots_of_study5_and_study3_do_not_overlap(world) -> None:
@@ -1077,6 +1218,13 @@ def study3_world(world: World) -> dict:
                     "refusal": 400 - h,
                     "missing": 1,
                     "safe_non_refusal": 120,
+                    # the 482 prompts outside the surrogate overlap: two harmful fewer
+                    "subset": {
+                        "n": 482,
+                        "harmful": h - 2 if h >= 2 else 0,
+                        "missing": 1,
+                        "excluded": 39,
+                    },
                 }
                 llama[run] = (h + 5) / 521
             arms[arm] = entry
@@ -1160,6 +1308,15 @@ def test_the_retrospective_and_the_extreme_blocks(world, monkeypatch) -> None:
     assert retro["harm"]["rho"] == pytest.approx(stats.spearmanr(p, h).statistic)
     assert retro["harm"]["interval"]["resamples"] == 10_000
     assert retro["refusal"]["n"] == 6
+    # the overlap check on study 3's blocks: h on the 482 prompts, ρ, no test
+    overlap = retro["surrogate_overlap"]
+    assert overlap["computed"] and overlap["prompts"] == 482 and overlap["association"]["n"] == 6
+    first = parts["blocks"][0]["arms"]["F"]
+    lo, hi = (parts["three"][first[e]]["subset"]["harmful"] for e in ("lo", "hi"))
+    assert overlap["h"][str(parts["blocks"][0]["seed"])] == pytest.approx(
+        0.75 * lo / 482 + 0.25 * hi / 482)  # fmt: skip
+    h_sub = [overlap["h"][str(b["seed"])] for b in parts["blocks"]]
+    assert overlap["association"]["rho"] == pytest.approx(stats.spearmanr(p, h_sub).statistic)
     extreme = result["descriptive"]["extreme_blocks"]
     cells_ = world.fixation["reference_sample"]["cells_drawn"]
     high = [parts["harm"][c["run_id"]].harmful / 521 for c in cells_ if c["group"] == "high"]
@@ -1349,3 +1506,94 @@ def test_scrub_replaces_absolute_roots_at_path_boundaries_only(tmp_path, monkeyp
     root = str((tmp_path / "r").resolve())
     assert reader.scrub(f"'{root}/study5/a' missing") == "'<runs>/study5/a' missing"
     assert reader.scrub(f"{root}2/b and /x{root}/c") == f"{root}2/b and /x{root}/c"
+
+
+def test_a_missing_or_unended_run_leaves_its_seed_unresolved_and_withholds_the_reading(
+        world) -> None:  # fmt: skip
+    """η_u of 50001 started but has no end: the seed is technically unresolved (not excluded), the
+    other seeds stand, and the test gives no inference while it is open."""
+    journal = world.runs / "launch" / "study5-pod2-x-fresh-upper-s50001.jsonl"
+    journal.write_text(journal.read_text().splitlines()[0] + "\n")
+    # a started fresh run without an end: pod 2 writes no completion record
+    (world.runs / "study5_records/pod2-x/fresh-completion.json").unlink()
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, "--without-study3"))
+    assert code == 0, why
+    result = json.loads(out.read_text())
+    test = result["confirmatory"]
+    assert test["status"] == "withheld" and (test["rho"], test["p_value"]) == (None, None)
+    assert [r["seed"] for r in test["reading_withheld"]] == [50001, None]
+    assert "completion record" in test["reading_withheld"][1]["reason"]
+    assert test["reading_withheld"][0]["reason"].startswith("runs: open: missing")
+    assert test["descriptive_partial"]["n"] == 1 and test["descriptive_partial"]["p_value"] is None
+    assert result["technically_unresolved"] == [
+        {"seed": 50001, "kind": "runs", "reason": test["reading_withheld"][0]["reason"][6:]}
+    ]
+    assert [u["seed"] for u in result["unsupported"]] == [50002, 50003]
+    assert test["seeds_by_state"]["technically_unresolved"]["runs"] == 1
+    # descriptive quantities stay, partial, the missing reported by name
+    assert result["descriptive"]["line_scans"]["points"]["+1"]["harmful"]["n"] == 4
+
+
+def test_pending_labels_leave_a_supported_seed_unresolved(world) -> None:
+    (world.upper[50001] / "judge" / "wildguard.receipt.json").unlink()
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, "--without-study3"))
+    assert code == 0, why
+    test = json.loads(out.read_text())["confirmatory"]
+    assert test["status"] == "withheld" and test["seeds_by_state"]["technically_unresolved"] == {
+        "binding": 0, "runs": 0, "technical": 0, "labels": 1}  # fmt: skip
+    assert test["reading_withheld"][0]["seed"] == 50001
+
+
+@pytest.mark.parametrize(
+    "case, problem",
+    [
+        ("missing", "completion record of the fresh runs is missing"),
+        ("fewer", "not exactly the plan's 8"),
+        ("before", "opened after pod 2's completion record"),
+    ],
+)
+def test_fresh_labels_need_the_completion_record_before_them(world, case, problem) -> None:
+    """Pod 2's completion record lists exactly the plan's fresh runs, each ended, and every fresh
+    label receipt (its labeling's start too) comes after its time; otherwise the reading is
+    withheld, the descriptive report written."""
+    rel = world.runs / "study5_records/pod2-x/fresh-completion.json"
+    if case == "missing":
+        rel.unlink()
+    elif case == "fewer":
+        world.completion(drop=1)
+    else:
+        world.completion(written="2026-11-11T13:00:00+00:00")  # after the labeling started
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, "--without-study3"))
+    assert code == 0, why
+    result = json.loads(out.read_text())
+    test = result["confirmatory"]
+    assert test["status"] == "withheld" and test["reading"] is None
+    assert any(problem in r["reason"] for r in test["reading_withheld"]), test["reading_withheld"]
+    assert result["descriptive"]["line_scans"]["points"]["+1"]["harmful"]["n"] == 4
+    if case == "fewer":
+        assert "are not ended in the completion record" in " ".join(
+            r["reason"] for r in test["reading_withheld"])  # fmt: skip
+
+
+@pytest.mark.parametrize("case", ["unnamed", "other seeds"])
+def test_the_seeds_are_the_committed_choice_the_registration_names(world, monkeypatch,
+                                                                   case) -> None:  # fmt: skip
+    if case == "unnamed":
+        monkeypatch.setattr(cli, "registration_text", lambda: (
+            "Status: `registered`.\n" + sha(world.fixation_path.read_bytes())))  # fmt: skip
+    else:
+        world.chosen = (json.dumps({"n": 2, "seeds": [50000, 50001]}) + "\n").encode()
+        monkeypatch.setattr(cli, "registration_text", lambda: (
+            "Status: `registered`.\n" + sha(world.fixation_path.read_bytes()) + "\n"
+            + sha(world.chosen)))  # fmt: skip
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, "--without-study3"))
+    assert code == 0, why
+    result = json.loads(out.read_text())
+    expected = ("does not name the sha256" if case == "unnamed"
+                else "not the committed choice")  # fmt: skip
+    assert any(expected in p for p in result["confirmatory_seeds"]["problems"])
+    assert result["confirmatory"]["status"] == "withheld"
