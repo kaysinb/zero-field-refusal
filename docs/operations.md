@@ -2999,10 +2999,15 @@ record is committed after its copy is verified; the fresh runs need only the cop
 made by the campaigns: the judging of the fresh runs is a separate step, after every fresh run has
 ended.
 
-**The analysis** runs on a CPU once both Pods' `runs/` are restored under one local `$RUNS_DIR`
-and the runs are labeled (WildGuard in each run directory; Llama Guard on the 40 relabeled study-3
-runs), through `python -m zero_field_refusal.analysis.study5_analysis_cli` (its docstring holds
-every rule; the computations are `analysis/study5_analysis.py`'s). It sits in the analysis
+**The analysis** runs on a CPU through `python -m zero_field_refusal.analysis.study5_analysis_cli`
+(its docstring holds every rule; the computations are `analysis/study5_analysis.py`'s), from a
+clean checkout. `retrospective`, after pod1 and before the registration, needs no pod2 input: it
+writes the retrospective record (ρ(p_s, F's harm at K\*) over study 3's 60 A–F blocks with the
+fixation record's block bootstrap, ρ(p_s, refusal share at K\*), the stream features, every
+input's sha256), once. `full` runs once both Pods' `runs/` are restored under one local
+`$RUNS_DIR` and the runs are labeled (WildGuard in each run directory; Llama Guard on the 40
+relabeled study-3 runs); it recomputes the retrospective and refuses unless it equals that
+record's, which it names by sha256. It sits in the analysis
 package, outside the GPU code identity, so adding it left `docs/study5-code-identity.json`
 standing. It reads the two campaign folders (`plan.json` and the launcher campaigns, each by the
 plan's sha256), the fixation record, the predictions record (refused unless its sha256 is the
@@ -3020,9 +3025,12 @@ file of a seed is named in every quantity it leaves; the seed counts nowhere the
 
 ```bash
 export DATA_DIR="$DATA"   # the prompt sets
-python -m zero_field_refusal.analysis.study5_analysis_cli --runs-root "$RUNS_DIR" \
+S3ARGS=(--study3-runs-root "$S3/runs" --study3-repo "$S3_CHECKOUT" --study3-sealed-dir "$SEALED")
+python -m zero_field_refusal.analysis.study5_analysis_cli retrospective --runs-root "$RUNS_DIR" \
+  --pod1 "$C/study5-pod1" --out "$RUNS_DIR/study5-final/retrospective.json" "${S3ARGS[@]}"
+python -m zero_field_refusal.analysis.study5_analysis_cli full --runs-root "$RUNS_DIR" \
   --pod1 "$C/study5-pod1" --pod2 "$C/study5-pod2" --out "$RUNS_DIR/study5-final/analysis.json" \
-  --study3-runs-root "$S3/runs" --study3-repo "$S3_CHECKOUT" --study3-sealed-dir "$SEALED" \
+  "${S3ARGS[@]}" --retrospective "$RUNS_DIR/study5-final/retrospective.json" \
   --reference-input "$RUNS_DIR/study5-reference/input" \
   --reference sonnet=SONNET.json --reference grok=GROK.json
 ```

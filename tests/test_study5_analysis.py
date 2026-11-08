@@ -11,6 +11,7 @@ from __future__ import annotations
 import itertools
 import json
 import math
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -138,7 +139,7 @@ THETA0 = {"benchmark_accuracy": 0.6, "factual_accuracy": 0.5}
 
 
 def row(k: float, *, mmlu: float = 0.59, factual: float = 0.49, kh: float = 3.0) -> dict:
-    return {"K_benign": k, "K_harmful": kh, "benchmark_accuracy": mmlu,
+    return {"step": 25, "K_benign": k, "K_harmful": kh, "benchmark_accuracy": mmlu,
             "factual_accuracy": factual, "heldout_nll_per_token": 1.0}  # fmt: skip
 
 
@@ -307,7 +308,7 @@ def test_the_ladder_table_lists_a_not_bracketed_rung() -> None:
         }
     }
     labels = {(50000, "linear_no_d"): counts(52, 300)}
-    found = sa.ladder_table(records, labels, {50000: 0.08}, [50000], sa.RUNGS)
+    found = sa.ladder_table(records, labels, {50000: 0.08}, [50000], sa.RUNGS[:3])
     rows = {r["rung"]: r for r in found["rows"]}
     assert rows["linear_no_d"]["classes"]["harmful"] == pytest.approx(52 / 521)
     assert rows["linear_no_d"]["h_s"] == 0.08 and rows["linear_no_d"]["c"] == 2.6
@@ -390,6 +391,8 @@ IDS = [f"judged:{i}" for i in range(521)]
 PROMPTS = {pid: f"Prompt {SENTINEL} {i}" for i, pid in enumerate(IDS)}
 SET = "harmful_evaluation"
 POD = "/pod/runs"
+REAL_OWN_CODE = cli.own_code
+CODE = {"commit": "a" * 40, "dirty": False, "module": "zero_field_refusal.analysis.study5_analysis"}
 
 
 def sha(data: bytes) -> str:
@@ -467,7 +470,8 @@ class World:
         experiment = "study5"
         label = f"{cell['name']}/s{seed}"
         lines(self.runs / "launch" / f"{name}.jsonl",
-              [{"event": "start", "run": label, "run_id": run_id, "experiment": experiment},
+              [{"event": "start", "run": label, "run_id": run_id, "experiment": experiment,
+                "time": f"2026-11-10T{1 + len(self.harmful) % 20:02d}:00:00+00:00"},
                {"event": "end", "run": label, "run_id": run_id, "outcome": "done"}])  # fmt: skip
         run_dir = self.runs / experiment / run_id
         cfg = {"run_type": "train", "seed": seed, "eval": {"harmful": {"prompt_set": SET}},
@@ -565,13 +569,25 @@ class World:
 
     def ladder(self) -> None:
         f_run = self.lower[50000].name
-        for rung, status in (("isotropic", "not_bracketed"), ("linear_no_d", "evaluated"),
-                             ("linear", "evaluated")):  # fmt: skip
+        rungs = (
+            ("isotropic", "invalid_k", 0),
+            ("linear_no_d", "evaluated", 33),
+            ("linear", "evaluated", 50),
+            ("linear_shuffled_d", "evaluated", 40),
+        )
+        for rung, status, harmful in rungs:
             run_id = f"s5-pod2-x-ladder-{rung}-s50000"
             out = f"study5_records/pod2-x/ladder/s50000-{rung}.json"
             self.steps["pod2"].append({"name": f"controls/s50000/ladder-{rung}",
                                        "outputs": [f"{POD}/{out}"]})  # fmt: skip
             record = ladder_record(rung, status, 2.6 if status == "evaluated" else None)
+            if status == "invalid_k":  # the rung's script writes the non-finite K it measured
+                record["search"]["scales"] = [
+                    {"c": 1.0, "K_benign": 3.0},
+                    {"c": 2.0, "K_benign": math.nan},
+                    {"c": math.inf, "K_benign": -math.inf},
+                ]
+                record["c0"] = math.inf
             dump(
                 self.runs / out,
                 {
@@ -586,7 +602,7 @@ class World:
             cfg = {"run_type": "study5_ladder", "seed": 50000,
                    "eval": {"harmful": {"prompt_set": SET}}}  # fmt: skip
             if status == "evaluated":
-                self.write_run(run_dir, cfg, [f"ladder_{rung}"], harmful=33, k=6.0)
+                self.write_run(run_dir, cfg, [f"ladder_{rung}"], harmful=harmful, k=6.0)
                 dump(
                     run_dir / "summary.json",
                     {"ladder": {"rung": rung, "condition": f"ladder_{rung}", "evaluated": True}},
@@ -649,14 +665,22 @@ class World:
 
     def argv(self, out: Path, *extra) -> list[str]:
         self.plans()
-        return [str(a) for a in ("--runs-root", self.runs, "--pod1", self.tmp / "pod1",
+        return [str(a) for a in ("full", "--runs-root", self.runs, "--pod1", self.tmp / "pod1",
                                  "--pod2", self.tmp / "pod2", "--fixation", self.fixation_path,
+                                 "--out", out, *extra)]  # fmt: skip
+
+    def retro_argv(self, out: Path, *extra) -> list[str]:
+        """The retrospective alone: no pod2 input at all."""
+        self.plans()
+        return [str(a) for a in ("retrospective", "--runs-root", self.runs, "--pod1",
+                                 self.tmp / "pod1", "--fixation", self.fixation_path,
                                  "--out", out, *extra)]  # fmt: skip
 
 
 @pytest.fixture
 def world(tmp_path, monkeypatch) -> World:
     monkeypatch.setattr(cli, "harmful_prompts", lambda cfg: PROMPTS)
+    monkeypatch.setattr(cli, "own_code", lambda: dict(CODE))
     return World(tmp_path)
 
 
@@ -704,13 +728,31 @@ def test_the_cli_writes_the_analysis_once_numbers_only(world, capsys) -> None:
     assert odd["n"] == 4 and odd["mean"] == pytest.approx(-1 / 521)
     controls = result["descriptive"]["controls"]
     assert controls["order"]["per_seed"]["harmful"]["50000"] == pytest.approx(10 / 521)
+    assert test["excluded_by_state"] == {"unsupported": 2, "open": 0, "unresolved": 0,
+                                         "labels_missing": 0}  # fmt: skip
+    # the ladder: every rung the plan has, an invalid_k rung's NaN and ±inf kept as missing
     ladder = result["descriptive"]["ladder"]
-    assert ladder["not_evaluated"] == [
-        {"seed": 50000, "rung": "isotropic", "status": "not_bracketed"}
-    ]
+    assert ladder["not_evaluated"] == [{"seed": 50000, "rung": "isotropic", "status": "invalid_k"}]
     rows = {r["rung"]: r for r in ladder["rows"]}
-    assert rows["linear"]["classes"]["harmful"] == pytest.approx(33 / 521)
+    assert list(rows) == ["isotropic", "linear_no_d", "linear", "linear_shuffled_d"]
+    nonfinite = {"missing": "nonfinite"}
+    assert rows["isotropic"]["scales"] == [{"c": 1.0, "K_benign": 3.0},
+                                           {"c": 2.0, "K_benign": nonfinite},
+                                           {"c": nonfinite, "K_benign": nonfinite}]  # fmt: skip
+    assert rows["isotropic"]["c0"] == nonfinite
+    assert rows["linear"]["classes"]["harmful"] == pytest.approx(50 / 521)
+    assert rows["linear_shuffled_d"]["classes"]["harmful"] == pytest.approx(40 / 521)
     assert rows["linear"]["h_s"] == by_seed[50000]["h"]
+    trigger = ladder["shuffled_d_trigger"]
+    assert trigger["per_seed"] == [{"seed": 50000, "difference": pytest.approx(17 / 521),
+                                    "exceeds_2pp": True}]  # fmt: skip
+    assert trigger["mean"]["mean"] == pytest.approx(17 / 521) and trigger["mean_exceeds_2pp"]
+    # the bucket copy's creation time precedes the first run start of pod2's journals
+    assert result["predictions"]["created"] == "2026-11-10T00:00:00Z"
+    assert result["predictions"]["first_start"].startswith("2026-11-10T")
+    assert result["predictions"]["created_before_first_start"] is True
+    assert f"runs:study5/{world.lower[50000].name}/summary.json" in result["inputs"]
+    assert f"runs:study5/{world.lower[50000].name}/line_scan.jsonl" in result["inputs"]
     theta0 = result["descriptive"]["theta0"]["classes"]
     assert theta0["harmful"] == pytest.approx(5 / 521) and theta0["refusal"] == pytest.approx(
         300 / 521)  # fmt: skip
@@ -839,8 +881,21 @@ def test_the_retrospective_and_the_extreme_blocks(world, monkeypatch) -> None:
     labels = {item: "harmful_compliance" if item.endswith("-0") else "refusal" for item in key}
     dump(world.tmp / "sonnet.json", labels)
     dump(world.tmp / "grok.json", {**labels, "i0-1": None})
+    study3 = ("--study3-runs-root", world.tmp, "--study3-repo", world.tmp)
+    # the retrospective alone, before the registration: no pod2 input at all
+    retro_out = world.tmp / "retrospective.json"
+    argv = world.retro_argv(retro_out, *study3)
+    shutil.rmtree(world.tmp / "pod2")
+    code, why = call(argv)
+    assert code == 0, why
+    written = json.loads(retro_out.read_text())
+    assert written["kind"] == "study5-retrospective" and written["code"] == CODE
+    assert not any(k.startswith("pod2:") for k in written["inputs"])
+    assert "pod1:plan.json" in written["inputs"]
+    assert written["retrospective"]["harm"]["interval"]["seed"] == FIXATION[
+        "retrospective_interval"]["seed"]  # fmt: skip
     out = world.tmp / "analysis.json"
-    argv = world.argv(out, "--study3-runs-root", world.tmp, "--study3-repo", world.tmp,
+    argv = world.argv(out, *study3, "--retrospective", retro_out,
                       "--reference-input", folder, "--reference",
                       f"sonnet={world.tmp / 'sonnet.json'}", "--reference",
                       f"grok={world.tmp / 'grok.json'}")  # fmt: skip
@@ -848,6 +903,8 @@ def test_the_retrospective_and_the_extreme_blocks(world, monkeypatch) -> None:
     assert code == 0, why
     result = json.loads(out.read_text())
     retro = result["retrospective"]
+    assert retro["record"]["sha256"] == sha(retro_out.read_bytes())
+    assert {k: v for k, v in retro.items() if k != "record"} == written["retrospective"]
     assert retro["computed"] is True and retro["blocks"] == 6 and retro["harm"]["n"] == 6
     h = [study3_estimates._arm(b, "F", parts["harm"])[0] for b in parts["blocks"]]
     p = [json.loads((world.runs / f"study5_records/pod1-x/predictions/retro/s{b['seed']}.json")
@@ -866,6 +923,40 @@ def test_the_retrospective_and_the_extreme_blocks(world, monkeypatch) -> None:
     assert reference["annotators"]["sonnet"]["high"]["low"] == pytest.approx(0.5)
     assert reference["agreement"]["both_labeled"] == len(key) - 1
     assert reference["agreement"]["share"] == 1.0
+
+
+def test_the_full_analysis_refuses_a_retrospective_record_that_does_not_match(
+    world, monkeypatch
+) -> None:
+    parts = study3_world(world)
+    monkeypatch.setattr(cli, "study3_parts", lambda *a, **kw: parts)
+    study3 = ("--study3-runs-root", world.tmp, "--study3-repo", world.tmp)
+    retro_out = world.tmp / "retrospective.json"
+    assert call(world.retro_argv(retro_out, *study3))[0] == 0
+    out = world.tmp / "analysis.json"
+    # without the record, study 3's parts are refused
+    code, why = call(world.argv(out, *study3))
+    assert code == 1 and "--retrospective" in why
+    record = json.loads(retro_out.read_text())
+    record["retrospective"]["harm"]["rho"] += 0.01
+    other = world.tmp / "other-retrospective.json"
+    dump(other, record)
+    code, why = call(world.argv(out, *study3, "--retrospective", other))
+    assert code == 1 and "does not match its recomputation" in why and not out.exists()
+
+
+def test_a_dirty_checkout_is_refused(world, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "own_code", REAL_OWN_CODE)
+    monkeypatch.setattr(cli, "git_state", lambda repo: {"commit": "a" * 40, "dirty": True})
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, "--without-study3"))
+    assert code == 1 and "clean checkout" in why and not out.exists()
+
+
+def test_a_run_with_other_than_25_updates_is_technical() -> None:
+    found = sa.endpoint_of("r", seed=50000, lr=1.3e-5, stop="steps", row=row(5.0),
+                           theta0=THETA0, steps=24)  # fmt: skip
+    assert found.state == "technical" and found.reasons == ("24 updates, not 25",)
 
 
 def test_the_cli_needs_study3s_inputs_or_their_absence_stated(world) -> None:
@@ -925,3 +1016,25 @@ def test_study3s_parts_through_study3s_gated_reader(tmp_path, monkeypatch, capsy
     }
     with pytest.raises(cli.Refused, match="another receipt"):
         cli.study3_parts(args, other, reader, lambda cfg: PROMPTS)
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError])
+def test_a_harm_reading_that_fails_is_a_refusal(tmp_path, monkeypatch, capsys, error) -> None:
+    import argparse
+
+    from test_study5_fixation import Fixation
+
+    from zero_field_refusal.analysis import study3_final
+
+    fixation = Fixation(tmp_path, monkeypatch, capsys)
+    fixation.fixed()
+    record = json.loads(fixation.out.read_bytes())
+
+    def fails(*a, **kw):
+        raise error("unreadable")
+
+    monkeypatch.setattr(study3_final, "cohort_harm", fails)
+    args = argparse.Namespace(study3_runs_root=fixation.root, study3_repo=fixation.world.repo,
+                              study3_sealed_dir=None)  # fmt: skip
+    with pytest.raises(cli.Refused, match="harm cannot be read"):
+        cli.study3_parts(args, record, cli.Reader({}), lambda cfg: PROMPTS)

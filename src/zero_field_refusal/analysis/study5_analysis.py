@@ -28,6 +28,10 @@ quantity uses fewer seeds than it reports.
 utilities as the evaluation records them (accuracies, held-out NLL per token).
 
 **Rulings** where the registration and the record leave a detail open:
+- *Gross collapse* (study 3's support rule: more than 15 pp of MMLU lost) is checked against study
+  5's own θ₀ evaluation, the same model and panels as the fresh runs.
+- *A non-finite number copied from a record* (a ladder rung's ``invalid_k`` scale holds NaN or
+  ±∞) is kept as ``NONFINITE`` (``as_finite``), so that the result stays strict JSON.
 - *Ties of ρ* in the permutation count: a permuted ρ counts as at or below the observed one within
   1e-12 (``TIE``), so that a permutation equal to the observation in exact arithmetic counts
   however its sum is rounded; the identity permutation always counts.
@@ -82,7 +86,10 @@ METRICS = ("K_benign", "K_harmful", *UTILITY_KEYS)
 SCAN_MEASURES = (*CLASSES, *METRICS)
 SCAN_POINTS = (-1.0, -0.5, -0.25, 0.25, 0.5)  # registered; a = +1 the endpoint, a = 0 θ₀
 PART_POINTS = (0.25, 0.5, 1.0)
-RUNGS = ("isotropic", "linear_no_d", "linear")  # the planned rungs; linear_shuffled_d on decision
+RUNGS = ("isotropic", "linear_no_d", "linear", "linear_shuffled_d")  # evaluation.LADDER_RUNGS
+TRIGGER_PP = 0.02  # the registered 2 pp between δ̂_s and the linear response without D
+STEPS = 25  # the protocol's updates
+NONFINITE = {"missing": "nonfinite"}
 FEATURES = ("phrase_share", "mean_tokens", "ended_share")
 TIE = 1e-12
 STEPS_STOP = "steps"  # the stop of a run that took all its updates
@@ -223,11 +230,16 @@ def bootstrap_interval(x: Sequence[float], y: Sequence[float],
 
 
 def endpoint_of(run_id: str, *, seed: int, lr: float, stop: str | None, row: Mapping | None,
-                theta0: Mapping[str, float], k_only: bool = False) -> Endpoint:  # fmt: skip
+                theta0: Mapping[str, float], steps: int | None = STEPS,
+                k_only: bool = False) -> Endpoint:  # fmt: skip
     """A study-5 F run as a study-3 ``Endpoint`` of a regular run: ``scientific`` for an
     instability stop, ``unusable`` for a gross collapse (MMLU loss over 15 pp against θ₀), else
-    ``usable`` with K = K_benign of its step-25 evaluation; ``technical`` for another stop or no
-    such evaluation (study3_records' rule for a regular run). ``theta0``: θ₀'s accuracies."""
+    ``usable`` with K = K_benign of its step-25 evaluation; ``technical`` for another stop, a
+    ``steps`` stop with other than 25 updates (``steps``, the terminal record's), or no step-25
+    evaluation row (study3_records' rule for a regular run). ``theta0``: the accuracies of study
+    5's own θ₀ evaluation (pod1's experiments/study5_theta0 run), against which gross collapse is
+    checked. The run's records are taken as the campaign wrote them: study3_records' conformity
+    checks of a record (``_records``) are not repeated here beyond these."""
     cell = Cell(campaign=None, label=None, candidate=None, step=None, round=None, arm=ARM,
                 rate=lr, seed=seed, config_hash=None)  # fmt: skip
     base = {"run_id": run_id, "run_dir": Path(run_id), "cell": cell, "arm": ARM, "lr": lr,
@@ -235,8 +247,11 @@ def endpoint_of(run_id: str, *, seed: int, lr: float, stop: str | None, row: Map
             "label": None, "stop": stop}  # fmt: skip
     if stop in INSTABILITY:
         return Endpoint(**base, state="scientific", reasons=(f"instability stop {stop}",))
-    if stop != STEPS_STOP or row is None:
-        why = "no step-25 evaluation" if row is None else f"stop {stop!r}"
+    if stop != STEPS_STOP or row is None or steps != STEPS or row.get("step") != STEPS:
+        why = (f"stop {stop!r}" if stop != STEPS_STOP else
+               "no step-25 evaluation" if row is None else
+               f"{steps!r} updates, not {STEPS}" if steps != STEPS else
+               f"its step-25 evaluation records step {row.get('step')!r}")  # fmt: skip
         return Endpoint(**base, state="technical", reasons=(why,))
     k = row.get("K_benign")
     mmlu = _loss(theta0["benchmark_accuracy"], row.get("benchmark_accuracy"))
@@ -263,8 +278,9 @@ def f_support(seed: int, endpoints: Sequence[Endpoint],
     """F's support in the seed (``study3_blocks.arm_support``: study 3's rule, its weight) and,
     when supported, the block as study 3's freeze holds one (module docstring); None otherwise."""
     found = arm_support(endpoints, kstar)
-    support = {"state": found["state"], "reason": found["reason"], "k_lo": found["k_lo"],
-               "k_hi": found["k_hi"], "weight": found["weight"],
+    support = {"state": found["state"], "reason": found["reason"],
+               "k_lo": as_finite(found["k_lo"]), "k_hi": as_finite(found["k_hi"]),
+               "weight": as_finite(found["weight"]),
                "lo": found["lo"].run_id if found["lo"] is not None else None,
                "hi": found["hi"].run_id if found["hi"] is not None else None}  # fmt: skip
     if not found["supported"]:
@@ -425,39 +441,84 @@ def controls(own: Mapping[int, Mapping[str, Value] | str],
 
 def ladder_table(records: Mapping[int, Mapping[str, Mapping[str, Any] | str]],
                  labels: Mapping[tuple[int, str], Mapping[str, int] | str],
-                 h: Mapping[int, Value], seeds: Sequence[int],
-                 rungs: Sequence[str]) -> dict[str, Any]:  # fmt: skip
+                 h: Mapping[int, Value], seeds: Sequence[int], rungs: Sequence[str],
+                 level: float = 0.95) -> dict[str, Any]:  # fmt: skip
     """The ladder (registration, "Ladder"): per seed and rung its status, c₀, the chosen c and
-    pair, every (c, K_benign), the full evaluation's K and utilities, the three classes at that
-    point (``labels`` of the condition ``ladder_<rung>``) beside the seed's h_s; the rungs not
-    evaluated (``not_bracketed``, ``invalid_k``, ``nonfinite_k``) and the records missing."""
+    pair, every (c, K_benign), the full evaluation's K and utilities (each number as recorded, a
+    non-finite one ``NONFINITE``), the three classes at that point (``labels`` of the condition
+    ``ladder_<rung>``) beside the seed's h_s; the rungs not evaluated (``not_bracketed``,
+    ``invalid_k``, ``nonfinite_k``) and the records missing; and ``shuffled_d_trigger``, the
+    registered quantity that decides whether ``linear_shuffled_d`` runs: per seed the harm of
+    ``linear`` (δ̂_s) minus ``linear_no_d`` at the K*-matched point and whether its magnitude
+    exceeds 2 pp, and their mean over seeds (a number only: the decision is the researcher's)."""
     rows, not_evaluated, missing = [], [], []
+    harm: dict[tuple[int, str], Value] = {}
     for s in seeds:
         for rung in rungs:
             record = (records.get(s) or {}).get(rung, "no ladder record")
             if not isinstance(record, Mapping):
                 missing.append({"seed": int(s), "rung": rung, "reason": str(record)})
+                harm[(s, rung)] = str(record)
                 continue
             search, evaluation = record.get("search") or {}, record.get("evaluation")
             status = record.get("status")
             entry: dict[str, Any] = {
-                "seed": int(s), "rung": rung, "status": status, "c0": record.get("c0"),
-                "c": record.get("c"), "pair": search.get("pair"), "choice": search.get("choice"),
+                "seed": int(s), "rung": rung, "status": status,
+                "c0": as_finite(record.get("c0")), "c": as_finite(record.get("c")),
+                "pair": finite_tree(search.get("pair")), "choice": search.get("choice"),
                 "extensions": search.get("extensions"), "monotone": search.get("monotone"),
-                "scales": [dict(x) for x in search.get("scales") or []],
-                **{m: (evaluation or {}).get(m) for m in METRICS},
+                "scales": finite_tree([dict(x) for x in search.get("scales") or []]),
+                **{m: as_finite((evaluation or {}).get(m)) for m in METRICS},
                 "classes": None, "labels": None, "h_s": _json_value(h.get(s, "no value")),
             }  # fmt: skip
+            harm[(s, rung)] = f"{rung}: {status}"
             if status != "evaluated":
                 not_evaluated.append({"seed": int(s), "rung": rung, "status": status})
             else:
                 found = labels.get((s, rung), "no labels")
                 if isinstance(found, Mapping):
                     entry["classes"] = class_shares(found)
+                    harm[(s, rung)] = entry["classes"]["harmful"]
                 else:
                     entry["labels"] = str(found)
+                    harm[(s, rung)] = f"{rung}: {found}"
             rows.append(entry)
-    return {"rows": rows, "not_evaluated": not_evaluated, "missing": missing}
+    differences: dict[int, Value] = {}
+    per_seed = []
+    for s in seeds:
+        a, b = harm.get((s, "linear"), "linear: no record"), harm.get(
+            (s, "linear_no_d"), "linear_no_d: no record")  # fmt: skip
+        d = a - b if _is_number(a) and _is_number(b) else "; ".join(
+            str(v) for v in (a, b) if not _is_number(v))  # fmt: skip
+        differences[s] = d
+        per_seed.append(
+            {
+                "seed": int(s),
+                "difference": _json_value(d),
+                "exceeds_2pp": abs(d) > TRIGGER_PP if _is_number(d) else None,
+            }
+        )
+    mean = summary(differences, seeds, level)
+    trigger = {"rule": "harm of linear minus linear_no_d at the K*-matched point; the rung "
+                       "linear_shuffled_d runs only if they differ by more than 2 pp",
+               "per_seed": per_seed, "mean": mean,
+               "mean_exceeds_2pp": (abs(mean["mean"]) > TRIGGER_PP
+                                    if mean["mean"] is not None else None)}  # fmt: skip
+    return {"rows": rows, "not_evaluated": not_evaluated, "missing": missing,
+            "shuffled_d_trigger": trigger}  # fmt: skip
+
+
+def excluded_by_state(outcomes: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """The fresh seeds without h by why: ``unsupported`` (a failed endpoint or a support
+    condition: study 3's scientific route), ``open`` (a run missing or not ended), ``unresolved``
+    (technical), ``labels_missing`` (supported, a run's labels not read)."""
+    counts = dict.fromkeys(("unsupported", "open", "unresolved", "labels_missing"), 0)
+    for o in outcomes:
+        if o["h"] is not None:
+            continue
+        key = o["support"]["state"] if o["block"] is None else "labels_missing"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 # ------------------------------------------------------------------ study 3's extreme blocks
@@ -546,6 +607,23 @@ def agreement(first: Mapping[str, str | None], second: Mapping[str, str | None])
 
 
 # ------------------------------------------------------------------ helpers
+
+
+def as_finite(value: Any) -> Any:
+    """A number copied from a record: itself when finite, ``NONFINITE`` when not (NaN or ±∞, as
+    a ladder rung's ``invalid_k`` scale holds them), anything else unchanged."""
+    if isinstance(value, int | float) and not isinstance(value, bool) and not math.isfinite(value):
+        return dict(NONFINITE)
+    return value
+
+
+def finite_tree(value: Any) -> Any:
+    """``as_finite`` on every number of a JSON-like value (mappings and lists walked)."""
+    if isinstance(value, Mapping):
+        return {k: finite_tree(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [finite_tree(v) for v in value]
+    return as_finite(value)
 
 
 def _is_number(value: Any) -> bool:

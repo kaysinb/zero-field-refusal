@@ -1,11 +1,25 @@
-"""Study 5's analysis, after the Pods, on a CPU: the confirmatory test and the descriptive
-measurements of docs/study5-preregistration.md from the campaigns' records and the label files,
-written once as one ``analysis.json`` (the computations are ``analysis.study5_analysis``'s).
+"""Study 5's analysis on a CPU: the retrospective predictor before the registration, and after
+the Pods the confirmatory test and the descriptive measurements of docs/study5-preregistration.md,
+from the campaigns' records and the label files, each written once as one record (the
+computations are ``analysis.study5_analysis``'s).
 
-    python -m zero_field_refusal.analysis.study5_analysis_cli --runs-root DIR --pod1 DIR
+    python -m zero_field_refusal.analysis.study5_analysis_cli retrospective --runs-root DIR
+        --pod1 DIR --out FILE --study3-runs-root DIR --study3-repo DIR [--study3-sealed-dir DIR]
+        [--fixation docs/study5-fixation.json]
+    python -m zero_field_refusal.analysis.study5_analysis_cli full --runs-root DIR --pod1 DIR
         --pod2 DIR --out FILE [--fixation docs/study5-fixation.json]
-        (--study3-runs-root DIR --study3-repo DIR [--study3-sealed-dir DIR] | --without-study3)
+        (--study3-runs-root DIR --study3-repo DIR [--study3-sealed-dir DIR] --retrospective FILE
+         | --without-study3)
         [--reference-input DIR --reference NAME=FILE [--reference NAME=FILE]]
+
+**retrospective** (registration order step 2, before the registration; no pod2 input) writes the
+retrospective record (kind ``study5-retrospective``): ρ(p_s, F's harm at K*) over study 3's 60
+A–F blocks with the fixation record's block bootstrap interval, ρ(p_s, F's refusal share at K*),
+the stream features against the harm, the per-block inputs, and every input's sha256. **full**
+recomputes the retrospective from the same inputs and refuses unless it equals that record's
+``retrospective`` byte for byte as strict JSON (``--retrospective``, named by its sha256 in the
+analysis): the registered retrospective result is the one the analysis reports. Both run from a
+clean checkout of a known commit (its commit in the record).
 
 It sits in the analysis package, outside the GPU code identity, so that adding it changes no GPU
 path (``code_identity``: every file under ``scripts/`` not named in ``ANALYSIS_SCRIPTS`` is one).
@@ -55,14 +69,21 @@ by sha256 and its ``key.json`` by sha256; the key maps each item id to its cell.
 
 **The record.** ``analysis.json`` (--out, refused when it exists, never overwritten; written whole
 by a link): the fixation record's sha256, the code, the seeds, the predictions record (its sha256
-that of the receipt and the sidecar), ``confirmatory``, ``outcomes`` (per fresh seed p, support,
+that of the receipt and the sidecar; its bucket copy's creation time beside the first run start
+in pod2's launcher journals, and whether it is earlier), ``confirmatory`` (with the excluded seeds
+counted by state), ``outcomes`` (per fresh seed p, support,
 h, the three classes or the reason), ``retrospective``, ``descriptive`` (the refusal share at K*,
 the surrogate at the endpoints, the line scans, the controls, the ladder, θ₀'s baseline, the
 stream features and the extreme blocks) and ``inputs``, every file read by its root and relative
-path with its sha256. Strict JSON, sorted keys. It holds numbers, ids, states and the registered
-words, never a text. stdout carries numbers, counts and the record's sha256 only.
+path with its sha256 (a run's ``summary.json`` and the other files ``response_conditions`` reads
+among them; study 3's label files are bound through the receipts the fixation record names).
+Strict JSON, sorted keys, a non-finite number copied from a record as ``{"missing":
+"nonfinite"}``. It holds numbers, ids, states and the registered words, never a text. stdout
+carries numbers, counts and the record's sha256 only. The ladder's rungs are every
+``controls/s<seed>/ladder-<rung>`` step of pod2's plan.
 
-**Refusals** exit with ``study5_analysis_cli: <why>`` and write nothing: a plan or campaign that
+**Refusals** exit with ``study5_analysis_cli: <why>`` and write nothing: a dirty checkout, a
+retrospective record that is not its recomputation, a plan or campaign that
 does not read or is not its plan's, a predictions record that is not the published one, a study-3
 input that is not the fixation record's, study 3's labels pending, a reference input of another
 record. A missing run, record or label file of one seed is no refusal: it is named in each
@@ -76,9 +97,11 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
@@ -113,6 +136,10 @@ DONE = ("done", "diverged")  # a launcher end after which the run's records deci
 WILDGUARD, LLAMA_GUARD = "wildguard", "llama_guard"
 CANDIDATE = 1
 OPTIMIZER = "adam_frozen"
+RETRO_KIND = "study5-retrospective"
+LADDER_STEP = re.compile(r"controls/s(?P<seed>[0-9]+)/ladder-(?P<rung>[a-z_]+)")
+# the files run_judging.response_conditions reads of a run (scheduled, line scan, ladder)
+CONDITION_FILES = ("evaluations.jsonl", "terminal.json", "line_scan.jsonl", "summary.json")
 
 
 class Refused(Exception):
@@ -198,6 +225,9 @@ def run_labels(
     if not isinstance(cfg, DictConfig):
         raise ValueError(f"{run_dir.name}: its config does not read")
     conditions = response_conditions(cfg, run_dir)
+    for name in CONDITION_FILES:  # what response_conditions read, hashed as an input
+        if (run_dir / name).is_file():
+            read(run_dir / name)
     if not conditions:
         raise study2_labels.LabelsPending(f"{run_dir.name}: no condition answered")
     prompts = prompts_of(cfg)
@@ -393,7 +423,7 @@ def f_run(reader: Reader, run_dir: Path | str, seed: int, lr: float) -> dict[str
         return f"{Path(run_dir).name}: its records do not read ({type(exc).__name__})"
     endpoint = [r for r in rows if r.get("condition") == ENDPOINT]
     return {"run_dir": run_dir, "run_id": run_dir.name, "seed": seed, "lr": lr,
-            "stop": (terminal.get("stop") or {}).get("reason"),
+            "stop": (terminal.get("stop") or {}).get("reason"), "steps": terminal.get("steps"),
             "row": endpoint[0] if len(endpoint) == 1 else None, "scan": scan}  # fmt: skip
 
 
@@ -482,6 +512,8 @@ def study3_parts(args: argparse.Namespace, fixation: Mapping[str, Any], reader: 
         refuse(str(exc))
     except (LabelingProblem, LedgerError) as exc:
         refuse(f"study 3's labels are not read ({type(exc).__name__})")
+    except (OSError, ValueError) as exc:
+        refuse(f"study 3's harm cannot be read ({type(exc).__name__})")
     fixed = fixation["inputs"]["labels"]["runs"]
     other = [run for run in runs if fixed.get(run, {}).get("receipt_sha256")
              != harm[run].receipt_sha256]  # fmt: skip
@@ -639,19 +671,108 @@ def fresh_seeds(fixation: Mapping[str, Any], n: Any) -> list[int]:
     refuse(f"pod2's n {n!r} is neither the fixation record's fresh n nor its alternative")
 
 
+def own_code() -> dict[str, Any]:
+    """This checkout's code: a clean checkout of a known commit, as the fixation record's."""
+    state = git_state(REPO_ROOT)
+    if not state.get("commit") or state.get("dirty") is not False:
+        refuse("the analysis runs from a clean checkout of a known commit")
+    return {"commit": state["commit"], "dirty": False,
+            "module": "zero_field_refusal.analysis.study5_analysis"}  # fmt: skip
+
+
+def reader_of(args: argparse.Namespace) -> Reader:
+    roots = {"runs": Path(args.runs_root), "pod1": Path(args.pod1)}
+    if getattr(args, "pod2", None):
+        roots["pod2"] = Path(args.pod2)
+    roots |= {"repo": REPO_ROOT, "fixation": Path(args.fixation).parent}
+    if getattr(args, "study3_runs_root", None):
+        roots |= {"study3_runs": Path(args.study3_runs_root), "study3_repo": Path(args.study3_repo)}
+    if getattr(args, "reference_input", None):
+        roots["reference"] = Path(args.reference_input)
+    if getattr(args, "retrospective", None):
+        roots["retrospective"] = Path(args.retrospective).parent
+    return Reader(roots)
+
+
+def fixation_of(reader: Reader, path: Path) -> tuple[bytes, dict[str, Any]]:
+    data = reader.bytes(Path(path))
+    found = json.loads(data)
+    if not isinstance(found, dict) or found.get("kind") != "study5-fixation":
+        refuse(f"{Path(path).name} is not study 5's fixation record")
+    return data, found
+
+
+def retrospective_record(args: argparse.Namespace) -> dict[str, Any]:
+    """The retrospective alone (registration, "Retrospective predictor"; before the registration,
+    without pod2): study 3's parts and pod1's records, written as its own record."""
+    code = own_code()
+    runs, reader = Path(args.runs_root), reader_of(args)
+    fixation_data, fixation = fixation_of(reader, args.fixation)
+    prompts_of = prompt_sets(reader)
+    pod1 = Plan(reader, args.pod1, runs)
+    parts = study3_parts(args, fixation, reader, prompts_of)
+    retro = sa.finite_tree(retrospective(parts, pod1, reader, fixation))
+    return {
+        "kind": RETRO_KIND, "version": VERSION, "registration": fixation["registration"],
+        "fixation": {"path": FIXATION, "sha256": sha256(fixation_data)}, "code": code,
+        "retrospective": retro, "inputs": dict(sorted(reader.hashes.items())),
+        "prompt_sets": dict(sorted(reader.prompt_sets.items())),
+    }  # fmt: skip
+
+
+def verified_retrospective(reader: Reader, path: Path, fixation_data: bytes,
+                           recomputed: Mapping[str, Any]) -> dict[str, Any]:  # fmt: skip
+    """The retrospective record written before the registration, recomputed here from the same
+    inputs: refused unless it is of this fixation record and its ``retrospective`` equals the
+    recomputation, byte for byte as strict JSON."""
+    try:
+        data = reader.bytes(Path(path))
+        found = json.loads(data)
+    except (OSError, ValueError) as exc:
+        refuse(f"the retrospective record does not read ({type(exc).__name__})")
+    if not isinstance(found, dict) or found.get("kind") != RETRO_KIND:
+        refuse(f"{Path(path).name} is not study 5's retrospective record")
+    if (found.get("fixation") or {}).get("sha256") != sha256(fixation_data):
+        refuse("the retrospective record is not of this fixation record")
+    if encoded(found.get("retrospective")) != encoded(recomputed):
+        refuse("the retrospective record does not match its recomputation from the inputs")
+    return {**recomputed, "record": {"path": Path(path).name, "sha256": sha256(data),
+                                     "code": found.get("code")}}  # fmt: skip
+
+
+def _when(stamp: Any) -> datetime | None:
+    if not isinstance(stamp, str):
+        return None
+    try:
+        found = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return found if found.tzinfo is not None else found.replace(tzinfo=UTC)
+
+
+def first_start(reader: Reader, runs: Path, plan: Plan) -> str | None:
+    """The earliest run start in the plan's launcher journals (pod2's: the fresh runs first)."""
+    stamps = [e.get("time") for name in sorted({name for name, _ in plan.cells})
+              for e in journal(reader, runs, name)
+              if e.get("event") == "start" and _when(e.get("time")) is not None]  # fmt: skip
+    return min(stamps, key=_when) if stamps else None
+
+
+def ladder_rungs(plan: Plan, seeds: Sequence[int]) -> list[str]:
+    """Every rung the plan has a ``controls/s<seed>/ladder-<rung>`` step of, in
+    ``evaluation.LADDER_RUNGS``' order (another name after them)."""
+    found = set()
+    for name in plan.steps:
+        match = LADDER_STEP.fullmatch(name)
+        if match and int(match["seed"]) in seeds:
+            found.add(match["rung"])
+    return sorted(found, key=lambda r: (sa.RUNGS.index(r) if r in sa.RUNGS else len(sa.RUNGS), r))
+
+
 def analysis(args: argparse.Namespace) -> dict[str, Any]:
-    runs = Path(args.runs_root)
-    fixation_path = Path(args.fixation)
-    reader = Reader({"runs": runs, "pod1": Path(args.pod1), "pod2": Path(args.pod2),
-                     "repo": REPO_ROOT, "fixation": fixation_path.parent,
-                     **({"study3_runs": Path(args.study3_runs_root),
-                         "study3_repo": Path(args.study3_repo)} if args.study3_runs_root else {}),
-                     **({"reference": Path(args.reference_input)} if args.reference_input
-                        else {})})  # fmt: skip
-    fixation_data = reader.bytes(fixation_path)
-    fixation = json.loads(fixation_data)
-    if fixation.get("kind") != "study5-fixation":
-        refuse(f"{fixation_path.name} is not study 5's fixation record")
+    code = own_code()
+    runs, reader = Path(args.runs_root), reader_of(args)
+    fixation_data, fixation = fixation_of(reader, args.fixation)
     prompts_of = prompt_sets(reader)
     pod1, pod2 = Plan(reader, args.pod1, runs), Plan(reader, args.pod2, runs)
     seeds = fresh_seeds(fixation, pod2.data.get("n"))
@@ -659,6 +780,7 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     ladder_seeds = [s for s in fixation["seeds"]["ladder"] if s in seeds]
     level = float(fixation["scan_intervals"]["level"])
     p, binding = predictions(reader, pod2, seeds)
+    start = first_start(reader, runs, pod2)
     labels = Labels(reader, prompts_of)
 
     theta0_dir = completed(reader, runs, pod1.find("experiments/study5_theta0", seeds[0]), "θ₀")
@@ -688,7 +810,7 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
                 continue
             endpoints.append(sa.endpoint_of(found["run_id"], seed=seed, lr=found["lr"],
                                             stop=found["stop"], row=found["row"],
-                                            theta0=theta0))  # fmt: skip
+                                            theta0=theta0, steps=found["steps"]))  # fmt: skip
             run_labels_[found["run_id"]] = labels.at(found["run_dir"], ENDPOINT)
         result = sa.seed_outcome(seed, endpoints, missing, run_labels_)
         h[seed] = result["h"] if result["h"] is not None else result["reason"]
@@ -732,8 +854,7 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
 
     ladder_records: dict[int, dict[str, Any]] = {}
     ladder_labels: dict[tuple[int, str], Any] = {}
-    rungs = [r for r in sa.RUNGS if any(f"controls/s{s}/ladder-{r}" in pod2.steps
-                                        for s in ladder_seeds)]  # fmt: skip
+    rungs = ladder_rungs(pod2, ladder_seeds)
     for seed in ladder_seeds:
         ladder_records[seed] = {}
         for rung in rungs:
@@ -775,20 +896,25 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         parts, retro = None, {"computed": False, "reason": "--without-study3"}
     else:
         parts = study3_parts(args, fixation, reader, prompts_of)
-        retro = retrospective(parts, pod1, reader, fixation)
+        retro = verified_retrospective(reader, args.retrospective, fixation_data, sa.finite_tree(
+            retrospective(parts, pod1, reader, fixation)))  # fmt: skip
     reference = reference_part(args, fixation_data, fixation, reader)
 
-    return {
+    return sa.finite_tree({
         "kind": KIND,
         "version": VERSION,
         "registration": fixation["registration"],
         "fixation": {"path": FIXATION, "sha256": sha256(fixation_data)},
-        "code": {**git_state(REPO_ROOT), "module": "zero_field_refusal.analysis.study5_analysis"},
+        "code": code,
         "k_star": sa.K_STAR,
         "seeds": {"fresh": seeds, "n": len(seeds), "controls": controls_seeds,
                   "ladder": ladder_seeds},
-        "predictions": binding,
-        "confirmatory": sa.confirmatory(p, h, seeds, fixation["permutation_test"]),
+        "predictions": {**binding, "first_start": start,
+                        "created_before_first_start": (_when(binding["created"]) < _when(start)
+                                                       if _when(binding["created"]) and _when(start)
+                                                       else None)},
+        "confirmatory": {**sa.confirmatory(p, h, seeds, fixation["permutation_test"]),
+                         "excluded_by_state": sa.excluded_by_state(outcomes)},
         "outcomes": outcomes,
         "unsupported": [{"seed": o["seed"], "reason": o["reason"]} for o in outcomes
                         if o["h"] is None],
@@ -799,7 +925,8 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
                                                  ("r", "refusal")),
             "line_scans": sa.line_scans(per_scan, seeds, level),
             "controls": sa.controls(own, control, controls_seeds, level),
-            "ladder": sa.ladder_table(ladder_records, ladder_labels, h, ladder_seeds, rungs),
+            "ladder": sa.ladder_table(ladder_records, ladder_labels, h, ladder_seeds, rungs,
+                                      level),
             "theta0": {"run_id": theta0_dir.name,
                        "counts": theta0_counts if isinstance(theta0_counts, Mapping) else None,
                        "classes": {k: sa._json_value(v) for k, v in
@@ -810,7 +937,7 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         },
         "inputs": dict(sorted(reader.hashes.items())),
         "prompt_sets": dict(sorted(reader.prompt_sets.items())),
-    }  # fmt: skip
+    })  # fmt: skip
 
 
 # ------------------------------------------------------------------ writing and the CLI
@@ -838,47 +965,63 @@ def _number(value: Any) -> str:
 
 def report(result: Mapping[str, Any], digest: str) -> None:
     """Numbers, counts and the record's sha256 only."""
-    test = result["confirmatory"]
-    print(f"fresh {result['seeds']['n']} supported {test['n']} unsupported "
-          f"{len(result['unsupported'])}")  # fmt: skip
-    print(f"rho {_number(test['rho'])} p {_number(test['p_value'])} descriptive "
-          f"{int(test['descriptive'])} predicts "
-          f"{int(test['reading'] == sa.READINGS['predicts'])}")  # fmt: skip
+    if result["kind"] == KIND:
+        test = result["confirmatory"]
+        print(f"fresh {result['seeds']['n']} supported {test['n']} unsupported "
+              f"{len(result['unsupported'])}")  # fmt: skip
+        print(f"rho {_number(test['rho'])} p {_number(test['p_value'])} descriptive "
+              f"{int(test['descriptive'])} predicts "
+              f"{int(test['reading'] == sa.READINGS['predicts'])}")  # fmt: skip
     retro = result["retrospective"]
     if retro.get("computed"):
         interval = retro["harm"]["interval"] or {}
-        print(
-            f"retrospective blocks {retro['blocks']} rho {_number(retro['harm']['rho'])} "
-            f"lower {_number(interval.get('lower'))} upper {_number(interval.get('upper'))}"
-        )
-    print(f"analysis sha256 {digest}")
+        print(f"retrospective blocks {retro['blocks']} n {retro['harm']['n']} rho "
+              f"{_number(retro['harm']['rho'])} lower {_number(interval.get('lower'))} upper "
+              f"{_number(interval.get('upper'))}")  # fmt: skip
+    print(f"{'analysis' if result['kind'] == KIND else 'retrospective'} sha256 {digest}")
 
 
-def parser_of() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=f"python -m zero_field_refusal.analysis.{PROG}",
-                                     description=__doc__.splitlines()[0])  # fmt: skip
+def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--runs-root", type=Path, required=True)
     parser.add_argument("--pod1", type=Path, required=True)
-    parser.add_argument("--pod2", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--fixation", type=Path, default=REPO_ROOT / FIXATION)
     parser.add_argument("--study3-runs-root", type=Path)
     parser.add_argument("--study3-repo", type=Path)
     parser.add_argument("--study3-sealed-dir", type=Path)
-    parser.add_argument("--without-study3", action="store_true")
-    parser.add_argument("--reference-input", type=Path)
-    parser.add_argument("--reference", action="append", default=[], metavar="NAME=FILE")
+
+
+def parser_of() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=f"python -m zero_field_refusal.analysis.{PROG}",
+                                     description=__doc__.splitlines()[0])  # fmt: skip
+    sub = parser.add_subparsers(dest="command", required=True)
+    retro = sub.add_parser("retrospective")
+    _common(retro)
+    full = sub.add_parser("full")
+    _common(full)
+    full.add_argument("--pod2", type=Path, required=True)
+    full.add_argument("--retrospective", type=Path)
+    full.add_argument("--without-study3", action="store_true")
+    full.add_argument("--reference-input", type=Path)
+    full.add_argument("--reference", action="append", default=[], metavar="NAME=FILE")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser_of().parse_args(argv)
     try:
-        if args.without_study3 == bool(args.study3_runs_root and args.study3_repo):
+        study3 = bool(args.study3_runs_root and args.study3_repo)
+        if args.command == "retrospective":
+            if not study3:
+                refuse("the retrospective needs --study3-runs-root and --study3-repo")
+        elif args.without_study3 == study3:
             refuse("give --study3-runs-root and --study3-repo, or --without-study3")
+        elif study3 and args.retrospective is None:
+            refuse("study 3's parts need --retrospective, the record written before the "
+                   "registration")  # fmt: skip
         if args.out.exists() or args.out.is_symlink():
             refuse(f"{args.out.name} exists: never overwritten")
-        result = analysis(args)
+        result = retrospective_record(args) if args.command == "retrospective" else analysis(args)
         data = encoded(result)
         write_once(args.out, data)
     except Refused as exc:
