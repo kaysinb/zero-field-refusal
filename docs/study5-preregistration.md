@@ -104,11 +104,14 @@ All descriptive; none changes the test's reading.
 
 - **Three classes.** Refusal, safe non-refusal and harmful compliance, each by seed; ρ(p_s,
   refusal share) is reported (expected positive).
-- **The surrogate at the endpoints:** ρ(r(θ₂₅), judged refusal share) over the fresh endpoints.
+- **The surrogate at the endpoints:** ρ(r(θ₂₅), judged refusal share) over the fresh endpoints at
+  η_l.
 - **Line scans.** For every fresh seed, at η_l: θ₀ + aΔθ for a ∈ {−1, −0.5, −0.25, +0.25, +0.5}
   besides the endpoint a = +1, each with K_benign, K_harmful, utility and the 521 judged
-  responses. Reported: the odd part h(+a) − h(−a) and the even part h(+a) + h(−a) − 2h(θ₀) per a,
-  their means over seeds with t intervals, and their growth with a.
+  responses, evaluated in a run of its own from the η_l run's endpoint (the η_l run itself is a
+  plain F run). Reported: the odd part h(+a) − h(−a) and the even part h(+a) + h(−a) − 2h(θ₀) for
+  a ∈ {0.25, 0.5, 1}, their means over seeds with t intervals; how they grow with a is read from
+  these three values. A scan point that was not evaluated is reported missing by name.
 - **Crossed controls,** seeds 50000–50005, F at η_l, paired within seed: the same 500 responses in
   another fixed order with the same v₀; the seed's responses and order with v₀ from seed
   50000 + ((s − 50000 + 1) mod 6).
@@ -118,7 +121,7 @@ All descriptive; none changes the test's reading.
   - the linear response without D;
   - δ̂_s;
   - δ̂_s with D shuffled within each tensor, only if δ̂_s and the linear response without D differ
-    in harm by more than 2 pp.
+    in harm by more than 2 pp in the mean over the six seeds.
   Each is reported beside the seed's real endpoint.
 - **θ₀'s baseline** on the 521 prompts, three classes.
 - **Stream-content features,** predefined, of the 500 training responses: share with a refusal or
@@ -127,10 +130,21 @@ All descriptive; none changes the test's reading.
   tokens. ρ with h_s on the fresh seeds.
 - **Study 3's extreme blocks:** the 5 highest and 5 lowest by mean harm at K\*, arms A and F, both
   rates, relabeled by a second judge (Llama-Guard-3-8B, pinned; harmful vs not), and a reference
-  sample of 200 responses (10 per block × arm, strata and weights fixed in the fixation record) by
+  sample of 200 responses (5 per block × arm × rate, drawn uniformly from the 521 prompts with
+  seeds and weights fixed in the fixation record) by
   the annotators of [amendment 11](study3-preregistration.md#amendment-11-the-audits-reference-annotators)
   under [amendment 12](study3-preregistration.md#amendment-12-safety-filter-stops-in-the-audits-labeling).
-  Reported: the high–low contrast by judge and in the reference.
+  Reported: the high–low contrast by judge and in the reference, with one estimand for all
+  three: per block × arm × rate the harmful share (over the 521 for a judge, over the 5 sampled
+  for the reference), a group's share the unweighted mean of its 20 cells, high minus low. The
+  block mean at K\* serves only to select the blocks.
+
+**Fixation record.** `docs/study5-fixation.json` fixes the seeds, the permutation test and the
+bootstrap (counts, RNG seeds, formulas), the interval levels, the extreme blocks, the reference
+sample and the contrast's estimand; its sha256 is entered here at registration. Analysis details
+not stated above (the scale grid of the ladder, the feature matching rule, the judge's reply
+parsing, the handling of missing labels) are those of the code at the registration commit, as
+documented in `docs/operations.md`.
 
 ## Seeds and order
 
