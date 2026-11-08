@@ -1,13 +1,24 @@
 {
  "code": {
-  "commit": "e403bcba75049ae7d23fce2e5ae648d87ba5aa94",
+  "commit": "e359f557f10f934e759ced779d03beef6433b76c",
   "files": {
-   "scripts/study5_fixation.py": "16cee65a1fe9231c360ea07dddcff3f657b0b9a6",
-   "src/zero_field_refusal/analysis/study5_fixation.py": "95c50856e4c63aa076b80e458d7b1f6ceb11bdf3"
+   "scripts/study5_fixation.py": "fdbe69089a98f32ad76b121c3d52c8e30c778c8b",
+   "src/zero_field_refusal/analysis/study5_fixation.py": "a5649d3d984b1152f4f3c8459c2edf34cabbaa63"
   },
   "rule": "the last commit that changed these files; src/, scripts/ and configs/ committed unchanged at HEAD when the record was written"
  },
  "extreme_blocks": {
+  "contrast": {
+   "cell": "per block x arm x rate, the harmful share over all 521 of that run's responses, by each judge from its own label files",
+   "contrast": "high minus low",
+   "group": "the unweighted mean over the group's 20 cells",
+   "judges": [
+    "WildGuard",
+    "Llama-Guard-3-8B"
+   ],
+   "same_as": "the reference sample's estimator (a group's share the mean over its cells of the cell's share), so that the judges and the reference compare one estimand",
+   "selection": "the block mean at K* (interpolated in ln K) is the selection measure only; it is not the contrast's estimand"
+  },
   "count": 5,
   "high": [
    {
@@ -1102,6 +1113,68 @@
    "sealed_dir": "study3-label-c1-20261104",
    "sha256": "8a5be42918d6853644a9b93bba0fdb0104ad4d7d6c9faba3e0223ba567f16088"
   },
+  "ledger": {
+   "count": 54,
+   "files": {
+    "accepted-20261104T180844.875669Z-8f0e6040-1.json": "239825d5d0eceff4afdfa50ea8232a9eb20e07c3d6ac700036be178136c827be",
+    "accepted-20261104T182637.249813Z-b1c020e0-1.json": "e283617898d8bb6656ecd238db974dc3e42f14f44b86f6bed3e83f5653fb498d",
+    "accepted-20261104T184332.863655Z-a10789e6-1.json": "ae5a974da623ba36b2f83893c8e323666e939bf2cfd01341d67df8e130411924",
+    "accepted-20261104T190031.227126Z-a7d0d4c5-1.json": "94840ac0046e5d0ec60fc7265447fe3dcff14d8276a3bce114ce9f54c71c0786",
+    "accepted-20261104T191715.282482Z-2a894ca1-1.json": "1c1b400382acb0798e01642b9b2e5994ad65cdb39c4e83911d2969b12549872b",
+    "accepted-20261104T193340.745500Z-5f3a1927-1.json": "109f15fcaf682fc7fab3bcee7d0995c0ecd259567338e70278671aa226225565",
+    "accepted-20261104T195022.595802Z-5e917e82-1.json": "ab51490b83b4e7e7d8351d614e39032908a189d2bd20ac8e16831dae3a1deb2d",
+    "accepted-20261104T200717.558375Z-af0b04c1-1.json": "39b78b16ee0205ef5b64d7501b4ad6764b8041e05f866d68ada4ac0d2ccd1968",
+    "accepted-20261107T080505.581382Z-2f6863f9-1.json": "39acf40c592e971414f4adb66fe25fee0bce87b2775437b1e3fc48bc5e8aa817",
+    "accepted-20261107T082230.916502Z-293cdc94-1.json": "d43bacb66c3e7aeab2ba0d90ff9733a674124300e0aff8f46d3d89ebb2896c32",
+    "accepted-20261107T083934.406923Z-21eee2fc-1.json": "86024749e091395a50a3ff82a5434ee97f46795003b55cbfd45ea6996b995421",
+    "accepted-20261107T085619.933193Z-186413b2-1.json": "6f68c9fdc9fa08aea567807d31adbeb5289739cce9c2c2131616f8786aa11ae0",
+    "accepted-20261107T091321.846287Z-682f282b-1.json": "0bf49df7027ef212fb0c0d7ac45dab1ee4100e086697f2433ce9975eea8017c7",
+    "accepted-20261107T093018.360177Z-fe650ecd-1.json": "e87e5de1e0f2bdbd38b6e86d5f14712f2b19807c512cd6a571f5227f809c6164",
+    "accepted-20261107T094713.618930Z-68fb1fe2-1.json": "271c302169448fa018d821df1d05bd1a6755b05d0347391a53859765e872b469",
+    "accepted-20261107T100417.121739Z-2149365c-1.json": "2cbca292e5268e9e44c14e2af2c9fa18c3fb8446d58819cfe69fbeb1c9e7b119",
+    "accepted-20261107T102133.627562Z-c60b1621-1.json": "ed6b293b0a31c5fc9e015a71a97d504b208a11f3eef18bfb57b998741bd61f33",
+    "accepted-20261107T103854.302308Z-c652ac59-1.json": "03537d5df42783c7c3c6fe79b7370407fb634b79953adb772742ef870889f798",
+    "accepted-20261107T105616.246565Z-3f0e0d57-1.json": "fe3ea974771cc974fcae74e425f1f96963edafb7f75a217784a20796c3d40e80",
+    "accepted-20261107T111340.824193Z-263aa24a-1.json": "70df3d76118d39fb387a14d557ce63d4b0832f50c9d3c196ede1abf504dc21d1",
+    "accepted-20261107T113121.900879Z-87215a9d-1.json": "a63b831e70ef22c67e1b5f3e66656595125b29dada51b2052abdc1be5abf01eb",
+    "accepted-20261107T114854.184133Z-0b1cd9f3-1.json": "475cbbba8253436dfefd4a698c6d5779e2fb803bfb67d80d2db41365884f83b7",
+    "accepted-20261107T120623.139745Z-9505daf5-1.json": "2d68c46e467ac2c9f92f12310a12fdb1c858078208ddd600a929b9f2b97a8d76",
+    "accepted-20261107T122402.908460Z-515aea49-1.json": "c7510b594a2dae16fec7bc929822e604c9202fd8d38e204f4b94a86c00b8c5bd",
+    "accepted-20261107T124138.734910Z-e95d3f3e-1.json": "1ea4ae7d4cc1e13bd76828d742a2ddd3c353be07b756b9fa07f51789aa02b03d",
+    "accepted-20261107T125918.556601Z-c5be7ae7-1.json": "1bd20b72d87f23454b25621b0584c84da41794a46d8ee76b6bc272cf79415d06",
+    "accepted-20261107T131651.123623Z-057dc918-1.json": "d5dca7e381d34cd000cca9cfc0d5f5e008a9eb0698286978e09d27b91e50f7cb",
+    "batch-20261104T180844.875669Z-8f0e6040.json": "7547f4b9b8f5c6bf83e4f52ecca14a06c5adfcf8d4d1ef228fa3112067ffa77a",
+    "batch-20261104T182637.249813Z-b1c020e0.json": "675ede98058cbb5128421fdcf5ad49e309b7fd9ce61b624255e1d0dd453aff9f",
+    "batch-20261104T184332.863655Z-a10789e6.json": "ea17d34e36d4b8e0e69d41f57d69ec2691ac8d157fd3dc3383f1daf60f8fa5a0",
+    "batch-20261104T190031.227126Z-a7d0d4c5.json": "247dd0871adea963118607763f176dcdca64272d911b34a20dafdc9f84d592b0",
+    "batch-20261104T191715.282482Z-2a894ca1.json": "212b4dde30c2e7224645ce1e3d4302584d9986521e218289eee955676dffe9bb",
+    "batch-20261104T193340.745500Z-5f3a1927.json": "ec8f0acd465f89ddfc9705195425da78b136262bf7c125a5327d161bf33e035d",
+    "batch-20261104T195022.595802Z-5e917e82.json": "ed8091fe233590d73f2411dce0341c4c56e25db83fc3bcdf7f7b1d3e97ac03f6",
+    "batch-20261104T200717.558375Z-af0b04c1.json": "828a70bd4961418511e5b348411fe213efefd2408c2e129ac25fc5d2cc342be1",
+    "batch-20261107T080505.581382Z-2f6863f9.json": "01b6b844e788fbbd92acd7c27385f328dfa18737b6a74467daefc5e5ba39c63f",
+    "batch-20261107T082230.916502Z-293cdc94.json": "208667c104bdf8d1b9b60e453722c1168f02eec342cedb52e2ba68700e85a883",
+    "batch-20261107T083934.406923Z-21eee2fc.json": "5f9cc8d48ba47f587ea7d50e5df0e3e3e8b54f17d413ca764cae5b4d3ff90f46",
+    "batch-20261107T085619.933193Z-186413b2.json": "5b8bc51e798ede55d74a38d6eaa0b87c0eacf9409b4f6784e0fc648c1d5992df",
+    "batch-20261107T091321.846287Z-682f282b.json": "d8d4049f58b4a64044f67d74285f37954ef74654869d349879c822fb51c0e731",
+    "batch-20261107T093018.360177Z-fe650ecd.json": "4d081d3191cd1c16a0b290372610424942fe6d3d4ca9129a60756e529c3cc047",
+    "batch-20261107T094713.618930Z-68fb1fe2.json": "22ec2bd24f57e0baf541bf7615538429f2d19588f001ff58aafd7ac9ccadbade",
+    "batch-20261107T100417.121739Z-2149365c.json": "b253a07e1dbe6cc6f4784120b1b582958e9b516897d56543de3919d7f0ec017b",
+    "batch-20261107T102133.627562Z-c60b1621.json": "ff4309164867aee49d4109fcb3146859b2f324db755ed5ca7edf6f870845a829",
+    "batch-20261107T103854.302308Z-c652ac59.json": "00b2093af8aa93ec5e4b4d53c36f2fc9cffec6d023b5a560b339442e4c0146b9",
+    "batch-20261107T105616.246565Z-3f0e0d57.json": "b3dc57be905016ee763c96eafc8e71139b35654c0adea8c257094d3099d849a0",
+    "batch-20261107T111340.824193Z-263aa24a.json": "6c7db4b55ba99654e5f4c94d5957835096b0f3c84c98718919571ddc0c6b8fe9",
+    "batch-20261107T113121.900879Z-87215a9d.json": "55c468a74bda40f49848b288f02f81ed6ef73187247303ebd598cb69604be0c0",
+    "batch-20261107T114854.184133Z-0b1cd9f3.json": "9a512fe26c1f413dbf6b7ad98803ad43ae4c627f9c9be4f0455395c29535bc47",
+    "batch-20261107T120623.139745Z-9505daf5.json": "249ead5bc4cf26956063dc81288cf26b02bbd625d1579200dcd71fe6024434aa",
+    "batch-20261107T122402.908460Z-515aea49.json": "42e7393292d12ee36f4fd3c22da4816e2f0744816b887cdd37b10cfbc888616d",
+    "batch-20261107T124138.734910Z-e95d3f3e.json": "a03633694bd34b2da15a67a4cef8b8620cae64b264ad88d7f82b63c0f0633442",
+    "batch-20261107T125918.556601Z-c5be7ae7.json": "f9b8d3385d05b701f24f60cc12d5832ff43d9b4b7c89c29296a4d2e9bb6603bf",
+    "batch-20261107T131651.123623Z-057dc918.json": "b6eed8a8fb56beb86961e27598de252f5f1fd153ff67da3eced74f5652fa5a8d"
+   },
+   "path": "study3-ledger",
+   "root": "sealed_dir",
+   "sha256": "46ccc3dc6cb9262aeb329cb8a472b9826dca6b7253edb24915aa4fdaeaf21498"
+  },
   "prompt_ids": {
    "count": 521,
    "sha256": "6239e8c1a50dbba8fd3782820fc189bd6e4fa3bef87c8077bd5bb9b80870e016"
@@ -1148,16 +1221,21 @@
    "20261106T232607Z-c1-confirmation-adam_frozen--s10462-a56fada9-a1": "43ab0c31db3db54227653a4aa039e650b95314d705ff3eff52a1f26f9badbd90",
    "20261106T233308Z-c1-confirmation-adam_frozen--s10462-ec58f793-a1": "a650e9b081855dfc2d556c33f25f240e7519c43ff7e890f26d01e6fff0a0f1e9"
   },
+  "state": {
+   "bound_by": "the freeze's sha256 (its blocks' run ids, weights and code) and, per cell, the run id and the lr the state's records give it, recorded in reference_sample.cells_drawn; the state's run records are not hashed one by one"
+  },
+  "study3_checkout": {
+   "commit": "1f6179a5b36adee4d3af4049d5a5d188f4dd0754",
+   "gpu_code_sha256": "717cd02317526179a821eb8eb57e85cefba9e49083108922013b2b353c45ebbc",
+   "supplies": "the label gate's GPU-code identity, the committed freeze and its validation runs; the readers run from code.commit e359f557f10f934e759ced779d03beef6433b76c"
+  },
   "study3_freeze": {
    "path": "docs/study3-analysis-freeze-c1.json",
    "root": "study3 checkout",
    "sha256": "0e8f2640fb06b58bbfdec873518e90daa0382944f813b958221779f501eb5703"
   },
-  "study3_readers": {
-   "commit": "1f6179a5b36adee4d3af4049d5a5d188f4dd0754",
-   "gpu_code_sha256": "717cd02317526179a821eb8eb57e85cefba9e49083108922013b2b353c45ebbc"
-  },
   "theta0": {
+   "bound_by": "its run id (the state's baseline for its utility checks); no value of it enters the record",
    "root": "runs",
    "run": "study2_stage_a/20261014T192927Z-theta0-s2000-abb703a1-a1"
   }
