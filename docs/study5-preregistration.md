@@ -73,7 +73,8 @@ On study 3's 60 A–F confirmation blocks: p_s from each seed's archived trainin
 streams, against F's harm at K\* in that block. Reported as a retrospective association, Spearman ρ
 with a block-bootstrap interval. It is not a test.
 
-*Result: pending.*
+*Result: pending.* At registration the retrospective record's sha256 is entered here with its
+result.
 
 ## The confirmatory test
 
