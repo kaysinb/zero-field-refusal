@@ -2953,7 +2953,13 @@ requires one surrogate sha256 across the checks, every predictor record and ever
 
 **Blocks.** Each block sets the deadline file first (2 × the estimated minutes of its steps
 outside the seed groups + 60), and so does each seed group (2 × the group's minutes + 60); the cap
-stays. A dead driver or a hung step leaves the Pod idle one group's window at most. The minutes
+stays. A dead driver or a hung step leaves the Pod idle one group's window at most. The deadline
+written is never above the cap `ZFR_DEADLINE_EPOCH` (min(requested, cap), both printed), and the
+cap is never raised from the driver. On pod 2 every block and seed group is admitted only while
+its window and the close's export window (76 minutes) both end before the cap; otherwise its
+deadline step fails (`not admitted`), a stop: no further group starts and the close runs, inside
+the cap. To go on, raise the cap (`update-pod`, a container restart) and start the campaign
+again. The minutes
 are study 3's measured unit costs (an F run 6.9; an evaluation 3.1; a K-only point 1.5; five scan
 points 15.5; a stream 91.7 s per 1000 responses; the predictor 1.7 per seed; a ladder rung 10.6:
 three K-only points of the search, two of the matched-K step and an evaluation; a checkpoint's
@@ -2970,7 +2976,9 @@ the completion record (`fresh/completion`, `$RUNS_DIR/study5_records/<ID>/fresh-
 every fresh run the launcher journals show as started, with its end and outcome. It is written
 only when no started fresh run lacks an end (a run cut off has none until the launcher settles
 it), kept only while the journals still say the same, and archived with the attempt; the
-analysis gives no reading without it, and no fresh label is made before it. A block ends with
+analysis gives no reading without it. The completion record certifies ended attempts only, a
+technical end among them: it is not readiness to label (see "Fresh labeling" below). A block
+ends with
 its records in the bucket, verified, a snapshot of the driver's journal and logs, and its
 receipt.
 
@@ -2989,13 +2997,15 @@ Every block's deadline, snapshot and receipt stop the campaign when they fail. E
 through `scripts/launch.py FILE --max-attempts 1`. Any other run or step that fails is recorded in
 the journal and the campaign goes on to the next seed. A failed step is not run again by a
 restart, and a recorded stop stops again. After a stop the block's archives still run, then the
-close. On pod 2 the close first sets a deadline window for, and attempts, the export of every
-recorded endpoint checkpoint not yet verified in the archive (`close/checkpoints`: uploaded, its
+close. On pod 2 the close first sets a deadline window for (76 minutes, never above the cap; the
+requested, cap and effective deadlines in `close/export-deadline-<attempt>.json`, which says
+explicitly when the effective window is shorter than the export needs), and attempts, the export
+of every recorded endpoint checkpoint not yet verified in the archive (`close/checkpoints`: uploaded, its
 sha256 checked against the run's recorded one); a failure that remains is written to the close
 record (`close/checkpoints-<attempt>.json` in the campaign folder) and printed with the path, the
 recorded sha256 and the error, and the shutdown goes on. Then the plan, the launcher campaigns,
-the receipts and that record go to the bucket, and the deadline is set 15 minutes ahead, so that
-the watcher stops the Pod. The close runs on SIGTERM and on any exception of the driver too.
+the receipts and that record go to the bucket, and the deadline is set 15 minutes ahead (never
+above the cap; recorded in `close/deadline-<attempt>.json`), so that the watcher stops the Pod. The close runs on SIGTERM and on any exception of the driver too.
 Read the journal before anything else.
 
 **Resuming.** Start the same command again, from the same commit: a block with a receipt is
@@ -3086,12 +3096,36 @@ its `.sha256` and its receipt) and `attempts/<attempt>/` per execution: `runs/` 
 journals and logs, runs without an end, the gate and completion records), `campaign/` (the plan,
 the launcher campaigns, the receipts and the snapshots) and `inventories/` (every other archive's
 inventory, read back); the fresh streams under `$ARTIFACT_REMOTE/data/` with every other stream.
-To restore a Pod's `runs/` for the analysis, copy `study5/<ID>/runs/`, then each attempt's
-`attempts/<attempt>/runs/` over it in the attempts' order (the launcher journals only grow, so
-the latest attempt's are complete). The predictions
-record is committed after its copy is verified; the fresh runs need only the copy. No label is
-made by the campaigns: the judging of the fresh runs is a separate step, after every fresh run has
-ended.
+To restore a Pod's `runs/` for the analysis, use `restore-runs` (`restore_runs`; the test of
+the restart runs it): first every attempt's `attempts/<attempt>/runs/`, in the attempts'
+chronological order (the id begins with its UTC time; the launcher journals only grow, so the
+latest attempt's are complete), then every completed stable run directory under `runs/` as a
+whole, replacing whatever an attempt restored at its path (a partial scan or ladder run
+archived by an earlier attempt never survives beside its completed rerun), then the stable
+records; each object's size and MD5 checked. The predictions record is committed after its copy
+is verified; the fresh runs need only the copy. No label is made by the campaigns.
+
+```bash
+python scripts/study5_campaigns.py restore-runs --archive-id pod2-20261110 --dest "$RUNS_DIR"
+```
+
+**Fresh labeling** starts only after the pre-label check passes, on the restored runs:
+`python -m zero_field_refusal.analysis.study5_analysis_cli ready --runs-root "$RUNS_DIR"
+--pod1 "$C/study5-pod1" --pod2 "$C/study5-pod2"`. It reads the analysis's inputs and no label,
+and exits 1 naming each open technical gap (a plan fresh run not ended `done` or `diverged`, a
+launcher conflict, its records unreadable, a technical end, p not bound to either endpoint or its
+predict record missing, the completion record not standing); with none it writes a
+ready-to-label record (its time, the completion record's sha256, the runs) under
+`$RUNS_DIR/study5_records/<ID>/ready-to-label/`. Then label every pod-2 run. The analysis uses
+only labels whose labeling started after the latest ready-to-label record.
+
+**A repair after labeling began** (a technical gap found late, fixed by a recovery round) is
+allowed: archive the old labels (move each pod-2 run's `judge/` to `judge-superseded/<UTC>/`,
+kept, never deleted), let the campaign write its new completion record, restore, run the
+pre-label check again (a new ready-to-label record, after the new completion record), and label
+every pod-2 run again. The analysis lists the earlier labels by run id as superseded and never
+uses them; a run left with labels from before the latest record awaits labels (a technical gap
+of its seed), not an order violation, so a repair does not withhold the reading by order.
 
 **The analysis** runs on a CPU through `python -m zero_field_refusal.analysis.study5_analysis_cli`
 (its docstring holds every rule; the computations are `analysis/study5_analysis.py`'s), from a
@@ -3129,8 +3163,9 @@ inference (`status: withheld`, no ρ, p-value or reading; each unresolved seed n
 reason; ρ over the resolved supported seeds under `descriptive_partial` alone); the descriptive
 quantities stay, partial. The reading is withheld too unless the predictions' bucket copy
 preceded the first fresh start, pod 2's completion record lists exactly the plan's fresh runs,
-every fresh run read is ended in it, every pod-2 run's labeling started (the earliest
-`created_at` of its label rows) and completed after its time, and the seeds are those of
+every fresh run read is ended in it, the latest ready-to-label record is of that completion
+record, postdates it and certifies every fresh run read (labels from before it are superseded,
+listed, never used), and the seeds are those of
 `docs/study5-confirmatory-seeds.json`, its sha256 named by the registration. The surrogate-overlap
 check is descriptive: h_s and ρ(p_s, h_s) on the 482 judged prompts outside the fixation
 record's `evaluation_ids_same_or_close`, for the fresh seeds and for the retrospective. The

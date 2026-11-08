@@ -199,10 +199,12 @@ documented in `docs/operations.md`.
 8. the extreme-block relabeling, which may run any time after step 2;
 9. the report.
 
-Labels of fresh runs are opened only after every fresh run has ended: once its last fresh group
-has ended, the fresh-seed campaign writes a completion record of every fresh run that started,
-with its end, and no fresh label is made before it (the analysis checks every fresh label's
-times against it).
+Labels of fresh runs are opened only after every fresh run has ended and every technical gap is
+resolved: once its last fresh group has ended, the fresh-seed campaign writes a completion record
+of every fresh run that started, with its end; a pre-label check then confirms that no technical
+gap remains and writes a ready-to-label record, and only labels made after the latest such record
+are used. A technical repair after labeling began is followed by the check again and a new
+labeling of every fresh-seed run; the earlier labels are listed as superseded and never used.
 
 ## Limits
 
