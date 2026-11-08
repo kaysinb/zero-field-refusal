@@ -253,7 +253,12 @@ def test_checks_script_writes_record_and_prints_numbers_only(tmp_path, monkeypat
     spec_path.write_text(SPEC_YAML)
     out = tmp_path / "records" / "checks.json"
     argv = ["experiments/smoke", "execution.device=cpu", "--out", str(out),
-            "--surrogate", str(spec_path)]  # fmt: skip
+            "--surrogate", str(spec_path), "--panel-size", "5"]  # fmt: skip
+    with pytest.raises(ValueError, match="not 100"):
+        module.main(argv[:-2])  # the registration's 100 prompts per panel
+    assert not out.exists()
+    assert module.main([*argv[:1], "model.dtype=bfloat16", *argv[1:]]) == 1
+    assert not out.exists()
     code = module.main(argv)
     record = json.loads(out.read_text())
     assert code == (0 if record["passes"] else 2)

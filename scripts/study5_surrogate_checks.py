@@ -4,6 +4,7 @@ extraction"), written as one JSON record.
     python scripts/study5_surrogate_checks.py CONFIG --out RECORD.json [--surrogate SPEC]
         [key=value ...]
 
+Each panel must hold --panel-size prompts (default 100) and the model must be float32.
 CONFIG names the model and the prompt sets (``model``, ``data``, ``execution``); SPEC is the
 surrogate (default ``configs/study5/surrogate.yaml``). The record holds the surrogate's sha256,
 the model, the prompt manifest's sha256, the numerics in force, every check with its numbers,
@@ -35,14 +36,17 @@ def ids_sha256(ids: list[str]) -> str:
     return hashlib.sha256(json.dumps(ids).encode()).hexdigest()
 
 
-def run(cfg, env, spec: surrogate.SurrogateSpec, numerics: dict) -> dict:
-    """The record of the checks at θ₀ in ``env``'s model."""
+def run(cfg, env, spec: surrogate.SurrogateSpec, numerics: dict, panel_size: int = 100) -> dict:
+    """The record of the checks at θ₀ in ``env``'s model; each panel must hold ``panel_size``
+    prompts (the registration's 100)."""
     model = env.new_model()
     model.eval()
     micro = int(cfg.execution.eval_batch_size)
     panels, logprobs = {}, {}
     for role, name in (("harmful", spec.harmful_panel), ("benign", spec.benign_panel)):
         items = env.prompt_set(name)
+        if len(items) != panel_size:
+            raise ValueError(f"panel {name} has {len(items)} prompts, not {panel_size}")
         logprobs[role] = surrogate.continuation_logprobs(
             model, env.tokenizer, [item["text"] for item in items], spec.continuations,
             device=env.device, micro_batch_size=micro, max_tokens=spec.max_tokens,
@@ -116,14 +120,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("overrides", nargs="*")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--surrogate", type=Path, default=surrogate.SPEC_PATH)
+    parser.add_argument("--panel-size", type=int, default=100)
     args = parser.parse_args(argv)
     if args.out.exists():
         print(f"record exists: {args.out}")
         return 1
     cfg = load_config(args.config, args.overrides)
+    if cfg.model.dtype != "float32":
+        print(f"model dtype {cfg.model.dtype}, not float32")
+        return 1
     numerics = configure_numerics(cfg, cfg.execution.device)  # first: before any CUDA work
     spec = surrogate.load_spec(args.surrogate)
-    record = run(cfg, environment(cfg, cfg.execution.device), spec, numerics)
+    record = run(cfg, environment(cfg, cfg.execution.device), spec, numerics, args.panel_size)
     write_new(args.out, record)
     report(record)
     return 0 if record["passes"] else 2

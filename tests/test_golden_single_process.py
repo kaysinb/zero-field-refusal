@@ -84,6 +84,9 @@ def snapshot(run_dir: Path) -> dict[str, list[str]]:
 
 @pytest.mark.parametrize("arm", ARMS)
 def test_single_process_records_are_pinned(arm, env, tmp_path) -> None:  # noqa: F811
+    # The fixture is pinned in a process with no visible CUDA device; a visible one changes the
+    # CPU records in the last digits, which would read as a code change.
+    assert not torch.cuda.is_available(), "run the golden test with CUDA_VISIBLE_DEVICES="
     torch.set_num_threads(1)
     extra = ("optimizer.preconditioner.batches=3",) if arm != "A" else ()
     checkpoint = f"tracking.endpoint_checkpoint={tmp_path / 'endpoint.pt'}"
