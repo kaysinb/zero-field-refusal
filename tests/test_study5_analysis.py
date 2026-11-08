@@ -545,6 +545,7 @@ class World:
         self.ladder()
         self.records()
         self.completion()
+        self.ready()
 
     # -------------------------------------------------------------- runs
 
@@ -814,6 +815,39 @@ class World:
             },
         )
 
+    def ready(self, written: str = "2026-11-11T06:00:00+00:00", name: str = "ready-1") -> Path:
+        """A ready-to-label record as the pre-label check writes it: of the completion record
+        on disk now, certifying every run it lists."""
+        completion = self.runs / "study5_records/pod2-x/fresh-completion.json"
+        data = completion.read_bytes()
+        runs = [{"campaign": r["campaign"], "run": r["run"], "run_id": r["run_id"]}
+                for r in json.loads(data)["runs"]]  # fmt: skip
+        path = self.runs / "study5_records/pod2-x/ready-to-label" / f"{name}.json"
+        dump(path, {"kind": "study5-ready-to-label", "written_utc": written,
+                    "completion": {"record": completion.name, "sha256": sha(data),
+                                   "written_utc": json.loads(data)["written_utc"]},
+                    "runs": runs})  # fmt: skip
+        return path
+
+    def relabel(self, run_dir: Path, when: str) -> None:
+        """The run labeled again (its rows stamped ``when``), its receipt for the new file."""
+        path = run_dir / "judge" / "wildguard.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        lines(path, [{**r, "created_at": when} for r in rows])
+        receipt = run_dir / "judge" / "wildguard.receipt.json"
+        data = json.loads(receipt.read_text())
+        dump(receipt, {**data, "labels_sha256": sha(path.read_bytes()), "completed_at": when})
+
+    def pod2_runs(self) -> list[Path]:
+        """Every pod-2 run directory with labels (fresh, scan, controls, ladder)."""
+        found = [
+            d
+            for e in ("study5", "study5_scan", "study5_ladder")
+            for d in sorted((self.runs / e).glob("*"))
+            if (d / "judge").is_dir()
+        ]
+        return [d for d in found if d != self.theta0]
+
     def plans(self) -> None:
         for pod in ("pod1", "pod2"):
             folder = self.tmp / pod
@@ -1029,7 +1063,11 @@ def test_pod1s_gates_are_reported_and_bind_the_analysis(world) -> None:
     assert result["hardware"]["runs"][world.lower[50000].name] == ["NVIDIA L40S"]
     assert result["hardware"]["runs"][world.scan[50000].name] == ["NVIDIA L40S"]
     assert result["labels_order"]["after"] is True and result["labels_order"]["earlier"] == []
-    assert result["labels_order"]["completion_written"] == "2026-11-11T00:00:00+00:00"
+    assert result["labels_order"]["ready_written"] == "2026-11-11T06:00:00+00:00"
+    assert (
+        result["ready_to_label"]["stands"] and result["ready_to_label"]["latest"] == "ready-1.json"
+    )
+    assert result["superseded_labels"] == []
     assert result["confirmatory"]["order_violated"] is False
     assert "reading_withheld" not in result["confirmatory"]
 
@@ -1146,11 +1184,14 @@ def test_p_is_bound_to_both_runs_it_is_paired_with(world, change, bound, end) ->
 
 
 def test_the_order_violated_gives_no_reading(world) -> None:
+    """The predictions' copy after the first fresh start withholds the reading by order. A label
+    started before the latest ready-to-label record is no order violation: it is superseded
+    (listed, never used) and its run awaits labels, a technical gap."""
     edit_json(
         world.runs / "study5_records/pod2-x/predictions-receipt.json",
         created="2026-11-11T00:00:00Z",
     )  # after the first fresh start
-    # 50001's η_u labeling started before pod 2's completion record and finished after it
+    # 50001's η_u labeling started before the ready-to-label record and finished after it
     run = world.upper[50001]
     path = run / "judge" / "wildguard.jsonl"
     rows = [json.loads(line) for line in path.read_text().splitlines()]
@@ -1162,15 +1203,20 @@ def test_the_order_violated_gives_no_reading(world) -> None:
     assert code == 0, why
     result = json.loads(out.read_text())
     test = result["confirmatory"]
-    assert test["order_violated"] is True and test["labels_before_runs_ended"] is True
-    assert test["reading"] is None and len(test["reading_withheld"]) == 2
-    assert test["status"] == "withheld" and test["p_value"] is None
+    assert test["order_violated"] is True
+    assert test["reading"] is None and test["status"] == "withheld" and test["p_value"] is None
+    assert [r["seed"] for r in test["reading_withheld"]] == [50001, None]
+    assert "bucket copy" in test["reading_withheld"][1]["reason"]
+    assert result["superseded_labels"] == [run.name]
     order = result["labels_order"]
-    assert order["earlier"] == [run.name] and order["after"] is False
-    assert order["labeling"][run.name] == {"started_at": "2026-11-10T02:00:00+00:00",
-                                           "completed_at": "2026-11-12T00:00:00+00:00"}  # fmt: skip
-    assert order["completion_written"] > order["labeling"][run.name]["started_at"]
-    assert order["labeling"][run.name]["completed_at"] > order["completion_written"]
+    assert order["superseded"][run.name] == {
+        "started_at": "2026-11-10T02:00:00+00:00",
+        "completed_at": "2026-11-12T00:00:00+00:00",
+    }
+    assert order["after"] is True and run.name not in order["labeling"]
+    by_seed = {o["seed"]: o for o in result["outcomes"]}
+    assert by_seed[50001]["unresolved"] == "labels"
+    assert "superseded" in by_seed[50001]["reason"]
 
 
 def test_the_runs_roots_of_study5_and_study3_do_not_overlap(world) -> None:
@@ -1522,8 +1568,9 @@ def test_a_missing_or_unended_run_leaves_its_seed_unresolved_and_withholds_the_r
     result = json.loads(out.read_text())
     test = result["confirmatory"]
     assert test["status"] == "withheld" and (test["rho"], test["p_value"]) == (None, None)
-    assert [r["seed"] for r in test["reading_withheld"]] == [50001, None]
+    assert test["reading_withheld"][0]["seed"] == 50001
     assert "completion record" in test["reading_withheld"][1]["reason"]
+    assert all(r["seed"] is None for r in test["reading_withheld"][1:])
     assert test["reading_withheld"][0]["reason"].startswith("runs: open: missing")
     assert test["descriptive_partial"]["n"] == 1 and test["descriptive_partial"]["p_value"] is None
     assert result["technically_unresolved"] == [
@@ -1551,12 +1598,12 @@ def test_pending_labels_leave_a_supported_seed_unresolved(world) -> None:
     [
         ("missing", "completion record of the fresh runs is missing"),
         ("fewer", "not exactly the plan's 8"),
-        ("before", "opened after pod 2's completion record"),
+        ("before", "does not postdate pod 2's completion record"),
     ],
 )
 def test_fresh_labels_need_the_completion_record_before_them(world, case, problem) -> None:
-    """Pod 2's completion record lists exactly the plan's fresh runs, each ended, and every fresh
-    label receipt (its labeling's start too) comes after its time; otherwise the reading is
+    """Pod 2's completion record lists exactly the plan's fresh runs, each ended, and the latest
+    ready-to-label record (which fresh labels must follow) postdates it; otherwise the reading is
     withheld, the descriptive report written."""
     rel = world.runs / "study5_records/pod2-x/fresh-completion.json"
     if case == "missing":
@@ -1564,7 +1611,7 @@ def test_fresh_labels_need_the_completion_record_before_them(world, case, proble
     elif case == "fewer":
         world.completion(drop=1)
     else:
-        world.completion(written="2026-11-11T13:00:00+00:00")  # after the labeling started
+        world.completion(written="2026-11-11T13:00:00+00:00")  # after the ready record
     out = world.tmp / "analysis.json"
     code, why = call(world.argv(out, "--without-study3"))
     assert code == 0, why
@@ -1597,3 +1644,101 @@ def test_the_seeds_are_the_committed_choice_the_registration_names(world, monkey
                 else "not the committed choice")  # fmt: skip
     assert any(expected in p for p in result["confirmatory_seeds"]["problems"])
     assert result["confirmatory"]["status"] == "withheld"
+
+
+def test_a_repair_after_labeling_supersedes_the_earlier_labels(world) -> None:
+    """Labels made, then a technical repair: a new completion record, a new ready-to-label
+    record, the old labels moved aside to judge-superseded/ and the runs labeled again. The old
+    labels are listed as superseded and never used; the new ones are; the order withholds
+    nothing. A run not labeled again keeps labels from before the latest ready record: they are
+    superseded and the run awaits labels (a technical gap), not an order violation."""
+    world.completion(written="2026-11-12T00:00:00+00:00")
+    world.ready(written="2026-11-12T01:00:00+00:00", name="ready-2")
+    runs = world.pod2_runs()
+    kept = world.upper[50001]
+    for run in runs:
+        if run == kept:
+            continue
+        shutil.copytree(run / "judge", run / "judge-superseded" / "20261112T010000Z")
+        world.relabel(run, "2026-11-12T02:00:00+00:00")
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, "--without-study3"))
+    assert code == 0, why
+    result = json.loads(out.read_text())
+    assert result["ready_to_label"]["latest"] == "ready-2.json"
+    assert [r["record"] for r in result["ready_to_label"]["records"]] == [
+        "ready-1.json",
+        "ready-2.json",
+    ]
+    assert result["superseded_labels"] == sorted(r.name for r in runs)
+    order = result["labels_order"]
+    assert order["superseded"][kept.name]["started_at"] == "2026-11-11T12:00:00+00:00"
+    assert order["superseded"][world.lower[50000].name] == {"archived": True}
+    test = result["confirmatory"]
+    assert test["reading_withheld"] == [
+        {"seed": 50001, "reason": test["reading_withheld"][0]["reason"]}
+    ] and test["reading_withheld"][0]["reason"].startswith("labels: ")
+    by_seed = {o["seed"]: o for o in result["outcomes"]}
+    assert by_seed[50000]["h"] is not None and by_seed[50001]["unresolved"] == "labels"
+    # the run labeled again too: nothing withheld, the new labels used
+    shutil.copytree(kept / "judge", kept / "judge-superseded" / "20261112T010000Z")
+    world.relabel(kept, "2026-11-12T03:00:00+00:00")
+    out = world.tmp / "analysis-2.json"
+    code, why = call(world.argv(out, "--without-study3"))
+    assert code == 0, why
+    result = json.loads(out.read_text())
+    test = result["confirmatory"]
+    assert "reading_withheld" not in test and test["status"] == "descriptive"
+    assert result["labels_order"]["after"] is True
+    assert result["superseded_labels"] == sorted(r.name for r in runs)
+    assert {o["seed"]: o for o in result["outcomes"]}[50001]["h"] is not None
+
+
+def test_the_pre_label_check_names_each_open_gap_or_writes_the_ready_record(world, capsys) -> None:
+    """``ready`` reads the analysis's inputs and no label: with every technical gap resolved it
+    writes a ready-to-label record (its time, the completion record's sha256, the runs); a
+    technical end, a binding mismatch or a missing completion record make it exit 1 naming
+    each, writing nothing."""
+    for run in world.pod2_runs():
+        shutil.rmtree(run / "judge")  # no label is read
+    world.plans()
+    argv = [
+        str(a)
+        for a in (
+            "ready",
+            "--runs-root",
+            world.runs,
+            "--pod1",
+            world.tmp / "pod1",
+            "--pod2",
+            world.tmp / "pod2",
+            "--fixation",
+            world.fixation_path,
+        )
+    ]
+    folder = world.runs / "study5_records/pod2-x/ready-to-label"
+    before = set(folder.glob("*.json"))
+    assert cli.main(argv) == 0
+    (written,) = set(folder.glob("*.json")) - before
+    record = json.loads(written.read_text())
+    completion = world.runs / "study5_records/pod2-x/fresh-completion.json"
+    assert record["kind"] == "study5-ready-to-label"
+    assert record["completion"]["sha256"] == sha(completion.read_bytes())
+    assert len(record["runs"]) == 8 and record["seeds"] == world.seeds
+    assert "ready to label: 8 fresh runs" in capsys.readouterr().out
+    assert not any("judge" in k for k in record["inputs"])
+    # a technical end (the η_u run of 50001 stopped by an error) and a binding mismatch
+    edit_json(world.upper[50001] / "terminal.json", stop={"reason": "error"})
+    meta = json.loads((world.lower[50002] / "meta.json").read_text())
+    meta["inputs"]["v0_sha256"] = "other"
+    dump(world.lower[50002] / "meta.json", meta)
+    written.unlink()
+    assert cli.main(argv) == 1
+    printed = capsys.readouterr().out
+    assert "open gap: seed 50001: technical" in printed
+    assert "open gap: seed 50002: binding: η_l" in printed
+    assert "not ready to label: 2 open gaps" in printed
+    assert set(folder.glob("*.json")) == before
+    completion.unlink()
+    assert cli.main(argv) == 1
+    assert "completion record of the fresh runs is missing" in capsys.readouterr().out

@@ -6,11 +6,24 @@ computations are ``analysis.study5_analysis``'s).
     python -m zero_field_refusal.analysis.study5_analysis_cli retrospective --runs-root DIR
         --pod1 DIR --out FILE --study3-runs-root DIR --study3-repo DIR [--study3-sealed-dir DIR]
         [--fixation docs/study5-fixation.json]
+    python -m zero_field_refusal.analysis.study5_analysis_cli ready --runs-root DIR --pod1 DIR
+        --pod2 DIR [--fixation docs/study5-fixation.json]
     python -m zero_field_refusal.analysis.study5_analysis_cli full --runs-root DIR --pod1 DIR
         --pod2 DIR --out FILE [--fixation docs/study5-fixation.json]
         (--study3-runs-root DIR --study3-repo DIR [--study3-sealed-dir DIR] --retrospective FILE
          | --without-study3)
         [--reference-input DIR --reference NAME=FILE [--reference NAME=FILE]]
+
+**ready** (the pre-label check, before any fresh label; ``readiness``) reads the analysis's
+inputs and no label, and exits 1 naming each open technical gap (a plan fresh run not ended
+``done`` or ``diverged`` or its records unreadable, study 3's open or unresolved support state, p
+not bound to an endpoint or its predict record missing, pod 2's completion record not standing);
+with none it writes a ready-to-label record (kind ``study5-ready-to-label``: its time, the
+completion record's sha256, the runs it certifies) once, under ``study5_records/<pod 2's
+ID>/ready-to-label/`` of the runs root. Fresh labeling starts only after it passed. A repair
+after labeling began (a technical gap found late) is allowed: the check runs again, writes a
+newer record, and every pod-2 run is labeled again; labels from before the latest record are
+superseded (listed, never used).
 
 **retrospective** (registration order step 2, before the registration; no pod2 input) writes the
 retrospective record (kind ``study5-retrospective``): ρ(p_s, F's harm at K*) over study 3's 60
@@ -99,13 +112,20 @@ alone); the descriptive quantities stay as they are, partial, the missing named.
 order: the predictions' bucket copy created before the first fresh start (``order_violated``
 otherwise); pod 2's completion record (``fresh/completion``: every fresh run its launcher
 journals show as started, with its end) present, listing exactly the plan's fresh runs and every
-fresh run read here as ended (``completion``); every pod-2 run's labeling started (the earliest
-``created_at`` of its label rows) and its receipt completed (``completed_at``) after that
-record's time (``labels_order``; ``labels_before_runs_ended`` otherwise); and the seeds the
+fresh run read here as ended (``completion``); the latest ready-to-label record
+(``ready_to_label``) of that completion record, written after it, certifying every fresh run
+read; and the seeds the
 committed choice (``docs/study5-confirmatory-seeds.json``, its sha256 named by the registration
 at this commit, its seeds pod 2's: ``confirmatory_seeds``). Every run's GPUs as its
 ``meta.json`` records them are reported (``hardware``), never refused. --runs-root and
 --study3-runs-root must not overlap.
+
+**Superseded labels.** Of a pod-2 run, only labels whose labeling started (the earliest
+``created_at`` of its label rows) after the latest ready-to-label record are used, their receipt
+completed after it too (``labels_order``). Earlier ones are superseded: listed by run id
+(``superseded_labels``, with ``labels_order.superseded``; a ``judge-superseded/`` folder, labels
+moved aside by a repair, listed by its existence alone), never used in any quantity; the run then
+awaits labels, a technical gap of its seed, not an order violation. θ₀'s run (pod 1) is apart.
 
 **The surrogate overlap** (descriptive, predeclared). The judged prompts the fixation record's
 ``surrogate_overlap.evaluation_ids_same_or_close`` names match a surrogate-panel prompt by
@@ -367,9 +387,15 @@ class Labels:
     """The WildGuard labels of study-5 runs, each run read once, a failure kept as its reason."""
 
     def __init__(self, reader: Reader, prompts_of, judge: str = WILDGUARD,
-                 exclude: frozenset[str] = frozenset()) -> None:  # fmt: skip
+                 exclude: frozenset[str] = frozenset(), ready: str | None = None,
+                 exempt: Sequence[Path] = ()) -> None:  # fmt: skip
+        """``ready``: the latest ready-to-label record's time; a run's labels whose labeling
+        started at or before it are superseded (never used: the run awaits its labels), except
+        for the ``exempt`` runs (θ₀'s, pod 1's)."""
         self.reader, self.prompts_of, self.judge = reader, prompts_of, judge
         self.exclude = frozenset(exclude)
+        self.ready, self.exempt = _when(ready), {Path(d) for d in exempt}
+        self.superseded: dict[str, dict[str, Any]] = {}  # run id → where and when
         self.identity = judge_identity(load_config(f"judge/{judge}"))
         self.found: dict[Path, dict[str, Any] | str] = {}
 
@@ -380,7 +406,30 @@ class Labels:
                                                  self.prompts_of, self.exclude)  # fmt: skip
             except (OSError, ValueError, KeyError) as exc:
                 self.found[run_dir] = f"labels: {_why(self.reader, exc)}"
+            self._supersede(Path(run_dir))
         return self.found[run_dir]
+
+    def _supersede(self, run_dir: Path) -> None:
+        """Labels from before the latest ready-to-label record are superseded: kept where they
+        are, listed by run id, never used; the run awaits labels made after it. Labels moved
+        aside (a ``judge-superseded/`` folder: its existence only, never its contents) are
+        listed too."""
+        if self.ready is None or run_dir in self.exempt:
+            return
+        archived = run_dir / "judge-superseded"
+        if archived.is_dir() and any(archived.iterdir()):
+            self.superseded.setdefault(run_dir.name, {})["archived"] = True
+        found = self.found[run_dir]
+        if not isinstance(found, Mapping):
+            return
+        started = _when(found.get("started_at"))
+        if started is None or started <= self.ready:
+            self.superseded.setdefault(run_dir.name, {}).update(
+                started_at=found.get("started_at"), completed_at=found.get("completed_at")
+            )
+            self.found[run_dir] = ("labels: superseded: its labeling started before the latest "
+                                   "ready-to-label record; the run awaits labels made after "
+                                   "it")  # fmt: skip
 
     def at(self, run_dir: Path | str, condition: str) -> dict[str, int] | str:
         """A run's counts at one condition, or the reason they are missing."""
@@ -747,25 +796,89 @@ def hardware_of(reader: Reader, run_dir: Path | str) -> Any:
     return list((meta.get("hardware") or {}).get("gpus") or [])
 
 
-def labels_order(found: Mapping[Path, Any], pod2_runs: Sequence[Path], completion: str | None
-                 ) -> dict[str, Any]:  # fmt: skip
-    """Labels of fresh runs opened only after every fresh run ended (registration, "Seeds and
-    order"): every pod-2 run's labeling started (its label rows' earliest ``created_at``) and its
-    receipt completed (``completed_at``) after the time of pod 2's completion record
-    (``completion_part``). ``after`` False when one did not, None when it cannot be told (no
-    completion record, or a time that does not read); each run's times are reported."""
-    end = _when(completion)
+def labels_order(found: Mapping[Path, Any], pod2_runs: Sequence[Path], ready: str | None,
+                 superseded: Mapping[str, Any]) -> dict[str, Any]:  # fmt: skip
+    """Labels of fresh runs opened only after every fresh run ended and every technical gap was
+    resolved (registration, "Seeds and order"): the labels used are those whose labeling started
+    (its label rows' earliest ``created_at``) after the latest ready-to-label record
+    (``Labels``: earlier ones are superseded, listed, never used); each one's receipt completed
+    (``completed_at``) after it too. ``after`` None without a ready-to-label record, False when a
+    receipt's time does not follow it or does not read; each run's times are reported."""
+    end = _when(ready)
     runs = {Path(d).name: found[d] for d in pod2_runs if isinstance(found.get(d), Mapping)}
-    times = {r: (f.get("started_at"), f.get("completed_at")) for r, f in runs.items()}
-    earlier = sorted(r for r, both in times.items() if end is not None
-                     and any(_when(t) is not None and _when(t) <= end for t in both))  # fmt: skip
-    unknown = sorted(r for r, both in times.items() if any(_when(t) is None for t in both))
-    after = None if end is None or unknown else not earlier
-    return {"completion_written": completion, "runs": len(times), "after": after,
-            "earlier": earlier, "unknown": unknown,
+    times = {r: f.get("completed_at") for r, f in runs.items()}
+    earlier = sorted(r for r, t in times.items() if end is not None and _when(t) is not None
+                     and _when(t) <= end)  # fmt: skip
+    unknown = sorted(r for r, t in times.items() if _when(t) is None)
+    after = None if end is None else not (earlier or unknown)
+    return {"ready_written": ready, "runs": len(times), "after": after, "earlier": earlier,
+            "unknown": unknown, "superseded": dict(sorted(superseded.items())),
             "labeling": {r: {"started_at": f.get("started_at"),
                              "completed_at": f.get("completed_at")}
                          for r, f in sorted(runs.items())}}  # fmt: skip
+
+
+READY_KIND = "study5-ready-to-label"
+READY_FOLDER = "ready-to-label"  # under the runs root's study5_records/<pod 2's ID>/
+
+
+def ready_folder(runs: Path, pod2: Plan) -> Path:
+    return Path(runs) / "study5_records" / str(pod2.data.get("archive_id")) / READY_FOLDER
+
+
+def ready_records(reader: Reader, runs: Path, pod2: Plan) -> dict[str, Any]:
+    """Every ready-to-label record the pre-label check wrote (``ready``), and the latest by its
+    time, whose time is the one fresh labels must follow."""
+    out: dict[str, Any] = {"records": [], "latest": None, "written_utc": None, "record": None,
+                           "problems": []}  # fmt: skip
+    folder = ready_folder(runs, pod2)
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        try:
+            data = reader.bytes(path)
+            found = json.loads(data)
+        except (OSError, ValueError) as exc:
+            out["problems"].append(f"the ready-to-label record {path.name} does not read "
+                                   f"({type(exc).__name__})")  # fmt: skip
+            continue
+        if not isinstance(found, dict) or found.get("kind") != READY_KIND or _when(
+                found.get("written_utc")) is None:  # fmt: skip
+            out["problems"].append(f"{path.name} is not a ready-to-label record")
+            continue
+        out["records"].append({"record": path.name, "sha256": sha256(data),
+                               "written_utc": found["written_utc"]})  # fmt: skip
+        if out["record"] is None or _when(found["written_utc"]) > _when(out["written_utc"]):
+            out |= {"latest": path.name, "written_utc": found["written_utc"], "record": found}
+    return out
+
+
+def ready_part(ready: Mapping[str, Any], completion: Mapping[str, Any],
+               used: Mapping[tuple[str, str], str]) -> dict[str, Any]:  # fmt: skip
+    """The latest ready-to-label record against pod 2's completion record and the runs read: of
+    that completion record (its sha256), written after it, certifying every fresh run read. Its
+    problems withhold the reading."""
+    problems = list(ready["problems"])
+    found = ready["record"]
+    if found is None:
+        problems.append("no ready-to-label record: the pre-label check (study5_analysis_cli "
+                        "ready) has not passed")  # fmt: skip
+    else:
+        mine = found.get("completion") or {}
+        if mine.get("sha256") != completion.get("sha256"):
+            problems.append("the latest ready-to-label record is not of pod 2's completion record")
+        end, own = _when(completion.get("written_utc")), _when(found.get("written_utc"))
+        if end is None or own is None or own <= end:
+            problems.append("the latest ready-to-label record does not postdate pod 2's "
+                            "completion record")  # fmt: skip
+        certified = {(r.get("campaign"), r.get("run"), r.get("run_id"))
+                     for r in found.get("runs") or [] if isinstance(r, Mapping)}  # fmt: skip
+        other = sorted(f"{c}: {r}" for (c, label), r in used.items()
+                       if (c, label, r) not in certified)  # fmt: skip
+        if other:
+            problems.append(f"{len(other)} fresh runs read are not the ones the latest "
+                            f"ready-to-label record certifies (first: {other[0]})")  # fmt: skip
+    return {"records": ready["records"], "latest": ready["latest"],
+            "written_utc": ready["written_utc"], "stands": not problems,
+            "problems": problems}  # fmt: skip
 
 
 def fresh_cells(plan: Plan) -> set[tuple[str, str]]:
@@ -1251,6 +1364,61 @@ def ladder_rungs(plan: Plan, seeds: Sequence[int]) -> list[str]:
     return sorted(found, key=lambda r: (sa.RUNGS.index(r) if r in sa.RUNGS else len(sa.RUNGS), r))
 
 
+def theta0_of(reader: Reader, runs: Path, pod1: Plan, seeds: Sequence[int]
+              ) -> tuple[Path, Mapping[str, float], Any]:  # fmt: skip
+    """θ₀'s evaluation run (pod 1), its accuracies (gross collapse is checked against them) and
+    its summary; refused when it does not read."""
+    from .study3_records import read_theta0
+
+    theta0_dir = completed(reader, runs, pod1.find("experiments/study5_theta0", seeds[0]), "θ₀")
+    if isinstance(theta0_dir, str):
+        refuse(f"θ₀'s evaluation: {theta0_dir}")
+    try:
+        return theta0_dir, read_theta0(theta0_dir), reader.json(theta0_dir / "summary.json")
+    except (OSError, ValueError) as exc:
+        refuse(f"θ₀'s evaluation does not read: {reader.scrub(str(exc))}")
+
+
+def seed_runs(reader: Reader, runs: Path, pod2: Plan, seed: int, theta0: Mapping[str, float],
+              entries: Mapping[int, Any]) -> dict[str, Any]:  # fmt: skip
+    """A fresh seed's two F runs, read without any label: each run (``f_run``) or why it is
+    missing, the plan's cell of each, the endpoints (``sa.endpoint_of``), the missing runs'
+    reasons, F's support (study 3's rule, on K alone), and p's binding to both endpoints (the
+    problems, each named by its endpoint, and the predict record)."""
+    cells = {name: pod2.find(FRESH, seed, lr, (FRESH_ROLE,))
+             for name, lr in (("η_l", ETA_L), ("η_u", ETA_U))}  # fmt: skip
+    found = {name: f_run(reader, completed(reader, runs, cells[name], name), seed, lr)
+             for name, lr in (("η_l", ETA_L), ("η_u", ETA_U))}  # fmt: skip
+    endpoints, missing = [], []
+    for run in found.values():
+        if isinstance(run, str):
+            missing.append(run)
+            continue
+        endpoints.append(sa.endpoint_of(run["run_id"], seed=seed, lr=run["lr"], stop=run["stop"],
+                                        row=run["row"], theta0=theta0,
+                                        steps=run["steps"]))  # fmt: skip
+    predict_path = pod2.output(f"streams/s{seed}/predict")
+    problems, predicted = [], None
+    for name, run in found.items():
+        if isinstance(run, str):
+            continue
+        problem, predicted = binding_problem(reader, entries.get(seed), predict_path, run)
+        if problem is not None:
+            problems.append(f"{name}: {problem}")
+    return {"cells": cells, "lo": found["η_l"], "hi": found["η_u"], "endpoints": endpoints,
+            "missing": missing, "support": sa.f_support(seed, endpoints)[0],
+            "binding": problems, "predicted": predicted,
+            "predict_path": predict_path}  # fmt: skip
+
+
+def gap_kind(binding: Sequence[str], missing: Sequence[str], state: Any) -> str | None:
+    """A seed's technical gap that is not its labels' (``sa.seeds_by_state``' kinds): ``binding``
+    on either endpoint, ``runs`` (a run missing, not ended, unreadable, study 3's open state),
+    ``technical`` (study 3's unresolved state); None when there is none."""
+    return ("binding" if binding else "runs" if missing or state == "open"
+            else "technical" if state == "unresolved" else None)  # fmt: skip
+
+
 def analysis(args: argparse.Namespace) -> dict[str, Any]:
     code = own_code()
     runs, reader = Path(args.runs_root), reader_of(args)
@@ -1273,21 +1441,14 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         refuse("a plan names another surrogate than the checks'")
     start = first_start(reader, runs, pod2)
     excluded_ids = overlap_ids(fixation)
-    labels = Labels(reader, prompts_of, exclude=excluded_ids)
+    theta0_dir, theta0, theta0_summary = theta0_of(reader, runs, pod1, seeds)
+    # only labels started after the latest ready-to-label record count; θ₀'s (pod 1) apart
+    ready = ready_records(reader, runs, pod2)
+    labels = Labels(reader, prompts_of, exclude=excluded_ids, ready=ready["written_utc"],
+                    exempt=(theta0_dir,))  # fmt: skip
     surrogate_records: dict[str, Any] = {}  # every predictor and endpoint record, by name
     pod2_runs: list[Path] = []  # the fresh seeds' runs read, for the labels' order
     gpus: dict[str, Any] = {}  # every run's GPUs, by run id
-
-    theta0_dir = completed(reader, runs, pod1.find("experiments/study5_theta0", seeds[0]), "θ₀")
-    if isinstance(theta0_dir, str):
-        refuse(f"θ₀'s evaluation: {theta0_dir}")
-    from .study3_records import read_theta0
-
-    try:
-        theta0 = read_theta0(theta0_dir)
-        theta0_summary = reader.json(theta0_dir / "summary.json")
-    except (OSError, ValueError) as exc:
-        refuse(f"θ₀'s evaluation does not read: {reader.scrub(str(exc))}")
     theta0_counts = labels.at(theta0_dir, THETA0)
     theta0_point = sa.point_values(theta0_counts, theta0_summary)
     gpus[theta0_dir.name] = hardware_of(reader, theta0_dir)
@@ -1298,45 +1459,29 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     used: dict[tuple[str, str], str] = {}  # the fresh runs read: (campaign, label) → run id
     h_overlap: dict[int, sa.Value] = {}  # h_s without the prompts of the surrogate overlap
     for seed in seeds:
-        cells = {name: pod2.find(FRESH, seed, lr, (FRESH_ROLE,))
-                 for name, lr in (("η_l", ETA_L), ("η_u", ETA_U))}  # fmt: skip
-        lo_dir = completed(reader, runs, cells["η_l"], "η_l")
-        hi_dir = completed(reader, runs, cells["η_u"], "η_u")
-        lo, hi = f_run(reader, lo_dir, seed, ETA_L), f_run(reader, hi_dir, seed, ETA_U)
-        endpoints, missing, run_labels_ = [], [], {}
-        for name, found in (("η_l", lo), ("η_u", hi)):
-            if isinstance(found, str):
-                missing.append(found)
+        # the two runs and p's binding to both endpoints (its record the published one, its v₀,
+        # θ₀ and training stream each endpoint's), as the pre-label check reads them
+        found = seed_runs(reader, runs, pod2, seed, theta0, entries)
+        lo, hi, missing, problems = found["lo"], found["hi"], found["missing"], found["binding"]
+        run_labels_ = {}
+        for name, run in (("η_l", lo), ("η_u", hi)):
+            if isinstance(run, str):
                 continue
-            used[cells[name]] = found["run_id"]
-            pod2_runs.append(found["run_dir"])
-            gpus[found["run_id"]] = hardware_of(reader, found["run_dir"])
-            endpoints.append(sa.endpoint_of(found["run_id"], seed=seed, lr=found["lr"],
-                                            stop=found["stop"], row=found["row"],
-                                            theta0=theta0, steps=found["steps"]))  # fmt: skip
-            run_labels_[found["run_id"]] = labels.at(found["run_dir"], ENDPOINT)
-        result = {**sa.seed_outcome(seed, endpoints, missing, run_labels_), "binding": None,
-                  "unresolved": None}  # fmt: skip
-        # p bound to both runs it is paired with: its record the published one, its v₀, θ₀ and
-        # training stream each endpoint's
-        predict_path = pod2.output(f"streams/s{seed}/predict")
-        problems, predicted = [], None
-        for name, found in (("η_l", lo), ("η_u", hi)):
-            if isinstance(found, str):
-                continue
-            problem, predicted = binding_problem(reader, entries.get(seed), predict_path, found)
-            if problem is not None:
-                problems.append(f"{name}: {problem}")
-        if predicted is not None:
-            surrogate_records[f"predict s{seed}"] = predicted
+            used[found["cells"][name]] = run["run_id"]
+            pod2_runs.append(run["run_dir"])
+            gpus[run["run_id"]] = hardware_of(reader, run["run_dir"])
+            run_labels_[run["run_id"]] = labels.at(run["run_dir"], ENDPOINT)
+        result = {**sa.seed_outcome(seed, found["endpoints"], missing, run_labels_),
+                  "binding": None, "unresolved": None}  # fmt: skip
+        predict_path = found["predict_path"]
+        if found["predicted"] is not None:
+            surrogate_records[f"predict s{seed}"] = found["predicted"]
         elif predict_path is not None and predict_path.is_file():
             surrogate_records[f"predict s{seed}"] = reader.json(predict_path)
         # every gap but the support rule is technical: the seed is unresolved, not excluded
-        state = result["support"]["state"]
-        kind = ("binding" if problems else "runs" if missing or state == "open"
-                else "technical" if state == "unresolved"
-                else "labels" if result["block"] is not None and result["h"] is None
-                else None)  # fmt: skip
+        kind = gap_kind(problems, missing, result["support"]["state"]) or (
+            "labels" if result["block"] is not None and result["h"] is None else None
+        )
         if problems:
             result |= {"binding": "; ".join(problems), "reason": "binding: " + "; ".join(problems)}
         if kind is not None:
@@ -1434,21 +1579,21 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
                 surrogate_records[step] = reader.json(path)
     one_surrogate(spec, surrogate_records)
     completion = completion_part(reader, pod2, used)
-    order = labels_order(labels.found, pod2_runs, completion["written_utc"])
+    readiness = ready_part(ready, completion, used)
+    order = labels_order(labels.found, pod2_runs, ready["written_utc"], labels.superseded)
     chosen = confirmatory_seeds(seeds, registration_text())
     created = (_when(published["created"]) < _when(start)
                if _when(published["created"]) and _when(start) else None)  # fmt: skip
     withheld = [why for why, bad in (
         ("the predictions' bucket copy is not known to precede the first fresh run's start",
          created is not True),
-        ("a fresh run's labels are not known to have been opened after pod 2's completion "
-         "record", completion["stands"] and order["after"] is not True)) if bad]  # fmt: skip
-    withheld += completion["problems"] + chosen["problems"]
+        ("a fresh run's label receipt does not follow the latest ready-to-label record",
+         readiness["stands"] and order["after"] is not True)) if bad]  # fmt: skip
+    withheld += completion["problems"] + readiness["problems"] + chosen["problems"]
     test = {**sa.confirmatory(p, h, seeds, fixation["permutation_test"], unresolved=unresolved,
                               withheld=withheld),
             "seeds_by_state": sa.seeds_by_state(outcomes),
-            "order_violated": created is False,
-            "labels_before_runs_ended": order["after"] is False}  # fmt: skip
+            "order_violated": created is False}  # fmt: skip
 
     if args.without_study3:
         parts, retro = None, {"computed": False, "reason": "--without-study3"}
@@ -1472,7 +1617,9 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         "predictions": {**published, "first_start": start, "created_before_first_start": created},
         "confirmatory_seeds": chosen,
         "completion": completion,
+        "ready_to_label": readiness,
         "labels_order": order,
+        "superseded_labels": sorted(labels.superseded),
         "hardware": {"runs": dict(sorted(gpus.items())),
                      "models": sorted({g for v in gpus.values() if isinstance(v, list)
                                        for g in v})},
@@ -1504,6 +1651,77 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         "inputs": dict(sorted(reader.hashes.items())),
         "prompt_sets": dict(sorted(reader.prompt_sets.items())),
     })  # fmt: skip
+
+
+# ------------------------------------------------------------------ the pre-label check
+
+
+def readiness(args: argparse.Namespace) -> tuple[list[str], dict[str, Any], Path]:
+    """The pre-label check (``ready``): before any fresh label, every technical gap that is not
+    a label's must be resolved, read from the analysis's own inputs without any label: each plan
+    fresh run ended with its records readable (its launcher campaign's last end ``done`` or
+    ``diverged``, no conflict, its run directory there), study 3's support state neither open nor
+    unresolved, p bound to both endpoints with its predict record present, and pod 2's
+    completion record standing. The open gaps (each named), and the ready-to-label record to
+    write when there are none: its time, the completion record's sha256 and the runs it
+    certifies. A repair later (a technical gap found after labeling began) is followed by this
+    check again and the labeling redone: labels from before the latest record are superseded."""
+    code = own_code()
+    runs, reader = Path(args.runs_root), reader_of(args)
+    _, fixation = fixation_of(reader, args.fixation)
+    pod1, pod2 = Plan(reader, args.pod1, runs), Plan(reader, args.pod2, runs)
+    seeds = fresh_seeds(fixation, pod2.data.get("n"))
+    _, published = predictions(reader, pod2, seeds)
+    entries = published.pop("entries")
+    _, theta0, _ = theta0_of(reader, runs, pod1, seeds)
+    gaps, used = [], {}
+    for seed in seeds:
+        found = seed_runs(reader, runs, pod2, seed, theta0, entries)
+        for name, key in (("η_l", "lo"), ("η_u", "hi")):
+            if isinstance(found[key], Mapping):
+                used[found["cells"][name]] = found[key]["run_id"]
+        state = found["support"]["state"]
+        kind = gap_kind(found["binding"], found["missing"], state)
+        if kind is not None:
+            why = "; ".join(found["binding"] or found["missing"]) or (
+                f"{state}: {found['support']['reason']}"
+            )
+            gaps.append(f"seed {seed}: {kind}: {reader.scrub(why)}")
+    completion = completion_part(reader, pod2, used)
+    gaps += completion["problems"]
+    record = {
+        "kind": READY_KIND, "version": VERSION, "written_utc": _now_utc(), "code": code,
+        "pod2": pod2.data.get("archive_id"), "seeds": seeds,
+        "completion": {key: completion[key] for key in ("record", "sha256", "written_utc")},
+        "runs": [{"campaign": c, "run": label, "run_id": run_id}
+                 for (c, label), run_id in sorted(used.items())],
+        "inputs": dict(sorted(reader.hashes.items())),
+    }  # fmt: skip
+    return gaps, record, ready_folder(runs, pod2)
+
+
+def _now_utc() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def ready_main(args: argparse.Namespace) -> int:
+    """Exit 1 naming each open gap, writing nothing; else the ready-to-label record, once, in
+    ``ready_folder`` (``ready-<UTC>.json``)."""
+    gaps, record, folder = readiness(args)
+    if gaps:
+        for gap in gaps:
+            print(f"open gap: {gap}")
+        print(f"not ready to label: {len(gaps)} open gaps")
+        return 1
+    stamp = record["written_utc"].replace(":", "").replace("-", "").replace("+0000", "Z")
+    path = folder / f"ready-{stamp}.json"
+    data = encoded(record)
+    write_once(path, data)
+    print(
+        f"ready to label: {len(record['runs'])} fresh runs, completion "
+        f"{record['completion']['sha256']}, record {path.name} sha256 {sha256(data)}"
+    )
+    return 0
 
 
 # ------------------------------------------------------------------ writing and the CLI
@@ -1571,11 +1789,21 @@ def parser_of() -> argparse.ArgumentParser:
     full.add_argument("--without-study3", action="store_true")
     full.add_argument("--reference-input", type=Path)
     full.add_argument("--reference", action="append", default=[], metavar="NAME=FILE")
+    ready = sub.add_parser("ready")  # the pre-label check: no label read, its record written
+    ready.add_argument("--runs-root", type=Path, required=True)
+    ready.add_argument("--pod1", type=Path, required=True)
+    ready.add_argument("--pod2", type=Path, required=True)
+    ready.add_argument("--fixation", type=Path, default=REPO_ROOT / FIXATION)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser_of().parse_args(argv)
+    if args.command == "ready":
+        try:
+            return ready_main(args)
+        except Refused as exc:
+            sys.exit(f"{PROG}: {exc}")
     try:
         study3 = bool(args.study3_runs_root and args.study3_repo)
         if args.command == "retrospective":
