@@ -75,14 +75,33 @@ by sha256 and its ``key.json`` by sha256; the key maps each item id to its cell.
 --reference NAME=FILE is one annotator's labels in study 3's audit-label form, ``{item_id: label
 | null}`` over exactly the key's items; with two, each is reported and their agreement.
 
+**The gates and the bindings** (``full``). The fixation record read has the sha256 the
+registration at this commit names (``registered``). Pod 1's engineering-check record is equal (at
+least one pair, every rerun from a clean checkout of a commit of pod 2's plan's GPU code identity,
+the record's own identity that one) and pod 1's surrogate checks passed (``gates``); the
+predictions record's GPU code identity is pod 2's plan's; one surrogate sha256 runs through the
+checks, both plans, every predictor record (fresh and retrospective) and every endpoint record.
+Each is a refusal otherwise. Each fresh seed's p is bound to its η_l run: its predict record the
+one the predictions record names (sha256), its v₀ and θ₀ hashes the run's, the run's training
+stream a prefix of the prediction's by content (the same stream, its chunks the first of the
+prediction's: a run stopped early read fewer); a seed not bound has no h, with the reason
+(``binding: …``), counted under ``binding`` in ``excluded_by_state``. The order of the
+registration: the predictions' bucket copy created before the first fresh start
+(``order_violated`` otherwise), and every fresh run's label receipt completed after the last end
+in pod 2's launcher journals (``labels_order``; ``labels_before_runs_ended`` otherwise); unless
+both are known to hold, the test gives no reading (``reading_withheld``, with why). Every run's
+GPUs as its ``meta.json`` records them are reported (``hardware``), never refused. --runs-root
+and --study3-runs-root must not overlap.
+
 **The record.** ``analysis.json`` (--out, refused when it exists, never overwritten; written whole
-by a link): the fixation record's sha256, the code, the seeds, the predictions record (its sha256
-that of the receipt and the sidecar; its bucket copy's creation time beside the first run start
-in pod2's launcher journals, and whether it is earlier), ``confirmatory`` (with the excluded seeds
-counted by state), ``outcomes`` (per fresh seed p, support,
-h, the three classes or the reason), ``retrospective``, ``descriptive`` (the refusal share at K*,
-the surrogate at the endpoints, the line scans, the controls, the ladder, θ₀'s baseline, the
-stream features and the extreme blocks) and ``inputs``, every file read by its root and relative
+by a link): the fixation record's sha256, the registration's, the code, the gates, the seeds,
+the predictions record (its sha256 that of the receipt and the sidecar; its bucket copy's
+creation time beside the first run start in pod2's launcher journals, and whether it is earlier),
+the labels' order, the runs' GPUs, ``confirmatory`` (with the excluded seeds counted by state),
+``outcomes`` (per fresh seed p, support, h, the three classes or the reason),
+``retrospective``, ``descriptive`` (the refusal share at K*, the surrogate at the endpoints, the
+line scans, the controls, the ladder, θ₀'s baseline, the stream features and the extreme blocks)
+and ``inputs``, every file read by its root and relative
 path with its sha256 (a run's ``summary.json`` and the other files ``response_conditions`` reads
 among them; study 3's label files are bound through the receipts the fixation record names).
 Strict JSON, sorted keys, a non-finite number copied from a record as ``{"missing":
@@ -91,11 +110,12 @@ carries numbers, counts and the record's sha256 only. The ladder's rungs are eve
 ``controls/s<seed>/ladder-<rung>`` step of pod2's plan.
 
 **Refusals** exit with ``study5_analysis_cli: <why>`` and write nothing: a dirty checkout, a
-retrospective record that is not its recomputation, a plan or campaign that
-does not read or is not its plan's, a predictions record that is not the published one, a study-3
-input that is not the fixation record's, study 3's labels pending, a reference input of another
-record. A missing run, record or label file of one seed is no refusal: it is named in each
-quantity it leaves, and the seed counts nowhere there.
+retrospective record that is not its recomputation, a plan or campaign that does not read or is
+not its plan's, a predictions record that is not the published one, a fixation record the
+registration does not name, a gate that does not stand, two surrogates, a study-3 input that is
+not the fixation record's, study 3's labels pending, a reference input of another record,
+overlapping runs roots. A missing run, record or label file of one seed is no refusal: it is
+named in each quantity it leaves, and the seed counts nowhere there.
 """
 
 from __future__ import annotations
@@ -137,6 +157,8 @@ from .study2_label_cli import harmful_prompts
 PROG = "study5_analysis_cli"
 KIND, VERSION = "study5-analysis", 1
 FIXATION = "docs/study5-fixation.json"
+REGISTRATION = "docs/study5-preregistration.md"
+REGISTERED = re.compile(r"^Status: `registered`", re.MULTILINE)
 ETA_L, ETA_U = 1.3e-05, 1.83e-05  # study 3's candidate-1 rates of F (scripts/study5_campaigns.py)
 ENDPOINT = "step-25"
 FRESH, FRESH_ROLE = "experiments/study5", "study5.role=fresh"  # the fresh F runs' cells
@@ -277,7 +299,8 @@ def run_labels(
         raise study2_labels.LabelsPending(f"{run_dir.name}: items without a label after "
                                           f"{receipt['rounds']} labeling rounds of "
                                           f"{LABEL_ROUNDS}")  # fmt: skip
-    out: dict[str, Any] = {"receipt_sha256": receipt_sha, "conditions": {}}
+    out: dict[str, Any] = {"receipt_sha256": receipt_sha, "conditions": {},
+                           "completed_at": receipt.get("completed_at")}  # fmt: skip
     for condition in conditions:
         count = Counter(labels.get(label_item_id(condition, pid)) for pid in ids)
         labeled = len(ids) - count[None]
@@ -430,6 +453,7 @@ def f_run(reader: Reader, run_dir: Path | str, seed: int, lr: float) -> dict[str
                 or cfg.optimizer.name != OPTIMIZER):  # fmt: skip
             return f"{run_dir.name}: its config is not seed {seed}, rate {lr!r}, {OPTIMIZER}"
         terminal = reader.json(run_dir / "terminal.json")
+        meta = reader.json(run_dir / "meta.json")
         rows = (reader.jsonl(run_dir / "evaluations.jsonl")
                 if (run_dir / "evaluations.jsonl").is_file() else [])  # fmt: skip
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -437,7 +461,8 @@ def f_run(reader: Reader, run_dir: Path | str, seed: int, lr: float) -> dict[str
     endpoint = [r for r in rows if r.get("condition") == ENDPOINT]
     return {"run_dir": run_dir, "run_id": run_dir.name, "seed": seed, "lr": lr,
             "stop": (terminal.get("stop") or {}).get("reason"), "steps": terminal.get("steps"),
-            "row": endpoint[0] if len(endpoint) == 1 else None}  # fmt: skip
+            "row": endpoint[0] if len(endpoint) == 1 else None,
+            "inputs": meta.get("inputs") or {}}  # fmt: skip
 
 
 def scan_rows(reader: Reader, run_dir: Path) -> dict[float, dict[str, Any]]:
@@ -523,7 +548,162 @@ def predictions(reader: Reader, plan: Plan, seeds: Sequence[int]) -> tuple[dict,
         refuse("the predictions record is not of the plan's seeds, in order, at η_l")
     p = {e["seed"]: float(e["p"]) for e in found["predictions"]}
     return p, {"record": path.name, "sha256": digest, "receipt": receipt_path_.name,
-               "created": receipt.get("created"), "n": found["n"]}  # fmt: skip
+               "created": receipt.get("created"), "n": found["n"],
+               "gpu_code_sha256": (found.get("code") or {}).get("gpu_code_sha256"),
+               "entries": {e["seed"]: e for e in found["predictions"]}}  # fmt: skip
+
+
+# ------------------------------------------------------------------ the gates and the bindings
+
+
+def identity_of(commit: Any) -> str | None:
+    """The GPU code identity of ``commit`` in this checkout's history (None: it cannot be told)."""
+    if not isinstance(commit, str) or not commit:
+        return None
+    try:
+        return code_identity.gpu_code_identity(commit, REPO_ROOT)["sha256"]
+    except Exception:
+        return None
+
+
+def registration_text() -> str:
+    """The registration at this checkout's commit (``own_code``: a clean checkout)."""
+    return (REPO_ROOT / REGISTRATION).read_text(encoding="utf-8")
+
+
+def registration_part(fixation_data: bytes) -> dict[str, Any]:
+    """The registration binds the fixation record: the record read has the sha256 the
+    registration at this commit names; refused otherwise."""
+    text = registration_text()
+    digest = sha256(fixation_data)
+    if digest not in text:
+        refuse(f"the fixation record read ({digest[:12]}) is not the one the registration names")
+    return {"path": REGISTRATION, "sha256": sha256(text.encode("utf-8")),
+            "registered": bool(REGISTERED.search(text)), "fixation_sha256": digest}  # fmt: skip
+
+
+def gate_records(reader: Reader, pod1: Plan, gpu: Any) -> tuple[dict[str, Any], str]:
+    """Pod 1's gates, reported, and the surrogate's sha256 of its checks: the engineering check
+    equal (at least one pair, every rerun from a clean checkout of a commit of GPU code ``gpu``,
+    its own ``code.gpu_code_sha256`` ``gpu``) and the surrogate checks passed; refused
+    otherwise. ``gpu``: pod 2's plan's GPU code identity, the predictions record's."""
+    found = {}
+    for step, kind in (("engineering/check", "study5-engineering-check"),
+                       ("surrogate/checks", "study5-surrogate-checks")):  # fmt: skip
+        path = pod1.output(step)
+        if path is None or not path.is_file():
+            refuse(f"pod 1's {step} record is missing")
+        try:
+            data = reader.bytes(path)
+            record = json.loads(data)
+        except (OSError, ValueError) as exc:
+            refuse(f"pod 1's {step} record does not read ({type(exc).__name__})")
+        if not isinstance(record, dict) or record.get("kind") != kind:
+            refuse(f"pod 1's {step} record is not a {kind} record")
+        found[step] = (path, sha256(data), record)
+    path, digest, eng = found["engineering/check"]
+    pairs = eng.get("pairs") or []
+    if eng.get("equal") is not True or not pairs:
+        refuse("pod 1's engineering check is not equal")
+    if (eng.get("code") or {}).get("gpu_code_sha256") != gpu:
+        refuse("pod 1's engineering check is not of pod 2's GPU code identity")
+    for pair in pairs:
+        if pair.get("rerun_dirty") is not False or identity_of(pair.get("rerun_commit")) != gpu:
+            refuse(f"pod 1's engineering rerun {pair.get('rerun')} is not of a clean checkout of "
+                   "pod 2's GPU code identity")  # fmt: skip
+    path_c, digest_c, checks = found["surrogate/checks"]
+    if checks.get("passes") is not True:
+        refuse("pod 1's surrogate checks did not pass")
+    spec = checks.get("surrogate_sha256")
+    if not isinstance(spec, str):
+        refuse("pod 1's surrogate checks record no surrogate sha256")
+    return {
+        "engineering": {"record": path.name, "sha256": digest, "equal": True,
+                        "pairs": len(pairs), "gpu_code_sha256": gpu,
+                        "rerun_commits": sorted({str(p.get("rerun_commit")) for p in pairs})},
+        "surrogate_checks": {"record": path_c.name, "sha256": digest_c, "passes": True,
+                             "surrogate_sha256": spec, "commit": (checks.get("git") or {}).get(
+                                 "commit")},
+    }, spec  # fmt: skip
+
+
+def one_surrogate(spec: str, records: Mapping[str, Any]) -> None:
+    """Every predictor record and every endpoint record of the surrogate of the checks
+    (``records``: name → a record, or why it is missing); refused otherwise."""
+    other = sorted(name for name, found in records.items()
+                   if isinstance(found, Mapping)
+                   and found.get("surrogate_sha256") != spec)  # fmt: skip
+    if other:
+        refuse(f"{len(other)} records are of another surrogate than the checks' (first: "
+               f"{other[0]}): one surrogate sha256 across the checks, every predictor and every "
+               "endpoint record")  # fmt: skip
+
+
+def stream_prefix_problem(run: Any, predicted: Any) -> str | None:
+    """The run's training stream against the one its prediction read, by content: the same
+    stream, the run's chunks a prefix of the prediction's (a run stopped early read fewer)."""
+    if not isinstance(run, Mapping) or not isinstance(predicted, Mapping):
+        return "a training stream is not recorded"
+    chunks, theirs = run.get("chunks"), predicted.get("chunks")
+    if run.get("path") != predicted.get("path") or not isinstance(chunks, list) or not isinstance(
+            theirs, list):  # fmt: skip
+        return "the training streams are not the same stream"
+    if (
+        not chunks
+        or run.get("count", 0) > predicted.get("count", 0)
+        or theirs[: len(chunks)] != chunks
+    ):
+        return "the run's training stream is not a prefix of the prediction's"
+    return None
+
+
+def binding_problem(reader: Reader, entry: Mapping[str, Any] | None, path: Path | None,
+                    lower: Mapping[str, Any]) -> tuple[str | None, Any]:  # fmt: skip
+    """A fresh seed's p bound to its η_l run: its predict record the one the predictions record
+    names (sha256), and its v₀, θ₀ and training stream the run's (``lower``: ``f_run``). The
+    problem (None: bound) and the predict record (or why there is none)."""
+    if entry is None:
+        return "the predictions record has no entry of the seed", "no entry"
+    if path is None or not path.is_file():
+        return "its predict record is missing", "p: no record"
+    data = reader.bytes(path)
+    if sha256(data) != entry.get("sha256"):
+        return "its predict record is not the one the predictions record names", "p: other record"
+    record = json.loads(data)
+    inputs = lower["inputs"]
+    for key, what in (("v0_sha256", "v₀"), ("theta0_trainable_sha256", "θ₀")):
+        if record.get(key) is None or record.get(key) != inputs.get(key):
+            return f"its prediction's {what} is not the η_l run's", record
+    found = stream_prefix_problem((inputs.get("streams") or {}).get("training"),
+                                  (record.get("streams") or {}).get("training"))  # fmt: skip
+    return found, record
+
+
+def hardware_of(reader: Reader, run_dir: Path | str) -> Any:
+    """A run's GPUs as its meta.json records them (``tracking.hardware``), or why not."""
+    if isinstance(run_dir, str):
+        return run_dir
+    try:
+        meta = reader.json(Path(run_dir) / "meta.json")
+    except (OSError, ValueError) as exc:
+        return f"meta.json does not read ({type(exc).__name__})"
+    return list((meta.get("hardware") or {}).get("gpus") or [])
+
+
+def labels_order(found: Mapping[Path, Any], pod2_runs: Sequence[Path], last_end: str | None
+                 ) -> dict[str, Any]:  # fmt: skip
+    """Labels of fresh runs opened only after every fresh run ended (registration, "Seeds and
+    order"): every fresh run's label receipt completed after the last end in pod 2's launcher
+    journals. ``after`` False when one did not, None when it cannot be told."""
+    end = _when(last_end)
+    times = {Path(d).name: found[d].get("completed_at") for d in pod2_runs
+             if isinstance(found.get(d), Mapping)}  # fmt: skip
+    earlier = sorted(r for r, t in times.items() if end is not None and _when(t) is not None
+                     and _when(t) <= end)  # fmt: skip
+    unknown = sorted(r for r, t in times.items() if _when(t) is None)
+    after = None if end is None or unknown else not earlier
+    return {"last_fresh_end": last_end, "receipts": len(times), "after": after,
+            "earlier": earlier, "unknown": unknown}  # fmt: skip
 
 
 # ------------------------------------------------------------------ study 3's parts
@@ -860,12 +1040,21 @@ def _when(stamp: Any) -> datetime | None:
     return found if found.tzinfo is not None else found.replace(tzinfo=UTC)
 
 
-def first_start(reader: Reader, runs: Path, plan: Plan) -> str | None:
-    """The earliest run start in the plan's launcher journals (pod2's: the fresh runs first)."""
+def first_start(reader: Reader, runs: Path, plan: Plan, event: str = "start",
+                last: bool = False) -> str | None:  # fmt: skip
+    """The earliest run start in the plan's launcher journals (pod2's: the fresh runs first); with
+    ``event`` "end" and ``last``, the last run end."""
     stamps = [e.get("time") for name in sorted({name for name, _ in plan.cells})
               for e in journal(reader, runs, name)
-              if e.get("event") == "start" and _when(e.get("time")) is not None]  # fmt: skip
-    return min(stamps, key=_when) if stamps else None
+              if e.get("event") == event and _when(e.get("time")) is not None]  # fmt: skip
+    if not stamps:
+        return None
+    return (max if last else min)(stamps, key=_when)
+
+
+def overlapping(first: Path, second: Path) -> bool:
+    a, b = Path(first).resolve(), Path(second).resolve()
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
 
 
 def ladder_rungs(plan: Plan, seeds: Sequence[int]) -> list[str]:
@@ -883,15 +1072,28 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     code = own_code()
     runs, reader = Path(args.runs_root), reader_of(args)
     fixation_data, fixation = fixation_of(reader, args.fixation)
+    registration = registration_part(fixation_data)
     prompts_of = prompt_sets(reader)
     pod1, pod2 = Plan(reader, args.pod1, runs), Plan(reader, args.pod2, runs)
     seeds = fresh_seeds(fixation, pod2.data.get("n"))
     controls_seeds = [s for s in fixation["seeds"]["controls"] if s in seeds]
     ladder_seeds = [s for s in fixation["seeds"]["ladder"] if s in seeds]
     level = float(fixation["scan_intervals"]["level"])
-    p, binding = predictions(reader, pod2, seeds)
+    p, published = predictions(reader, pod2, seeds)
+    entries = published.pop("entries")
+    gpu = pod2.data.get("gpu_code")
+    if published["gpu_code_sha256"] != gpu:
+        refuse("the predictions record's GPU code identity is not pod 2's plan's")
+    gates, spec = gate_records(reader, pod1, gpu)
+    if pod2.data.get("surrogate_sha256") not in (None, spec) or pod1.data.get(
+            "surrogate_sha256") not in (None, spec):  # fmt: skip
+        refuse("a plan names another surrogate than the checks'")
     start = first_start(reader, runs, pod2)
+    last_end = first_start(reader, runs, pod2, "end", last=True)
     labels = Labels(reader, prompts_of)
+    surrogate_records: dict[str, Any] = {}  # every predictor and endpoint record, by name
+    pod2_runs: list[Path] = []  # the fresh seeds' runs read, for the labels' order
+    gpus: dict[str, Any] = {}  # every run's GPUs, by run id
 
     theta0_dir = completed(reader, runs, pod1.find("experiments/study5_theta0", seeds[0]), "θ₀")
     if isinstance(theta0_dir, str):
@@ -905,6 +1107,7 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         refuse(f"θ₀'s evaluation does not read: {reader.scrub(str(exc))}")
     theta0_counts = labels.at(theta0_dir, THETA0)
     theta0_point = sa.point_values(theta0_counts, theta0_summary)
+    gpus[theta0_dir.name] = hardware_of(reader, theta0_dir)
 
     outcomes, h, refusal, per_scan, own, control = [], {}, {}, {}, {}, {"order": {}, "v0": {}}
     lower_ids: dict[int, str | None] = {}  # the η_l run's id
@@ -917,11 +1120,24 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
             if isinstance(found, str):
                 missing.append(found)
                 continue
+            pod2_runs.append(found["run_dir"])
+            gpus[found["run_id"]] = hardware_of(reader, found["run_dir"])
             endpoints.append(sa.endpoint_of(found["run_id"], seed=seed, lr=found["lr"],
                                             stop=found["stop"], row=found["row"],
                                             theta0=theta0, steps=found["steps"]))  # fmt: skip
             run_labels_[found["run_id"]] = labels.at(found["run_dir"], ENDPOINT)
-        result = sa.seed_outcome(seed, endpoints, missing, run_labels_)
+        result = {**sa.seed_outcome(seed, endpoints, missing, run_labels_), "binding": None}
+        # p bound to the runs it is paired with: its record the published one, its v₀, θ₀ and
+        # training stream the η_l run's
+        predict_path = pod2.output(f"streams/s{seed}/predict")
+        if not isinstance(lo, str):
+            problem, predicted = binding_problem(reader, entries.get(seed), predict_path, lo)
+            surrogate_records[f"predict s{seed}"] = predicted
+            if problem is not None:
+                result |= {"h": None, "classes": None, "binding": problem,
+                           "reason": f"binding: {problem}"}  # fmt: skip
+        elif predict_path is not None and predict_path.is_file():
+            surrogate_records[f"predict s{seed}"] = reader.json(predict_path)
         h[seed] = result["h"] if result["h"] is not None else result["reason"]
         refusal[seed] = (result["classes"]["refusal"] if result["classes"] is not None
                          else result["reason"])  # fmt: skip
@@ -940,11 +1156,19 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         scan = record(reader, pod2.output(f"fresh/s{seed}/scan"), "study5-scan", seed, "scan")
         per_scan[seed] = {0.0: theta0_point, 1.0: endpoint,
                           **scan_points(reader, labels, scan, runs, lo["run_id"])}  # fmt: skip
+        if isinstance(scan, Mapping):
+            scan_dir = runs / str(scan.get("experiment")) / str(scan.get("run_id"))
+            if scan_dir.is_dir():
+                pod2_runs.append(scan_dir)
+                gpus[scan_dir.name] = hardware_of(reader, scan_dir)
     for seed in controls_seeds:
         for kind, config in (("order", "experiments/study5_control_order"),
                              ("v0", "experiments/study5_control_v0")):  # fmt: skip
             found = f_run(reader, completed(reader, runs, pod2.find(config, seed, ETA_L), kind),
                           seed, ETA_L)  # fmt: skip
+            if not isinstance(found, str):
+                pod2_runs.append(found["run_dir"])
+                gpus[found["run_id"]] = hardware_of(reader, found["run_dir"])
             control[kind][seed] = (
                 found
                 if isinstance(found, str)
@@ -969,6 +1193,9 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
             ladder_records[seed][rung] = found
             if isinstance(found, Mapping) and found.get("status") == "evaluated":
                 run_dir = runs / str(found["experiment"]) / str(found["run_id"])
+                if run_dir.is_dir():
+                    pod2_runs.append(run_dir)
+                    gpus[run_dir.name] = hardware_of(reader, run_dir)
                 ladder_labels[(seed, rung)] = labels.at(
                     run_dir if run_dir.is_dir() else f"ladder {rung}: its run directory is missing",
                     ladder_condition(rung))  # fmt: skip
@@ -979,6 +1206,7 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     for seed in seeds:
         found = record(reader, pod2.output(f"fresh/s{seed}/surrogate-endpoint"),
                        "study5-surrogate-endpoint", seed, "r")  # fmt: skip
+        surrogate_records[f"endpoint s{seed}"] = found
         if isinstance(found, Mapping) and found.get("run_id") != lower_ids[seed]:
             found = (
                 "r: the record is of another run than the seed's η_l run"
@@ -993,6 +1221,27 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         for name in sa.FEATURES:
             features[name][seed] = found if isinstance(found, str) else found["features"][name]
 
+    for step in pod1.steps:  # the retrospective predictor's records: the same surrogate
+        if re.fullmatch(r"retrospective/s[0-9]+/predict", step):
+            path = pod1.output(step)
+            if path is not None and path.is_file():
+                surrogate_records[step] = reader.json(path)
+    one_surrogate(spec, surrogate_records)
+    order = labels_order(labels.found, pod2_runs, last_end)
+    created = (_when(published["created"]) < _when(start)
+               if _when(published["created"]) and _when(start) else None)  # fmt: skip
+    test = {**sa.confirmatory(p, h, seeds, fixation["permutation_test"]),
+            "excluded_by_state": sa.excluded_by_state(outcomes),
+            "order_violated": created is False,
+            "labels_before_runs_ended": order["after"] is False}  # fmt: skip
+    withheld = [why for why, bad in (
+        ("the predictions' bucket copy is not known to precede the first fresh run's start",
+         created is not True),
+        ("a fresh run's labels are not known to have been opened after every fresh run ended",
+         order["after"] is not True)) if bad]  # fmt: skip
+    if withheld:
+        test |= {"reading": None, "reading_withheld": withheld}
+
     if args.without_study3:
         parts, retro = None, {"computed": False, "reason": "--without-study3"}
     else:
@@ -1005,17 +1254,19 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         "kind": KIND,
         "version": VERSION,
         "registration": fixation["registration"],
+        "registered": registration,
         "fixation": {"path": FIXATION, "sha256": sha256(fixation_data)},
         "code": code,
         "k_star": sa.K_STAR,
+        "gates": gates,
         "seeds": {"fresh": seeds, "n": len(seeds), "controls": controls_seeds,
                   "ladder": ladder_seeds},
-        "predictions": {**binding, "first_start": start,
-                        "created_before_first_start": (_when(binding["created"]) < _when(start)
-                                                       if _when(binding["created"]) and _when(start)
-                                                       else None)},
-        "confirmatory": {**sa.confirmatory(p, h, seeds, fixation["permutation_test"]),
-                         "excluded_by_state": sa.excluded_by_state(outcomes)},
+        "predictions": {**published, "first_start": start, "created_before_first_start": created},
+        "labels_order": order,
+        "hardware": {"runs": dict(sorted(gpus.items())),
+                     "models": sorted({g for v in gpus.values() if isinstance(v, list)
+                                       for g in v})},
+        "confirmatory": test,
         "outcomes": outcomes,
         "unsupported": [{"seed": o["seed"], "reason": o["reason"]} for o in outcomes
                         if o["h"] is None],
@@ -1120,6 +1371,9 @@ def main(argv: list[str] | None = None) -> int:
         elif study3 and args.retrospective is None:
             refuse("study 3's parts need --retrospective, the record written before the "
                    "registration")  # fmt: skip
+        if study3 and overlapping(args.runs_root, args.study3_runs_root):
+            refuse("--runs-root and --study3-runs-root overlap: study 5's runs and study 3's are "
+                   "read from separate roots")  # fmt: skip
         if args.out.exists() or args.out.is_symlink():
             refuse(f"{args.out.name} exists: never overwritten")
         result = retrospective_record(args) if args.command == "retrospective" else analysis(args)

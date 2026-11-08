@@ -448,9 +448,10 @@ def ladder_table(records: Mapping[int, Mapping[str, Mapping[str, Any] | str]],
     non-finite one ``NONFINITE``), the three classes at that point (``labels`` of the condition
     ``ladder_<rung>``) beside the seed's h_s; the rungs not evaluated (``not_bracketed``,
     ``invalid_k``, ``nonfinite_k``) and the records missing; and ``shuffled_d_trigger``, the
-    registered quantity that decides whether ``linear_shuffled_d`` runs: per seed the harm of
-    ``linear`` (δ̂_s) minus ``linear_no_d`` at the K*-matched point and whether its magnitude
-    exceeds 2 pp, and their mean over seeds (a number only: the decision is the researcher's)."""
+    registered quantity that decides whether ``linear_shuffled_d`` runs: the mean over the six
+    seeds of the harm of ``linear`` (δ̂_s) minus ``linear_no_d`` at the K*-matched point and
+    whether its magnitude exceeds 2 pp (``trigger``), with the per-seed values as description
+    (numbers only: the decision is the researcher's)."""
     rows, not_evaluated, missing = [], [], []
     harm: dict[tuple[int, str], Value] = {}
     for s in seeds:
@@ -499,22 +500,29 @@ def ladder_table(records: Mapping[int, Mapping[str, Mapping[str, Any] | str]],
             }
         )
     mean = summary(differences, seeds, level)
-    trigger = {"rule": "harm of linear minus linear_no_d at the K*-matched point; the rung "
-                       "linear_shuffled_d runs only if they differ by more than 2 pp",
-               "per_seed": per_seed, "mean": mean,
-               "mean_exceeds_2pp": (abs(mean["mean"]) > TRIGGER_PP
-                                    if mean["mean"] is not None else None)}  # fmt: skip
+    exceeds = abs(mean["mean"]) > TRIGGER_PP if mean["mean"] is not None else None
+    trigger = {"rule": "the harm of linear minus linear_no_d at the K*-matched point, in the mean "
+                       "over the six seeds; the rung linear_shuffled_d runs only if its magnitude "
+                       "exceeds 2 pp; the per-seed values are description",
+               "per_seed": per_seed, "mean": mean, "mean_exceeds_2pp": exceeds,
+               "trigger": exceeds, "seeds_in_mean": mean["n"],
+               "all_seeds": mean["n"] == len(seeds)}  # fmt: skip
     return {"rows": rows, "not_evaluated": not_evaluated, "missing": missing,
             "shuffled_d_trigger": trigger}  # fmt: skip
 
 
 def excluded_by_state(outcomes: Sequence[Mapping[str, Any]]) -> dict[str, int]:
-    """The fresh seeds without h by why: ``unsupported`` (a failed endpoint or a support
-    condition: study 3's scientific route), ``open`` (a run missing or not ended), ``unresolved``
-    (technical), ``labels_missing`` (supported, a run's labels not read)."""
-    counts = dict.fromkeys(("unsupported", "open", "unresolved", "labels_missing"), 0)
+    """The fresh seeds without h by why: ``binding`` (its p not bound to its η_l run: the
+    prediction's record, v₀, θ₀ or training stream not the run's), ``unsupported`` (a failed
+    endpoint or a support condition: study 3's scientific route), ``open`` (a run missing or not
+    ended), ``unresolved`` (technical), ``labels_missing`` (supported, a run's labels not
+    read)."""
+    counts = dict.fromkeys(("binding", "unsupported", "open", "unresolved", "labels_missing"), 0)
     for o in outcomes:
         if o["h"] is not None:
+            continue
+        if o.get("binding"):
+            counts["binding"] += 1
             continue
         key = o["support"]["state"] if o["block"] is None else "labels_missing"
         counts[key] = counts.get(key, 0) + 1

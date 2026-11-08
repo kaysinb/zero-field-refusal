@@ -3051,7 +3051,15 @@ is reported missing by name, and the seed stays in every quantity that does not 
 go through study 3's final reader with `--study3-runs-root`, `--study3-repo` and
 `--study3-sealed-dir` as for the fixation record, its freeze and receipts the record's; the
 reference sample from the reference input's key and each annotator's labels in study 3's
-audit-label form (`{item_id: label | null}`). It writes one `analysis.json`, never over an
+audit-label form (`{item_id: label | null}`). `full` also requires: the fixation record it reads named by sha256 in
+the registration at its commit; pod 1's engineering check equal under pod 2's plan's GPU code
+identity, the predictions record's; pod 1's surrogate checks passed; one surrogate sha256 across
+the checks, both plans, every predictor record and every endpoint record; `--runs-root` apart
+from `--study3-runs-root`. Each fresh seed's p is bound to its η_l run (its predict record the
+published one by sha256; v₀, θ₀ and the training stream by content the run's), or the seed has no
+h and is counted under `binding`. The test gives no reading unless the predictions' bucket copy
+preceded the first fresh start and every fresh label receipt followed the last fresh end in pod
+2's launcher journals. Every run's GPUs are reported. It writes one `analysis.json`, never over an
 existing file, with every input's sha256, and prints numbers only. A missing run, record or label
 file of a seed is named in every quantity it leaves; the seed counts nowhere there.
 

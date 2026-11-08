@@ -393,6 +393,11 @@ SET = "harmful_evaluation"
 POD = "/pod/runs"
 REAL_OWN_CODE = cli.own_code
 CODE = {"commit": "a" * 40, "dirty": False, "module": "zero_field_refusal.analysis.study5_analysis"}
+GPU = "e" * 64  # pod 2's plan's GPU code identity
+RERUN = "b" * 40  # the engineering reruns' commit, of GPU code GPU
+SPEC = "5" * 64  # the surrogate's sha256
+STREAM = {"path": "teacher/x/training/y/seed-{seed}", "count": 500,
+          "chunks": [f"{i:064x}" for i in range(1)]}  # fmt: skip
 
 
 def sha(data: bytes) -> str:
@@ -423,6 +428,8 @@ class World:
 
     def __init__(self, tmp: Path) -> None:
         self.tmp, self.runs = tmp, tmp / "runs"
+        self.study3 = tmp / "study3"  # study 3's runs root and checkout: apart from study 5's
+        self.study3.mkdir()
         self.identity = judge_identity(load_config("judge/wildguard"))
         self.fixation = dict(FIXATION)
         self.fixation["seeds"] = {**FIXATION["seeds"],
@@ -470,10 +477,12 @@ class World:
         run_id = f"r-{campaign}-{len(self.harmful)}"
         experiment = "study5"
         label = f"{cell['name']}/s{seed}"
+        hour = 1 + len(self.harmful) % 20
         lines(self.runs / "launch" / f"{name}.jsonl",
               [{"event": "start", "run": label, "run_id": run_id, "experiment": experiment,
-                "time": f"2026-11-10T{1 + len(self.harmful) % 20:02d}:00:00+00:00"},
-               {"event": "end", "run": label, "run_id": run_id, "outcome": "done"}])  # fmt: skip
+                "time": f"2026-11-10T{hour:02d}:00:00+00:00"},
+               {"event": "end", "run": label, "run_id": run_id, "outcome": "done",
+                "time": f"2026-11-10T{hour:02d}:30:00+00:00"}])  # fmt: skip
         run_dir = self.runs / experiment / run_id
         cfg = {"run_type": "train", "seed": seed, "eval": {"harmful": {"prompt_set": SET}},
                "optimizer": {"name": "adam_frozen", "lr": lr}, **extra}  # fmt: skip
@@ -506,16 +515,21 @@ class World:
     def write_run(self, run_dir: Path, cfg: dict, conditions, *, harmful: int, k: float) -> None:
         (run_dir).mkdir(parents=True)
         (run_dir / "config.yaml").write_text(json.dumps(cfg))  # JSON is YAML
+        seed = cfg["seed"]
         dump(
             run_dir / "meta.json",
             {
                 "run_id": run_dir.name,
+                "hardware": {"gpus": ["NVIDIA L40S"]},
                 "inputs": {
                     "harmful_prompts": {
                         "set": SET,
                         "count": 521,
                         "ids_sha256": sha(json.dumps(IDS).encode()),
-                    }
+                    },
+                    "v0_sha256": f"v0-{seed}",
+                    "theta0_trainable_sha256": "t" * 64,
+                    "streams": {"training": {**STREAM, "path": STREAM["path"].format(seed=seed)}},
                 },
             },
         )
@@ -580,6 +594,7 @@ class World:
                 "rounds": 1,
                 "missing": 0,
                 "labels_sha256": sha((run_dir / "judge" / "wildguard.jsonl").read_bytes()),
+                "completed_at": "2026-11-12T00:00:00+00:00",
             },
         )
 
@@ -628,6 +643,16 @@ class World:
         base = "study5_records/pod2-x"
         rng = np.random.default_rng(0)
         self.p = {s: float(v) for s, v in zip(self.seeds, rng.normal(size=4), strict=True)}
+        self.predict_sha = {}
+        for seed in self.seeds:
+            rel = f"{base}/predictions/fresh/s{seed}.json"
+            self.steps["pod2"].append({"name": f"streams/s{seed}/predict",
+                                       "outputs": [f"{POD}/{rel}"]})  # fmt: skip
+            self.predict_sha[seed] = sha(dump(self.runs / rel, {
+                "kind": "study5-prediction", "seed": seed, "lr": 1.3e-05, "p": self.p[seed],
+                "v0_sha256": f"v0-{seed}", "theta0_trainable_sha256": "t" * 64,
+                "streams": {"training": {**STREAM, "path": STREAM["path"].format(seed=seed)}},
+                "surrogate_sha256": SPEC}))  # fmt: skip
         for seed in self.seeds:
             for step, rel, value in (
                 (f"streams/s{seed}/features", f"{base}/features/fresh/s{seed}.json",
@@ -636,7 +661,8 @@ class World:
                                "ended_share": 0.5}}),
                 (f"fresh/s{seed}/surrogate-endpoint", f"{base}/surrogate-endpoint/s{seed}.json",
                  {"kind": "study5-surrogate-endpoint", "seed": seed,
-                  "run_id": self.lower[seed].name, "r": 1.0 + seed % 3}),
+                  "run_id": self.lower[seed].name, "r": 1.0 + seed % 3,
+                  "surrogate_sha256": SPEC}),
             ):  # fmt: skip
                 self.steps["pod2"].append({"name": step, "outputs": [f"{POD}/{rel}"]})
                 dump(self.runs / rel, value)
@@ -645,7 +671,10 @@ class World:
             "n": 4,
             "seeds": self.seeds,
             "lr": 1.3e-05,
-            "predictions": [{"seed": s, "p": self.p[s]} for s in self.seeds],
+            "predictions": [
+                {"seed": s, "p": self.p[s], "sha256": self.predict_sha[s]} for s in self.seeds
+            ],
+            "code": {"commit": "c" * 40, "gpu_code_sha256": GPU},
         }
         path = self.runs / base / "predictions-record.json"
         data = dump(path, record)
@@ -663,6 +692,18 @@ class World:
             {"name": "predictions/record", "outputs": [f"{POD}/{base}/predictions-record.json"]},
             {"name": "predictions/publish",
              "outputs": [f"{POD}/{base}/predictions-receipt.json"]}]  # fmt: skip
+        # pod 1's gates
+        for step, rel, value in (
+            ("engineering/check", "study5_records/pod1-x/engineering-check.json",
+             {"kind": "study5-engineering-check", "equal": True,
+              "pairs": [{"rerun": "x", "rerun_commit": RERUN, "rerun_dirty": False}],
+              "code": {"commit": RERUN, "gpu_code_sha256": GPU}}),
+            ("surrogate/checks", "study5_records/pod1-x/surrogate-checks.json",
+             {"kind": "study5-surrogate-checks", "passes": True, "surrogate_sha256": SPEC,
+              "git": {"commit": RERUN, "dirty": False}}),
+        ):  # fmt: skip
+            self.steps["pod1"].append({"name": step, "outputs": [f"{POD}/{rel}"]})
+            dump(self.runs / rel, value)
 
     def plans(self) -> None:
         for pod in ("pod1", "pod2"):
@@ -674,7 +715,8 @@ class World:
                 (folder / "campaigns" / f"{name}.yaml").write_text(text)
                 digests[name] = sha(text.encode())
             dump(folder / "plan.json", {"pod": pod, "archive_id": f"{pod}-x", "runs": POD,
-                                        "n": 4 if pod == "pod2" else None,
+                                        "n": 4 if pod == "pod2" else None, "gpu_code": GPU,
+                                        "surrogate_sha256": SPEC,
                                         "blocks": [{"name": "all", "steps": self.steps[pod]}],
                                         "campaigns": digests})  # fmt: skip
         dump(self.fixation_path, self.fixation)
@@ -697,7 +739,12 @@ class World:
 def world(tmp_path, monkeypatch) -> World:
     monkeypatch.setattr(cli, "harmful_prompts", lambda cfg: PROMPTS)
     monkeypatch.setattr(cli, "own_code", lambda: dict(CODE))
-    return World(tmp_path)
+    monkeypatch.setattr(cli, "identity_of", lambda commit: GPU if commit == RERUN else None)
+    found = World(tmp_path)
+    # the registration at the analysis's commit names the fixation record it reads
+    monkeypatch.setattr(cli, "registration_text", lambda: (
+        "Status: `registered`.\n" + sha(found.fixation_path.read_bytes())))  # fmt: skip
+    return found
 
 
 def call(argv) -> tuple[int, str]:
@@ -744,8 +791,8 @@ def test_the_cli_writes_the_analysis_once_numbers_only(world, capsys) -> None:
     assert odd["n"] == 4 and odd["mean"] == pytest.approx(-1 / 521)
     controls = result["descriptive"]["controls"]
     assert controls["order"]["per_seed"]["harmful"]["50000"] == pytest.approx(10 / 521)
-    assert test["excluded_by_state"] == {"unsupported": 2, "open": 0, "unresolved": 0,
-                                         "labels_missing": 0}  # fmt: skip
+    assert test["excluded_by_state"] == {"binding": 0, "unsupported": 2, "open": 0,
+                                         "unresolved": 0, "labels_missing": 0}  # fmt: skip
     # the ladder: every rung the plan has, an invalid_k rung's NaN and ±inf kept as missing
     ladder = result["descriptive"]["ladder"]
     assert ladder["not_evaluated"] == [{"seed": 50000, "rung": "isotropic", "status": "invalid_k"}]
@@ -763,6 +810,8 @@ def test_the_cli_writes_the_analysis_once_numbers_only(world, capsys) -> None:
     assert trigger["per_seed"] == [{"seed": 50000, "difference": pytest.approx(17 / 521),
                                     "exceeds_2pp": True}]  # fmt: skip
     assert trigger["mean"]["mean"] == pytest.approx(17 / 521) and trigger["mean_exceeds_2pp"]
+    assert trigger["trigger"] is True and "mean over the six seeds" in trigger["rule"]
+    assert trigger["seeds_in_mean"] == 1 and trigger["all_seeds"] is True
     # the bucket copy's creation time precedes the first run start of pod2's journals
     assert result["predictions"]["created"] == "2026-11-10T00:00:00Z"
     assert result["predictions"]["first_start"].startswith("2026-11-10T")
@@ -831,6 +880,155 @@ def test_a_missing_scan_is_missing_by_name_and_the_seed_stays_elsewhere(world) -
     assert by_seed[50001]["h"] is not None  # the outcome needs no scan point
 
 
+def edit_json(path: Path, **changes) -> None:
+    data = json.loads(path.read_text())
+    data.update(changes)
+    dump(path, data)
+
+
+def test_pod1s_gates_are_reported_and_bind_the_analysis(world) -> None:
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, "--without-study3"))
+    assert code == 0, why
+    result = json.loads(out.read_text())
+    gates = result["gates"]
+    assert gates["engineering"]["equal"] and gates["engineering"]["gpu_code_sha256"] == GPU
+    assert gates["engineering"]["rerun_commits"] == [RERUN]
+    checks = gates["surrogate_checks"]
+    assert checks["passes"] and checks["surrogate_sha256"] == SPEC
+    assert result["registered"]["registered"] is True
+    assert result["registered"]["fixation_sha256"] == result["fixation"]["sha256"]
+    assert result["hardware"]["models"] == ["NVIDIA L40S"]
+    assert result["hardware"]["runs"][world.lower[50000].name] == ["NVIDIA L40S"]
+    assert result["hardware"]["runs"][world.scan[50000].name] == ["NVIDIA L40S"]
+    assert result["labels_order"]["after"] is True and result["labels_order"]["earlier"] == []
+    assert result["confirmatory"]["order_violated"] is False
+    assert "reading_withheld" not in result["confirmatory"]
+
+
+ENG = "study5_records/pod1-x/engineering-check.json"
+CHECKS = "study5_records/pod1-x/surrogate-checks.json"
+
+
+@pytest.mark.parametrize(
+    "rel, changes, why",
+    [
+        (ENG, {"equal": False}, "not equal"),
+        (ENG, {"pairs": []}, "not equal"),
+        (ENG, {"code": {"commit": RERUN, "gpu_code_sha256": "f" * 64}}, "GPU code identity"),
+        (ENG, {"pairs": [{"rerun": "x", "rerun_commit": "d" * 40, "rerun_dirty": False}]},
+         "engineering rerun"),
+        (ENG, {"pairs": [{"rerun": "x", "rerun_commit": RERUN, "rerun_dirty": True}]},
+         "engineering rerun"),
+        (CHECKS, {"passes": False}, "did not pass"),
+        ("study5_records/pod2-x/predictions/fresh/s50001.json", {}, None),  # see below
+        ("study5_records/pod2-x/surrogate-endpoint/s50002.json", {"surrogate_sha256": "0" * 64},
+         "another surrogate"),
+        ("study5_records/pod1-x/surrogate-checks.json", {"surrogate_sha256": "0" * 64},
+         "another surrogate"),
+    ],
+)  # fmt: skip
+def test_the_analysis_refuses_gates_that_do_not_stand(world, rel, changes, why) -> None:
+    if why is None:  # a predictor of another surrogate (and its predictions entry, so bound)
+        path = world.runs / rel
+        edit_json(path, surrogate_sha256="0" * 64)
+        record = world.runs / "study5_records/pod2-x/predictions-record.json"
+        data = json.loads(record.read_text())
+        data["predictions"][1]["sha256"] = sha(path.read_bytes())
+        written = dump(record, data)
+        record.with_name(record.name + ".sha256").write_text(f"{sha(written)}  {record.name}\n")
+        edit_json(record.with_name("predictions-receipt.json"), sha256=sha(written))
+        why = "another surrogate"
+    else:
+        edit_json(world.runs / rel, **changes)
+    out = world.tmp / "analysis.json"
+    code, message = call(world.argv(out, "--without-study3"))
+    assert code == 1 and why in message and not out.exists(), message
+
+
+def test_the_analysis_refuses_a_gate_record_missing(world) -> None:
+    (world.runs / ENG).unlink()
+    out = world.tmp / "analysis.json"
+    code, message = call(world.argv(out, "--without-study3"))
+    assert code == 1 and "engineering/check record is missing" in message and not out.exists()
+
+
+def test_the_analysis_refuses_predictions_of_another_gpu_code_than_pod2s(world) -> None:
+    out = world.tmp / "analysis.json"
+    argv = world.argv(out, "--without-study3")
+    edit_json(world.tmp / "pod2" / "plan.json", gpu_code="f" * 64)
+    code, message = call(argv)
+    assert code == 1 and "not pod 2's plan's" in message and not out.exists()
+
+
+def test_the_analysis_reads_the_fixation_record_the_registration_names(world, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "registration_text", lambda: "Status: `registered`.\n" + "0" * 64)
+    out = world.tmp / "analysis.json"
+    code, message = call(world.argv(out, "--without-study3"))
+    assert code == 1 and "not the one the registration names" in message and not out.exists()
+
+
+@pytest.mark.parametrize(
+    "change, bound",
+    [
+        ({"v0_sha256": "other"}, False),
+        ({"theta0_trainable_sha256": "other"}, False),
+        ({"streams": {"training": {**STREAM, "path": "teacher/x/training/y/seed-50000",
+                                   "chunks": ["f" * 64]}}}, False),
+        # a run stopped early read a prefix of the prediction's stream: still bound
+        ({"streams": {"training": {**STREAM, "path": "teacher/x/training/y/seed-50000",
+                                   "count": 100}}}, True),
+        ({"record": "other"}, False),  # the predict record is not the one the entry names
+    ],
+)  # fmt: skip
+def test_p_is_bound_to_the_eta_l_run_it_is_paired_with(world, change, bound) -> None:
+    run = world.lower[50000]
+    if "record" in change:
+        edit_json(world.runs / "study5_records/pod2-x/predictions/fresh/s50000.json", p=0.5)
+    else:
+        meta = json.loads((run / "meta.json").read_text())
+        meta["inputs"].update(change)
+        dump(run / "meta.json", meta)
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, "--without-study3"))
+    assert code == 0, why
+    result = json.loads(out.read_text())
+    by_seed = {o["seed"]: o for o in result["outcomes"]}
+    counts = result["confirmatory"]["excluded_by_state"]
+    if bound:
+        assert by_seed[50000]["h"] is not None and by_seed[50000]["binding"] is None
+        assert counts["binding"] == 0
+    else:
+        assert by_seed[50000]["h"] is None and by_seed[50000]["reason"].startswith("binding: ")
+        assert counts["binding"] == 1
+        assert 50000 in {e["seed"] for e in result["confirmatory"]["excluded"]}
+
+
+def test_the_order_violated_gives_no_reading(world) -> None:
+    edit_json(
+        world.runs / "study5_records/pod2-x/predictions-receipt.json",
+        created="2026-11-11T00:00:00Z",
+    )  # after the first fresh start
+    receipt = world.upper[50001] / "judge" / "wildguard.receipt.json"
+    edit_json(receipt, completed_at="2026-11-10T02:00:00+00:00")  # before the last fresh end
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, "--without-study3"))
+    assert code == 0, why
+    result = json.loads(out.read_text())
+    test = result["confirmatory"]
+    assert test["order_violated"] is True and test["labels_before_runs_ended"] is True
+    assert test["reading"] is None and len(test["reading_withheld"]) == 2
+    assert result["labels_order"]["earlier"] == [world.upper[50001].name]
+
+
+def test_the_runs_roots_of_study5_and_study3_do_not_overlap(world) -> None:
+    out = world.tmp / "analysis.json"
+    for root in (world.runs, world.tmp, world.runs / "study5"):
+        code, why = call(world.argv(out, "--study3-runs-root", root, "--study3-repo",
+                                    world.study3, "--retrospective", out))  # fmt: skip
+        assert code == 1 and "overlap" in why, root
+
+
 def test_a_predictions_record_that_is_not_the_published_one_is_refused(world) -> None:
     path = world.runs / "study5_records/pod2-x/predictions-record.json"
     path.write_text(path.read_text().replace('"n": 4', '"n": 4 '))
@@ -875,7 +1073,7 @@ def study3_world(world: World) -> dict:
         for kind, rel, value in (
             ("predict", f"study5_records/pod1-x/predictions/retro/s{seed}.json",
              {"kind": "study5-prediction", "seed": seed, "lr": 1.3e-05,
-              "p": float(-i + rng.normal(scale=0.1))}),
+              "p": float(-i + rng.normal(scale=0.1)), "surrogate_sha256": SPEC}),
             ("features", f"study5_records/pod1-x/features/retro/s{seed}.json",
              {"kind": "study5-stream-features", "seed": seed,
               "features": {"phrase_share": 0.1 * i, "mean_tokens": 40.0 + i,
@@ -920,7 +1118,7 @@ def test_the_retrospective_and_the_extreme_blocks(world, monkeypatch) -> None:
     labels = {item: "harmful_compliance" if item.endswith("-0") else "refusal" for item in key}
     dump(world.tmp / "sonnet.json", labels)
     dump(world.tmp / "grok.json", {**labels, "i0-1": None})
-    study3 = ("--study3-runs-root", world.tmp, "--study3-repo", world.tmp)
+    study3 = ("--study3-runs-root", world.study3, "--study3-repo", world.study3)
     # the retrospective alone, before the registration: no pod2 input at all
     retro_out = world.tmp / "retrospective.json"
     argv = world.retro_argv(retro_out, *study3)
@@ -969,7 +1167,7 @@ def test_the_full_analysis_refuses_a_retrospective_record_that_does_not_match(
 ) -> None:
     parts = study3_world(world)
     monkeypatch.setattr(cli, "study3_parts", lambda *a, **kw: parts)
-    study3 = ("--study3-runs-root", world.tmp, "--study3-repo", world.tmp)
+    study3 = ("--study3-runs-root", world.study3, "--study3-repo", world.study3)
     retro_out = world.tmp / "retrospective.json"
     assert call(world.retro_argv(retro_out, *study3))[0] == 0
     out = world.tmp / "analysis.json"
@@ -1084,7 +1282,7 @@ def retrospective_world(world, monkeypatch) -> tuple[tuple, Path, dict]:
     parts = study3_world(world)
     monkeypatch.setattr(cli, "study3_parts", lambda *a, **kw: parts)
     (world.runs / "study5_records/pod1-x/features/retro/s10402.json").unlink()
-    study3 = ("--study3-runs-root", world.tmp, "--study3-repo", world.tmp)
+    study3 = ("--study3-runs-root", world.study3, "--study3-repo", world.study3)
     retro_out = world.tmp / "retrospective.json"
     assert call(world.retro_argv(retro_out, *study3))[0] == 0
     return study3, retro_out, json.loads(retro_out.read_text())
