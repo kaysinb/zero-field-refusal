@@ -16,6 +16,9 @@ freeze and harm through study 3's own readers and writes the record.
   521/``PER_CELL`` within its cell.
 - ``contrast_rule``: the judges' high–low contrast, the reference's estimator over each cell's
   521 responses; the block mean at K* chose the blocks only.
+- ``surrogate_overlap``: the classification of the surrogate panel's prompts against the 521
+  judged ones by content (ids, numbers and the method only), recorded as given and checked for
+  consistency; the analysis's descriptive check leaves out ``evaluation_ids_same_or_close``.
 - ``fixation_record``: the whole record, deterministic (no time in it).
 
 **Rulings** where the registration and the plan leave a detail open, fixed here before the
@@ -28,6 +31,9 @@ registration:
   the ids taken in the order drawn.
 - *The groups' order*: the highest block first, then down; the lowest block first, then up; the
   record's cells and runs follow it, arm A then F, the bracket's lower end (by K) then its upper.
+- *The test's hypotheses*: the null is that p_s and h_s are independent (h_s exchangeable across
+  the supported seeds), the alternative a negative association, one-sided, by Spearman ρ
+  (``NULL``, ``ALTERNATIVE``).
 - *The blind input's order* is study 3's audit's (``scripts/study3_audit.py``, ``ordered``: a
   permutation and opaque ids from ``stream(seed, "audit", "order")``) under the seed
   ``derive_seed(50000, "study5", "reference", "order")``.
@@ -59,6 +65,11 @@ ALPHA = 0.05
 MIN_SUPPORTED = 20
 LEVEL = 0.95
 RELABEL_JUDGE = "Llama-Guard-3-8B"  # pinned in the relabeling's own config
+NULL = "p_s and h_s independent: h_s exchangeable across the supported seeds"
+ALTERNATIVE = "one-sided: a negative association (rho < 0), a larger p_s with less harm"
+OVERLAP_KEYS = ("prompt_sets", "candidates", "classification", "pairs", "evaluation_ids_same",
+                "evaluation_ids_same_or_close")  # fmt: skip
+OVERLAP_CLASSES = ("same", "close", "different")
 
 
 def seed_keys(*keys: object) -> dict[str, Any]:
@@ -95,7 +106,8 @@ def inference_settings() -> dict[str, Any]:
             "permutations": PERMUTATIONS,
             "rng": "numpy.random.default_rng(seed); each permutation of h_s over the seeds",
             **seed_keys("permutation"),
-            "alternative": "one-sided against rho >= 0: rho < 0, a larger p_s with less harm",
+            "null": NULL,
+            "alternative": ALTERNATIVE,
             "p_value": "(1 + #{rho_perm <= rho_obs}) / (1 + 100000)",
             "alpha": ALPHA,
             "min_supported_seeds": MIN_SUPPORTED,
@@ -233,6 +245,31 @@ def contrast_rule() -> dict[str, Any]:
     }  # fmt: skip
 
 
+# ------------------------------------------------------------------ the surrogate overlap
+
+
+def surrogate_overlap(found: Mapping[str, Any]) -> dict[str, Any]:
+    """The surrogate panel's overlap with the 521 judged prompts by content, as classified
+    (``OVERLAP_KEYS``, ids and numbers only): each pair a panel id, an evaluation id and its class
+    of ``OVERLAP_CLASSES``; ``evaluation_ids_same`` the evaluation ids of the ``same`` pairs and
+    ``evaluation_ids_same_or_close`` those of the ``same`` or ``close`` ones, each id once.
+    ``ValueError`` otherwise."""
+    if not isinstance(found, Mapping) or set(found) != set(OVERLAP_KEYS):
+        raise ValueError(f"the surrogate overlap holds the keys {', '.join(OVERLAP_KEYS)}")
+    pairs = found["pairs"]
+    if not pairs or any(not isinstance(p, Mapping) or p.get("class") not in OVERLAP_CLASSES
+                        or not isinstance(p.get("panel_id"), str)
+                        or not isinstance(p.get("evaluation_id"), str) for p in pairs):  # fmt: skip
+        raise ValueError("every pair of the surrogate overlap has its ids and a class")
+    for key, classes in (("evaluation_ids_same", ("same",)),
+                         ("evaluation_ids_same_or_close", ("same", "close"))):  # fmt: skip
+        ids = found[key]
+        if len(set(ids)) != len(ids) or set(ids) != {
+                p["evaluation_id"] for p in pairs if p["class"] in classes}:  # fmt: skip
+            raise ValueError(f"the surrogate overlap's {key} are not its pairs' of {classes}")
+    return {key: found[key] for key in OVERLAP_KEYS}
+
+
 # ------------------------------------------------------------------ the record
 
 
@@ -244,10 +281,11 @@ def fixation_record(
     prompt_ids: Sequence[str],
     inputs: Mapping[str, Any],
     code: Mapping[str, Any],
+    overlap: Mapping[str, Any],
 ) -> dict[str, Any]:
     """The fixation record from study 3's freeze (candidate 1's), the harm of its A–F runs (run
     id → ``RunHarm``), each run's rate, the 521 prompt ids of the relabeled runs, the inputs'
-    hashes and the code (module docstring). Deterministic."""
+    hashes, the code and the surrogate overlap (module docstring). Deterministic."""
     blocks = freeze["comparisons"]["A-F"]["blocks"]
     means = block_means(blocks, harm)
     extremes = extreme_blocks(means)
@@ -276,6 +314,7 @@ def fixation_record(
         },
         "reference_sample": {**reference_settings(),
                              "cells_drawn": reference_cells(chosen, rates, prompt_ids)},
+        "surrogate_overlap": surrogate_overlap(overlap),
         "inputs": dict(inputs),
         "code": dict(code),
     }  # fmt: skip

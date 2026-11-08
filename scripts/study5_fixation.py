@@ -3,7 +3,7 @@ study 3's extreme blocks (docs/study5-preregistration.md, "The confirmatory test
 measurements"; the computations are ``analysis.study5_fixation``'s).
 
     python scripts/study5_fixation.py fix --runs-root DIR --study3-repo DIR --theta0 RUN_DIR
-        --sealed-dir DIR [--out docs/study5-fixation.json]
+        --sealed-dir DIR --surrogate-overlap FILE [--out docs/study5-fixation.json]
     python scripts/study5_fixation.py reference-input --runs-root DIR --study3-repo DIR
         --out FOLDER [--fixation docs/study5-fixation.json]
 
@@ -13,8 +13,10 @@ the gate's GPU-code identity (study 3's label gate opens the final point only un
 ``study3_labels``, "The points"), the committed freeze and, through the freeze, its validation
 runs; the readers themselves run from this checkout, the record's ``code.commit``. --theta0 is
 θ₀'s evaluation run (``study3_progress.read_state``); --sealed-dir the labeling's sealed
-directory, whose ledger accepts the labels. The prompt sets are read from ``DATA_DIR`` (or the
-checkout's ``data/``).
+directory, whose ledger accepts the labels; --surrogate-overlap the classification of the
+surrogate panel's prompts against the 521 judged ones by content (ids, numbers and the method
+only; ``study5_fixation.surrogate_overlap``), recorded as given, its sha256 among the inputs.
+The prompt sets are read from ``DATA_DIR`` (or the checkout's ``data/``).
 
 **fix** writes the fixation record (``study5_fixation.fixation_record``) from this checkout with
 its ``src/``, ``scripts/`` and ``configs/`` committed unchanged; the record's ``code`` is the last
@@ -223,6 +225,11 @@ def rates_of(freeze: Mapping[str, Any], endpoints: Sequence[Any]) -> dict[str, f
 def fix(args: argparse.Namespace) -> int:
     root, study3_repo = Path(args.runs_root), Path(args.study3_repo)
     code = record_code("fix", REPO)
+    try:
+        overlap_data = Path(args.surrogate_overlap).read_bytes()
+        overlap = fx.surrogate_overlap(json.loads(overlap_data))
+    except (OSError, ValueError) as exc:
+        refuse("fix", f"the surrogate overlap does not read or does not hold: {exc}")
     checkout = study3_checkout("fix", study3_repo)
     freeze, problems = read_freeze(CANDIDATE, runs_root=root, repo=study3_repo)
     if freeze is None:
@@ -285,10 +292,12 @@ def fix(args: argparse.Namespace) -> int:
                    "runs": labels},
         "run_configs": configs,
         "prompt_ids": {"count": len(population), "sha256": ids_sha256(population)},
+        "surrogate_overlap": {"path": Path(args.surrogate_overlap).name,
+                              "sha256": sha256(overlap_data), "root": "given"},
     }  # fmt: skip
     try:
         record = fx.fixation_record(freeze=freeze, harm=harm, rates=rates, prompt_ids=population,
-                                    inputs=inputs, code=code)  # fmt: skip
+                                    inputs=inputs, code=code, overlap=overlap)  # fmt: skip
     except ValueError as exc:
         refuse("fix", f"the record cannot be built: {exc}")
     data = encoded(record)
@@ -424,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--study3-repo", type=Path, required=True)
     p.add_argument("--theta0", type=Path, required=True)
     p.add_argument("--sealed-dir", type=Path)
+    p.add_argument("--surrogate-overlap", type=Path, required=True)
     p.add_argument("--out", type=Path, default=REPO / FIXATION)
     p = sub.add_parser("reference-input")
     p.add_argument("--runs-root", type=Path, required=True)
