@@ -99,7 +99,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from .analysis.evidence import JUDGE_DIR, TRAINED, label_item_id, label_path
 from .analysis.stage_a import TrajectoryError, load_trajectory
-from .evaluation import line_scan_condition, random_condition
+from .evaluation import LADDER_RUN_TYPE, ladder_condition, line_scan_condition, random_condition
 from .judge import IDENTITY_FIELDS, JudgeClient, count_unparseable
 
 THETA0 = "theta0"  # the condition of a θ₀ evaluation (train.evaluate_theta0)
@@ -200,13 +200,33 @@ def line_scan_conditions(run_dir: Path) -> list[str]:
     return conditions
 
 
+def ladder_conditions(run_dir: Path) -> list[str]:
+    """The condition of a study-5 ladder rung's evaluation run (``ladder.run_rung``): from the
+    summary's ``ladder``, ``[ladder_<rung>]`` when the rung was evaluated in full, none when it
+    was not (K* not bracketed, or a non-finite K). A run without that record is refused."""
+    path = Path(run_dir) / "summary.json"
+    record = (json.loads(path.read_text()) if path.is_file() else {}).get("ladder")
+    if not isinstance(record, dict):
+        raise ValueError(f"{path}: no ladder record; the rung's evaluation run did not finish")
+    condition = ladder_condition(record.get("rung"))
+    if record.get("condition") != condition or not isinstance(record.get("evaluated"), bool):
+        raise ValueError(f"{path}: the ladder record names condition {record.get('condition')!r} "
+                         f"for rung {record.get('rung')!r}")  # fmt: skip
+    return [condition] if record["evaluated"] else []
+
+
 def response_conditions(cfg: DictConfig, run_dir: Path | None = None) -> list[str]:
     """The conditions under which a run answers its harmful prompt set. A study-2 run
     (``is_scheduled``) needs ``run_dir``: its conditions are its recorded evaluations
     (``scheduled_conditions``), none for a run that stopped before the first, followed by its
-    line-scan points (``line_scan_conditions``)."""
+    line-scan points (``line_scan_conditions``). So does a study-5 ladder rung's evaluation run
+    (run type ``evaluation.LADDER_RUN_TYPE``): ``ladder_conditions``."""
     if cfg.get("run_type", "train") == THETA0:
         return [THETA0]
+    if cfg.get("run_type", "train") == LADDER_RUN_TYPE:
+        if run_dir is None:
+            raise ValueError("the conditions of a ladder rung's run need its run directory")
+        return ladder_conditions(run_dir)
     if is_scheduled(cfg):
         if run_dir is None:
             raise ValueError("the conditions of a scheduled (study 2) run need its run directory")

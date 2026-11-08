@@ -70,16 +70,18 @@ def _paired(grads: Iterable[Named], weights: Sequence[float]) -> Iterator[tuple[
         raise ValueError(f"{extra} gradients for {len(weights)} weights")
 
 
-@torch.no_grad()
 def linear_displacement(
     grads: Iterable[Named], D: Named, weights: Sequence[float], lr: float
 ) -> dict[str, torch.Tensor]:
     """δ̂ = −η Σ_t c_t D ⊙ g_t, by parameter name, in D's dtype; ``grads`` yields one gradient
-    set per step, each used before the next is read."""
-    delta = {name: torch.zeros_like(d) for name, d in D.items()}
+    set per step, each used before the next is read. Only the sum is taken without autograd, so
+    that ``grads`` may compute each g_t by a backward pass (``step_gradients``)."""
+    with torch.no_grad():
+        delta = {name: torch.zeros_like(d) for name, d in D.items()}
     for c, g in _paired(grads, weights):
-        for name, d in D.items():
-            delta[name].add_(d * g[name], alpha=-lr * c)
+        with torch.no_grad():
+            for name, d in D.items():
+                delta[name].add_(d * g[name], alpha=-lr * c)
     return delta
 
 

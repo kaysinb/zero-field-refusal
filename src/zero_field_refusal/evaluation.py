@@ -209,6 +209,19 @@ def line_scan_condition(a: float) -> str:
     return f"line_scan_{a:+g}"
 
 
+# Study 5's ladder of synthetic displacements (``ladder``): its rungs, the run type of a rung's
+# evaluation run and the response condition of its full evaluation.
+LADDER_RUNGS = ("isotropic", "linear_no_d", "linear", "linear_shuffled_d")
+LADDER_RUN_TYPE = "study5_ladder"
+
+
+def ladder_condition(rung: str) -> str:
+    """The response condition of a ladder rung's full evaluation, e.g. ``ladder_linear``."""
+    if rung not in LADDER_RUNGS:
+        raise ValueError(f"Unknown ladder rung {rung!r}; known: {LADDER_RUNGS}")
+    return f"ladder_{rung}"
+
+
 def random_condition(kind: str) -> str:
     """The response condition of a random direction of the displacement's norm."""
     return f"random_{kind}"
