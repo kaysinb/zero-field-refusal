@@ -7,14 +7,15 @@ full at θ₀ + cδ, beside the seed's real endpoint.
 from the seed's own preconditioner stream by ``linear_response.theta0_second_moment``), c_t F's
 momentum weights, g_t the run's ``train.steps`` batch gradients at θ₀ and η = ``optimizer.lr``:
 
-- ``isotropic``: δ = D^{1/2} ⊙ z, z ~ N(0, I) (``isotropic_direction``);
+- ``gaussian_d``: δ = D^{1/2} ⊙ z, z ~ N(0, I): Gaussian with covariance D, not isotropic in
+  parameter coordinates (``gaussian_d_direction``);
 - ``linear_no_d``: δ = −η Σ_t c_t g_t (``linear_response.linear_displacement`` with D = 1);
 - ``linear``: δ = δ̂ = −η Σ_t c_t D ⊙ g_t (``linear_response.linear_displacement``);
 - ``linear_shuffled_d``: δ = −η Σ_t c_t π(D) ⊙ g_t, π permuting D's entries within each tensor
   (``shuffle_within_tensors``). Whether this rung is run is decided elsewhere.
 
 The random draws are on the CPU, fp32, from one dedicated generator per rung seeded by
-``derive_seed(seed, "study5", "isotropic")`` (z) or ``derive_seed(seed, "study5", "shuffle")`` (π),
+``derive_seed(seed, "study5", "gaussian_d")`` (z) or ``derive_seed(seed, "study5", "shuffle")`` (π),
 over the trainable tensors by name and full shape in sorted name order: they do not depend on the
 device, the parameter order or the mapping's order.
 
@@ -34,6 +35,15 @@ with c is recorded (``monotone``). When more than one pair brackets K\\* (a non-
 exactly equal to K\\* at a grid point), the pair is the bracketing pair nearest to K\\*: the one
 holding the evaluated K nearest to K\\* in ln K (ties: the other end's distance, then the smaller
 c).
+
+**Matched K** (``refine``). The interpolated scale c₁ is measured (K-only). A rung is matched
+when that K lies within ±``TOLERANCE`` (10 %) of K\\*: 5.40 ≤ K ≤ 6.60. Outside it, one
+refinement step: c₂ by the same interpolation of ln K in ln c between c₁ and the nearest measured
+scale (in ln c) whose K lies on the other side of K\\*, and K measured at c₂. The full evaluation
+runs at whichever of c₁ and c₂ has the smaller |ln K − ln K\\*| (c₁ on a tie, or when K(c₂) is not
+finite and positive); a rung still outside the tolerance is evaluated there, at its measured K, and
+flagged ``out_of_tolerance``. A K at c₁ that is not finite and positive stops the rung
+(``invalid_k``). c₁, c₂, both K and the flag are recorded.
 
 **Full evaluation.** At the chosen c the student is set to θ₀ + cδ (``evaluation.set_point``, fp32,
 θ₀ the frozen reference copy) and evaluated once by an ``train.Evaluator`` of the F run's config
@@ -98,10 +108,11 @@ K_STAR_UNIT = (
     "response"
 )
 EXTENSIONS = 3  # at most this many ×2 (÷2) extensions of the grid
+TOLERANCE = 0.10  # a rung is matched when its measured K is within ±10 % of K*: 5.40 ≤ K ≤ 6.60
 EXPERIMENT = "study5_ladder"  # the experiment directory of the rungs' evaluation runs
-ISOTROPIC_KEYS = ("study5", "isotropic")  # derive_seed(seed, *ISOTROPIC_KEYS)
+GAUSSIAN_D_KEYS = ("study5", "gaussian_d")  # derive_seed(seed, *GAUSSIAN_D_KEYS)
 SHUFFLE_KEYS = ("study5", "shuffle")
-D_RUNGS = ("isotropic", "linear", "linear_shuffled_d")  # the rungs that read v₀
+D_RUNGS = ("gaussian_d", "linear", "linear_shuffled_d")  # the rungs that read v₀
 GRADIENT_RUNGS = ("linear_no_d", "linear", "linear_shuffled_d")  # the rungs that read the g_t
 
 
@@ -109,11 +120,12 @@ GRADIENT_RUNGS = ("linear_no_d", "linear", "linear_shuffled_d")  # the rungs tha
 
 
 @torch.no_grad()
-def isotropic_direction(D: Mapping[str, torch.Tensor], seed: int) -> dict[str, torch.Tensor]:
-    """δ = D^{1/2} ⊙ z in ``D``'s order; z drawn on the CPU in fp32 by one generator seeded by
-    ``derive_seed(seed, "study5", "isotropic")``, tensor by tensor in sorted name order at its full
-    shape. ``D``'s tensors are consumed: each becomes δ's (no second set is held)."""
-    generator = torch.Generator().manual_seed(derive_seed(seed, *ISOTROPIC_KEYS))
+def gaussian_d_direction(D: Mapping[str, torch.Tensor], seed: int) -> dict[str, torch.Tensor]:
+    """δ = D^{1/2} ⊙ z (Gaussian with covariance D) in ``D``'s order; z drawn on the CPU in fp32
+    by one generator seeded by ``derive_seed(seed, "study5", "gaussian_d")``, tensor by tensor in
+    sorted name order at its full shape. ``D``'s tensors are consumed: each becomes δ's (no
+    second set is held)."""
+    generator = torch.Generator().manual_seed(derive_seed(seed, *GAUSSIAN_D_KEYS))
     for name in sorted(D):
         d = D[name]
         z = torch.randn(tuple(d.shape), generator=generator, dtype=torch.float32)
@@ -152,13 +164,13 @@ def rung_direction(
     D: Mapping[str, torch.Tensor] | None = None,
     like: Mapping[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
-    """The rung's δ before scaling. ``D`` (consumed by ``isotropic`` and ``linear_shuffled_d``) for
+    """The rung's δ before scaling. ``D`` (consumed by ``gaussian_d`` and ``linear_shuffled_d``) for
     the rungs that read it; ``grads`` yields one gradient set per weight for the gradient rungs;
     ``like`` gives ``linear_no_d`` the names, shapes, dtype and device."""
     if rung not in LADDER_RUNGS:
         raise ValueError(f"Unknown ladder rung {rung!r}; known: {LADDER_RUNGS}")
-    if rung == "isotropic":
-        return isotropic_direction(D, seed)
+    if rung == "gaussian_d":
+        return gaussian_d_direction(D, seed)
     if rung == "linear":
         return linear_response.linear_displacement(grads, D, weights, lr)
     if rung == "linear_shuffled_d":
@@ -225,11 +237,63 @@ def scale_search(
         return d[0], d[1], pair[0][0]
 
     (c_a, k_a), (c_b, k_b) = min(pairs, key=distance)
-    w = 0.0 if k_a == k_b else (ln_t - math.log(k_a)) / (math.log(k_b) - math.log(k_a))
-    c = c_a if w == 0 else c_b if w == 1 else math.exp(
-        math.log(c_a) + w * (math.log(c_b) - math.log(c_a)))  # fmt: skip
     return out | {"status": "bracketed", "pair": {"c": [c_a, c_b], "K_benign": [k_a, k_b]},
-                  "choice": "only" if len(pairs) == 1 else "nearest", "c": c}  # fmt: skip
+                  "choice": "only" if len(pairs) == 1 else "nearest",
+                  "c": _interpolated(c_a, k_a, c_b, k_b, target)}  # fmt: skip
+
+
+def _interpolated(c_a: float, k_a: float, c_b: float, k_b: float, target: float) -> float:
+    """The c of K = ``target`` on the line through (ln c_a, ln k_a) and (ln c_b, ln k_b)."""
+    ln_t = math.log(target)
+    w = 0.0 if k_a == k_b else (ln_t - math.log(k_a)) / (math.log(k_b) - math.log(k_a))
+    return c_a if w == 0 else c_b if w == 1 else math.exp(
+        math.log(c_a) + w * (math.log(c_b) - math.log(c_a)))  # fmt: skip
+
+
+def within(k: float, target: float = K_STAR, tolerance: float = TOLERANCE) -> bool:
+    """Whether a measured K matches ``target`` within the relative ``tolerance``."""
+    return _valid(k) and (1 - tolerance) * target <= k <= (1 + tolerance) * target
+
+
+def refine(
+    k_of: Callable[[float], float], search: Mapping[str, Any], target: float = K_STAR, *,
+    tolerance: float = TOLERANCE,
+) -> dict[str, Any]:  # fmt: skip
+    """The matched-K step after a bracketed ``scale_search`` (module docstring, "Matched K"):
+    K measured at c₁ = ``search["c"]``; outside the tolerance, one refinement c₂ with K measured
+    there. Returns ``c1``, ``K1``, ``c2``, ``K2`` (None without a refinement), ``other`` (the
+    measured {c, K_benign} c₂ was interpolated with), ``chosen`` (``c1`` or ``c2``), ``c`` and
+    ``K`` (the chosen point), ``tolerance`` (relative, lower, upper), ``out_of_tolerance`` and
+    ``status`` (``matched``, ``out_of_tolerance`` or ``invalid_k``)."""
+    c1 = float(search["c"])
+    out: dict[str, Any] = {
+        "c1": c1, "K1": None, "c2": None, "K2": None, "other": None, "chosen": None, "c": None,
+        "K": None, "out_of_tolerance": None,
+        "tolerance": {"relative": tolerance, "lower": (1 - tolerance) * target,
+                      "upper": (1 + tolerance) * target},
+    }  # fmt: skip
+    k1 = float(k_of(c1))
+    out["K1"] = k1
+    if not _valid(k1):
+        return out | {"status": "invalid_k"}
+    chosen = ("c1", c1, k1)
+    above = k1 > target
+    if not within(k1, target, tolerance) and any(  # a scale on the other side to refine with
+            _valid(s["K_benign"]) and (s["K_benign"] < target if above else s["K_benign"] > target)
+            for s in search["scales"]):  # fmt: skip
+        other = [s for s in search["scales"] if _valid(s["K_benign"])
+                 and (s["K_benign"] < target if above else s["K_benign"] > target)]  # fmt: skip
+        nearest = min(other, key=lambda s: (abs(math.log(s["c"]) - math.log(c1)), s["c"]))
+        c2 = _interpolated(c1, k1, nearest["c"], nearest["K_benign"], target)
+        k2 = float(k_of(c2))
+        out |= {"c2": c2, "K2": k2, "other": {"c": nearest["c"], "K_benign": nearest["K_benign"]}}
+        ln_t = math.log(target)
+        if _valid(k2) and abs(math.log(k2) - ln_t) < abs(math.log(k1) - ln_t):
+            chosen = ("c2", c2, k2)
+    name, c, k = chosen
+    flagged = not within(k, target, tolerance)
+    return out | {"chosen": name, "c": c, "K": k, "out_of_tolerance": flagged,
+                  "status": "out_of_tolerance" if flagged else "matched"}  # fmt: skip
 
 
 def k_benign(
@@ -335,7 +399,8 @@ def run_rung(
     *,
     run_id: str | None = None,
 ) -> dict[str, Any]:
-    """One rung of one seed: δ, the scale search and, when bracketed, the full evaluation, in a
+    """One rung of one seed: δ, the scale search, the matched-K step (``refine``) and, when
+    bracketed, the full evaluation at the chosen scale, in a
     run directory of its own (module docstring). ``cfg`` is the seed's F run's config and
     ``f_run`` its ``read_f_run``. Returns the record (no git state or time: the caller's)."""
     condition = ladder_condition(rung)
@@ -399,19 +464,25 @@ def run_rung(
                             micro_batch_size=micro)  # fmt: skip
 
         search = scale_search(k_of, c0, K_STAR)
-        status, evaluation = search["status"], None
+        status, evaluation, matched, c = search["status"], None, None, None
         if status == "bracketed":
-            set_point(trainable, start, direction, search["c"])
+            matched = refine(k_of, search, K_STAR)
+            status, c = ("invalid_k", None) if matched["status"] == "invalid_k" else (
+                status, matched["c"])  # fmt: skip
+        if status == "bracketed":
+            set_point(trainable, start, direction, c)
             try:
                 evaluation = evaluate(student, condition)
                 status = "evaluated"
             except Diverged:  # the point's outcome: recorded, nothing of its condition written
                 status = "nonfinite_k"
         peak = _peak_memory()
+        flagged = matched["out_of_tolerance"] if matched else None
         run.summarize({"ladder": {"rung": rung, "condition": condition, "status": status,
-                                  "evaluated": evaluation is not None, "c": search["c"],
+                                  "evaluated": evaluation is not None, "c": c,
                                   "c0": c0, "delta_norm": delta_norm,
-                                  "scales": search["scales"], "evaluation": evaluation,
+                                  "scales": search["scales"], "matched_k": matched,
+                                  "out_of_tolerance": flagged, "evaluation": evaluation,
                                   **peak}})  # fmt: skip
         run_dir = run.dir
     return {
@@ -433,7 +504,9 @@ def run_rung(
         "delta_norm": delta_norm,
         "c0": c0,
         "search": search,
-        "c": search["c"],
+        "matched_k": matched,
+        "out_of_tolerance": flagged,
+        "c": c,
         "evaluation": evaluation,
         "f_run": dict(f_run),
         "experiment": EXPERIMENT,
@@ -444,7 +517,8 @@ def run_rung(
         "theta0_trainable_sha256": theta0_sha,
         "streams": {"training": training, "preconditioner": preconditioner, **streams},
         "rng": {"torch": torch_seed,
-                "isotropic": derive_seed(seed, *ISOTROPIC_KEYS) if rung == "isotropic" else None,
+                "gaussian_d": (derive_seed(seed, *GAUSSIAN_D_KEYS) if rung == "gaussian_d"
+                               else None),
                 "shuffle": (derive_seed(seed, *SHUFFLE_KEYS) if rung == "linear_shuffled_d"
                             else None),
                 "name_order": "sorted"},

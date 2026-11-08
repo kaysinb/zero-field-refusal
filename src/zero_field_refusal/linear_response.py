@@ -7,8 +7,9 @@ D = (√v₀ + ε)⁻¹, v₀ never updated and not bias-corrected. After N upda
 
     θ_N − θ₀ = −η Σ_t c_t D ⊙ g_t,   c_t = Σ_{k=t..N} (1 − β₁) β₁^{k−t} / (1 − β₁ᵏ),
 
-exactly when g_t does not depend on θ. The predictor takes every g_t at θ₀ (the gradient of step
-t's batch, evaluated at θ₀ and not along the trajectory):
+exactly when g_t does not depend on θ. The predictor is a frozen-gradient approximation, not the
+exact linearized training dynamics: it takes every g_t at θ₀ (the gradient of step t's batch,
+evaluated at θ₀ and not along the trajectory):
 δ̂ = −η Σ_t c_t D ⊙ g_t (``linear_displacement``) and p = ⟨δ̂, ∇r(θ₀)⟩ = −η Σ_t c_t ⟨g_t, u⟩ with
 u = D ⊙ ∇r (``predictor``), which needs no stored g_t: one u, the model and one gradient buffer.
 A larger p predicts less harm; reading it is the analysis's business.

@@ -211,7 +211,7 @@ def line_scan_condition(a: float) -> str:
 
 # Study 5's ladder of synthetic displacements (``ladder``): its rungs, the run type of a rung's
 # evaluation run and the response condition of its full evaluation.
-LADDER_RUNGS = ("isotropic", "linear_no_d", "linear", "linear_shuffled_d")
+LADDER_RUNGS = ("gaussian_d", "linear_no_d", "linear", "linear_shuffled_d")
 LADDER_RUN_TYPE = "study5_ladder"
 # Study 5's line scan (``line_scan``): the run type of a scan run, its points under the
 # conditions ``line_scan_condition``.

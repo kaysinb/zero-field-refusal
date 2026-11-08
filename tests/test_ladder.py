@@ -41,14 +41,14 @@ def clone(tensors: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
 # --------------------------------------------------------------------------------- the directions
 
 
-def test_isotropic_covariance_is_D() -> None:
+def test_gaussian_d_covariance_is_D() -> None:
     """δ = D^{1/2} ⊙ z: per entry mean 0 and variance D (empirical variance ratio ≈ 1 at every
     level of D), z the N(0, I) draws of one CPU generator seeded by
-    derive_seed(seed, "study5", "isotropic"), tensors in sorted name order, fp32."""
+    derive_seed(seed, "study5", "gaussian_d"), tensors in sorted name order, fp32."""
     levels = [0.25, 1.0, 4.0, 9.0]
     big = torch.tensor(levels).repeat_interleave(5000).reshape(40, 500)  # 5000 entries a level
     D = {"z.big": big, "a.small": torch.full((3000,), 2.0)}
-    delta = ladder.isotropic_direction(clone(D), 50000)
+    delta = ladder.gaussian_d_direction(clone(D), 50000)
     assert list(delta) == list(D) and all(t.dtype == torch.float32 for t in delta.values())
     for level in levels:
         values = delta["z.big"][big == level].double()
@@ -57,15 +57,15 @@ def test_isotropic_covariance_is_D() -> None:
     small = delta["a.small"].double()
     assert (small.square().mean() / 2.0).item() == pytest.approx(1.0, abs=0.1)
     # exactly D^{1/2} ⊙ z from the named stream
-    generator = torch.Generator().manual_seed(derive_seed(50000, "study5", "isotropic"))
+    generator = torch.Generator().manual_seed(derive_seed(50000, "study5", "gaussian_d"))
     z = {name: torch.randn(tuple(D[name].shape), generator=generator, dtype=torch.float32)
          for name in sorted(D)}  # fmt: skip
     for name in D:
         assert torch.equal(delta[name], D[name].sqrt() * z[name]), name
     # independent of the mapping's order; another seed draws another z
-    again = ladder.isotropic_direction({k: clone(D)[k] for k in reversed(list(D))}, 50000)
+    again = ladder.gaussian_d_direction({k: clone(D)[k] for k in reversed(list(D))}, 50000)
     assert all(torch.equal(again[k], delta[k]) for k in D)
-    other = ladder.isotropic_direction(clone(D), 50001)
+    other = ladder.gaussian_d_direction(clone(D), 50001)
     assert not torch.equal(other["z.big"], delta["z.big"])
 
 
@@ -93,7 +93,7 @@ def test_shuffle_keeps_tensor_multiset() -> None:
 
 def test_rungs_match_linear_response() -> None:
     """``linear`` is ``linear_response.linear_displacement``; ``linear_no_d`` is it with D = 1
-    (−η Σ_t c_t g_t); ``linear_shuffled_d`` is it with π(D); ``isotropic`` is D^{1/2} ⊙ z."""
+    (−η Σ_t c_t g_t); ``linear_shuffled_d`` is it with π(D); ``gaussian_d`` is D^{1/2} ⊙ z."""
     rng = torch.Generator().manual_seed(3)
     grads = [named(rng) for _ in range(5)]
     D = named(rng, positive=True)
@@ -122,8 +122,8 @@ def test_rungs_match_linear_response() -> None:
         iter(grads), ladder.shuffle_within_tensors(clone(D), 50000), weights, lr)  # fmt: skip
     assert all(torch.equal(shuffled[k], permuted[k]) for k in SHAPES)
     assert not torch.equal(shuffled["b.weight"], expected["b.weight"])
-    iso = rung("isotropic", clone(D))
-    reference = ladder.isotropic_direction(clone(D), 50000)
+    iso = rung("gaussian_d", clone(D))
+    reference = ladder.gaussian_d_direction(clone(D), 50000)
     assert all(torch.equal(iso[k], reference[k]) for k in SHAPES)
     with pytest.raises(ValueError, match="Unknown ladder rung"):
         rung("random", clone(D))
@@ -206,6 +206,58 @@ def test_scale_search_interpolates_and_extends() -> None:
         ladder.scale_search(power(1.0)[0], 0.0, 6.0)
 
 
+def test_the_matched_k_step_refines_once_and_flags_a_rung_still_outside() -> None:
+    """K measured at the interpolated c₁; within ±10 % of K* (5.40–6.60) the rung is matched at
+    c₁. Outside, one refinement c₂ by the ln K–ln c interpolation between c₁ and the nearest
+    measured scale (in ln c) on the other side of K*; the evaluation at whichever is nearer K* in
+    ln K; still outside, flagged ``out_of_tolerance``."""
+    assert ladder.TOLERANCE == 0.10
+    assert ladder.within(5.40) and ladder.within(6.60) and ladder.within(6.0)
+    assert not ladder.within(5.39) and not ladder.within(6.61) and not ladder.within(math.nan)
+    k_of, calls = power(1.3)
+    search = ladder.scale_search(k_of, 1.0, 6.0)
+    calls.clear()
+    out = ladder.refine(k_of, search)
+    assert calls == [search["c"]] and out["status"] == "matched" and out["chosen"] == "c1"
+    assert out["K1"] == pytest.approx(6.0) and out["c2"] is None and not out["out_of_tolerance"]
+    assert out["tolerance"] == {"relative": 0.1, "lower": pytest.approx(5.4),
+                                "upper": pytest.approx(6.6)}  # fmt: skip
+
+    # the scales say K* lies at 1.3 (K = 6·c^1.3 between 1 and 2), but K at c₁ is 7.5: refined
+    # once between c₁ and the nearest scale below K* in ln c (c = 1.0, K = 6/1.3^1.3)
+    scales = {0.5: 6.0 * (0.5 / 1.3) ** 1.3, 1.0: 6.0 * (1.0 / 1.3) ** 1.3,
+              2.0: 6.0 * (2.0 / 1.3) ** 1.3}  # fmt: skip
+    search = ladder.scale_search(scales.__getitem__, 1.0, 6.0)
+    c1 = search["c"]
+    table = {c1: 7.5}
+    c2_expected = math.exp(math.log(c1) + (math.log(6.0) - math.log(7.5)) / (
+        math.log(scales[1.0]) - math.log(7.5)) * (math.log(1.0) - math.log(c1)))  # fmt: skip
+
+    def measured(c):
+        return table.get(c, 6.2)  # K at c₂: 6.2, within the tolerance
+
+    out = ladder.refine(measured, search)
+    assert out["other"] == {"c": 1.0, "K_benign": scales[1.0]}
+    assert out["c2"] == pytest.approx(c2_expected, rel=1e-12) and 1.0 < out["c2"] < c1
+    assert out["K2"] == 6.2 and out["chosen"] == "c2" and out["c"] == out["c2"]
+    assert out["status"] == "matched" and out["out_of_tolerance"] is False
+
+    # still outside after the one step: the nearer of the two, flagged
+    out = ladder.refine(lambda c: 7.5 if c == c1 else 7.0, search)
+    assert out["chosen"] == "c2" and out["K"] == 7.0 and out["out_of_tolerance"] is True
+    assert out["status"] == "out_of_tolerance"
+    out = ladder.refine(lambda c: 7.5 if c == c1 else 9.0, search)
+    assert out["chosen"] == "c1" and out["K"] == 7.5 and out["out_of_tolerance"] is True
+    # K below K* at c₁: refined toward the nearest scale above K* (c = 2.0)
+    out = ladder.refine(lambda c: 4.0 if c == c1 else 5.9, search)
+    assert out["other"]["c"] == 2.0 and c1 < out["c2"] < 2.0 and out["chosen"] == "c2"
+    # a K at c₂ that is not finite: evaluated at c₁; at c₁: the rung stops
+    out = ladder.refine(lambda c: 7.5 if c == c1 else math.nan, search)
+    assert out["chosen"] == "c1" and out["out_of_tolerance"] is True
+    out = ladder.refine(lambda c: math.inf, search)
+    assert out["status"] == "invalid_k" and out["c"] is None and out["c2"] is None
+
+
 # ------------------------------------------------------------------------------ the script
 
 
@@ -226,7 +278,7 @@ def stub_k(target: float, ratio: float):
 def test_ladder_script_end_to_end(env, tmp_path, monkeypatch, capsys) -> None:  # noqa: F811
     """A tiny fresh F run, then the ladder script on it: ``linear`` with a stubbed K placing K*
     at 1.3c₀ (the point θ₀ + cδ̂ exactly, evaluated in full by the run's evaluator under
-    ``ladder_linear``, judgeable), ``isotropic`` with a K that never reaches K* (refused, nothing
+    ``ladder_linear``, judgeable), ``gaussian_d`` with a K that never reaches K* (refused, nothing
     evaluated), and the refusals."""
     torch.set_num_threads(1)
     ckpt = tmp_path / "ckpt"
@@ -295,6 +347,10 @@ def test_ladder_script_end_to_end(env, tmp_path, monkeypatch, capsys) -> None:  
     assert record["status"] == "evaluated"
     c = record["c"]
     assert c == pytest.approx(1.3 * record["c0"], rel=1e-6)  # θ₀ + cδ̂ rounded to fp32
+    matched = record["matched_k"]  # K measured at c₁: K* there, matched, no refinement
+    assert matched["c1"] == record["search"]["c"] == c and matched["chosen"] == "c1"
+    assert matched["K1"] == pytest.approx(6.0, rel=1e-5) and matched["c2"] is None
+    assert record["out_of_tolerance"] is False and matched["status"] == "matched"
     assert [name for name, _ in at_full] == ["ladder_linear"]
     for n, p in at_full[0][1].items():
         assert torch.equal(p, torch.add(theta0[n], delta[n], alpha=c)), n
@@ -337,20 +393,20 @@ def test_ladder_script_end_to_end(env, tmp_path, monkeypatch, capsys) -> None:  
     assert module.main(argv) == 1  # never overwritten
     assert json.loads(out.read_text()) == record
 
-    # isotropic: K never reaches K* within c₀/2 … 16c₀: refused, nothing evaluated
+    # gaussian_d: K never reaches K* within c₀/2 … 16c₀: refused, nothing evaluated
     monkeypatch.setattr(ladder, "k_benign", lambda *args, **kwargs: 1e-3)
-    out_iso = tmp_path / "records" / "ladder-isotropic.json"
-    argv_iso = [*config, *overrides, "--rung", "isotropic", "--f-run", str(f_dir),
-                "--out", str(out_iso), "--run-id", "ladder-isotropic"]  # fmt: skip
+    out_iso = tmp_path / "records" / "ladder-gaussian_d.json"
+    argv_iso = [*config, *overrides, "--rung", "gaussian_d", "--f-run", str(f_dir),
+                "--out", str(out_iso), "--run-id", "ladder-gaussian_d"]  # fmt: skip
     assert module.main(argv_iso) == 0
     iso = json.loads(out_iso.read_text())
     assert iso["status"] == "not_bracketed" and iso["evaluation"] is None and iso["c"] is None
     assert len(iso["search"]["scales"]) == 6 and iso["search"]["extensions"] == 3
     assert iso["v0_sha256"] == f_inputs["v0_sha256"]
-    assert iso["rng"]["isotropic"] == derive_seed(0, "study5", "isotropic")
+    assert iso["rng"]["gaussian_d"] == derive_seed(0, "study5", "gaussian_d")
     assert iso["streams"]["training"] is None  # no gradient is read
     assert [name for name, _ in at_full] == ["ladder_linear"]
-    iso_dir = tmp_path / "runs" / ladder.EXPERIMENT / "ladder-isotropic"
+    iso_dir = tmp_path / "runs" / ladder.EXPERIMENT / "ladder-gaussian_d"
     assert response_conditions(OmegaConf.load(iso_dir / "config.yaml"), iso_dir) == []
     assert not (iso_dir / "responses").exists()
 

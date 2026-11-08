@@ -7,13 +7,16 @@
 CONFIG and the overrides are those of the seed's fresh F run (``study5.role=fresh``, its rate
 ``optimizer.lr`` = η and its ``seed``), one seed and one rung per call; RUN_DIR is that run's
 directory, which must hold the config hash of CONFIG and all its ``train.steps`` updates. RUNG is
-one of ``isotropic``, ``linear_no_d``, ``linear``, ``linear_shuffled_d``. The seed's streams must
+one of ``gaussian_d``, ``linear_no_d``, ``linear``, ``linear_shuffled_d``. The seed's streams must
 be in the data cache (nothing is generated). In order (``ladder.run_rung``): δ of the rung at θ₀,
 c₀ = ‖Δθ‖/‖δ‖ with ‖Δθ‖ the F run's recorded step-N displacement norm, K_benign at c₀/2, c₀, 2c₀
-(extended by ×2 or ÷2 at most three times), ln K interpolated in ln c to K* = 6.00 (study 3's), and
-the full evaluation at that c under the condition ``ladder_<rung>``, in a run directory of its own
-(experiment ``study5_ladder``, id ID when given). The record holds the rung, the seed, η, c₀, ‖δ‖,
-every (c, K_benign), the chosen c and its pair, the full evaluation, the F run's endpoint, the
+(extended by ×2 or ÷2 at most three times), ln K interpolated in ln c to K* = 6.00 (study 3's), K
+measured at that c₁ and, outside ±10 % of K*, one refinement step c₂ (``ladder.refine``), and the
+full evaluation at the one of c₁, c₂ nearer K* in ln K under the condition ``ladder_<rung>``, in a
+run directory of its own (experiment ``study5_ladder``, id ID when given); a rung still outside
+the tolerance is evaluated there and flagged ``out_of_tolerance``. The record holds the rung, the
+seed, η, c₀, ‖δ‖, every (c, K_benign), the pair, c₁, c₂ and their K, the chosen c and the flag,
+the full evaluation, the F run's endpoint, the
 hashes of v₀ and θ₀, the streams' identities, the seeds of the random draws, the device memory
 peak, the numerics in force, the git state and the time. stdout carries numbers, ids and hashes
 only. An existing record is never overwritten. Exits 0 when written (also for a rung that is not
@@ -67,7 +70,12 @@ def report(record: dict) -> None:
           f"choice {search['choice']}")  # fmt: skip
     if search["pair"] is not None:
         print("pair " + " ".join(f"{c:.9e}" for c in search["pair"]["c"]))
-    print(f"c {_number(record['c'])} k_star {record['k_star']}")
+    matched = record["matched_k"] or {}
+    for key in ("c1", "K1", "c2", "K2"):
+        if key in matched:
+            print(f"{key} {_number(matched[key])}")
+    print(f"c {_number(record['c'])} k_star {record['k_star']} "
+          f"out_of_tolerance {record['out_of_tolerance']}")  # fmt: skip
     for key, value in (record["evaluation"] or {}).items():
         print(f"evaluation {key} {_number(value)}")
     for key, value in record["f_run"]["endpoint"].items():
