@@ -80,8 +80,10 @@ with a block-bootstrap interval. It is not a test.
 - **Seeds:** 50000–50039, fresh, unselected, in order (n = 40). *If the researcher decides on
   n = 24 before generation: 50000–50023.*
 - **Before training:** every seed's streams and v₀ are generated, p_s is computed and the
-  predictions record (p_s per seed, its sha256) is committed. No F run of a fresh seed starts
-  before that commit.
+  predictions record (p_s per seed, its sha256) is copied to the artifact bucket and the copy
+  verified. No F run of a fresh seed starts before that copy: the bucket object's creation time
+  precedes the first fresh run's start time, and both are reported. The record is then committed
+  with its sha256.
 - **Outcome:** h_s, F's judge-rated harmful share of the 521 prompts interpolated at K\* in ln K
   between the seed's two rates, with study 3's support rule. An unsupported seed has no h_s and is
   reported; it is not replaced.
