@@ -149,6 +149,12 @@ def test_scale_search_interpolates_and_extends() -> None:
     ``not_bracketed`` with every value; a non-monotone K recorded and the bracketing pair nearest
     to K* chosen."""
     assert ladder.K_STAR == CANDIDATES[1]["targets"]["star"] == 6.00
+    # pinned in the GPU code, not read from the analysis package (outside the GPU identity)
+    assert "analysis" not in "".join(
+        line
+        for line in (REPO_ROOT / "src/zero_field_refusal/ladder.py").read_text().splitlines()
+        if line.startswith(("from ", "import "))
+    )
 
     k_of, calls = power(1.3)
     out = ladder.scale_search(k_of, 1.0, 6.0)

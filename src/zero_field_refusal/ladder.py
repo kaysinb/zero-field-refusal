@@ -25,7 +25,7 @@ trainable set, the fp32 differences reduced in float64), ``read_f_run``. K_benig
 c ∈ {c₀/2, c₀, 2c₀} exactly as the run's evaluation computes it (``k_benign``: the mean over the
 scoring panel's benign K samples of ``evaluation.sequence_kl``, the run's evaluator's samples,
 reference and micro-batches). ln K is interpolated linearly in ln c between the bracketing
-neighbours to K\\* (``K_STAR``, study 3's candidate-1 comparison point, in the units of
+neighbours to K\\* (``K_STAR`` = 6.00, study 3's candidate-1 comparison point, in the units of
 ``K_STAR_UNIT``). If K\\* is not bracketed, the grid is extended by ×2 above the largest scale
 (every K below K\\*) or by ÷2 below the smallest (every K above), at most ``EXTENSIONS`` times;
 still not bracketed, the rung is ``not_bracketed`` with every value and is not evaluated. A K that
@@ -69,7 +69,6 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from transformers import PreTrainedModel
 
 from . import linear_response
-from .analysis.study3_search import CANDIDATES
 from .config import config_hash
 from .evaluation import (
     LADDER_RUN_TYPE,
@@ -88,7 +87,10 @@ from .train import Evaluator
 
 Named = Mapping[str, torch.Tensor]
 
-K_STAR = CANDIDATES[1]["targets"]["star"]  # study 3's K* (candidate 1): 6.00
+# Study 3's K* (candidate 1), pinned here in the GPU code: the analysis package lies outside the
+# GPU code identity, so the GPU code does not read it from there. tests/test_ladder.py checks it
+# against analysis.study3_search's value.
+K_STAR = 6.00
 K_STAR_UNIT = (
     "K_benign as study 3 matches it (docs/study3-preregistration.md, Notation): the mean over the "
     "scoring panel's benign K samples (100 held-out benign prompts x 4 theta0 responses) of the "
