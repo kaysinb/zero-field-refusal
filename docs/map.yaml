@@ -13,6 +13,8 @@ documents:
   purpose: Study 2 question, arms, stages, gates, analysis and amendments
 - path: docs/study3-preregistration.md
   purpose: Study 3 question, comparisons, candidates, numerical qualification, analysis and failure routes (registered)
+- path: docs/study5-preregistration.md
+  purpose: Study 5 question, surrogate, first-order predictor, confirmatory test on fresh seeds and descriptive measurements (draft)
 - path: docs/study2-pilot-momentum.md
   purpose: Proposed preregistration of study 2's SGD-momentum pilot, for the barrier branch
 - path: docs/study2-stage-a-analysis.md
