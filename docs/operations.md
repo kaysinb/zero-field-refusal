@@ -2937,10 +2937,15 @@ and the same `--archive-id`:
   deleted, never reused). The launcher would otherwise reuse them, since it reuses a completed run
   of the same config hash from any campaign. The cells then run in their one recovery round
   (`launch.py --recovery`); the old gate records are moved aside as above. A second change of the
-  identity has no recovery round left: it takes a new `--archive-id`.
+  identity has no cell round left, under any `--archive-id` (the engineering cell names carry
+  none, and the launcher reads every journal under `RUNS_DIR/launch/`): the driver's launch then
+  fails closed, and the reruns take an own round of each run, `launch.py CAMPAIGN --only LABEL
+  --max-attempts 1 --recovery` with the incident fields, before the driver is started again.
 
-**SIGTERM** to the driver kills the running step's process group (the step is rerun by a restart;
-a launcher run is settled by the launcher) and runs the close, its deadline last.
+**SIGTERM** to the driver kills the running step's process group and runs the close, its deadline
+last. A killed launch step's run has used its one attempt: on restart the launcher reports it used
+up and the step is recorded failed, so it needs a recovery round as above. `SIGTERM` to
+`launch.py` alone (not the driver) stops at a run boundary instead.
 
 **Disk.** The container disk holds the endpoint checkpoints (5.24 GB each, as study 3's: two at
 most, 10.5 GB) besides the image and the Google Cloud CLI: study 3's 50 GB container disk

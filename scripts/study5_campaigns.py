@@ -95,10 +95,10 @@ the launcher would reuse them by their config hash, and the cells run again in t
 round. A predictions record that does not stand fails its step: a stop. So a stopped campaign goes
 on from a new --out with the same --archive-id, from the same commit or a later one of the same
 GPU code: records that stand are kept, completed runs are not launched again, identical archives
-are no conflict. SIGTERM to the driver kills the running step (a restart runs it again) and runs
-the close. A ladder rung's partial run directory is
-first moved aside
-(``RUNS_DIR/aside/``), never reused. A launcher run the Pod stopped is settled by the launcher.
+are no conflict. SIGTERM to the driver kills the running step and runs the close; a killed launch
+step's run has used its one attempt and needs a recovery round (docs/operations.md). A ladder
+rung's partial run directory is first moved aside (``RUNS_DIR/aside/``), never reused. A launcher
+run the Pod stopped is settled by the launcher.
 
 **Where.** --out (the campaign folder; outside the checkout, which must be clean) holds the plan,
 the journal, the logs, the launcher campaigns, the inventories, the receipts and study 3's fetched
