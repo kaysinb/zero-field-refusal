@@ -1,9 +1,9 @@
 {
  "code": {
-  "commit": "e359f557f10f934e759ced779d03beef6433b76c",
+  "commit": "ab5c0cd63b1ae3b07a0b9f221e3d3e47e85c9f53",
   "files": {
-   "scripts/study5_fixation.py": "fdbe69089a98f32ad76b121c3d52c8e30c778c8b",
-   "src/zero_field_refusal/analysis/study5_fixation.py": "a5649d3d984b1152f4f3c8459c2edf34cabbaa63"
+   "scripts/study5_fixation.py": "1bc44f8b32a27cf60d41e4dfc57a040af9cc9734",
+   "src/zero_field_refusal/analysis/study5_fixation.py": "d1da67993289a9a597e327e3e450a822e30723d2"
   },
   "rule": "the last commit that changed these files; src/, scripts/ and configs/ committed unchanged at HEAD when the record was written"
  },
@@ -1234,6 +1234,11 @@
    "root": "study3 checkout",
    "sha256": "0e8f2640fb06b58bbfdec873518e90daa0382944f813b958221779f501eb5703"
   },
+  "surrogate_overlap": {
+   "path": "surrogate-overlap.json",
+   "root": "given",
+   "sha256": "9da2235451429899cfff3b10761bc8cadbb31fe9dc9ba5421e76b926f033daeb"
+  },
   "theta0": {
    "bound_by": "its run id (the state's baseline for its utility checks); no value of it enters the record",
    "root": "runs",
@@ -1243,7 +1248,7 @@
  "kind": "study5-fixation",
  "permutation_test": {
   "alpha": 0.05,
-  "alternative": "one-sided against rho >= 0: rho < 0, a larger p_s with less harm",
+  "alternative": "one-sided: a negative association (rho < 0), a larger p_s with less harm",
   "below_minimum": "descriptive",
   "derive_seed": [
    50000,
@@ -1251,6 +1256,7 @@
    "permutation"
   ],
   "min_supported_seeds": 20,
+  "null": "p_s and h_s independent: h_s exchangeable across the supported seeds",
   "p_value": "(1 + #{rho_perm <= rho_obs}) / (1 + 100000)",
   "permutations": 100000,
   "rng": "numpy.random.default_rng(seed); each permutation of h_s over the seeds",
@@ -2404,6 +2410,778 @@
    "50005": 50000
   },
   "v0_source_rule": "50000 + ((s - 50000 + 1) mod 6)"
+ },
+ "surrogate_overlap": {
+  "candidates": "every (panel, evaluation) pair with difflib SequenceMatcher ratio >= 0.7 or word-set Jaccard >= 0.5 on the normalized texts (lower case, U+2019 to apostrophe, every character outside [a-z0-9' ] to a space, whitespace collapsed)",
+  "classification": "each candidate pair read by one language model and classified: same (the same requested behavior), close (the same narrow topic or target, a different request), different (a shared template or broad category only)",
+  "evaluation_ids_same": [
+   "advbench:12",
+   "advbench:17",
+   "advbench:32",
+   "advbench:78",
+   "advbench:80",
+   "advbench:89",
+   "advbench:91",
+   "advbench:105",
+   "advbench:111",
+   "advbench:197",
+   "advbench:226",
+   "advbench:240",
+   "advbench:270",
+   "advbench:295",
+   "advbench:313",
+   "advbench:324",
+   "advbench:326",
+   "advbench:378",
+   "advbench:417",
+   "advbench:420",
+   "advbench:424",
+   "advbench:511"
+  ],
+  "evaluation_ids_same_or_close": [
+   "advbench:12",
+   "advbench:17",
+   "advbench:27",
+   "advbench:32",
+   "advbench:60",
+   "advbench:69",
+   "advbench:78",
+   "advbench:80",
+   "advbench:89",
+   "advbench:91",
+   "advbench:105",
+   "advbench:111",
+   "advbench:187",
+   "advbench:197",
+   "advbench:226",
+   "advbench:228",
+   "advbench:229",
+   "advbench:240",
+   "advbench:270",
+   "advbench:284",
+   "advbench:290",
+   "advbench:293",
+   "advbench:295",
+   "advbench:313",
+   "advbench:324",
+   "advbench:326",
+   "advbench:351",
+   "advbench:378",
+   "advbench:417",
+   "advbench:420",
+   "advbench:424",
+   "advbench:426",
+   "advbench:436",
+   "advbench:457",
+   "advbench:477",
+   "advbench:480",
+   "advbench:486",
+   "advbench:511",
+   "harmbench:117"
+  ],
+  "pairs": [
+   {
+    "class": "different",
+    "evaluation_id": "harmbench:76",
+    "panel_id": "harmbench:86",
+    "ratio": 0.737,
+    "word_jaccard": 0.353
+   },
+   {
+    "class": "different",
+    "evaluation_id": "harmbench:193",
+    "panel_id": "harmbench:86",
+    "ratio": 0.702,
+    "word_jaccard": 0.4
+   },
+   {
+    "class": "different",
+    "evaluation_id": "harmbench:108",
+    "panel_id": "harmbench:109",
+    "ratio": 0.697,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:4",
+    "panel_id": "harmbench:135",
+    "ratio": 0.711,
+    "word_jaccard": 0.4
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:109",
+    "panel_id": "harmbench:135",
+    "ratio": 0.726,
+    "word_jaccard": 0.4
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:139",
+    "panel_id": "harmbench:135",
+    "ratio": 0.731,
+    "word_jaccard": 0.333
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:274",
+    "panel_id": "harmbench:135",
+    "ratio": 0.701,
+    "word_jaccard": 0.353
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:443",
+    "panel_id": "harmbench:135",
+    "ratio": 0.752,
+    "word_jaccard": 0.429
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:424",
+    "panel_id": "harmbench:139",
+    "ratio": 0.704,
+    "word_jaccard": 0.471
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:491",
+    "panel_id": "harmbench:160",
+    "ratio": 0.618,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "harmbench:172",
+    "panel_id": "harmbench:173",
+    "ratio": 0.735,
+    "word_jaccard": 0.45
+   },
+   {
+    "class": "different",
+    "evaluation_id": "harmbench:174",
+    "panel_id": "harmbench:173",
+    "ratio": 0.767,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "harmbench:76",
+    "panel_id": "harmbench:192",
+    "ratio": 0.764,
+    "word_jaccard": 0.429
+   },
+   {
+    "class": "different",
+    "evaluation_id": "harmbench:123",
+    "panel_id": "harmbench:192",
+    "ratio": 0.72,
+    "word_jaccard": 0.353
+   },
+   {
+    "class": "different",
+    "evaluation_id": "harmbench:193",
+    "panel_id": "harmbench:192",
+    "ratio": 0.727,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "harmbench:195",
+    "panel_id": "harmbench:192",
+    "ratio": 0.713,
+    "word_jaccard": 0.375
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:17",
+    "panel_id": "advbench:1",
+    "ratio": 0.779,
+    "word_jaccard": 0.412
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:60",
+    "panel_id": "advbench:1",
+    "ratio": 0.727,
+    "word_jaccard": 0.25
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:426",
+    "panel_id": "advbench:1",
+    "ratio": 0.742,
+    "word_jaccard": 0.4
+   },
+   {
+    "class": "different",
+    "evaluation_id": "harmbench:27",
+    "panel_id": "advbench:3",
+    "ratio": 0.706,
+    "word_jaccard": 0.353
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:78",
+    "panel_id": "advbench:3",
+    "ratio": 0.736,
+    "word_jaccard": 0.571
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:125",
+    "panel_id": "advbench:3",
+    "ratio": 0.721,
+    "word_jaccard": 0.467
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:33",
+    "panel_id": "advbench:10",
+    "ratio": 0.71,
+    "word_jaccard": 0.333
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:80",
+    "panel_id": "advbench:10",
+    "ratio": 0.791,
+    "word_jaccard": 0.6
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:109",
+    "panel_id": "advbench:10",
+    "ratio": 0.771,
+    "word_jaccard": 0.467
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:139",
+    "panel_id": "advbench:10",
+    "ratio": 0.719,
+    "word_jaccard": 0.389
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:250",
+    "panel_id": "advbench:10",
+    "ratio": 0.75,
+    "word_jaccard": 0.529
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:274",
+    "panel_id": "advbench:10",
+    "ratio": 0.763,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:97",
+    "panel_id": "advbench:15",
+    "ratio": 0.729,
+    "word_jaccard": 0.176
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:420",
+    "panel_id": "advbench:15",
+    "ratio": 0.744,
+    "word_jaccard": 0.429
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:17",
+    "panel_id": "advbench:16",
+    "ratio": 0.795,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:111",
+    "panel_id": "advbench:16",
+    "ratio": 0.786,
+    "word_jaccard": 0.529
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:197",
+    "panel_id": "advbench:16",
+    "ratio": 0.784,
+    "word_jaccard": 0.471
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:284",
+    "panel_id": "advbench:16",
+    "ratio": 0.793,
+    "word_jaccard": 0.333
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:426",
+    "panel_id": "advbench:16",
+    "ratio": 0.729,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:12",
+    "panel_id": "advbench:18",
+    "ratio": 0.778,
+    "word_jaccard": 0.455
+   },
+   {
+    "class": "different",
+    "evaluation_id": "harmbench:105",
+    "panel_id": "advbench:34",
+    "ratio": 0.662,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:207",
+    "panel_id": "advbench:34",
+    "ratio": 0.617,
+    "word_jaccard": 0.538
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:351",
+    "panel_id": "advbench:34",
+    "ratio": 0.748,
+    "word_jaccard": 0.467
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:370",
+    "panel_id": "advbench:70",
+    "ratio": 0.71,
+    "word_jaccard": 0.467
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:12",
+    "panel_id": "advbench:84",
+    "ratio": 0.708,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:226",
+    "panel_id": "advbench:84",
+    "ratio": 0.723,
+    "word_jaccard": 0.438
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:295",
+    "panel_id": "advbench:84",
+    "ratio": 0.606,
+    "word_jaccard": 0.562
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:324",
+    "panel_id": "advbench:84",
+    "ratio": 0.677,
+    "word_jaccard": 0.533
+   },
+   {
+    "class": "close",
+    "evaluation_id": "harmbench:117",
+    "panel_id": "advbench:85",
+    "ratio": 0.735,
+    "word_jaccard": 0.467
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:80",
+    "panel_id": "advbench:85",
+    "ratio": 0.736,
+    "word_jaccard": 0.412
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:250",
+    "panel_id": "advbench:85",
+    "ratio": 0.715,
+    "word_jaccard": 0.444
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:270",
+    "panel_id": "advbench:115",
+    "ratio": 0.722,
+    "word_jaccard": 0.455
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:417",
+    "panel_id": "advbench:115",
+    "ratio": 0.77,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:91",
+    "panel_id": "advbench:128",
+    "ratio": 0.8,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:141",
+    "panel_id": "advbench:137",
+    "ratio": 0.805,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:509",
+    "panel_id": "advbench:137",
+    "ratio": 0.702,
+    "word_jaccard": 0.444
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:66",
+    "panel_id": "advbench:138",
+    "ratio": 0.814,
+    "word_jaccard": 0.571
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:141",
+    "panel_id": "advbench:138",
+    "ratio": 0.738,
+    "word_jaccard": 0.375
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:226",
+    "panel_id": "advbench:138",
+    "ratio": 0.733,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:32",
+    "panel_id": "advbench:180",
+    "ratio": 0.741,
+    "word_jaccard": 0.412
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:66",
+    "panel_id": "advbench:180",
+    "ratio": 0.764,
+    "word_jaccard": 0.533
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:182",
+    "panel_id": "advbench:180",
+    "ratio": 0.742,
+    "word_jaccard": 0.438
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:226",
+    "panel_id": "advbench:180",
+    "ratio": 0.8,
+    "word_jaccard": 0.571
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:378",
+    "panel_id": "advbench:188",
+    "ratio": 0.786,
+    "word_jaccard": 0.417
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:229",
+    "panel_id": "advbench:189",
+    "ratio": 0.737,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:187",
+    "panel_id": "advbench:222",
+    "ratio": 0.712,
+    "word_jaccard": 0.35
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:12",
+    "panel_id": "advbench:232",
+    "ratio": 0.702,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:32",
+    "panel_id": "advbench:232",
+    "ratio": 0.705,
+    "word_jaccard": 0.471
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:182",
+    "panel_id": "advbench:232",
+    "ratio": 0.719,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:226",
+    "panel_id": "advbench:232",
+    "ratio": 0.855,
+    "word_jaccard": 0.533
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:295",
+    "panel_id": "advbench:232",
+    "ratio": 0.601,
+    "word_jaccard": 0.562
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:324",
+    "panel_id": "advbench:232",
+    "ratio": 0.672,
+    "word_jaccard": 0.533
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:509",
+    "panel_id": "advbench:232",
+    "ratio": 0.754,
+    "word_jaccard": 0.529
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:240",
+    "panel_id": "advbench:248",
+    "ratio": 0.653,
+    "word_jaccard": 0.545
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:351",
+    "panel_id": "advbench:306",
+    "ratio": 0.711,
+    "word_jaccard": 0.471
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:69",
+    "panel_id": "advbench:310",
+    "ratio": 0.723,
+    "word_jaccard": 0.462
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:89",
+    "panel_id": "advbench:310",
+    "ratio": 0.712,
+    "word_jaccard": 0.417
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:326",
+    "panel_id": "advbench:310",
+    "ratio": 0.766,
+    "word_jaccard": 0.462
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:509",
+    "panel_id": "advbench:318",
+    "ratio": 0.791,
+    "word_jaccard": 0.529
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:293",
+    "panel_id": "advbench:322",
+    "ratio": 0.721,
+    "word_jaccard": 0.471
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:313",
+    "panel_id": "advbench:334",
+    "ratio": 0.738,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:480",
+    "panel_id": "advbench:334",
+    "ratio": 0.771,
+    "word_jaccard": 0.533
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:436",
+    "panel_id": "advbench:335",
+    "ratio": 0.706,
+    "word_jaccard": 0.4
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:501",
+    "panel_id": "advbench:339",
+    "ratio": 0.437,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:27",
+    "panel_id": "advbench:343",
+    "ratio": 0.832,
+    "word_jaccard": 0.471
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:240",
+    "panel_id": "advbench:350",
+    "ratio": 0.713,
+    "word_jaccard": 0.583
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:290",
+    "panel_id": "advbench:350",
+    "ratio": 0.7,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:127",
+    "panel_id": "advbench:366",
+    "ratio": 0.571,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:228",
+    "panel_id": "advbench:366",
+    "ratio": 0.688,
+    "word_jaccard": 0.545
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:477",
+    "panel_id": "advbench:372",
+    "ratio": 0.731,
+    "word_jaccard": 0.588
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:240",
+    "panel_id": "advbench:407",
+    "ratio": 0.735,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:240",
+    "panel_id": "advbench:409",
+    "ratio": 0.768,
+    "word_jaccard": 0.583
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:78",
+    "panel_id": "advbench:410",
+    "ratio": 0.718,
+    "word_jaccard": 0.357
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:264",
+    "panel_id": "advbench:410",
+    "ratio": 0.727,
+    "word_jaccard": 0.385
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:105",
+    "panel_id": "advbench:419",
+    "ratio": 0.722,
+    "word_jaccard": 0.533
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:79",
+    "panel_id": "advbench:432",
+    "ratio": 0.709,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:146",
+    "panel_id": "advbench:432",
+    "ratio": 0.721,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:457",
+    "panel_id": "advbench:446",
+    "ratio": 0.772,
+    "word_jaccard": 0.375
+   },
+   {
+    "class": "close",
+    "evaluation_id": "advbench:486",
+    "panel_id": "advbench:446",
+    "ratio": 0.726,
+    "word_jaccard": 0.294
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:76",
+    "panel_id": "advbench:451",
+    "ratio": 0.695,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:78",
+    "panel_id": "advbench:451",
+    "ratio": 0.722,
+    "word_jaccard": 0.417
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:472",
+    "panel_id": "advbench:451",
+    "ratio": 0.782,
+    "word_jaccard": 0.455
+   },
+   {
+    "class": "same",
+    "evaluation_id": "advbench:511",
+    "panel_id": "advbench:453",
+    "ratio": 0.73,
+    "word_jaccard": 0.5
+   },
+   {
+    "class": "different",
+    "evaluation_id": "advbench:338",
+    "panel_id": "advbench:513",
+    "ratio": 0.729,
+    "word_jaccard": 0.375
+   }
+  ],
+  "prompt_sets": "data/prompts/0447eb9e71c5 (harmful_kl: the surrogate panel, 100; harmful_evaluation: the 521)"
  },
  "version": 1
 }

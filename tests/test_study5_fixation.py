@@ -27,6 +27,21 @@ from zero_field_refusal.seeding import derive_seed
 
 SCRIPT = REPO_ROOT / "scripts" / "study5_fixation.py"
 IDS = [f"judged:{i}" for i in range(521)]
+# a synthetic classification of the surrogate panel against the judged prompts (ids only)
+OVERLAP = {
+    "prompt_sets": "synthetic", "candidates": "every pair above a threshold",
+    "classification": "same, close or different",
+    "pairs": [{"panel_id": "panel:0", "evaluation_id": IDS[3], "ratio": 0.8, "word_jaccard": 0.4,
+               "class": "same"},
+              {"panel_id": "panel:1", "evaluation_id": IDS[7], "ratio": 0.7, "word_jaccard": 0.5,
+               "class": "close"},
+              {"panel_id": "panel:2", "evaluation_id": IDS[9], "ratio": 0.7, "word_jaccard": 0.2,
+               "class": "different"},
+              {"panel_id": "panel:3", "evaluation_id": IDS[3], "ratio": 0.9, "word_jaccard": 0.6,
+               "class": "same"}],
+    "evaluation_ids_same": [IDS[3]],
+    "evaluation_ids_same_or_close": [IDS[3], IDS[7]],
+}  # fmt: skip
 
 
 def synthetic(harmful: dict[int, tuple[int, int, int, int]], w: float = 0.25):
@@ -116,7 +131,7 @@ def test_the_record_is_deterministic_with_the_fixed_settings() -> None:
     blocks, harm, rates = synthetic({10400 + i: (i, 2 * i, i, 3 * i) for i in range(12)})
     freeze = {"candidate": 1, "comparisons": {"A-F": {"blocks": blocks}}}
     kw = {"freeze": freeze, "harm": harm, "rates": rates, "prompt_ids": IDS,
-          "inputs": {"x": 1}, "code": {"commit": "c" * 40}}  # fmt: skip
+          "inputs": {"x": 1}, "code": {"commit": "c" * 40}, "overlap": OVERLAP}  # fmt: skip
     first, second = fx.fixation_record(**kw), fx.fixation_record(**kw)
     assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
     seeds = first["seeds"]
@@ -130,6 +145,10 @@ def test_the_record_is_deterministic_with_the_fixed_settings() -> None:
     assert (test["permutations"], test["alpha"], test["min_supported_seeds"]) == (100_000, 0.05, 20)
     assert test["seed"] == derive_seed(50000, "study5", "permutation")
     assert test["p_value"] == "(1 + #{rho_perm <= rho_obs}) / (1 + 100000)"
+    # the null is independence (h_s exchangeable), the alternative a negative association
+    assert test["null"] == fx.NULL and "independent" in test["null"]
+    assert test["alternative"] == fx.ALTERNATIVE and "negative association" in test["alternative"]
+    assert first["surrogate_overlap"] == OVERLAP
     boot = first["retrospective_interval"]
     assert (boot["resamples"], boot["level"], boot["interval"]) == (10_000, 0.95, "percentile")
     assert boot["seed"] == derive_seed(50000, "study5", "bootstrap")
@@ -175,12 +194,16 @@ class Fixation(Audit):
         (ledger / "batch-b1.json").write_text("{}\n")
         (ledger / "acceptance-b1.json").write_text("{}\n")
         self.out = self.here / "docs" / "study5-fixation.json"
+        self.overlap = tmp_path / "surrogate-overlap.json"
         self.theta0 = self.root / "study2_stage_a" / "theta0-run"
 
     def common(self) -> list:
         return ["--runs-root", self.root, "--study3-repo", self.world.repo]
 
     def call_fix(self, *argv) -> tuple[int, str, str]:
+        if argv and argv[0] == "fix" and "--surrogate-overlap" not in argv:
+            self.overlap.write_text(json.dumps(OVERLAP))
+            argv = (*argv, "--surrogate-overlap", self.overlap)
         self.capsys.readouterr()
         code, message = 0, ""
         try:
@@ -214,6 +237,10 @@ def test_fix_writes_the_record_once_and_a_rerun_is_byte_identical(fixation) -> N
         (fixation.world.repo / freeze_name(1)).read_bytes()).hexdigest()  # fmt: skip
     assert record["inputs"]["labels"]["count"] == 240
     assert record["inputs"]["prompt_ids"]["count"] == 521
+    assert record["surrogate_overlap"] == OVERLAP  # as given, its sha256 among the inputs
+    assert record["inputs"]["surrogate_overlap"] == {
+        "path": "surrogate-overlap.json", "root": "given",
+        "sha256": hashlib.sha256(fixation.overlap.read_bytes()).hexdigest()}  # fmt: skip
     code = git(fixation.here, "rev-parse", "HEAD")
     assert record["code"]["commit"] == code
     assert set(record["code"]["files"]) == set(fixation.fix.CODE_FILES)
@@ -391,3 +418,36 @@ def test_fix_names_data_dir_when_the_prompt_set_is_missing(fixation, monkeypatch
                                      "--out", fixation.out)  # fmt: skip
     assert code not in (0, None) and "DATA_DIR" in why
     assert not fixation.out.exists()
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda o: o.pop("candidates"),
+        lambda o: o["pairs"].append({"panel_id": "p", "evaluation_id": "e", "class": "near"}),
+        lambda o: o["evaluation_ids_same"].append(IDS[7]),
+        lambda o: o["evaluation_ids_same_or_close"].pop(),
+        lambda o: o["evaluation_ids_same_or_close"].append(IDS[3]),
+    ],
+)  # fmt: skip
+def test_the_surrogate_overlap_is_consistent_or_refused(edit) -> None:
+    assert fx.surrogate_overlap(OVERLAP) == OVERLAP
+    found = json.loads(json.dumps(OVERLAP))
+    edit(found)
+    with pytest.raises(ValueError, match="surrogate overlap"):
+        fx.surrogate_overlap(found)
+
+
+def test_the_committed_record_holds_the_surrogate_overlap_and_the_hypotheses() -> None:
+    record = json.loads((REPO_ROOT / "docs" / "study5-fixation.json").read_text())
+    overlap = fx.surrogate_overlap(record["surrogate_overlap"])
+    assert len(overlap["pairs"]) == 100
+    assert len(overlap["evaluation_ids_same"]) == 22
+    assert len(overlap["evaluation_ids_same_or_close"]) == 39
+    assert set(overlap["evaluation_ids_same"]) <= set(overlap["evaluation_ids_same_or_close"])
+    test = record["permutation_test"]
+    assert (test["null"], test["alternative"]) == (fx.NULL, fx.ALTERNATIVE)
+    assert record["inputs"]["surrogate_overlap"]["root"] == "given"
+    # the fixation's own code at the record's commit is this checkout's
+    for rel, blob in record["code"]["files"].items():
+        assert git(REPO_ROOT, "rev-parse", f"HEAD:{rel}") == blob, rel
