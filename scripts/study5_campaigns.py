@@ -17,13 +17,18 @@ what its failure does (``stop`` the campaign, ``record`` it and go on, or ``skip
 rest of its seed's steps), built as data from the arguments, the checkout's commit and study 3's
 records alone (``pod1_plan``, ``pod2_plan``); nothing is run to build it. ``--dry-run`` prints it
 and writes nothing. Every block begins by setting the Pod's deadline file (``deadline``: now +
-2 × the block's estimated minutes + 60, through ``scripts/pod_deadline_watch.py --set``;
-``ZFR_DEADLINE_EPOCH`` stays its cap) and ends by archiving its records to the bucket, verified
+2 × the estimated minutes of its steps outside the seed groups + 60, through
+``scripts/pod_deadline_watch.py --set``; ``ZFR_DEADLINE_EPOCH`` stays its cap), and so does every
+seed group (2 × the group's minutes + 60), so that a dead driver or a hung step leaves the Pod
+idle one group's window at most. The minutes are study 3's measured unit costs where one exists
+(``MINUTES``). Every step runs in its own session with a timeout (3 × its minutes + 20): past it
+its process group is killed and the step has failed, under its rule. A block ends by archiving
+its records to the bucket, verified
 (``scripts/archive.py``: every object's size and MD5; each inventory archived too and read back),
 a snapshot of the campaign's journal and logs, and the block's receipt. A last block, ``close``,
-run at every end and after a stop, archives the plan, the launcher campaigns and the receipts and
-sets the deadline 15 minutes ahead, so that the watcher stops the Pod and nothing is left
-running.
+run at every end, after a stop and on any exception of the driver (its deadline in a
+``finally``), archives the plan, the launcher campaigns and the receipts and sets the deadline 15
+minutes ahead, so that the watcher stops the Pod and nothing is left running.
 
 **Pod 1** (order steps 1-2 of the registration): ``engineering``: seed 10403's streams fetched
 from the bucket; study 3's archived records of its F runs at both rates (the run ids from study
@@ -48,16 +53,19 @@ record of p per seed, seeds in order, each seed's record by its sha256, with its
 it (``<record>.sha256``); it is refused unless every seed has its prediction. It is copied to the
 bucket, read back and compared, and the object's creation time is recorded in a receipt; only
 then: ``fresh``, which first checks the receipt against the record (``check-published``), then
-per seed the F runs at η_l (experiments/study5_scan: the line scan and the endpoint checkpoint)
-and η_u (experiments/study5, ``study5.role=fresh``), one launcher campaign per seed. Each
-endpoint checkpoint is archived, verified and then removed from the container disk by
+per seed the F run at η_l (experiments/study5_scan: the line scan and the endpoint checkpoint),
+its checkpoint archived, then the F run at η_u (experiments/study5, ``study5.role=fresh``), each
+in a launcher campaign of its own. Each endpoint checkpoint is archived, verified and then removed
+from the container disk by
 ``remove_checkpoint``, which refuses any path but that run's own ``<dir>/<run id>.pt``; a seed's
 runs start only while at most one checkpoint is on the disk (``check-checkpoints``), so it holds
 at most two. ``controls``: seeds 50000-50005 (those of the campaign's seeds): the two crossed
 controls at η_l (experiments/study5_control_order; experiments/study5_control_v0 with v₀ from
 seed 50000 + ((s - 50000 + 1) mod 6)), then the ladder's rungs ``isotropic``, ``linear_no_d`` and
 ``linear`` (``scripts/study5_ladder.py``, on the seed's fresh F run at η_l; ``linear_shuffled_d``
-runs only on a later decision). No labeling: labels are opened only after every fresh run has
+runs only on a later decision). ``check-published`` also requires the record to hold exactly the
+plan's seeds in order, its n and the plan's commit and GPU code; a mismatch stops the campaign
+before any F run. No labeling: labels are opened only after every fresh run has
 ended, in a separate step.
 
 **Failures.** Every run goes through ``scripts/launch.py FILE --max-attempts 1`` (one attempt; a
@@ -65,14 +73,24 @@ rerun is a recovery round of the run's own, zero_field_refusal.launch, "Recovery
 that fails or exits non-zero is recorded in the journal and the campaign goes on to the next seed
 where the step is per seed, except where the plan stops: the engineering check, the surrogate
 checks, the fetch of study 3's streams, the predictions record and its publication, the checkpoint
-count, every archive and every deadline. A failed step is not run again by a restart; a stop
+count, every archive and every deadline. The checkpoint step refuses a checkpoint whose run
+records no sha256 for it (the file stays, and the next seed's count stops the campaign). A failed
+step is not run again by a restart; a stop
 recorded stops again.
 
 **Resumable.** The driver keeps ``journal.jsonl`` in --out (a start and an end line per step;
 each attempt's output in ``logs/``). Started again with the same arguments from the same commit
 (the plan must equal ``plan.json``), it skips a block whose receipt exists (its archive verified)
-and, inside a block, every step that ended or whose outputs exist; a step left started without an
-end (the Pod stopped) runs again, a ladder rung's partial run directory first moved aside
+and, inside a block, every step that ended, every launch whose runs all completed (by the
+launcher's journal) and every step whose outputs exist; a step left started without an end (the
+Pod stopped) runs again. A gate's record is kept only by its verdict (``gate_problem``): the
+engineering check equal for reruns of the plan's commit, the surrogate checks passed, each under
+the plan's commit (clean) and GPU code identity; otherwise it is moved aside beside itself
+(``<record>.aside-<UTC>``, never deleted) and the gate runs again. A predictions record that is
+not of the plan's seeds, n and code fails its step: a stop. So a stopped campaign goes on from a
+new --out with the same --archive-id: records that stand are kept, completed runs are not
+launched again, identical archives are no conflict. A ladder rung's partial run directory is
+first moved aside
 (``RUNS_DIR/aside/``), never reused. A launcher run the Pod stopped is settled by the launcher.
 
 **Where.** --out (the campaign folder; outside the checkout, which must be clean) holds the plan,
@@ -89,14 +107,16 @@ is clean and that its GPU code is the one ``docs/study5-code-identity.json`` rec
 from __future__ import annotations
 
 import argparse
+import base64
+import contextlib
 import csv
 import hashlib
-import importlib.util
 import json
 import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -137,26 +157,45 @@ END_MINUTES = 15  # the deadline after the close: the watcher stops the Pod
 MARGIN = 60
 COMPLETED, ERROR, STOPPED = 0, 1, 3
 _ID = re.compile(r"[a-z0-9][a-z0-9-]{0,23}")
-# Estimated minutes per step, for the blocks' deadlines only (2 × the sum + MARGIN)
+# Minutes per step. Measured on study 3's L40S Pod where a unit cost exists: an F run 6.9; an
+# evaluation without training 3.1; a K-only point 1.5; five scan points 15.5; a stream 91.7 s per
+# 1000 responses (1500 per seed: 500 training, 1000 for v₀); the predictor 1.7 per seed; a
+# ladder rung three K-only points and one evaluation, 7.6; an endpoint checkpoint's save 0.5.
+# Assumed where none is measured, as named. They set each block's and each seed group's deadline
+# (2 × the sum + MARGIN) and each step's timeout (timeout_of).
+F_RUN, EVALUATION, K_POINT, SCAN, CKPT_SAVE = 6.9, 3.1, 1.5, 15.5, 0.5
+STREAM_PER_RESPONSE = 91.7 / 60 / 1000
 MINUTES = {
-    "fetch-seed": 10,
-    "fetch-seeds": 30,
-    "fetch-run": 5,
-    "engineering-runs": 20,
-    "engineering-check": 5,
-    "theta0": 15,
-    "surrogate": 20,
-    "predict": 10,
-    "features": 2,
-    "training-stream": 6,
-    "preconditioner-stream": 8,
-    "fresh-runs": 35,
-    "checkpoint": 5,
-    "controls": 15,
-    "rung": 15,
-    "archive": 2,
-    "small": 1,
+    "fetch-seed": 1.0,  # assumed: one seed's two streams, about 10 MB
+    "fetch-seeds": 15.0,  # assumed: 60 seeds' streams, about 0.6 GB
+    "fetch-run": 1.0,  # assumed: a run directory, under 1 MB
+    "engineering-runs": 2 * F_RUN,
+    "engineering-check": 1.0,  # assumed: a CPU comparison of two run directories
+    "theta0": EVALUATION,
+    "surrogate": EVALUATION,  # assumed: forward passes on 200 prompts, as an evaluation
+    "predict": 1.7,
+    "features": 0.5,  # assumed: no model, 500 responses decoded
+    "training-stream": 500 * STREAM_PER_RESPONSE,
+    "preconditioner-stream": 1000 * STREAM_PER_RESPONSE,
+    "fresh-lower": F_RUN + SCAN + CKPT_SAVE,
+    "fresh-upper": F_RUN,
+    "checkpoint": 4.0,  # assumed: a 5.24 GB checkpoint hashed and uploaded at about 25 MB/s
+    "controls": 2 * F_RUN,
+    "rung": 3 * K_POINT + EVALUATION,
+    "archive": 1.0,  # assumed: a seed's run directories and records, a few MB
+    "small": 0.5,
 }
+TIMEOUT_FACTOR, TIMEOUT_SLACK = 3, 20  # a step's timeout: 3 × its minutes + 20, in minutes
+
+
+def timeout_of(minutes: float) -> int:
+    """A step's timeout in seconds: past it the step is killed and counts as failed."""
+    return int(round(60 * (TIMEOUT_FACTOR * minutes + TIMEOUT_SLACK)))
+
+
+def deadline_minutes(minutes: float) -> int:
+    """A deadline window for work estimated at ``minutes``: 2 × it + MARGIN."""
+    return int(math.ceil(2 * minutes + MARGIN))
 
 
 class StepError(RuntimeError):
@@ -176,7 +215,10 @@ class Step:
     exists_ok: bool = False  # generate_teacher.py's refusal of an existing stream is no failure
     group: str = ""  # a seed's steps, for skip-group
     always: bool = False  # run at every start (the close)
-    minutes: int = 1
+    minutes: float = 1.0
+    timeout: int | None = None  # seconds; past it the step is killed and counts as failed
+    gate: str = ""  # engineering | surrogate | predictions: its record kept only by its verdict
+    kept_if_runs: tuple[str, ...] = ()  # "<campaign>\t<label>": done when each run completed
 
 
 @dataclass(frozen=True)
@@ -194,6 +236,7 @@ class Plan:
     data: Path
     checkpoints: Path
     commit: str
+    gpu_code: str  # the GPU code identity at the commit (code_identity.gpu_code_identity)
     n: int | None
     blocks: list[Block]
     campaigns: dict[str, str] = field(default_factory=dict)  # launcher campaign name -> YAML
@@ -207,6 +250,7 @@ class Plan:
             "data": str(self.data),
             "checkpoints": str(self.checkpoints),
             "commit": self.commit,
+            "gpu_code": self.gpu_code,
             "n": self.n,
             "blocks": [
                 {"name": b.name, "steps": [asdict(s) for s in b.steps]} for b in self.blocks
@@ -297,8 +341,11 @@ class Builder:
     def own(self, *args: str) -> tuple[str, ...]:
         return (SELF, *map(str, args))
 
-    def step(self, name: str, argv, *, minutes: str = "small", **kw) -> Step:
-        found = Step(name=name, argv=tuple(map(str, argv)), minutes=MINUTES[minutes], **kw)
+    def step(self, name: str, argv, *, minutes: str | float = "small", **kw) -> Step:
+        value = MINUTES[minutes] if isinstance(minutes, str) else float(minutes)
+        found = Step(
+            name=name, argv=tuple(map(str, argv)), minutes=value, timeout=timeout_of(value), **kw
+        )
         self.current.append(found)
         return found
 
@@ -313,11 +360,15 @@ class Builder:
         path = self.launcher(name, block, cells)
         full = Path(path).stem
         group = kw.get("group", "")
+        tag = f"{block}/{group}" if group else block
         found = self.step(
-            f"{block}/{group}/launch" if group else f"{block}/launch",
+            f"{tag}/launch-{name.removesuffix('-' + group)}" if group else f"{tag}/launch",
             ("scripts/launch.py", path, "--max-attempts", "1"),
             kind="launch",
             minutes=minutes,
+            # a run that completed is not launched again: its launcher would refuse a removed
+            # checkpoint as a conflict
+            kept_if_runs=tuple(f"{full}\t{label(cell)}" for cell in cells),
             **kw,
         )
         return found, full
@@ -329,7 +380,7 @@ class Builder:
         root: Path,
         remote: str,
         paths=(),
-        campaign: str | None = None,
+        campaign: str | tuple[str, ...] | None = None,
         streams: int | None = None,
         group: str = "",
         kind: str = "archive",
@@ -351,8 +402,11 @@ class Builder:
         ]
         for path in paths:
             argv += ["--path", path]
-        if campaign is not None:
-            argv += ["--campaign", campaign, "--runs", self.runs]
+        campaigns = (campaign,) if isinstance(campaign, str) else tuple(campaign or ())
+        for name_ in campaigns:
+            argv += ["--campaign", name_]
+        if campaigns:
+            argv += ["--runs", self.runs]
         if streams is not None:
             argv += ["--streams", streams]
         return self.step(
@@ -366,7 +420,12 @@ class Builder:
         )
 
     def runs_archive(
-        self, name: str, *, paths=(), campaign: str | None = None, group: str = ""
+        self,
+        name: str,
+        *,
+        paths=(),
+        campaign: str | tuple[str, ...] | None = None,
+        group: str = "",
     ) -> Step:
         return self.archive(
             name,
@@ -415,16 +474,32 @@ class Builder:
             on_fail="stop",
             outputs=(str(self.out / "receipts" / f"{block}.json"),),
         )
-        minutes = 2 * sum(s.minutes for s in self.current) + MARGIN
-        deadline = Step(
-            name=f"{block}/deadline",
-            argv=self.own("deadline", "--minutes", minutes),
+        # The block's window covers its steps outside the seed groups; each group sets its own
+        # first, so a dead driver or a hung step leaves the Pod idle at most one group's window.
+        loose = sum(s.minutes for s in self.current if not s.group)
+        steps = [self.deadline(f"{block}/deadline", loose)]
+        for found in self.current:
+            if found.group and (steps[-1].group != found.group):
+                minutes = sum(s.minutes for s in self.current if s.group == found.group)
+                steps.append(
+                    self.deadline(f"{block}/{found.group}/deadline", minutes, group=found.group)
+                )
+            steps.append(found)
+        self.blocks.append(Block(block, tuple(steps)))
+        self.current = []
+
+    def deadline(self, name: str, minutes: float, group: str = "") -> Step:
+        """The deadline file set to now + 2 × ``minutes`` + MARGIN (the cap stays), again at every
+        start that reaches it: a restart rewrites the window."""
+        return Step(
+            name=name,
+            argv=self.own("deadline", "--minutes", deadline_minutes(minutes)),
             on_fail="stop",
             kind="deadline",
-            always=True,  # set again at every start of the block: a restart rewrites the window
+            always=True,
+            group=group,
+            timeout=timeout_of(MINUTES["small"]),
         )
-        self.blocks.append(Block(block, (deadline, *self.current)))
-        self.current = []
 
     def close(self) -> None:
         self.current = []
@@ -461,7 +536,7 @@ class Builder:
         )
         self.blocks.append(Block(CLOSE, tuple(self.current)))
 
-    def plan(self, commit: str, n: int | None) -> Plan:
+    def plan(self, commit: str, gpu_code: str, n: int | None) -> Plan:
         return Plan(
             pod=self.pod,
             archive_id=self.id,
@@ -470,6 +545,7 @@ class Builder:
             data=self.data,
             checkpoints=self.checkpoints,
             commit=commit,
+            gpu_code=gpu_code,
             n=n,
             blocks=self.blocks,
             campaigns=self.campaigns,
@@ -502,6 +578,7 @@ def pod1_plan(
     checkpoints: Path = CHECKPOINTS,
     archive_id: str,
     commit: str,
+    gpu_code: str,
     repo: Path = REPO,
 ) -> Plan:
     """Pod 1's plan (module docstring, "Pod 1")."""
@@ -553,6 +630,7 @@ def pod1_plan(
         on_fail="stop",
         outputs=(str(check),),
         minutes="engineering-check",
+        gate="engineering",
     )
     b.runs_archive("engineering/archive", paths=(b.rel(check),), campaign=eng)
     b.end("engineering")
@@ -577,6 +655,7 @@ def pod1_plan(
         on_fail="stop",
         outputs=(str(checks),),
         minutes="surrogate",
+        gate="surrogate",
     )
     b.runs_archive("surrogate/archive", paths=(b.rel(checks),))
     b.end("surrogate")
@@ -606,7 +685,7 @@ def pod1_plan(
         )
     b.end("retrospective")
     b.close()
-    return b.plan(commit, None)
+    return b.plan(commit, gpu_code, None)
 
 
 def pod2_plan(
@@ -617,6 +696,7 @@ def pod2_plan(
     checkpoints: Path = CHECKPOINTS,
     archive_id: str,
     commit: str,
+    gpu_code: str,
     n: int = 40,
 ) -> Plan:
     """Pod 2's plan (module docstring, "Pod 2")."""
@@ -687,6 +767,7 @@ def pod2_plan(
         ),
         on_fail="stop",
         outputs=(str(record),),
+        gate="predictions",
     )
     b.step(
         "predictions/publish",
@@ -711,7 +792,19 @@ def pod2_plan(
     b.begin()  # the fresh F runs: η_l with its scan and checkpoint, then η_u
     b.step(
         "fresh/check-published",
-        b.own("check-published", "--record", record, "--receipt", receipt),
+        b.own(
+            "check-published",
+            "--record",
+            record,
+            "--receipt",
+            receipt,
+            "--commit",
+            commit,
+            "--gpu-code",
+            gpu_code,
+            "--seeds",
+            *seeds,
+        ),
         on_fail="stop",
     )
     fresh: dict[int, tuple[str, str]] = {}
@@ -735,8 +828,9 @@ def pod2_plan(
             on_fail="stop",
             group=group,
         )
+        # η_l alone first: its checkpoint is archived and removed before η_u starts
         _, name = b.launch(
-            f"fresh-{group}", "fresh", [lower, upper], minutes="fresh-runs", group=group
+            f"fresh-scan-{group}", "fresh", [lower], minutes="fresh-lower", group=group
         )
         fresh[seed] = (name, label(lower))
         b.step(
@@ -762,7 +856,10 @@ def pod2_plan(
             minutes="checkpoint",
         )
         b.inventories.append(str(b.out / "inventories" / f"checkpoint-{group}.tsv"))  # if any
-        b.runs_archive(f"fresh/{group}/archive", campaign=name, group=group)
+        _, upper_name = b.launch(
+            f"fresh-upper-{group}", "fresh", [upper], minutes="fresh-upper", group=group
+        )
+        b.runs_archive(f"fresh/{group}/archive", campaign=(name, upper_name), group=group)
     b.end("fresh")
 
     b.begin()  # the crossed controls and the ladder, seeds 50000-50005
@@ -822,7 +919,7 @@ def pod2_plan(
         )
     b.end("controls")
     b.close()
-    return b.plan(commit, n)
+    return b.plan(commit, gpu_code, n)
 
 
 # ------------------------------------------------------------------ the executor
@@ -874,47 +971,157 @@ def _attempt_log(logs: Path, step: Step) -> Path:
     return logs / f"{stem}.{k}.log"
 
 
+def _kept_by_runs(step: Step, runs: Path) -> bool:
+    """Every run the launch step names completed, by its launcher journal."""
+    if not step.kept_if_runs:
+        return False
+    for entry in step.kept_if_runs:
+        campaign, run_label = entry.split("\t", 1)
+        try:
+            completed_run(runs, campaign, run_label)
+        except StepError:
+            return False
+    return True
+
+
+def _set_aside(path: Path) -> Path:
+    """Move a record aside beside itself (never deleted); its new path."""
+    target = path.with_name(f"{path.name}.aside-{_stamp()}")
+    path.rename(target)
+    return target
+
+
+def _run(
+    argv: list[str], *, cwd: Path, env: dict[str, str], log: Path, timeout: int | None
+) -> int | str:
+    """The step's process, in its own session; past ``timeout`` seconds its whole process
+    group is killed and the outcome is ``"timeout"``."""
+    with log.open("w", encoding="utf-8") as out:
+        process = subprocess.Popen(
+            argv, cwd=cwd, env=env, stdout=out, stderr=subprocess.STDOUT, start_new_session=True
+        )
+        try:
+            return process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            return "timeout"
+        except BaseException:  # the driver itself is stopping: its step goes with it
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            raise
+
+
 def run_step(
     step: Step,
     status: dict[str, str],
     *,
+    plan: Plan,
     journal: Path,
     logs: Path,
     python: list[str],
     cwd: Path,
     env: dict[str, str],
 ) -> str:
-    """Run ``step`` unless its journal or its outputs say it is done; its outcome."""
+    """Run ``step`` unless its journal or its outputs say it is done; its outcome. A gate's
+    record is kept only by its verdict, for the plan's commit and GPU code (``gate_problem``):
+    otherwise an engineering or surrogate record is moved aside and the step runs again, and a
+    predictions record fails the step."""
     before = status.get(step.name)
     if not step.always and before in ("done", "kept", "failed"):
         return before
     if not step.always and step.outputs and all(Path(p).exists() for p in step.outputs):
+        problem = gate_problem(step.gate, Path(step.outputs[0]), plan) if step.gate else None
+        if problem is None:
+            append(journal, {"event": "end", "step": step.name, "status": "kept", "exit": None})
+            status[step.name] = "kept"
+            return "kept"
+        if step.gate == "predictions":
+            append(
+                journal,
+                {
+                    "event": "end",
+                    "step": step.name,
+                    "status": "failed",
+                    "exit": None,
+                    "problem": problem,
+                },
+            )
+            print(f"== {_now()} failed {step.name}: {problem}", flush=True)
+            status[step.name] = "failed"
+            return "failed"
+        moved = _set_aside(Path(step.outputs[0]))
+        append(
+            journal, {"event": "aside", "step": step.name, "record": moved.name, "problem": problem}
+        )
+        print(f"== {_now()} {step.name}: its record set aside ({problem})", flush=True)
+    elif not step.always and _kept_by_runs(step, plan.runs):
         append(journal, {"event": "end", "step": step.name, "status": "kept", "exit": None})
         status[step.name] = "kept"
         return "kept"
     log = _attempt_log(logs, step)
     append(journal, {"event": "start", "step": step.name, "log": log.name})
     print(f"== {_now()} start {step.name}", flush=True)
-    with log.open("w", encoding="utf-8") as out:
-        code = subprocess.run(
-            [*python, *step.argv], cwd=cwd, env=env, stdout=out, stderr=subprocess.STDOUT
-        ).returncode
+    code = _run([*python, *step.argv], cwd=cwd, env=env, log=log, timeout=step.timeout)
     outcome = "done" if code == 0 else "failed"
     if code != 0 and step.exists_ok and EXISTS in log.read_text(encoding="utf-8", errors="replace"):
         outcome = "kept"
-    append(journal, {"event": "end", "step": step.name, "status": outcome, "exit": code})
+    problem = None
+    if outcome == "done" and step.gate:  # the record just written must stand too
+        problem = gate_problem(step.gate, Path(step.outputs[0]), plan)
+        if problem is not None:
+            outcome = "failed"
+    end = {"event": "end", "step": step.name, "status": outcome, "exit": code}
+    append(journal, end if problem is None else {**end, "problem": problem})
     print(f"== {_now()} {outcome} {step.name} (exit {code})", flush=True)
     status[step.name] = outcome
     return outcome
 
 
+def _final(status: dict[str, str]) -> bool:
+    return status in ("done", "kept", "failed")
+
+
 def execute(plan: Plan, *, python: list[str], cwd: Path, env: dict[str, str]) -> int:
-    """Run the plan's blocks in order (module docstring, "Failures", "Resumable"); then the close.
-    COMPLETED, or STOPPED when a stop rule fired."""
+    """Run the plan's blocks in order (module docstring, "Failures", "Resumable"); then the close,
+    whatever ends the blocks (an exception too): its deadline last, in a ``finally``. COMPLETED,
+    or STOPPED when a stop rule fired."""
     journal, logs = plan.out / "journal.jsonl", plan.out / "logs"
-    status = read_journal(journal)
-    append(journal, {"event": "driver", "pod": plan.pod, "commit": plan.commit})
-    run = {"journal": journal, "logs": logs, "python": python, "cwd": cwd, "env": env}
+    run = {"plan": plan, "journal": journal, "logs": logs, "python": python, "cwd": cwd, "env": env}
+    close = next((b for b in plan.blocks if b.name == CLOSE), Block(CLOSE, ()))
+    status: dict[str, str] = {}
+    stopped = False
+    try:
+        status = read_journal(journal)
+        append(journal, {"event": "driver", "pod": plan.pod, "commit": plan.commit})
+        stopped = _blocks(plan, status, run)
+    finally:
+        deadlines = [s for s in close.steps if s.kind == "deadline"]
+        try:
+            for step in close.steps:
+                if step.kind != "deadline":
+                    run_step(step, status, **run)
+        finally:
+            for step in deadlines:
+                try:
+                    run_step(step, status, **run)
+                except Exception as exc:  # the journal itself may be unwritable
+                    print(f"== close deadline through the journal failed ({exc}); set directly")
+                    _run(
+                        [*python, *step.argv],
+                        cwd=cwd,
+                        env=env,
+                        log=Path(tempfile.mkstemp(suffix=".log")[1]),
+                        timeout=step.timeout,
+                    )
+    return STOPPED if stopped else COMPLETED
+
+
+def _blocks(plan: Plan, status: dict[str, str], run: dict[str, Any]) -> bool:
+    """The blocks but the close; whether a stop rule fired."""
+    journal = run["journal"]
     stopped = False
     for block in plan.blocks:
         if block.name == CLOSE:
@@ -929,10 +1136,20 @@ def execute(plan: Plan, *, python: list[str], cwd: Path, env: dict[str, str]) ->
             # after a stop, the block's archives of what exists: its own and its begun groups'
             archives = step.kind == "archive" and (not stopped or step.group in touched)
             if blocked and not archives:
-                if status.get(step.name) not in ("done", "kept", "failed"):
+                if not _final(status.get(step.name)):
                     append(journal, {"event": "skip", "step": step.name, "status": "skipped"})
                     status[step.name] = "skipped"
                 continue
+            if (
+                step.kind == "deadline"
+                and step.group
+                and all(
+                    _final(status.get(s.name))
+                    for s in block.steps
+                    if s.group == step.group and s is not step
+                )
+            ):
+                continue  # a group already ended sets no window
             outcome = run_step(step, status, **run)
             if outcome == "failed":
                 if step.on_fail == "stop":
@@ -950,11 +1167,78 @@ def execute(plan: Plan, *, python: list[str], cwd: Path, env: dict[str, str]) ->
                     skipped_groups.add(step.group)
         if stopped:
             break
-    for block in plan.blocks:
-        if block.name == CLOSE:
-            for step in block.steps:
-                run_step(step, status, **run)
-    return STOPPED if stopped else COMPLETED
+    return stopped
+
+
+def gate_problem(kind: str, path: Path, plan: Plan) -> str | None:
+    """Why a gate's existing record does not stand for the plan, or None: its verdict (the
+    engineering check equal, the surrogate checks passed; the predictions record of exactly
+    the plan's seeds in order) and its code, the plan's commit from a clean checkout and the
+    plan's GPU code identity (recorded, or of the recorded commit)."""
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return f"unreadable ({type(exc).__name__})"
+    if not isinstance(record, dict):
+        return "not a record"
+    if kind == "predictions":
+        return predictions_problem(record, fresh_seeds(plan.n), plan.commit, plan.gpu_code)
+    if kind == "engineering":
+        if record.get("equal") is not True:
+            return "the engineering check found a difference"
+        for pair in record.get("pairs") or []:
+            if pair.get("rerun_commit") != plan.commit or pair.get("rerun_dirty") is not False:
+                return f"rerun {pair.get('rerun')} is not of the plan's commit, clean"
+        if not record.get("pairs"):
+            return "the engineering check holds no pair"
+    elif kind == "surrogate":
+        if record.get("passes") is not True:
+            return "the surrogate checks did not pass"
+    else:
+        raise ValueError(f"unknown gate {kind!r}")
+    return code_problem(record, plan.commit, plan.gpu_code)
+
+
+def code_problem(record: dict[str, Any], commit: str, gpu_code: str) -> str | None:
+    """The record's code against the plan's: the commit (``code.commit``, else ``git.commit``)
+    from a clean checkout (``git.dirty`` false where recorded) and the GPU code identity
+    (``code.gpu_code_sha256``, else that of the recorded commit)."""
+    code = record.get("code") if isinstance(record.get("code"), dict) else {}
+    git = record.get("git") if isinstance(record.get("git"), dict) else {}
+    found = code.get("commit") or git.get("commit")
+    if found != commit:
+        return f"its commit {str(found)[:12]} is not the plan's {commit[:12]}"
+    if "dirty" in git and git["dirty"] is not False:
+        return "it was written from a checkout that was not clean"
+    identity = code.get("gpu_code_sha256")
+    if identity is None:
+        try:
+            identity = code_identity.gpu_code_identity(found)["sha256"]
+        except Exception:  # a commit this checkout cannot place
+            return f"the GPU code of its commit {str(found)[:12]} cannot be told"
+    if identity != gpu_code:
+        return "its GPU code identity is not the plan's"
+    return None
+
+
+def predictions_problem(
+    record: dict[str, Any], seeds: list[int], commit: str, gpu_code: str
+) -> str | None:
+    """The predictions record against the plan: its kind, exactly the plan's seeds in order,
+    its n, and its code (``code.commit``, ``code.gpu_code_sha256``) the plan's."""
+    if record.get("kind") != "study5-predictions":
+        return "not a predictions record"
+    if record.get("seeds") != list(seeds) or record.get("n") != len(seeds):
+        return (
+            f"its seeds ({record.get('n')}) are not the plan's {len(seeds)} seeds "
+            f"{seeds[0]}-{seeds[-1]}, in order"
+        )
+    if [e.get("seed") for e in record.get("predictions") or []] != list(seeds):
+        return "its predictions are not the plan's seeds, in order"
+    code = record.get("code") or {}
+    if code.get("commit") != commit or code.get("gpu_code_sha256") != gpu_code:
+        return "its code is not the plan's commit and GPU code"
+    return None
 
 
 # ------------------------------------------------------------------ the steps' helpers
@@ -982,11 +1266,27 @@ def gcloud(args: list[str]) -> str:
     return done.stdout
 
 
-def archive_module():
-    spec = importlib.util.spec_from_file_location("zfr_archive", REPO / "scripts" / "archive.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def archive(inventory: Path, prefix: str, root: Path, paths: list[str]) -> dict[str, int]:
+    """``scripts/archive.py INVENTORY PREFIX ROOT PATH...`` as its own process (every object's
+    size and MD5 checked, the inventory appended); the files and their verified count."""
+    done = subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "archive.py"), str(inventory), prefix, str(root),
+         *paths], capture_output=True, text=True)  # fmt: skip
+    lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
+    if not lines:
+        raise StepError(f"scripts/archive.py failed (exit {done.returncode})")
+    result = json.loads(lines[-1])
+    if done.returncode != 0 and not result.get("mismatched"):
+        raise StepError(f"scripts/archive.py failed (exit {done.returncode})")
+    return result
+
+
+def md5_b64(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 24):
+            digest.update(chunk)
+    return base64.b64encode(digest.digest()).decode()
 
 
 def sha256_of(path: Path) -> str:
@@ -1152,13 +1452,13 @@ def archive_paths(
     staged.unlink(missing_ok=True)
     files = 0
     if present:
-        result = archive_module().archive(staged, f"{base}/{remote}", root, present)
+        result = archive(staged, f"{base}/{remote}", root, present)
         if result["mismatched"]:
             raise StepError(f"{result['mismatched']} of {result['files']} objects do not match")
         files = result["files"]
     else:
         staged.write_text("path\tsize\tsha256\tmd5_b64\turl\tstatus\n", encoding="utf-8")
-    copy = archive_module().archive(
+    copy = archive(
         staging / f"{inventory.stem}.self.tsv",
         f"{base}/{inventories_remote}",
         staging,
@@ -1303,7 +1603,7 @@ def cmd_fetch_run(args) -> int:
         local = partial / rel
         local.parent.mkdir(parents=True, exist_ok=True)
         gcloud(["cp", "--quiet", url, str(local)])
-        _, _, md5 = archive_module().digests(local)
+        md5 = md5_b64(local)
         if md5 != meta.get("md5_hash") or local.stat().st_size != int(meta["size"]):
             raise StepError(f"{run_id}/{rel}: the copy does not match its object")
         count += 1
@@ -1330,8 +1630,8 @@ def cmd_with_runs(args) -> int:
 
 def cmd_archive(args) -> int:
     paths = list(args.path or [])
-    if args.campaign:
-        paths += campaign_paths(args.runs, args.campaign)
+    for campaign in args.campaign or []:
+        paths += campaign_paths(args.runs, campaign)
     if args.streams is not None:
         paths += stream_dirs(args.root, args.streams)
     if args.inventory.exists():
@@ -1397,21 +1697,33 @@ def cmd_check_checkpoints(args) -> int:
 
 
 def cmd_checkpoint(args) -> int:
+    """The η_l run's endpoint checkpoint archived, verified, then removed from the disk. It is
+    refused while the run's summary records no sha256 for it (the file stays). A checkpoint no
+    longer on the disk must be in the bucket when the run recorded one."""
     run_id = latest_run_id(args.runs, args.campaign, args.label)
     if run_id is None:
         print(f"no run of {args.label}: no checkpoint")
         return 0
     path = args.dir / f"{safe_rel(run_id)}.pt"
-    if not path.exists():
-        print(f"no checkpoint of {run_id}")
-        return 0
-    digest = sha256_of(path)
     summary = args.runs / safe_rel(_start_of(args.runs, args.campaign, run_id)["experiment"])
     summary = summary / run_id / "summary.json"
-    recorded = None
+    record = None
     if summary.is_file():
-        recorded = (json.loads(summary.read_text()).get("endpoint_checkpoint") or {}).get("sha256")
-    if recorded is not None and recorded != digest:
+        record = json.loads(summary.read_text(encoding="utf-8")).get("endpoint_checkpoint")
+    recorded = record.get("sha256") if isinstance(record, dict) else None
+    if not path.exists():
+        if recorded is None:
+            print(f"no checkpoint of {run_id}")
+            return 0
+        url = f"{artifact_remote()}/{args.remote}/{path.name}"
+        if json.loads(gcloud(["objects", "list", url, "--format=json"])):
+            print(f"checkpoint {run_id} archived earlier and removed from the disk")
+            return 0
+        raise StepError(f"{path.name}: recorded by its run but neither on the disk nor archived")
+    if not isinstance(recorded, str):
+        raise StepError(f"{path.name}: its run's summary records no sha256 for it; it stays")
+    digest = sha256_of(path)
+    if recorded != digest:
         raise StepError(f"{path.name}: its sha256 is not the one its run recorded")
     if not args.inventory.exists():
         archive_paths(args.dir, args.remote, [path.name], args.inventory, args.inventories_remote)
@@ -1443,9 +1755,7 @@ def cmd_publish(args) -> int:
         raise StepError(f"{sidecar.name} does not hold the record's sha256")
     staged = args.inventory.with_name(f".{args.inventory.name}.partial")
     staged.unlink(missing_ok=True)
-    result = archive_module().archive(
-        staged, f"{base}/{args.remote}", record.parent, [record.name, sidecar.name]
-    )
+    result = archive(staged, f"{base}/{args.remote}", record.parent, [record.name, sidecar.name])
     if result["mismatched"]:
         raise StepError("the predictions record's copy does not match")
     url = f"{base}/{args.remote}/{record.name}"
@@ -1456,18 +1766,21 @@ def cmd_publish(args) -> int:
     staging = args.receipt.parent / ".staging"
     pending = staging / args.receipt.name
     if not pending.is_file():
-        write_json(pending, {
-            "kind": "study5-predictions-receipt",
-            "record": record.name,
-            "sha256": digest,
-            "object": f"$ARTIFACT_REMOTE/{args.remote}/{record.name}",
-            "created": _created(meta),
-            "verified_utc": _now(),
-        })  # fmt: skip
+        write_json(
+            pending,
+            {
+                "kind": "study5-predictions-receipt",
+                "record": record.name,
+                "sha256": digest,
+                "object": f"$ARTIFACT_REMOTE/{args.remote}/{record.name}",
+                "created": _created(meta),
+                "verified_utc": _now(),
+            },
+        )
     receipt = json.loads(pending.read_text(encoding="utf-8"))
     if receipt.get("sha256") != digest:
         raise StepError(f"{pending} is the receipt of another record")
-    copy = archive_module().archive(staged, f"{base}/{args.remote}", staging, [pending.name])
+    copy = archive(staged, f"{base}/{args.remote}", staging, [pending.name])
     if copy["mismatched"]:
         raise StepError("the receipt's copy does not match")
     os.replace(staged, args.inventory)
@@ -1477,6 +1790,9 @@ def cmd_publish(args) -> int:
 
 
 def cmd_check_published(args) -> int:
+    """Before any fresh F run: the record is the one published (its sha256 in the receipt and
+    its sidecar), of exactly the plan's seeds in order and n, under the plan's commit and GPU
+    code."""
     if not args.receipt.is_file() or not args.record.is_file():
         raise StepError("the predictions record or its receipt is missing: no fresh run starts")
     receipt = json.loads(args.receipt.read_text())
@@ -1484,6 +1800,11 @@ def cmd_check_published(args) -> int:
     sidecar = args.record.with_name(args.record.name + ".sha256").read_text(encoding="utf-8")
     if receipt.get("sha256") != digest or sidecar != f"{digest}  {args.record.name}\n":
         raise StepError("the predictions record is not the one published")
+    problem = predictions_problem(
+        json.loads(args.record.read_text(encoding="utf-8")), args.seeds, args.commit, args.gpu_code
+    )
+    if problem is not None:
+        raise StepError(f"the predictions record does not stand for this plan: {problem}")
     print(f"published {args.record.name} sha256 {digest} created {receipt.get('created')}")
     return 0
 
@@ -1498,7 +1819,7 @@ def preflight(plan: Plan) -> list[str]:
     if state.get("dirty") is not False or state.get("commit") != plan.commit:
         problems.append("the checkout is not clean at the plan's commit")
     recorded = json.loads((REPO / IDENTITY_FILE).read_text(encoding="utf-8"))
-    if code_identity.gpu_code_identity()["sha256"] != recorded.get("gpu_code_sha256"):
+    if plan.gpu_code != recorded.get("gpu_code_sha256"):
         problems.append(f"HEAD's GPU code is not the one {IDENTITY_FILE} records")
     if not os.environ.get("ARTIFACT_REMOTE", "").startswith("gs://"):
         problems.append("ARTIFACT_REMOTE is not a gs:// path")
@@ -1540,12 +1861,17 @@ def show(plan: Plan) -> None:
 
 def cmd_pod(args) -> int:
     commit = git_state(REPO).get("commit") or "unknown"
+    try:
+        gpu_code = code_identity.gpu_code_identity(commit)["sha256"]
+    except Exception:  # no commit: the preflight refuses
+        gpu_code = "unknown"
     where = {
         "out": args.out.absolute(),
         "runs": runs_root(),
         "data": data_root(),
         "archive_id": args.archive_id,
         "commit": commit,
+        "gpu_code": gpu_code,
     }
     if args.kind == "pod1":
         plan = pod1_plan(**where)
@@ -1559,7 +1885,16 @@ def cmd_pod(args) -> int:
         for problem in problems:
             print(f"refused: {problem}")
         return ERROR
-    prepare(plan)
+    try:
+        prepare(plan)
+    except Exception:
+        # nothing runs: the watcher stops the Pod after the close's window
+        subprocess.run(
+            [sys.executable, str(REPO / SELF), "deadline", "--minutes", str(END_MINUTES)],
+            cwd=REPO,
+            timeout=timeout_of(MINUTES["small"]),
+        )
+        raise
     env = {
         **os.environ,
         "RUNS_DIR": str(plan.runs),
@@ -1604,7 +1939,7 @@ def parser_of() -> argparse.ArgumentParser:
     p.add_argument("--root", type=Path, required=True)
     p.add_argument("--inventories-remote", required=True)
     p.add_argument("--path", action="append")
-    p.add_argument("--campaign")
+    p.add_argument("--campaign", action="append")
     p.add_argument("--runs", type=Path)
     p.add_argument("--streams", type=int)
     p = sub.add_parser("snapshot")
@@ -1637,6 +1972,9 @@ def parser_of() -> argparse.ArgumentParser:
     p = sub.add_parser("check-published")
     p.add_argument("--record", type=Path, required=True)
     p.add_argument("--receipt", type=Path, required=True)
+    p.add_argument("--commit", required=True)
+    p.add_argument("--gpu-code", required=True)
+    p.add_argument("--seeds", type=int, nargs="+", required=True)
     return parser
 
 

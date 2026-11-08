@@ -20,7 +20,9 @@ what the run computed. The endpoint state is compared where a run records one: i
 sha256 is in ``summary.json`` and ``meta.json`` (``endpoint_checkpoint``; the path is
 volatile), so an archived checkpoint record must be matched by the rerun's.
 
-The record holds, per pair, the config hash, both run ids and, per file, its name, whether it is
+The record holds the checkout's commit and GPU code identity (``code``) and, per pair, the config
+hash, both run ids, the rerun's recorded commit and cleanness (``rerun_commit``,
+``rerun_dirty``) and, per file, its name, whether it is
 equal and, for a differing file, its line counts and the number of lines that differ; for a
 differing record file outside ``responses/`` and ``observations/``, also the names of the
 top-level keys that differ (names only, never values). A file under ``responses/`` or
@@ -45,6 +47,7 @@ from typing import Any
 
 import yaml
 
+from zero_field_refusal import code_identity
 from zero_field_refusal.analysis.record_normalize import normalize
 from zero_field_refusal.tracking import git_state
 
@@ -149,16 +152,24 @@ def by_hash(runs: list[Path], side: str) -> dict[str, Path]:
     return out
 
 
+def rerun_git(run: Path) -> dict[str, Any]:
+    """The commit and cleanness a rerun's ``meta.json`` records (volatile in the comparison,
+    kept in the record so that the check binds to the code its reruns ran)."""
+    git = json.loads((run / "meta.json").read_text(encoding="utf-8")).get("git") or {}
+    return {"rerun_commit": git.get("commit"), "rerun_dirty": git.get("dirty")}
+
+
 def check(archived: list[Path], rerun: list[Path]) -> dict[str, Any]:
     left, right = by_hash(archived, "archived"), by_hash(rerun, "rerun")
     pairs = []
     for found in sorted(left.keys() & right.keys()):
         files = compare_runs(left[found], right[found])
         pairs.append({"config_hash": found, "archived": left[found].name,
-                      "rerun": right[found].name, "equal": all(f["equal"] for f in files),
-                      "files": files})  # fmt: skip
+                      "rerun": right[found].name, **rerun_git(right[found]),
+                      "equal": all(f["equal"] for f in files), "files": files})  # fmt: skip
     unpaired = {"archived": sorted(left.keys() - right.keys()),
                 "rerun": sorted(right.keys() - left.keys())}  # fmt: skip
+    identity = code_identity.gpu_code_identity()
     equal = all(p["equal"] for p in pairs) and not unpaired["archived"] and not unpaired["rerun"]
     return {
         "kind": "study5-engineering-check",
@@ -167,6 +178,7 @@ def check(archived: list[Path], rerun: list[Path]) -> dict[str, Any]:
         "unpaired": unpaired,
         "rule": "analysis.record_normalize.normalize; meta.json without " + ", ".join(PLACEMENT),
         "skipped_folders": list(SKIPPED),
+        "code": {"commit": identity["commit"], "gpu_code_sha256": identity["sha256"]},
         "git": git_state(),
         "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),
     }

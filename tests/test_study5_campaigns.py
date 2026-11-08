@@ -8,7 +8,9 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,7 @@ def script_module(path: Path, name: str):
 camp = script_module(REPO_ROOT / "scripts" / "study5_campaigns.py", "study5_campaigns")
 
 COMMIT = "c" * 40
+GPU = "e" * 64
 # Study 3's F runs on seed 10403 (docs/study3-analysis-freeze-c1.json): their config hashes
 STUDY3_F_HASHES = {"d1ce7a92e45b", "3b4601aa846f"}
 
@@ -46,11 +49,11 @@ def where(tmp_path):
 
 
 def pod1(where):
-    return camp.pod1_plan(archive_id="t1", commit=COMMIT, **where)
+    return camp.pod1_plan(archive_id="t1", commit=COMMIT, gpu_code=GPU, **where)
 
 
 def pod2(where, n=40):
-    return camp.pod2_plan(archive_id="t2", commit=COMMIT, n=n, **where)
+    return camp.pod2_plan(archive_id="t2", commit=COMMIT, gpu_code=GPU, n=n, **where)
 
 
 def steps(plan, block=None):
@@ -265,9 +268,14 @@ def test_pod2_seeds_and_the_predictions_before_any_f_run(where, n):
     predictions = every[record]
     assert [int(x) for x in predictions.argv[predictions.argv.index("--seeds") + 1 :]] == seeds
     fresh = steps(plan, "fresh")
-    assert fresh[1].argv[1] == "check-published" and fresh[1].on_fail == "stop"
+    check = fresh[1]
+    assert check.argv[1] == "check-published" and check.on_fail == "stop"
+    assert [int(x) for x in check.argv[check.argv.index("--seeds") + 1 :]] == seeds
+    assert check.argv[check.argv.index("--commit") + 1] == COMMIT
+    assert check.argv[check.argv.index("--gpu-code") + 1] == GPU
+    assert every[record].gate == "predictions"
     launches = [s for s in fresh if s.kind == "launch"]
-    assert len(launches) == n and all(s.on_fail == "record" for s in launches)
+    assert len(launches) == 2 * n and all(s.on_fail == "record" for s in launches)
 
 
 def test_pod2_rejects_another_n(where):
@@ -282,19 +290,25 @@ def test_pod2_fresh_runs_per_seed(where, tmp_path):
     for seed in (50000, 50023):
         group = [s for s in fresh if s.group == f"s{seed}"]
         assert [s.argv[1] if "study5_campaigns" in s.argv[0] else s.argv[0] for s in group] == [
+            "deadline",
             "check-checkpoints",
             "scripts/launch.py",
             "checkpoint",
+            "scripts/launch.py",
             "archive",
         ]
-        assert group[0].on_fail == "stop" and group[3].on_fail == "stop"
-        assert group[0].argv[-2:] == ("--max", "1")
-        runs = campaign_runs(plan, tmp_path, Path(group[1].argv[1]).stem)
-        assert [(r.config, r.seed) for r in runs] == [
-            ("experiments/study5_scan", seed),
-            ("experiments/study5", seed),
-        ]
-        lower, upper = (load_run_config(r.config, list(r.overrides)) for r in runs)
+        assert group[1].on_fail == "stop" and group[5].on_fail == "stop"
+        assert group[1].argv[-2:] == ("--max", "1")
+        # η_l alone, its checkpoint archived and removed, then η_u: the archive covers both
+        (low,) = campaign_runs(plan, tmp_path, Path(group[2].argv[1]).stem)
+        (high,) = campaign_runs(plan, tmp_path, Path(group[4].argv[1]).stem)
+        assert (low.config, low.seed) == ("experiments/study5_scan", seed)
+        assert (high.config, high.seed) == ("experiments/study5", seed)
+        assert group[3].argv[group[3].argv.index("--label") + 1] == low.label
+        archived = [group[5].argv[i + 1] for i, a in enumerate(group[5].argv) if a == "--campaign"]
+        assert archived == [Path(group[2].argv[1]).stem, Path(group[4].argv[1]).stem]
+        assert group[2].kept_if_runs == (f"{Path(group[2].argv[1]).stem}\t{low.label}",)
+        lower, upper = (load_run_config(r.config, list(r.overrides)) for r in (low, high))
         assert lower.optimizer.lr == 1.3e-05 and upper.optimizer.lr == 1.83e-05
         assert lower.tracking.endpoint_checkpoint == "/root/ckpt/study5"
         assert upper.tracking.endpoint_checkpoint is None
@@ -309,7 +323,8 @@ def test_pod2_controls_and_ladder_on_the_first_six_seeds(where, tmp_path):
     assert groups == [f"s{s}" for s in range(50000, 50006)]
     for seed in range(50000, 50006):
         group = [s for s in controls if s.group == f"s{seed}"]
-        launch_step = group[0]
+        assert group[0].kind == "deadline"
+        launch_step = group[1]
         assert launch_step.kind == "launch" and launch_step.on_fail == "record"
         runs = campaign_runs(plan, tmp_path, Path(launch_step.argv[1]).stem)
         order, v0 = (load_run_config(r.config, list(r.overrides)) for r in runs)
@@ -353,6 +368,7 @@ def fake_plan(tmp_path, blocks):
         data=tmp_path / "d",
         checkpoints=tmp_path / "k",
         commit=COMMIT,
+        gpu_code=GPU,
         n=None,
         blocks=blocks,
         campaigns={},
@@ -754,9 +770,21 @@ def test_checkpoint_is_archived_verified_then_removed(tmp_path, bucket):
 
 def test_publish_then_check_published(tmp_path, bucket):
     record = tmp_path / "r" / "predictions-record.json"
-    camp.write_record(record, {"kind": "study5-predictions", "seeds": [50000]})
+    camp.write_record(record, predictions_of([50000]))
     receipt = tmp_path / "r" / "predictions-receipt.json"
-    check = ["check-published", "--record", str(record), "--receipt", str(receipt)]
+    check = [
+        "check-published",
+        "--record",
+        str(record),
+        "--receipt",
+        str(receipt),
+        "--commit",
+        COMMIT,
+        "--gpu-code",
+        GPU,
+        "--seeds",
+        "50000",
+    ]
     assert camp.main(check) == 1  # not yet published: no fresh run starts
     argv = [
         "publish",
@@ -839,7 +867,7 @@ def test_dry_run_prints_the_plan_and_writes_nothing(tmp_path, capsys, monkeypatc
     )
     printed = capsys.readouterr().out
     assert "block fresh" in printed and "s5-fresh-scan-1.3e-05-s50024" not in printed
-    assert "study5-t-fresh-s50023.yaml" in printed and not out.exists()
+    assert "study5-t-fresh-scan-s50023.yaml" in printed and not out.exists()
     with pytest.raises(SystemExit):
         camp.main(["pod2", "--out", str(out), "--archive-id", "t", "--n", "30", "--dry-run"])
 
@@ -882,3 +910,283 @@ def test_after_a_stop_only_the_begun_groups_and_the_block_are_archived(tmp_path)
     ]
     assert run_plan(fake_plan(tmp_path, blocks), tmp_path) == camp.STOPPED
     assert marks(tmp_path) == ["s1", "s1-archive", "s2", "s2-archive", "snapshot"]
+
+
+# ------------------------------------------------------------------ gates, deadlines, timeouts
+
+
+def predictions_of(seeds, commit=COMMIT, gpu=GPU):
+    return {
+        "kind": "study5-predictions",
+        "n": len(seeds),
+        "seeds": list(seeds),
+        "predictions": [{"seed": s, "p": 0.0} for s in seeds],
+        "code": {"commit": commit, "gpu_code_sha256": gpu},
+    }
+
+
+def writes(tmp_path, name, path, record):
+    """A step that marks itself and writes ``record`` at ``path``: a gate run again."""
+    return py(
+        f"import json, pathlib; pathlib.Path(r'{tmp_path}/marks/{name}').touch(); "
+        f"pathlib.Path(r'{path}').write_text(json.dumps({record!r}))"
+    )
+
+
+def gate_plan(tmp_path, step, n=None):
+    plan = fake_plan(tmp_path, [camp.Block("one", (step,)), camp.Block("close", ())])
+    plan.n = n
+    return plan
+
+
+def engineering_record(equal=True, commit=COMMIT, rerun_commit=COMMIT, gpu=GPU):
+    return {
+        "kind": "study5-engineering-check",
+        "equal": equal,
+        "pairs": [{"rerun": "r", "rerun_commit": rerun_commit, "rerun_dirty": False}],
+        "code": {"commit": commit, "gpu_code_sha256": gpu},
+        "git": {"commit": commit, "dirty": False},
+    }
+
+
+@pytest.mark.parametrize(
+    "record, kept",
+    [
+        (engineering_record(), True),
+        (engineering_record(equal=False), False),  # a difference: never kept
+        (engineering_record(commit="d" * 40), False),  # another commit
+        (engineering_record(gpu="f" * 64), False),  # another GPU code
+        (engineering_record(rerun_commit="d" * 40), False),  # reruns of another commit
+    ],
+)
+def test_an_engineering_record_is_kept_by_its_verdict_and_code_only(tmp_path, record, kept):
+    path = tmp_path / "check.json"
+    path.write_text(json.dumps(record))
+    step = camp.Step(
+        "one/check",
+        writes(tmp_path, "check", path, engineering_record()),
+        on_fail="stop",
+        outputs=(str(path),),
+        gate="engineering",
+    )
+    plan = gate_plan(tmp_path, step)
+    assert run_plan(plan, tmp_path) == camp.COMPLETED
+    assert marks(tmp_path) == ([] if kept else ["check"])
+    aside = sorted(p.name for p in tmp_path.glob("check.json.aside-*"))
+    assert (aside == []) is kept
+    if not kept:
+        assert json.loads((tmp_path / aside[0]).read_text()) == record  # moved, never deleted
+
+
+def test_a_surrogate_record_is_kept_by_its_verdict_and_its_commits_gpu_code(tmp_path):
+    head = camp.code_identity.gpu_code_identity()
+    for passes, commit, kept in (
+        (True, head["commit"], True),
+        (False, head["commit"], False),
+        (True, "d" * 40, False),
+    ):
+        for p in (tmp_path / "marks").glob("*") if (tmp_path / "marks").exists() else ():
+            p.unlink()
+        for p in tmp_path.glob("checks.json*"):
+            p.unlink()
+        (tmp_path / "c").exists() and shutil.rmtree(tmp_path / "c")
+        path = tmp_path / "checks.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "kind": "study5-surrogate-checks",
+                    "passes": passes,
+                    "git": {"commit": commit, "dirty": False},
+                }
+            )
+        )
+        good = {
+            "kind": "study5-surrogate-checks",
+            "passes": True,
+            "git": {"commit": head["commit"], "dirty": False},
+        }
+        step = camp.Step(
+            "one/checks",
+            writes(tmp_path, "checks", path, good),
+            on_fail="stop",
+            outputs=(str(path),),
+            gate="surrogate",
+        )
+        plan = gate_plan(tmp_path, step)
+        plan.commit, plan.gpu_code = head["commit"], head["sha256"]
+        assert run_plan(plan, tmp_path) == camp.COMPLETED
+        assert marks(tmp_path) == ([] if kept else ["checks"]), (passes, commit)
+
+
+@pytest.mark.parametrize("record_n, plan_n", [(24, 40), (40, 24), (40, 40)])
+def test_a_predictions_record_of_other_seeds_stops_before_any_f_run(tmp_path, record_n, plan_n):
+    path = tmp_path / "record.json"
+    path.write_text(json.dumps(predictions_of(camp.fresh_seeds(record_n))))
+    step = camp.Step(
+        "one/record",
+        mark(tmp_path, "record"),
+        on_fail="stop",
+        outputs=(str(path),),
+        gate="predictions",
+    )
+    after = camp.Step("one/launch", mark(tmp_path, "launch"), kind="launch")
+    plan = fake_plan(tmp_path, [camp.Block("one", (step, after)), camp.Block("close", ())])
+    plan.n = plan_n
+    expected = camp.COMPLETED if record_n == plan_n else camp.STOPPED
+    assert run_plan(plan, tmp_path) == expected
+    assert marks(tmp_path) == (["launch"] if record_n == plan_n else [])
+    # check-published, before the first fresh run, refuses it the same way
+    digest = camp.write_record(
+        tmp_path / "pub" / "r.json", predictions_of(camp.fresh_seeds(record_n))
+    )
+    receipt = tmp_path / "pub" / "receipt.json"
+    receipt.write_text(json.dumps({"sha256": digest}))
+    argv = [
+        "check-published",
+        "--record",
+        str(tmp_path / "pub" / "r.json"),
+        "--receipt",
+        str(receipt),
+        "--commit",
+        COMMIT,
+        "--gpu-code",
+        GPU,
+        "--seeds",
+        *map(str, camp.fresh_seeds(plan_n)),
+    ]
+    assert camp.main(argv) == (0 if record_n == plan_n else 1)
+    other = [*argv[:6], "d" * 40, *argv[7:]]
+    assert camp.main(other) == 1  # another commit
+
+
+def test_every_planned_step_has_a_timeout_and_every_group_sets_its_deadline_first(where):
+    for plan in (pod1(where), pod2(where), pod2(where, 24)):
+        for block in plan.blocks:
+            assert all(isinstance(s.timeout, int) and s.timeout > 0 for s in block.steps)
+            if block.name == "close":
+                assert block.steps[-1].kind == "deadline"
+                continue
+            assert block.steps[0].kind == "deadline" and not block.steps[0].group
+            window = int(block.steps[0].argv[-1])
+            seen = set()
+            for step in block.steps[1:]:
+                if step.group and step.group not in seen:
+                    seen.add(step.group)
+                    assert step.kind == "deadline" and step.group, (block.name, step.name)
+                    window = int(step.argv[-1])
+                    members = [s for s in block.steps if s.group == step.group and s is not step]
+                    assert window == camp.deadline_minutes(sum(s.minutes for s in members))
+                assert step.timeout <= 60 * window, step.name  # a hung step ends in its window
+    lower = next(s for s in steps(pod2(where)) if s.name == "fresh/s50000/launch-fresh-scan")
+    assert lower.minutes == pytest.approx(6.9 + 15.5 + 0.5)
+    assert lower.timeout == camp.timeout_of(lower.minutes)
+
+
+def test_a_step_past_its_timeout_is_killed_and_fails(tmp_path):
+    slow = camp.Step("one/slow", py("import time; time.sleep(60)"), on_fail="record", timeout=1)
+    after = camp.Step("one/after", mark(tmp_path, "after"))
+    plan = fake_plan(tmp_path, [camp.Block("one", (slow, after)), camp.Block("close", ())])
+    started = time.monotonic()
+    assert run_plan(plan, tmp_path) == camp.COMPLETED
+    assert time.monotonic() - started < 30
+    assert camp.read_journal(plan.out / "journal.jsonl")["one/slow"] == "failed"
+    assert '"exit": "timeout"' in (plan.out / "journal.jsonl").read_text()
+    assert marks(tmp_path) == ["after"]
+
+
+def test_the_close_deadline_runs_on_an_unexpected_exception(tmp_path, monkeypatch):
+    close = camp.Block(
+        "close",
+        (camp.Step("close/deadline", mark(tmp_path, "deadline"), kind="deadline", always=True),),
+    )
+    plan = fake_plan(tmp_path, [camp.Block("one", ()), close])
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(camp, "_blocks", broken)
+    with pytest.raises(OSError):
+        run_plan(plan, tmp_path)
+    assert marks(tmp_path) == ["deadline"]
+
+
+def test_a_launch_whose_runs_completed_is_not_run_again(tmp_path):
+    journal_of(
+        tmp_path / "r",
+        "camp-a",
+        [
+            {"event": "start", "run": "cell/s1", "run_id": "r-a1", "experiment": "study5"},
+            {"event": "end", "run": "cell/s1", "run_id": "r-a1", "outcome": "done"},
+        ],
+    )
+    (tmp_path / "r" / "study5" / "r-a1").mkdir(parents=True)
+    done = camp.Step(
+        "one/launch-a", mark(tmp_path, "a"), kind="launch", kept_if_runs=("camp-a\tcell/s1",)
+    )
+    todo = camp.Step(
+        "one/launch-b", mark(tmp_path, "b"), kind="launch", kept_if_runs=("camp-b\tcell/s1",)
+    )
+    plan = fake_plan(tmp_path, [camp.Block("one", (done, todo)), camp.Block("close", ())])
+    assert run_plan(plan, tmp_path) == camp.COMPLETED
+    assert marks(tmp_path) == ["b"]
+
+
+def test_the_checkpoint_step_refuses_a_checkpoint_its_run_did_not_record(tmp_path, bucket):
+    runs, ckpt = tmp_path / "runs", tmp_path / "ckpt"
+    journal_of(
+        runs, "f", [{"event": "start", "run": "low/s1", "run_id": "r-a1", "experiment": "study5"}]
+    )
+    (runs / "study5" / "r-a1").mkdir(parents=True)
+    (runs / "study5" / "r-a1" / "summary.json").write_text("{}")
+    ckpt.mkdir()
+    (ckpt / "r-a1.pt").write_bytes(b"weights")
+    argv = [
+        "checkpoint",
+        "--runs",
+        str(runs),
+        "--campaign",
+        "f",
+        "--label",
+        "low/s1",
+        "--dir",
+        str(ckpt),
+        "--inventory",
+        str(tmp_path / "inv" / "ck.tsv"),
+        "--remote",
+        "study5/t/checkpoints",
+        "--inventories-remote",
+        "study5/t/inventories",
+    ]
+    assert camp.main(argv) == 1
+    assert (ckpt / "r-a1.pt").exists() and not (bucket / "study5/t/checkpoints").exists()
+    # recorded but neither on the disk nor in the bucket: lost, named
+    digest = hashlib.sha256(b"weights").hexdigest()
+    (runs / "study5" / "r-a1" / "summary.json").write_text(
+        json.dumps({"endpoint_checkpoint": {"sha256": digest}})
+    )
+    (ckpt / "r-a1.pt").unlink()
+    assert camp.main(argv) == 1
+
+
+def test_the_study5_driver_scripts_are_analysis_scripts_with_no_gpu_use():
+    from test_code_identity import gpu_uses
+
+    from zero_field_refusal.code_identity import ANALYSIS_SCRIPTS, is_gpu_path
+
+    for name in ("study5_campaigns.py", "study5_engineering_check.py"):
+        assert f"scripts/{name}" in ANALYSIS_SCRIPTS and not is_gpu_path(f"scripts/{name}")
+        assert not gpu_uses(REPO_ROOT / "scripts" / name), name
+
+
+def test_a_gate_that_writes_a_record_that_does_not_stand_fails(tmp_path):
+    path = tmp_path / "check.json"
+    writes = py(
+        f"import json, pathlib; pathlib.Path(r'{path}').write_text(json.dumps("
+        f"{engineering_record(rerun_commit='d' * 40)!r}))"
+    )
+    step = camp.Step("one/check", writes, on_fail="stop", outputs=(str(path),), gate="engineering")
+    after = camp.Step("one/after", mark(tmp_path, "after"))
+    plan = fake_plan(tmp_path, [camp.Block("one", (step, after)), camp.Block("close", ())])
+    assert run_plan(plan, tmp_path) == camp.STOPPED
+    assert marks(tmp_path) == []
+    assert camp.read_journal(plan.out / "journal.jsonl")["one/check"] == "failed"

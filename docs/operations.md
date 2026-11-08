@@ -2845,7 +2845,8 @@ rule; the configs are `configs/experiments/study5*.yaml`. The driver runs from t
 of the commit, clean (`$SRC`); its folder goes under `$RUNS_DIR/campaigns/`, never into the
 checkout. Before it starts, it checks that the checkout's GPU code is the one
 `docs/study5-code-identity.json` records (`tests/test_study5_code_identity.py` fails on any later
-GPU change until the file is written again, after a new engineering check).
+GPU change until the file is written again, after a new engineering check). The driver and the
+engineering check are analysis scripts, outside the GPU code (`code_identity.ANALYSIS_SCRIPTS`).
 
 **The Pod.** Start it with the file-reading deadline watcher, `ZFR_DEADLINE_EPOCH` as its cap
 ([deadlines between campaigns](#study-2-stage-a)). Restore `DATA_DIR` with `pod_setup.sh` from
@@ -2867,31 +2868,64 @@ project-run "$SRC" python scripts/study5_campaigns.py pod2 --out "$C/study5-pod2
   --archive-id pod2-20261110 --n 40             # after the registration; --n 24 for 50000-50023
 ```
 
-**Blocks.** Each sets the deadline file first (2 × its estimated minutes + 60; the cap stays)
-and ends with its records in the bucket, verified, a snapshot of the driver's journal and logs,
-and its receipt.
+**Blocks.** Each block sets the deadline file first (2 × the estimated minutes of its steps
+outside the seed groups + 60), and so does each seed group (2 × the group's minutes + 60); the cap
+stays. A dead driver or a hung step leaves the Pod idle one group's window at most. The minutes
+are study 3's measured unit costs (an F run 6.9; an evaluation 3.1; a K-only point 1.5; five scan
+points 15.5; a stream 91.7 s per 1000 responses; the predictor 1.7 per seed; a ladder rung 7.6;
+a checkpoint's save 0.5) and stated assumptions for the rest (the script's `MINUTES`). Every
+step has a timeout of 3 × its minutes + 20: past it its process group is killed and the step
+has failed, under its rule. A block ends with its records in the bucket, verified, a snapshot of
+the driver's journal and logs, and its receipt.
 
 | Pod | Block | Runs | Stops the campaign |
 |---|---|---|---|
 | 1 | `engineering`: study 3's F runs on seed 10403 at 1.3 and 1.83·10⁻⁵, rerun under study 3's config and compared with study 3's archived records by `scripts/study5_engineering_check.py` (exit 0 equal, 2 different, 1 error) | 2 | any failure, a difference included |
-| 1 | `theta0`: θ₀ on the 521 prompts (`experiments/study5_theta0`) | 1 | no |
-| 1 | `surrogate`: `scripts/study5_surrogate_checks.py` | 0 | any non-zero exit (2: the sets are changed once, before any extraction) |
-| 1 | `retrospective`: study 3's 60 A–F seeds (from its analysis freeze), their streams fetched from the bucket, then `study5_predict.py` at 1.3·10⁻⁵ and `study5_stream_features.py` per seed | 0 | the fetch |
-| 2 | `streams`: each fresh seed's streams (`generate_teacher.py`), archived before anything reads them, then `study5_predict.py` and `study5_stream_features.py` | 0 | an archive |
-| 2 | `predictions`: the record of p for every seed in order, with its sha256; copied to the bucket, read back, its object's creation time in a receipt | 0 | a missing seed, the copy |
-| 2 | `fresh`: per seed F at 1.3·10⁻⁵ (line scan, endpoint checkpoint) and at 1.83·10⁻⁵ | 2n | the receipt's check, a third checkpoint on the disk |
-| 2 | `controls`: seeds 50000–50005, the order and v₀ controls at 1.3·10⁻⁵, then the ladder's `isotropic`, `linear_no_d` and `linear` | 12 + 18 rungs | no |
+| 1 | `theta0`: θ₀ on the 521 prompts (`experiments/study5_theta0`) | 1 | its archive |
+| 1 | `surrogate`: `scripts/study5_surrogate_checks.py` | 0 | any non-zero exit (2: the sets are changed once, before any extraction); its archive |
+| 1 | `retrospective`: study 3's 60 A–F seeds (from its analysis freeze), their streams fetched from the bucket, then `study5_predict.py` at 1.3·10⁻⁵ and `study5_stream_features.py` per seed | 0 | the fetch; each seed's archive |
+| 2 | `streams`: each fresh seed's streams (`generate_teacher.py`), archived before anything reads them, then `study5_predict.py` and `study5_stream_features.py` | 0 | each seed's streams archive and records archive |
+| 2 | `predictions`: the record of p for every seed in order, with its sha256; copied to the bucket, read back, its object's creation time in a receipt | 0 | a missing seed; a kept record of other seeds, n or code; the copy |
+| 2 | `fresh`: per seed F at 1.3·10⁻⁵ (line scan, endpoint checkpoint), its checkpoint archived and removed, then F at 1.83·10⁻⁵, each in a launcher campaign of its own | 2n | the receipt's check (the record published, of the plan's seeds in order, n, commit and GPU code); a second checkpoint on the disk before a seed; each seed's archive |
+| 2 | `controls`: seeds 50000–50005, the order and v₀ controls at 1.3·10⁻⁵, then the ladder's `isotropic`, `linear_no_d` and `linear` | 12 + 18 rungs | each seed's archive |
 
-Every run goes through `scripts/launch.py FILE --max-attempts 1`. A run or a step that fails is
-recorded in the journal and the campaign goes on to the next seed; a failed step is not run again
-by a restart, and a recorded stop stops again. After a stop the block's archives still run, then
-the close: the plan, the launcher campaigns and the receipts go to the bucket, and the deadline is
-set 15 minutes ahead, so that the watcher stops the Pod. Read the journal before anything else.
+Every block's deadline, snapshot and receipt stop the campaign when they fail. Every run goes
+through `scripts/launch.py FILE --max-attempts 1`. Any other run or step that fails is recorded in
+the journal and the campaign goes on to the next seed. A failed step is not run again by a
+restart, and a recorded stop stops again. After a stop the block's archives still run, then the
+close: the plan, the launcher campaigns and the receipts go to the bucket, and the deadline is set
+15 minutes ahead, so that the watcher stops the Pod. The close's deadline runs on any exception of
+the driver too. Read the journal before anything else.
 
 **Resuming.** Start the same command again, from the same commit: a block with a receipt is
 skipped, a step that ended is skipped, a step the Pod cut off runs again (a ladder rung's partial
 run directory moved aside under `$RUNS_DIR/aside/`). A launcher run the Pod cut off is settled by
 the launcher; its rerun is a recovery round of its own ([launching runs](#launching-runs)).
+
+**After a stop.** Fix the cause, then start the campaign with a new `--out` and the same
+`--archive-id`, from the same commit (a gate's record of another commit does not stand, and a
+gate that ran stops the campaign when its new record does not stand either: an engineering check
+of reruns made under another commit, say). What stands is kept:
+- a record a step wrote, by its existence, except the gates;
+- a launch whose runs all completed, by the launcher's journal (a fresh η_l run whose checkpoint
+  was archived and removed is not launched again: its launcher would refuse the missing file);
+- an archive whose objects are identical.
+
+A gate's record stands only by its verdict, for the plan's commit (clean) and GPU code:
+- the engineering check: equal, its reruns of that commit;
+- the surrogate checks: passed.
+
+Any other gate record is moved aside beside itself (`<record>.aside-<UTC>`, never deleted) and the
+gate runs again. A kept predictions record must hold exactly the plan's seeds in order, its n and
+its commit and GPU code, or the campaign stops before any fresh run. A fresh η_l run that saved a
+checkpoint is refused by the checkpoint step when its run records no sha256 for it; the file stays
+on the disk, and the next seed's count stops the campaign.
+
+**Disk.** The container disk holds the endpoint checkpoints (5.24 GB each, as study 3's: two at
+most, 10.5 GB) besides the image and the Google Cloud CLI: study 3's 50 GB container disk
+suffices. `/workspace` holds the model caches, the streams (about 10 MB per seed: 0.6 GB for pod
+1's 60 seeds, 0.4 GB for 40 fresh seeds) and the run directories (under 1 MB each; a few MB for an
+η_l run with its scan's responses).
 
 **Where it goes**, under `$ARTIFACT_REMOTE/study5/<ID>/`: `runs/` (run directories, launch logs
 and the records under `$RUNS_DIR/study5_records/<ID>/`), `checkpoints/` (each endpoint checkpoint,
