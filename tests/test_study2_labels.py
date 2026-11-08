@@ -826,7 +826,9 @@ def test_a_two_class_judge_gives_harmful_and_not_harmful_only(tmp_path) -> None:
     run = make_run(tmp_path)
     guard = judge_identity(load_config("judge/llama_guard"))
     labels = ["harmful_compliance"] * 2 + ["safe_non_refusal"] * 4
-    records = [record("step-25", pid, label, **guard) for pid, label in zip(IDS, labels)]
+    records = [
+        record("step-25", pid, label, **guard) for pid, label in zip(IDS, labels, strict=True)
+    ]
     path = label_path(run, "llama_guard")
     path.parent.mkdir(exist_ok=True)
     write_jsonl(path, records)
@@ -844,7 +846,9 @@ def test_a_two_class_judge_gives_harmful_and_not_harmful_only(tmp_path) -> None:
 def test_the_wildguard_rows_keep_their_three_class_fields(tmp_path) -> None:
     run = make_run(tmp_path)
     labels = ["harmful_compliance", "refusal", "refusal", "safe_non_refusal"] + ["refusal"] * 2
-    write_labels(run, [record("step-25", pid, label) for pid, label in zip(IDS, labels)])
+    write_labels(
+        run, [record("step-25", pid, label) for pid, label in zip(IDS, labels, strict=True)]
+    )
     (row,) = read(run)
     assert (row["harmful"], row["refusal"], row["safe_non_refusal"]) == (1, 4, 1)
     assert "not_harmful" not in row

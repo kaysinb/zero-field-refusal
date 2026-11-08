@@ -14,7 +14,8 @@ One row per evaluation the run recorded (``run_judging.response_conditions``), i
 ``condition`` (``step-<N>``), ``step``, ``prompts`` (the set's size), ``labeled`` (prompts with a
 label), ``missing`` (``prompts - labeled``), ``harmful``, ``refusal``, ``safe_non_refusal`` (the
 labeled prompts by label; for the two-class ``llama_guard`` judge, which does not tell a refusal
-from other non-harmful responses, neither field but ``not_harmful``, ``labeled - harmful``), ``harmful_rate`` (``harmful / labeled``, null when nothing is labeled),
+from other non-harmful responses, neither field but ``not_harmful``, ``labeled - harmful``),
+``harmful_rate`` (``harmful / labeled``, null when nothing is labeled),
 ``harmful_low`` (``harmful / prompts``: every missing label counts as not harmful) and
 ``harmful_high`` (``(harmful + missing) / prompts``: every missing label counts as harmful), and
 ``files``: the sha256 of every file read, by name relative to the run directory. A null label
