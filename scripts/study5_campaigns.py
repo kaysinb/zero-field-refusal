@@ -12,8 +12,8 @@ On a Pod: ``project-run "$SRC" python scripts/study5_campaigns.py pod1 ...``, de
 commands (``deadline``, ``fetch-streams``, ``fetch-run``, ``with-runs``, ``archive``,
 ``snapshot``, ``receipt``, ``check-checkpoints``, ``checkpoint``, ``completion``,
 ``export-checkpoints``, ``predictions``, ``publish``, ``check-published``) are the steps the
-drivers run; each prints numbers, ids, paths and hashes
-only, and exits 0 on success, 1 otherwise.
+drivers run (``restore-runs`` restores a Pod's runs for the analysis, ``restore_runs``); each
+prints numbers, ids, paths and hashes only, and exits 0 on success, 1 otherwise.
 
 **The plan.** A campaign is a plan: blocks of steps, each step a command line (its argv) with
 what its failure does (``stop`` the campaign, ``record`` it and go on, or ``skip-group``: skip the
@@ -23,10 +23,13 @@ and writes nothing. Every block begins by setting the Pod's deadline file (``dea
 2 × the estimated minutes of its steps outside the seed groups + 60, through
 ``scripts/pod_deadline_watch.py --set``; ``ZFR_DEADLINE_EPOCH`` stays its cap), and so does every
 seed group (2 × the group's minutes + 60), so that a dead driver or a hung step leaves the Pod
-idle one group's window at most. The minutes are study 3's measured unit costs where one exists
-(``MINUTES``). Every step runs in its own session with a timeout (3 × its minutes + 20): past it
-its process group is killed and the step has failed, under its rule. A block ends by archiving
-its records to the bucket, verified
+idle one group's window at most. A deadline written is never above the cap (min(requested,
+cap), both printed; ``cmd_deadline``), and on pod 2 a block or seed group is admitted only while
+its window and the close's export window (``EXPORT_WINDOW``, 76 minutes) both end before the cap:
+otherwise its deadline step fails, a stop, and the close runs inside the cap. The minutes are
+study 3's measured unit costs where one exists (``MINUTES``). Every step runs in its own session
+with a timeout (3 × its minutes + 20): past it its process group is killed and the step has
+failed, under its rule. A block ends by archiving its records to the bucket, verified
 (``scripts/archive.py``: every object's size and MD5; each inventory archived too and read back),
 a snapshot of the campaign's journal and logs, and the block's receipt. A last block, ``close``,
 run at every end, after a stop and on any exception of the driver or SIGTERM (its deadline in a
@@ -107,7 +110,9 @@ once keeps its stable place: the records of the scripts, the streams, the direct
 journal shows ended, a scan or ladder run with its record, the checkpoints (and their
 inventories, named by the run), the predictions record. So a later attempt never writes an
 object an earlier one wrote; one it finds already there is checked identical (``archive.py
---no-clobber``), never replaced.
+--no-clobber``), never replaced. ``restore-runs`` restores the attempts first, in their
+chronological order, then each completed stable run directory whole, so that a partial run an
+earlier attempt archived never survives beside its completed rerun.
 
 **Resumable.** The driver keeps ``journal.jsonl`` in --out (a start and an end line per step;
 each run of a step's output in ``logs/``). Started again with the same arguments from the same
@@ -257,6 +262,10 @@ MINUTES = {
     "small": 0.5,
 }
 TIMEOUT_FACTOR, TIMEOUT_SLACK = 3, 20  # a step's timeout: 3 × its minutes + 20, in minutes
+# The close's export window (2 × two checkpoints' archive + MARGIN = 76): pod 2 admits a block or
+# a seed group only while its window and this one both fit before the cap ZFR_DEADLINE_EPOCH
+EXPORT_WINDOW = int(math.ceil(2 * 2 * MINUTES["checkpoint"] + 60))
+NOT_ADMITTED = 4  # the deadline step's exit when a window does not fit before the cap
 
 
 def timeout_of(minutes: float) -> int:
@@ -432,6 +441,7 @@ class Builder:
         self.blocks: list[Block] = []
         self.inventories: list[str] = []
         self.current: list[Step] = []
+        self.reserve = 0  # minutes kept free before the cap for the close's export (pod 2)
 
     def own(self, *args: str) -> tuple[str, ...]:
         return (SELF, *map(str, args))
@@ -603,10 +613,16 @@ class Builder:
 
     def deadline(self, name: str, minutes: float, group: str = "") -> Step:
         """The deadline file set to now + 2 × ``minutes`` + MARGIN (the cap stays), again at every
-        start that reaches it: a restart rewrites the window."""
+        start that reaches it: a restart rewrites the window. With ``reserve`` (pod 2), the
+        block or group is admitted only when its window and the close's export window both fit
+        before the cap (``cmd_deadline``); otherwise the step fails, a stop: no further group,
+        the close follows."""
+        argv = ["deadline", "--minutes", deadline_minutes(minutes)]
+        if self.reserve:
+            argv += ["--reserve", self.reserve]
         return Step(
             name=name,
-            argv=self.own("deadline", "--minutes", deadline_minutes(minutes)),
+            argv=self.own(*argv),
             on_fail="stop",
             kind="deadline",
             always=True,
@@ -625,8 +641,9 @@ class Builder:
         if checkpoints:
             # set in order, before the export: the close's own deadline comes last
             self.step(f"{CLOSE}/export-deadline",
-                      self.own("deadline", "--minutes",
-                               deadline_minutes(2 * MINUTES["checkpoint"])),
+                      self.own("deadline", "--minutes", EXPORT_WINDOW, "--needs",
+                               2 * MINUTES["checkpoint"], "--record",
+                               self.out / CLOSE / f"export-deadline-{ATTEMPT}.json"),
                       on_fail="record", always=True)  # fmt: skip
             argv = ["export-checkpoints", "--runs", self.runs, "--dir", self.checkpoints,
                     "--remote", f"{self.base}/checkpoints", "--inventories-remote",
@@ -658,7 +675,13 @@ class Builder:
         )
         self.step(
             f"{CLOSE}/deadline",
-            self.own("deadline", "--minutes", END_MINUTES),
+            self.own(
+                "deadline",
+                "--minutes",
+                END_MINUTES,
+                "--record",
+                self.out / CLOSE / f"deadline-{ATTEMPT}.json",
+            ),
             kind="deadline",
             on_fail="record",
             always=True,
@@ -860,6 +883,7 @@ def pod2_plan(
     seeds = fresh_seeds(n)
     spec = surrogate_spec(surrogate)
     b = Builder("pod2", archive_id, out, runs, data, checkpoints)
+    b.reserve = EXPORT_WINDOW  # every block and group keeps the close's export inside the cap
     teacher = ("scripts/generate_teacher.py", *FRESH, rate(ETA_L))
 
     b.begin()  # streams, then the predictor and the features of every fresh seed
@@ -1867,12 +1891,55 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 # ------------------------------------------------------------------ the steps
 
 
+def deadline_cap() -> int | None:
+    """The hard cap ``ZFR_DEADLINE_EPOCH`` (Unix seconds) of the Pod's environment; the watcher
+    stops the Pod at it whatever the file says. None when it is not set or does not read."""
+    try:
+        return int(os.environ["ZFR_DEADLINE_EPOCH"])
+    except (KeyError, ValueError):
+        return None
+
+
+def _iso(epoch: int | None) -> str | None:
+    return None if epoch is None else datetime.fromtimestamp(epoch, UTC).isoformat()
+
+
 def cmd_deadline(args) -> int:
-    epoch = int(time.time()) + 60 * args.minutes
+    """The deadline file set to now + ``--minutes``, never above the cap: the effective deadline
+    is min(requested, cap), printed and (``--record``) recorded with both. With ``--reserve``,
+    the window is admitted only when it and the reserved minutes (the close's export) both end
+    before the cap; otherwise nothing is written and the step exits ``NOT_ADMITTED``. With
+    ``--needs``, a window shorter than that is said so explicitly."""
+    now = int(time.time())
+    requested, cap = now + 60 * args.minutes, deadline_cap()
+    found: dict[str, Any] = {"kind": "study5-deadline", "requested": _iso(requested),
+                             "cap": _iso(cap), "minutes": args.minutes,
+                             "reserve_minutes": args.reserve, "written_utc": _iso(now)}  # fmt: skip
+    if args.reserve and cap is not None and requested + 60 * args.reserve > cap:
+        found |= {"admitted": False, "effective": None}
+        print(
+            f"not admitted: the window of {args.minutes} min and the close's {args.reserve} "
+            f"min end after the cap {_iso(cap)}: no further group, the close follows"
+        )
+        if args.record:
+            write_json(args.record, found)
+        return NOT_ADMITTED
+    effective = requested if cap is None else min(requested, cap)
+    window = (effective - now) / 60
+    found |= {"admitted": True, "effective": _iso(effective), "effective_minutes": window}
+    if args.needs is not None:
+        found |= {"needs_minutes": args.needs, "short": window < args.needs}
     done = subprocess.run(
-        [sys.executable, str(REPO / "scripts" / "pod_deadline_watch.py"), "--set", str(epoch)]
+        [sys.executable, str(REPO / "scripts" / "pod_deadline_watch.py"), "--set", str(effective)]
     )
-    print(f"deadline {datetime.fromtimestamp(epoch, UTC).isoformat()} exit {done.returncode}")
+    found["exit"] = done.returncode
+    print(f"deadline requested {_iso(requested)} cap {_iso(cap)} effective {_iso(effective)} "
+          f"exit {done.returncode}")  # fmt: skip
+    if found.get("short"):
+        print(f"WARNING: the effective window, {window:.1f} min before the cap, is shorter than "
+              f"the {args.needs} min the export needs")  # fmt: skip
+    if args.record:
+        write_json(args.record, found)
     return done.returncode
 
 
@@ -2299,6 +2366,70 @@ def completion_runs(runs: Path, campaigns: list[str]) -> list[dict[str, Any]]:
     return out
 
 
+def fetch_object(meta: dict[str, Any], target: Path) -> None:
+    """One bucket object to ``target``, its size and MD5 checked against the listing."""
+    url = f"gs://{meta['bucket']}/{meta['name']}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(f".{target.name}.partial-restore")
+    gcloud(["cp", "--quiet", url, str(partial)])
+    if partial.stat().st_size != int(meta["size"]) or md5_b64(partial) != meta.get("md5_hash"):
+        partial.unlink()
+        raise StepError(f"{meta['name']}: the copy does not match its object")
+    os.replace(partial, target)
+
+
+def restore_runs(archive_id: str, dest: Path) -> dict[str, int]:
+    """A Pod's runs restored from the bucket into ``dest`` (the analysis's runs root), in the
+    order that keeps every completed record: first each attempt's ``attempts/<attempt>/runs/``
+    in the attempts' chronological order (the id begins with its UTC time; a later one replaces
+    an earlier one's file), then every stable run directory under ``runs/`` as a whole (the
+    directory an attempt restored at its path removed first, so that no file of a partial run
+    survives beside its completed rerun), then the stable records. Each object's size and MD5
+    checked. The counts restored."""
+    if not _ID.fullmatch(archive_id):
+        raise StepError(f"--archive-id {archive_id!r}: not an archive id")
+    prefix = f"{artifact_remote()}/study5/{archive_id}"
+    listing = json.loads(gcloud(["objects", "list", f"{prefix}/**", "--format=json"]))
+    objects = {f"gs://{m['bucket']}/{m['name']}"[len(prefix) + 1 :]: m for m in listing}
+    attempts: dict[str, list[tuple[str, dict]]] = {}
+    stable_dirs: dict[str, list[tuple[str, dict]]] = {}
+    stable_files: list[tuple[str, dict]] = []
+    for rel, meta in objects.items():
+        parts = PurePosixPath(rel).parts
+        if len(parts) > 3 and parts[0] == "attempts" and parts[2] == "runs":
+            attempts.setdefault(parts[1], []).append((safe_rel("/".join(parts[3:])), meta))
+        elif len(parts) > 1 and parts[0] == "runs":
+            inner = safe_rel("/".join(parts[1:]))
+            inner_parts = PurePosixPath(inner).parts
+            if len(inner_parts) >= 3 and inner_parts[0] != "study5_records":
+                stable_dirs.setdefault("/".join(inner_parts[:2]), []).append((inner, meta))
+            else:
+                stable_files.append((inner, meta))
+    counts = {"attempts": len(attempts), "attempt_files": 0, "run_directories": 0, "files": 0}
+    for attempt in sorted(attempts):  # chronological: the id starts with its UTC time
+        for rel, meta in sorted(attempts[attempt], key=lambda x: x[0]):
+            fetch_object(meta, dest / rel)
+            counts["attempt_files"] += 1
+    for run_dir, found in sorted(stable_dirs.items()):  # completed: whole and authoritative
+        if (dest / run_dir).exists():
+            shutil.rmtree(dest / run_dir)
+        for rel, meta in sorted(found, key=lambda x: x[0]):
+            fetch_object(meta, dest / rel)
+        counts["run_directories"] += 1
+    for rel, meta in sorted(stable_files, key=lambda x: x[0]):
+        fetch_object(meta, dest / rel)
+        counts["files"] += 1
+    return counts
+
+
+def cmd_restore_runs(args) -> int:
+    counts = restore_runs(args.archive_id, args.dest)
+    print(f"restored {args.archive_id}: {counts['attempts']} attempts "
+          f"({counts['attempt_files']} files), {counts['run_directories']} completed run "
+          f"directories, {counts['files']} records")  # fmt: skip
+    return 0
+
+
 def cmd_completion(args) -> int:
     """Pod 2's completion record, once its last fresh group has ended: every fresh run the
     launcher journals show as started, with its end and outcome; written only when no started
@@ -2585,6 +2716,9 @@ def parser_of() -> argparse.ArgumentParser:
             p.add_argument("--retrospective", type=Path)
     p = sub.add_parser("deadline")
     p.add_argument("--minutes", type=int, required=True)
+    p.add_argument("--reserve", type=int, default=0)  # minutes kept free before the cap
+    p.add_argument("--needs", type=float)  # minutes the window must hold (the close's export)
+    p.add_argument("--record", type=Path)
     p = sub.add_parser("fetch-streams")
     p.add_argument("--inventory", required=True)
     p.add_argument("--data", type=Path, required=True)
@@ -2640,6 +2774,9 @@ def parser_of() -> argparse.ArgumentParser:
     for name in ("--campaign", "--label", "--remote", "--inventories-remote"):
         p.add_argument(name, required=True)
     p.add_argument("--keep", action="store_true")  # archived and verified, not removed
+    p = sub.add_parser("restore-runs")  # a Pod's runs from the bucket, for the analysis
+    p.add_argument("--archive-id", required=True)
+    p.add_argument("--dest", type=Path, required=True)
     p = sub.add_parser("completion")
     p.add_argument("--runs", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
@@ -2680,6 +2817,7 @@ COMMANDS = {
     "check-checkpoints": cmd_check_checkpoints,
     "checkpoint": cmd_checkpoint,
     "completion": cmd_completion,
+    "restore-runs": cmd_restore_runs,
     "export-checkpoints": cmd_export_checkpoints,
     "predictions": cmd_predictions,
     "publish": cmd_publish,

@@ -1436,6 +1436,10 @@ def test_a_predictions_record_is_bound_to_its_gpu_code_and_its_published_sha(tmp
     assert check_published(path, receipt, seeds) == 1
 
 
+def minutes_of(step) -> int:
+    return int(step.argv[step.argv.index("--minutes") + 1])
+
+
 def test_every_planned_step_has_a_timeout_and_every_group_sets_its_deadline_first(where):
     for plan in (pod1(where), pod2(where), pod2(where, 24)):
         for block in plan.blocks:
@@ -1444,13 +1448,13 @@ def test_every_planned_step_has_a_timeout_and_every_group_sets_its_deadline_firs
                 assert block.steps[-1].kind == "deadline"
                 continue
             assert block.steps[0].kind == "deadline" and not block.steps[0].group
-            window = int(block.steps[0].argv[-1])
+            window = minutes_of(block.steps[0])
             seen = set()
             for step in block.steps[1:]:
                 if step.group and step.group not in seen:
                     seen.add(step.group)
                     assert step.kind == "deadline" and step.group, (block.name, step.name)
-                    window = int(step.argv[-1])
+                    window = minutes_of(step)
                     members = [s for s in block.steps if s.group == step.group and s is not step]
                     assert window == camp.deadline_minutes(sum(s.minutes for s in members))
                 assert step.timeout <= 60 * window, step.name  # a hung step ends in its window
@@ -1919,6 +1923,7 @@ if attempt == 1:
     (records / "gate.json").write_text("first verdict")
     scan.mkdir(parents=True)
     (scan / "line_scan.jsonl").write_text("partial")  # cut off: no record
+    (scan / "partial.tmp").write_text("a file the completed rerun does not have")
 else:
     with journal.open("a") as out:   # the launcher settles r-2, its recovery round runs r-3
         out.write(json.dumps({"event": "end", "run": "cell/s2", "run_id": "r-2",
@@ -1998,6 +2003,31 @@ def test_the_documented_restart_against_an_archive_an_earlier_attempt_wrote(tmp_
                if json.loads(line).get("event") == "driver"]  # fmt: skip
     assert [d["attempt"] for d in drivers] == [*attempts, second_id]
 
+    # the documented restore (restore-runs) into an empty root: every attempt's files in
+    # their order, then each completed stable run directory whole; it equals the final records
+    restored = tmp_path / "restored"
+    assert camp.main(["restore-runs", "--archive-id", "t", "--dest", str(restored)]) == 0
+    runs = tmp_path / "runs"
+    found = {p.relative_to(restored).as_posix() for p in restored.rglob("*") if p.is_file()}
+    assert found and not any(".partial" in rel for rel in found)
+    for rel in found:
+        assert (restored / rel).read_bytes() == (runs / rel).read_bytes(), rel
+    scan = "study5_scan/s5-t-scan"
+    assert sorted(p.name for p in (restored / scan).iterdir()) == ["line_scan.jsonl"]
+    assert (restored / scan / "line_scan.jsonl").read_bytes() == b"whole"  # not the partial
+    for rel in (
+        "launch/study5-t-one.jsonl",
+        "study5_records/t/gate.json",
+        "study5_records/t/scan.json",
+        "study5/r-1/meta.json",
+        "study5/r-3/meta.json",
+    ):
+        assert rel in found, rel  # fmt: skip
+    # the order matters: the partial scan (an earlier attempt's) restored last would survive
+    assert "attempts/" in "".join(after) and any(
+        k.endswith("study5_scan/s5-t-scan/partial.tmp") for k in after
+    )
+
 
 def test_an_attempt_id_is_the_utc_time_and_a_random_suffix_and_fills_the_argv():
     one, two = camp.new_attempt(), camp.new_attempt()
@@ -2010,3 +2040,67 @@ def test_a_ladder_rungs_minutes_cover_its_matched_k_step(where):
     rung = next(s for s in steps(pod2(where)) if s.name == "controls/s50000/ladder-linear")
     assert rung.minutes == pytest.approx(5 * camp.K_POINT + camp.EVALUATION) == 10.6
     assert rung.timeout == camp.timeout_of(10.6)
+
+
+# ------------------------------------------------------------------ the deadlines and the cap
+
+
+def deadline_env(monkeypatch, tmp_path, cap):
+    target = tmp_path / "zfr-deadline"
+    monkeypatch.setenv("ZFR_DEADLINE_FILE", str(target))
+    monkeypatch.setenv("ZFR_DEADLINE_EPOCH", str(cap))
+    return target
+
+
+def test_pod2_admits_a_group_only_while_its_window_and_the_close_fit_before_the_cap(
+    where, tmp_path, monkeypatch
+):
+    """Every block and seed group of pod 2 reserves the close's export window (76 minutes)
+    against the hard cap ZFR_DEADLINE_EPOCH: a group whose window and the close's do not both
+    fit is not admitted (the step fails: a stop, the close follows); the cap is never raised."""
+    assert camp.EXPORT_WINDOW == 76
+    plan = pod2(where, 24)
+    deadlines = [s for b in plan.blocks if b.name != "close" for s in b.steps
+                 if s.kind == "deadline"]  # fmt: skip
+    assert deadlines and all(s.argv[s.argv.index("--reserve") + 1] == "76" for s in deadlines)
+    assert all(s.on_fail == "stop" for s in deadlines)
+    assert not any("--reserve" in s.argv for s in steps(pod1(where)))
+    group = next(s for s in deadlines if s.group == "s50003" and s.name.startswith("fresh/"))
+    window = minutes_of(group)
+    now = int(time.time())
+    target = deadline_env(monkeypatch, tmp_path, now + 60 * (window + 76) - 120)
+    record = tmp_path / "rec.json"
+    assert camp.main([*group.argv[1:], "--record", str(record)]) == camp.NOT_ADMITTED
+    assert not target.exists()  # nothing written, the cap stands
+    found = json.loads(record.read_text())
+    assert found["admitted"] is False and found["effective"] is None
+    deadline_env(monkeypatch, tmp_path, now + 60 * (window + 76) + 600)
+    assert camp.main([*group.argv[1:], "--record", str(record)]) == 0
+    written = int(target.read_text())
+    assert abs(written - (now + 60 * window)) <= 5 and json.loads(record.read_text())["admitted"]
+
+
+def test_the_close_deadline_is_never_above_the_cap_and_a_short_window_is_said(
+    where, tmp_path, monkeypatch
+):
+    close = {s.name: s for s in steps(pod2(where, 24), "close")}
+    export = close["close/export-deadline"]
+    assert "--reserve" not in export.argv and minutes_of(export) == 76
+    assert export.argv[export.argv.index("--needs") + 1] == "8.0"
+    now = int(time.time())
+    cap = now + 30 * 60  # 30 minutes left: the request (76) exceeds it
+    target = deadline_env(monkeypatch, tmp_path, cap)
+    record = tmp_path / "export-deadline.json"
+    argv = [a.replace("{attempt}", "a1") for a in export.argv[1:]]
+    argv[argv.index("--record") + 1] = str(record)
+    assert camp.main(argv) == 0
+    found = json.loads(record.read_text())
+    assert int(target.read_text()) == cap  # min(requested, cap)
+    assert found["effective"] == found["cap"] == camp._iso(cap)
+    assert found["requested"] > found["cap"] and found["short"] is False  # 30 ≥ 8 minutes
+    deadline_env(monkeypatch, tmp_path, now + 5 * 60)  # 5 minutes left: shorter than the export
+    assert camp.main(argv) == 0
+    found = json.loads(record.read_text())
+    assert found["short"] is True and found["effective_minutes"] < 8
+    final = close["close/deadline"]
+    assert "--record" in final.argv and "--reserve" not in final.argv
