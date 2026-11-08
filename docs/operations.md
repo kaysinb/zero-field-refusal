@@ -3006,8 +3006,9 @@ writes the retrospective record (ρ(p_s, F's harm at K\*) over study 3's 60 A–
 fixation record's block bootstrap, ρ(p_s, refusal share at K\*), the stream features, every
 input's sha256), once. `full` runs once both Pods' `runs/` are restored under one local
 `$RUNS_DIR` and the runs are labeled (WildGuard in each run directory; Llama Guard on the 40
-relabeled study-3 runs); it recomputes the retrospective and refuses unless it equals that
-record's, which it names by sha256. It sits in the analysis
+relabeled study-3 runs); it recomputes the retrospective and refuses unless it agrees with
+that record's (the same ids, seeds, counts and states, numbers within a relative 1e-12), which it
+names by sha256. It sits in the analysis
 package, outside the GPU code identity, so adding it left `docs/study5-code-identity.json`
 standing. It reads the two campaign folders (`plan.json` and the launcher campaigns, each by the
 plan's sha256), the fixation record, the predictions record (refused unless its sha256 is the

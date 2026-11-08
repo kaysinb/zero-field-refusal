@@ -1038,3 +1038,67 @@ def test_a_harm_reading_that_fails_is_a_refusal(tmp_path, monkeypatch, capsys, e
                               study3_sealed_dir=None)  # fmt: skip
     with pytest.raises(cli.Refused, match="harm cannot be read"):
         cli.study3_parts(args, record, cli.Reader({}), lambda cfg: PROMPTS)
+
+
+def retrospective_world(world, monkeypatch) -> tuple[tuple, Path, dict]:
+    """The retrospective record of the synthetic study-3 parts, one block's features record
+    missing so that a reason is in it."""
+    parts = study3_world(world)
+    monkeypatch.setattr(cli, "study3_parts", lambda *a, **kw: parts)
+    (world.runs / "study5_records/pod1-x/features/retro/s10402.json").unlink()
+    study3 = ("--study3-runs-root", world.tmp, "--study3-repo", world.tmp)
+    retro_out = world.tmp / "retrospective.json"
+    assert call(world.retro_argv(retro_out, *study3))[0] == 0
+    return study3, retro_out, json.loads(retro_out.read_text())
+
+
+def edited(world, record: dict, edit) -> Path:
+    edit(record["retrospective"])
+    path = world.tmp / f"edited-{len(list(world.tmp.glob('edited-*')))}.json"
+    dump(path, record)
+    return path
+
+
+def test_the_retrospective_comparison_allows_the_last_bit_and_reworded_reasons(
+    world, monkeypatch
+) -> None:
+    study3, _, record = retrospective_world(world, monkeypatch)
+
+    def ulp(r):
+        r["harm"]["rho"] = float(np.nextafter(r["harm"]["rho"], math.inf))
+        excluded = r["stream_features"]["mean_tokens"]["excluded"]
+        assert excluded and excluded[0]["seed"] == 10402
+        excluded[0]["reason"] = "the features record is absent (reworded)"
+
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, *study3, "--retrospective", edited(world, record, ulp)))
+    assert code == 0, why
+    deviation = json.loads(out.read_text())["retrospective"]["record"]["max_deviation"]
+    assert 0 < deviation["relative"] < 1e-15
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda r: r["harm"].__setitem__("rho", r["harm"]["rho"] + 1e-9),
+        lambda r: r["harm"].__setitem__("seeds", r["harm"]["seeds"][:-1]),
+        lambda r: r["per_block"][0].__setitem__("seed", 10499),
+    ],
+    ids=["1e-9", "seed set", "seed"],
+)
+def test_the_retrospective_comparison_refuses_another_result(world, monkeypatch, edit) -> None:
+    study3, _, record = retrospective_world(world, monkeypatch)
+    out = world.tmp / "analysis.json"
+    code, why = call(world.argv(out, *study3, "--retrospective", edited(world, record, edit)))
+    assert code == 1 and "does not match its recomputation" in why and not out.exists()
+
+
+def test_scrub_replaces_absolute_roots_at_path_boundaries_only(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "r").mkdir()
+    reader = cli.Reader({"runs": Path("r")})  # a short relative root, as typed
+    text = "error in rounds: r is not a run; see r/x and 'rr'"
+    assert reader.scrub(text) == text
+    root = str((tmp_path / "r").resolve())
+    assert reader.scrub(f"'{root}/study5/a' missing") == "'<runs>/study5/a' missing"
+    assert reader.scrub(f"{root}2/b and /x{root}/c") == f"{root}2/b and /x{root}/c"

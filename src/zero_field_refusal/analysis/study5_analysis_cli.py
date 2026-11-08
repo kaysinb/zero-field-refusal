@@ -16,9 +16,11 @@ computations are ``analysis.study5_analysis``'s).
 retrospective record (kind ``study5-retrospective``): ρ(p_s, F's harm at K*) over study 3's 60
 A–F blocks with the fixation record's block bootstrap interval, ρ(p_s, F's refusal share at K*),
 the stream features against the harm, the per-block inputs, and every input's sha256. **full**
-recomputes the retrospective from the same inputs and refuses unless it equals that record's
-``retrospective`` byte for byte as strict JSON (``--retrospective``, named by its sha256 in the
-analysis): the registered retrospective result is the one the analysis reports. Both run from a
+recomputes the retrospective from the same inputs and refuses unless it agrees with that
+record's ``retrospective`` (``--retrospective``, named by its sha256 in the analysis, with the
+largest numeric deviation): the same structure, ids, seeds, counts and states, numbers within a
+relative 1e-12 (1e-15 near zero), reasons not compared (``same_tree``). The registered
+retrospective result is the one the analysis reports. Both run from a
 clean checkout of a known commit (its commit in the record).
 
 It sits in the analysis package, outside the GPU code identity, so that adding it changes no GPU
@@ -137,6 +139,8 @@ WILDGUARD, LLAMA_GUARD = "wildguard", "llama_guard"
 CANDIDATE = 1
 OPTIMIZER = "adam_frozen"
 RETRO_KIND = "study5-retrospective"
+REL_TOLERANCE, ABS_TOLERANCE = 1e-12, 1e-15  # a recomputed retrospective number against its record
+FREE_TEXT = ("reason", "missing")  # keys whose strings are reasons: not compared
 LADDER_STEP = re.compile(r"controls/s(?P<seed>[0-9]+)/ladder-(?P<rung>[a-z_]+)")
 # the files run_judging.response_conditions reads of a run (scheduled, line scan, ladder)
 CONDITION_FILES = ("evaluations.jsonl", "terminal.json", "line_scan.jsonl", "summary.json")
@@ -171,12 +175,16 @@ class Reader:
         self.prompt_sets: dict[str, str] = {}  # a prompt set's name -> sha256 of its ids and texts
 
     def scrub(self, text: str) -> str:
-        """``text`` with every root's local path replaced by its name (``<runs>``)."""
-        for name in sorted(self.roots, key=lambda n: -len(str(self.roots[n]))):
-            for path in {str(self.roots[name]), str(self.given[name].absolute()),
-                         str(self.given[name])}:  # fmt: skip
-                if path not in ("", "."):
-                    text = text.replace(path, f"<{name}>")
+        """``text`` with every root's local path replaced by its name (``<runs>``): the root's
+        absolute forms only (resolved, and absolute as given), each matched at path boundaries
+        (``/tmp/runs`` not inside ``/x/tmp/runs`` or ``/tmp/runs2``), the longest first. A root as
+        given relative on the command line is never matched: it could rewrite unrelated text."""
+        forms = {(str(form), name) for name in self.roots
+                 for form in (self.roots[name], self.given[name].absolute())
+                 if form.is_absolute() and str(form) != "/"}  # fmt: skip
+        for form, name in sorted(forms, key=lambda f: -len(f[0])):
+            pattern = r"(?<![\w./-])" + re.escape(form) + r"(?![\w.-])"
+            text = re.sub(pattern, f"<{name}>", text)
         return text
 
     def name(self, path: Path) -> str:
@@ -723,8 +731,9 @@ def retrospective_record(args: argparse.Namespace) -> dict[str, Any]:
 def verified_retrospective(reader: Reader, path: Path, fixation_data: bytes,
                            recomputed: Mapping[str, Any]) -> dict[str, Any]:  # fmt: skip
     """The retrospective record written before the registration, recomputed here from the same
-    inputs: refused unless it is of this fixation record and its ``retrospective`` equals the
-    recomputation, byte for byte as strict JSON."""
+    inputs: refused unless it is of this fixation record and its ``retrospective`` agrees with the
+    recomputation (``same_tree``: the same structure, ids, seeds, counts and states; numbers
+    within ``REL_TOLERANCE``; reasons not compared). The largest numeric deviation is kept."""
     try:
         data = reader.bytes(Path(path))
         found = json.loads(data)
@@ -734,10 +743,66 @@ def verified_retrospective(reader: Reader, path: Path, fixation_data: bytes,
         refuse(f"{Path(path).name} is not study 5's retrospective record")
     if (found.get("fixation") or {}).get("sha256") != sha256(fixation_data):
         refuse("the retrospective record is not of this fixation record")
-    if encoded(found.get("retrospective")) != encoded(recomputed):
-        refuse("the retrospective record does not match its recomputation from the inputs")
-    return {**recomputed, "record": {"path": Path(path).name, "sha256": sha256(data),
-                                     "code": found.get("code")}}  # fmt: skip
+    try:
+        deviation = same_tree(found.get("retrospective"), recomputed)
+    except Mismatch as exc:
+        refuse(f"the retrospective record does not match its recomputation from the inputs "
+               f"(at {exc})")  # fmt: skip
+    return {
+        **recomputed,
+        "record": {
+            "path": Path(path).name,
+            "sha256": sha256(data),
+            "code": found.get("code"),
+            "max_deviation": deviation,
+        },
+    }
+
+
+class Mismatch(ValueError):
+    """Two records' trees differ: the path where they first do."""
+
+
+def same_tree(stored: Any, computed: Any, where: str = "retrospective") -> dict[str, float]:
+    """Whether a stored record's tree agrees with its recomputation: the same keys and lengths;
+    ids, seeds, counts, states and every other string or integer equal; floats within a relative
+    ``REL_TOLERANCE`` (``ABS_TOLERANCE`` near zero), so that the last bit of a ρ or a percentile
+    may move across machines; the free text under ``reason`` and ``missing`` keys not compared,
+    only that it is text. Returns the largest absolute and relative deviation of the floats;
+    ``Mismatch`` (naming the path) otherwise."""
+    worst = {"absolute": 0.0, "relative": 0.0}
+
+    def walk(a: Any, b: Any, path: str, free: bool) -> None:
+        if free and isinstance(a, str) and isinstance(b, str):
+            return
+        if isinstance(a, Mapping) and isinstance(b, Mapping):
+            if set(a) != set(b):
+                raise Mismatch(f"{path}: keys {sorted(set(a) ^ set(b))}")
+            for key in a:
+                walk(a[key], b[key], f"{path}.{key}", key in FREE_TEXT)
+            return
+        if isinstance(a, list) and isinstance(b, list):
+            if len(a) != len(b):
+                raise Mismatch(f"{path}: {len(a)} items, not {len(b)}")
+            for i, (x, y) in enumerate(zip(a, b, strict=True)):
+                walk(x, y, f"{path}[{i}]", False)
+            return
+        if isinstance(a, float) or isinstance(b, float):
+            numbers = all(isinstance(v, int | float) and not isinstance(v, bool) for v in (a, b))
+            if not numbers or not (math.isfinite(a) and math.isfinite(b)):
+                raise Mismatch(path)
+            gap = abs(a - b)
+            scale = max(abs(a), abs(b))
+            if gap > max(REL_TOLERANCE * scale, ABS_TOLERANCE):
+                raise Mismatch(f"{path}: {a!r} against {b!r}")
+            worst["absolute"] = max(worst["absolute"], gap)
+            worst["relative"] = max(worst["relative"], gap / scale if scale > 0 else 0.0)
+            return
+        if type(a) is not type(b) or a != b:
+            raise Mismatch(path)
+
+    walk(stored, computed, where, False)
+    return worst
 
 
 def _when(stamp: Any) -> datetime | None:
