@@ -2866,8 +2866,13 @@ names the sha256 of every file of the labeling's ledger, and states how the stat
 and θ₀'s run are bound (the freeze's sha256, each cell's run id and rate). It fixes the judges'
 high–low contrast as the reference's estimator: per cell the harmful share over all 521 responses
 by each judge, the group the unweighted mean of its 20 cells, high minus low; the block mean at
-K\* only selects the blocks. The prompt sets come from `DATA_DIR`. Rerun on the same
-inputs and code it is byte-identical; it never overwrites a different file.
+K\* only selects the blocks. It states the permutation test's null (p_s and h_s independent)
+and its one-sided alternative (a negative association), and holds the surrogate overlap
+(`--surrogate-overlap`: the classification of the 100 surrogate-panel prompts against the 521
+judged ones by content, ids, numbers and the method only, its sha256 among the inputs), from
+which the analysis's descriptive check takes `evaluation_ids_same_or_close`. The prompt sets come
+from `DATA_DIR`. Rerun on the same inputs and code it is byte-identical; it never overwrites a
+different file.
 `scripts/study5_fixation.py reference-input` then writes the reference annotators' input
 (amendments [11](study3-preregistration.md#amendment-11-the-audits-reference-annotators) and
 [12](study3-preregistration.md#amendment-12-safety-filter-stops-in-the-audits-labeling)) in study
@@ -2878,7 +2883,8 @@ inputs and code it is byte-identical; it never overwrites a different file.
 ```bash
 export DATA_DIR="$DATA"   # the prompt sets (study 3's data root); or a checkout with data/
 python scripts/study5_fixation.py fix --runs-root "$S3/runs" --study3-repo "$S3_CHECKOUT" \
-  --theta0 "$S3/runs/study2_stage_a/<θ₀ run>" --sealed-dir "$SEALED"   # docs/study5-fixation.json
+  --theta0 "$S3/runs/study2_stage_a/<θ₀ run>" --sealed-dir "$SEALED" \
+  --surrogate-overlap "$OVERLAP"   # docs/study5-fixation.json
 python scripts/study5_fixation.py reference-input --runs-root "$S3/runs" \
   --study3-repo "$S3_CHECKOUT" --out "$RUNS_DIR/study5-reference/input"
 ```
@@ -2900,11 +2906,16 @@ project-run "$SRC" python scripts/study5_campaigns.py pod1 --out "$C/study5-pod1
 project-run "$SRC" python scripts/study5_campaigns.py pod1 --out "$C/study5-pod1" \
   --archive-id pod1-20261109                    # detached
 project-run "$SRC" python scripts/study5_campaigns.py pod2 --out "$C/study5-pod2" \
-  --archive-id pod2-20261110 --n 40 \
+  --archive-id pod2-20261110 \
   --engineering-check "$GATES/engineering-check.json" \
   --surrogate-checks "$GATES/surrogate-checks.json" \
-  --retrospective "$GATES/retrospective.json"   # after the registration; --n 24 for 50000-50023
+  --retrospective "$GATES/retrospective.json"   # after the registration
 ```
+
+**The n.** `docs/study5-confirmatory-seeds.json` holds the n chosen before generation and its
+seeds: `{"n": 40, "seeds": [50000, …, 50039]}`, or the alternative `{"n": 24, "seeds": [50000, …,
+50023]}`, committed before the registration, which names its sha256. Pod 2 takes its n from it
+(`--n` defaults to it; another is refused), so a restart cannot change n.
 
 **Pod 1's commit stays reachable** until the analysis: its engineering reruns, its surrogate
 checks and pod 2's preflight name it, and the analysis computes its GPU code identity from this
@@ -2923,7 +2934,9 @@ tag with the branch.
   least one pair, its reruns from a clean checkout of a commit of the plan's GPU code identity;
 - pod 1's surrogate-checks record (`--surrogate-checks`, `surrogate-checks.json` beside it)
   passed, written from a clean checkout under that identity, of the plan's surrogate (the same
-  sha256).
+  sha256);
+- `docs/study5-confirmatory-seeds.json` at the plan's commit, its sha256 named in the
+  registration there, and the plan's fresh seeds exactly its seeds.
 
 `$GATES` is a folder on the Pod, outside the checkout, holding the two records from pod 1's
 archive and the retrospective record written by the analysis's `retrospective` before the
@@ -2942,8 +2955,9 @@ requires one surrogate sha256 across the checks, every predictor record and ever
 outside the seed groups + 60), and so does each seed group (2 × the group's minutes + 60); the cap
 stays. A dead driver or a hung step leaves the Pod idle one group's window at most. The minutes
 are study 3's measured unit costs (an F run 6.9; an evaluation 3.1; a K-only point 1.5; five scan
-points 15.5; a stream 91.7 s per 1000 responses; the predictor 1.7 per seed; a ladder rung 7.6;
-a checkpoint's save 0.5) and stated assumptions for the rest (the script's `MINUTES`; among
+points 15.5; a stream 91.7 s per 1000 responses; the predictor 1.7 per seed; a ladder rung 10.6:
+three K-only points of the search, two of the matched-K step and an evaluation; a checkpoint's
+save 0.5) and stated assumptions for the rest (the script's `MINUTES`; among
 them the surrogate at an endpoint, ≈ 1, and the scan run's loading, ≈ 2: two models, the
 checkpoint hashed and read, the panels). A fresh seed's group: the checkpoint count 0.5, η_l
 7.4 (an F run and its checkpoint's save), the checkpoint's archive 4, r 1, the scan 17.5 (five
@@ -2951,8 +2965,14 @@ evaluations and the loading), the checkpoint's removal 0.5, η_u 6.9, its archiv
 minutes, a window of 138. A checkpoint fetched back from the archive (≈ 4 minutes) fits the
 timeouts of r (23) and of the scan (72.5). Every step has a
 timeout of 3 × its minutes + 20 (the scan's 72.5 minutes): past it its process group is killed
-and the step has failed, under its rule. A block ends with its records in the bucket, verified, a snapshot of
-the driver's journal and logs, and its receipt.
+and the step has failed, under its rule. After the last fresh group, the `fresh` block writes
+the completion record (`fresh/completion`, `$RUNS_DIR/study5_records/<ID>/fresh-completion.json`):
+every fresh run the launcher journals show as started, with its end and outcome. It is written
+only when no started fresh run lacks an end (a run cut off has none until the launcher settles
+it), kept only while the journals still say the same, and archived with the attempt; the
+analysis gives no reading without it, and no fresh label is made before it. A block ends with
+its records in the bucket, verified, a snapshot of the driver's journal and logs, and its
+receipt.
 
 | Pod | Block | Runs | Stops the campaign |
 |---|---|---|---|
@@ -2963,15 +2983,20 @@ the driver's journal and logs, and its receipt.
 | 2 | `streams`: each fresh seed's streams (`generate_teacher.py`), archived before anything reads them, then `study5_predict.py` and `study5_stream_features.py` | 0 | each seed's streams archive and records archive |
 | 2 | `predictions`: the record of p for every seed in order, with its sha256; copied to the bucket, read back, its object's creation time in a receipt | 0 | a missing seed; a kept record of other seeds, n or GPU code, or not the published copy; the copy |
 | 2 | `fresh`: per seed, in order (the seed's group): (1) F at 1.3·10⁻⁵, a plain F run with its endpoint checkpoint (`experiments/study5`, `study5.role=fresh`); (2) the surrogate r at its endpoint from that checkpoint (`scripts/study5_surrogate_endpoint.py`: θ₀'s model with the trainable parameters set from the checkpoint, its sha256 the run's recorded one; r, r_benign and the per-prompt values); (3) the scan run of its endpoint (`scripts/study5_scan.py`: θ₀ + aΔθ for a ∈ {−1, −0.5, −0.25, +0.25, +0.5} from θ₀ and the checkpoint, each evaluated in full under `line_scan_{a:+g}`, a run of its own under `study5_scan/`); (4) the checkpoint removed from the container disk; (5) F at 1.83·10⁻⁵. The checkpoint is archived and verified right after (1), before (2), and kept on the disk until (4); (2) and (3) fetch it back from that archive when it is gone. Each F run in a launcher campaign of its own; a failure of (2) or (3) is the seed's, recorded, and takes nothing from the η_l run | 2n + n scan runs | the receipt's check (the record the published copy, of the plan's seeds in order, n and GPU code); a second checkpoint on the disk before a seed; each seed's archive |
-| 2 | `controls`: seeds 50000–50005, the order and v₀ controls at 1.3·10⁻⁵, then the ladder's `isotropic`, `linear_no_d` and `linear` | 12 + 18 rungs | each seed's archive |
+| 2 | `controls`: seeds 50000–50005, the order and v₀ controls at 1.3·10⁻⁵, then the ladder's `gaussian_d` (D^{1/2}z, Gaussian with covariance D), `linear_no_d` and `linear`, each matched to K\* within ±10 % (one refinement step, else flagged `out_of_tolerance`) | 12 + 18 rungs | each seed's archive |
 
 Every block's deadline, snapshot and receipt stop the campaign when they fail. Every run goes
 through `scripts/launch.py FILE --max-attempts 1`. Any other run or step that fails is recorded in
 the journal and the campaign goes on to the next seed. A failed step is not run again by a
 restart, and a recorded stop stops again. After a stop the block's archives still run, then the
-close: the plan, the launcher campaigns and the receipts go to the bucket, and the deadline is set
-15 minutes ahead, so that the watcher stops the Pod. The close's deadline runs on any exception of
-the driver too. Read the journal before anything else.
+close. On pod 2 the close first sets a deadline window for, and attempts, the export of every
+recorded endpoint checkpoint not yet verified in the archive (`close/checkpoints`: uploaded, its
+sha256 checked against the run's recorded one); a failure that remains is written to the close
+record (`close/checkpoints-<attempt>.json` in the campaign folder) and printed with the path, the
+recorded sha256 and the error, and the shutdown goes on. Then the plan, the launcher campaigns,
+the receipts and that record go to the bucket, and the deadline is set 15 minutes ahead, so that
+the watcher stops the Pod. The close runs on SIGTERM and on any exception of the driver too.
+Read the journal before anything else.
 
 **Resuming.** Start the same command again, from the same commit: a block with a receipt is
 skipped, a step that ended is skipped, a step the Pod cut off runs again (a ladder rung's or a
@@ -2985,12 +3010,26 @@ again leaves its points missing by name; it takes nothing from the η_l run, who
 stands. A launcher run the Pod cut off is settled by the launcher; its rerun is a recovery round
 of its own ([launching runs](#launching-runs)).
 
+**Attempts.** Every start of the driver is an execution attempt with its own id (the UTC time
+and a short random suffix, in the journal's `driver` line). Every file that can change between
+attempts goes to the bucket under `study5/<ID>/attempts/<attempt>/`: the launcher journals and
+logs, the directories of runs the journals show without an end, a scan or ladder run before its
+record, the gate and completion records (`runs/`); the snapshots, the plan, the launcher campaigns
+and the receipts (`campaign/`); every inventory (`inventories/`). What is written once keeps its
+stable place: the records of the scripts, the streams, the directory of a run its journal shows
+ended, a scan or ladder run with its record, the checkpoints and their inventories (named by the
+run), the predictions record. So a later attempt never writes an object an earlier attempt wrote;
+`archive.py --no-clobber` finds the stable ones already there and checks them identical, never
+replaces them (`tests/test_study5_campaigns.py` runs this restart against a populated archive).
+
 **After a stop.** Fix the cause, then start the campaign with a new `--out` and the same
-`--archive-id`. What stands is kept:
+`--archive-id`; it is a new attempt, and the archive an earlier attempt populated is no
+conflict. What stands is kept:
 - a record a step wrote, by its existence, except the gates;
 - a launch whose runs all completed, by the launcher's journal (a fresh η_l run whose checkpoint
   was archived and removed is not launched again: its launcher would refuse the missing file);
-- an archive whose objects are identical.
+- an archive whose objects are identical (the written-once ones; the mutable ones go to the new
+  attempt's place).
 
 A gate's record stands only by its verdict, written from a clean checkout under the plan's GPU
 code identity. A commit counts by its GPU code identity, never by itself:
@@ -3025,8 +3064,8 @@ and the same `--archive-id`:
   fails closed, and the reruns take an own round of each run, `launch.py CAMPAIGN --only LABEL
   --max-attempts 1 --recovery` with the incident fields, before the driver is started again.
 
-**SIGTERM** to the driver kills the running step's process group and runs the close, its deadline
-last. A killed launch step's run has used its one attempt: on restart the launcher reports it used
+**SIGTERM** to the driver kills the running step's process group and runs the close (on pod 2
+the checkpoints' export first), its deadline last. A killed launch step's run has used its one attempt: on restart the launcher reports it used
 up and the step is recorded failed, so it needs a recovery round as above. `SIGTERM` to
 `launch.py` alone (not the driver) stops at a run boundary instead.
 
@@ -3038,12 +3077,18 @@ scan run with its five points' responses). A scan run holds on the host the chec
 trainable tensors (5.24 GB) and on the device two models and Δθ (about 17.6 GB) besides an
 evaluation.
 
-**Where it goes**, under `$ARTIFACT_REMOTE/study5/<ID>/`: `runs/` (run directories, the scan and
-ladder runs among them, launch logs and the records under `$RUNS_DIR/study5_records/<ID>/`), `checkpoints/` (each endpoint checkpoint,
-verified before it is removed from the container disk; at most two are there at a time),
-`predictions/` (the record, its `.sha256` and its receipt), `campaign/` (the plan, the launcher
-campaigns, the receipts and the snapshots) and `inventories/` (every archive's inventory, read
-back); the fresh streams under `$ARTIFACT_REMOTE/data/` with every other stream. The predictions
+**Where it goes**, under `$ARTIFACT_REMOTE/study5/<ID>/`: `runs/` (the ended runs' directories,
+the scan and ladder runs with their records, and the records under
+`$RUNS_DIR/study5_records/<ID>/` written once), `checkpoints/` (each endpoint checkpoint, verified
+before it is removed from the container disk; at most two are there at a time),
+`inventories/checkpoint-<run id>.tsv` (each checkpoint's inventory), `predictions/` (the record,
+its `.sha256` and its receipt) and `attempts/<attempt>/` per execution: `runs/` (the launcher
+journals and logs, runs without an end, the gate and completion records), `campaign/` (the plan,
+the launcher campaigns, the receipts and the snapshots) and `inventories/` (every other archive's
+inventory, read back); the fresh streams under `$ARTIFACT_REMOTE/data/` with every other stream.
+To restore a Pod's `runs/` for the analysis, copy `study5/<ID>/runs/`, then each attempt's
+`attempts/<attempt>/runs/` over it in the attempts' order (the launcher journals only grow, so
+the latest attempt's are complete). The predictions
 record is committed after its copy is verified; the fresh runs need only the copy. No label is
 made by the campaigns: the judging of the fresh runs is a separate step, after every fresh run has
 ended.
@@ -3075,11 +3120,22 @@ audit-label form (`{item_id: label | null}`). `full` also requires: the fixation
 the registration at its commit; pod 1's engineering check equal under pod 2's plan's GPU code
 identity, the predictions record's; pod 1's surrogate checks passed; one surrogate sha256 across
 the checks, both plans, every predictor record and every endpoint record; `--runs-root` apart
-from `--study3-runs-root`. Each fresh seed's p is bound to its η_l run (its predict record the
-published one by sha256; v₀, θ₀ and the training stream by content the run's), or the seed has no
-h and is counted under `binding`. The test gives no reading unless the predictions' bucket copy
-preceded the first fresh start and every fresh run's labeling started (the earliest `created_at`
-of its label rows) after the last fresh end in pod 2's launcher journals. Every run's GPUs are reported. It writes one `analysis.json`, never over an
+from `--study3-runs-root`. Each fresh seed's p is bound to both its runs, η_l and η_u (its
+predict record the published one by sha256; v₀, θ₀ and the training stream by content each
+run's). The support rule is the only exclusion: every other gap (a run missing or not ended, a
+binding mismatch on either endpoint, a label receipt missing or pending, a required input that
+does not read) leaves the seed technically unresolved, and while any seed is, the test gives no
+inference (`status: withheld`, no ρ, p-value or reading; each unresolved seed named with its
+reason; ρ over the resolved supported seeds under `descriptive_partial` alone); the descriptive
+quantities stay, partial. The reading is withheld too unless the predictions' bucket copy
+preceded the first fresh start, pod 2's completion record lists exactly the plan's fresh runs,
+every fresh run read is ended in it, every pod-2 run's labeling started (the earliest
+`created_at` of its label rows) and completed after its time, and the seeds are those of
+`docs/study5-confirmatory-seeds.json`, its sha256 named by the registration. The surrogate-overlap
+check is descriptive: h_s and ρ(p_s, h_s) on the 482 judged prompts outside the fixation
+record's `evaluation_ids_same_or_close`, for the fresh seeds and for the retrospective. The
+ladder's shuffled-D trigger is `undecided` unless all six paired differences exist. Every run's
+GPUs are reported. It writes one `analysis.json`, never over an
 existing file, with every input's sha256, and prints numbers only. A missing run, record or label
 file of a seed is named in every quantity it leaves; the seed counts nowhere there.
 
