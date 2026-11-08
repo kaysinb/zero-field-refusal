@@ -25,7 +25,7 @@ from zero_field_refusal.schedule import run_scheduled
 
 FIXTURES = Path(__file__).parent / "fixtures" / "golden_single"
 ARMS = {"A": "adamw", "F": "adam_frozen", "P": "adamw_prewarmed"}
-RECORDS = ("metrics", "monitor", "evaluations", "measurements", "diagnostics", "update_scalars",
+RECORDS = ("metrics", "monitor", "evaluations", "diagnostics", "update_scalars",
            "chunk_checks", "cache_checks")  # fmt: skip
 OVERRIDES = ("train.steps=3", "schedule.evaluate_at=[3]", "eval.monitor.every=1",
              "eval.diagnostics.every=1", "tracking.update_scalars=true",
@@ -59,18 +59,24 @@ def normalize(value: Any, dropped: set[str] | None = None) -> Any:
 
 
 def lines(path: Path) -> list[str]:
-    if not path.exists():
-        return []
-    return [json.dumps(normalize(json.loads(line)), sort_keys=True)
+    assert path.exists(), f"expected record file missing: {path.name}"
+    rows = [json.dumps(normalize(json.loads(line)), sort_keys=True)
             for line in path.read_text().splitlines()]  # fmt: skip
+    assert rows, f"expected record file empty: {path.name}"
+    return rows
 
 
 def snapshot(run_dir: Path) -> dict[str, list[str]]:
     out = {name: lines(run_dir / f"{name}.jsonl") for name in RECORDS}
+    out["observations/measurements"] = lines(run_dir / "observations" / "measurements.jsonl")
+    responses = sorted((run_dir / "responses").glob("*.jsonl"))
+    assert responses, "no responses/*.jsonl written"
+    for file in responses:
+        out[f"responses/{file.stem}"] = lines(file)
     for name in ("terminal", "summary"):
         file = run_dir / f"{name}.json"
-        out[name] = ([json.dumps(normalize(json.loads(file.read_text())), sort_keys=True)]
-                     if file.exists() else [])  # fmt: skip
+        assert file.exists(), f"expected record file missing: {file.name}"
+        out[name] = [json.dumps(normalize(json.loads(file.read_text())), sort_keys=True)]
     meta = json.loads((run_dir / "meta.json").read_text())
     out["inputs"] = [json.dumps(normalize(meta.get("inputs", {})), sort_keys=True)]
     return out
