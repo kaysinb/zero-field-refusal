@@ -99,9 +99,10 @@ FEATURES = ("phrase_share", "mean_tokens", "ended_share")
 TIE = 1e-12
 STEPS_STOP = "steps"  # the stop of a run that took all its updates
 READINGS = {
-    "predicts": "a quantity computed at θ₀ from a seed's own streams before training predicts "
-                "which fresh streams yield more judge-rated harm, among the supported seeds",
-    "does_not_predict": "this first-order prediction did not establish the predicted negative "
+    "predicts": "the first-order score p_s, computed at θ₀ from a seed's own streams and recorded "
+                "before training, is negatively rank-associated with judge-rated harm across the "
+                "supported fresh seeds",
+    "does_not_predict": "this first-order predictor did not establish the hypothesized negative "
                         "association with judge-rated harm on fresh streams",
 }  # fmt: skip
 STATUSES = ("tested", "descriptive", "withheld", "undefined")

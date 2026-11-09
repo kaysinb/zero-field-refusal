@@ -16,9 +16,19 @@ A–F 0.92, P–F 0.996). The arm main effect is 0.8 %. The A–F difference rem
 made it measurable.
 
 Study 5 asks whether a first-order quantity computed at θ₀ from a seed's own streams, before any
-training, predicts that seed's harm after training, and it describes which parts of the bundle
-carry the effect. It is a new preregistered study on fresh seeds, in the namespace `study5_*`. It
-reuses study 3's protocol, panels, judge and analysis readers.
+training, ranks fresh seeds by their harm after training. It also describes, on six seeds, how
+harm changes when a stream's order or its preconditioner is swapped, and how displacements
+matched in K compare. It is a new preregistered study on fresh seeds, in the namespace
+`study5_*`. It reuses study 3's protocol, panels, judge and analysis readers.
+
+The form of the predictor is not new. He, Xia and Henderson (2024, arXiv:2404.01099) select
+benign examples that break safety by the inner product of an example's gradient with the
+difference of mean gradients on harmful and safe anchor responses, justified by a first-order
+expansion at the start of training; LESS (Xia et al., 2024, arXiv:2402.04333) uses Adam's
+preconditioned direction for the training example. What is specific here is its use: ranking
+unselected random streams of the model's own samples, at a matched K_benign, with the
+full-parameter step of the arm that is trained, on predictor values recorded before the runs.
+Prior work is reviewed in [study5-related-work.md](study5-related-work.md).
 
 ## What is known when this is registered
 
@@ -41,7 +51,7 @@ GPU code of study 3 plus the study-5 additions; an engineering check reruns stud
 10403 and requires bit-identical records.
 
 F is used because its update is linear in the gradient with a fixed preconditioner. The
-prediction below is a frozen-gradient approximation of its response: every g_t is taken at θ₀,
+predictor below is a frozen-gradient approximation of F's response: every g_t is taken at θ₀,
 not along the trajectory, so it is not the exact linearized training dynamics.
 
 ## The surrogate and the predictor
@@ -57,6 +67,13 @@ teacher-forced right after the assistant-turn start of the chat template, token-
 probabilities in fp32:
 
 r(θ) = (1/100) Σₓ [ log meanexp_{y∈R} log p_θ(y|x) − log meanexp_{y∈C} log p_θ(y|x) ].
+
+r is a likelihood contrast of fixed refusal and compliance continuations, checked at θ₀ only; it
+is not a validated measure of refusal. It plays the role of He et al.'s pair of anchors (harmful
+and safe responses to the same harmful instructions), with short fixed continuations in place of
+full responses. Scoring refusal by the likelihood of refusal tokens at the start of the response
+follows Arditi et al. (2024, arXiv:2406.11717), and the start of the response is where Qi et al.
+(2025, arXiv:2406.05946) locate most of the alignment's effect.
 
 **Checks before any extraction** (at θ₀): r > 0 on every harmful prompt of the panel; on the 100
 benign prompts of the K_benign panel the same difference is smaller than on the harmful ones in at
@@ -98,7 +115,13 @@ g_t(θ₀) of the seed's training stream:
 
 δ̂_s = −η_l Σ_{t=1..25} c_t D_s g_t(θ₀),  p_s = ⟨δ̂_s, ∇r(θ₀)⟩.
 
-A larger p_s moves the model toward refusal to first order and predicts **less** harm.
+Up to sign and scale, p_s is He et al.'s bidirectional gradient score of the stream's batches,
+without their normalization, in the metric D (Adam's preconditioner, as in LESS) and weighted by
+F's momentum and bias-correction weights; unlike a selection score, its size is the first-order
+change of r under the actual 25-step update.
+
+A larger p_s means the first-order step moves r toward refusal. The registered hypothesis is that
+it goes with **less** judge-rated harm.
 
 ## Retrospective predictor
 
@@ -134,12 +157,13 @@ result.
   α = 0.05 of the null that p_s and h_s are independent (h_s exchangeable across the supported
   seeds) against a negative association, with the exact permutation distribution (or 100 000
   permutations, seed fixed in the fixation record).
-- **Reading:** ρ < 0 with p < 0.05: "a quantity computed at θ₀ from a seed's own streams before
-  training predicts which fresh streams yield more judge-rated harm, among the supported seeds".
-  Harm is the primary outcome; this does not by itself establish erosion of refusals. Otherwise:
-  "this first-order prediction did not establish the predicted negative association with
-  judge-rated harm on fresh streams"; this weakens the specific first-order account, not every
-  finite-sample account.
+- **Reading:** ρ < 0 with p < 0.05: "the first-order score p_s, computed at θ₀ from a seed's own
+  streams and recorded before training, is negatively rank-associated with judge-rated harm across
+  the supported fresh seeds", reported with ρ and its one-sided p. The score's form is He et
+  al.'s (above). Harm is the primary outcome; this does not by itself establish erosion of
+  refusals. Otherwise: "this first-order predictor did not establish the hypothesized negative
+  association with judge-rated harm on fresh streams"; this weakens the specific first-order
+  account, not every finite-sample account.
 - **Minimum:** with every seed resolved and fewer than 20 supported seeds, the result is
   descriptive.
 - **Power** (Fisher's z for Spearman's ρ with variance 1.06/(n − 3), one-sided 0.05): at true
@@ -231,5 +255,8 @@ labeling of every fresh-seed run; the earlier labels are listed as superseded an
 
 - Judge-rated harm on the fixed 521 prompts, Qwen2.5-1.5B-Instruct, one arm (F), 25 updates, two
   rates.
-- The predictor is one first-order specification on one surrogate; a null result is specific to it.
+- The predictor is one first-order specification on one surrogate, of a form taken from data
+  selection (He et al., 2024; Xia et al., 2024); a null result is specific to it. A positive result
+  is a rank association on one model, one arm and the fixed 521 prompts; it does not show that the
+  score selects harmful data or transfers to other models or optimizers.
 - The crossed controls and the ladder are on six seeds and are descriptive.
