@@ -18,6 +18,11 @@ computations are ``analysis.study5_analysis``'s).
         --seed N
     python -m zero_field_refusal.analysis.study5_analysis_cli consensus --sonnet FILE --grok FILE
         --gpt FILE --out DIR --manifest FILE --arbiter FILE --arbiter-stops FILE
+    python -m zero_field_refusal.analysis.study5_analysis_cli check-plan --sonnet FILE --grok FILE
+        --gpt FILE --out DIR --manifest FILE --reference-input DIR
+    python -m zero_field_refusal.analysis.study5_analysis_cli check --sonnet FILE --grok FILE
+        --gpt FILE --out DIR --manifest FILE --check-manifest FILE --checked FILE
+        --checked-stops FILE
 
 **ready** (the pre-label check, before any fresh label; ``readiness``) reads the analysis's
 inputs and no label, and exits 1 naming each open technical gap (a plan fresh run not ended
@@ -97,7 +102,10 @@ annotators and their consensus (``consensus``), at most three.
 **consensus-plan** and **consensus** build the reference consensus of study 3's amendments 11
 and 12 (``analysis.study5_reference``): the plan and the arbiter's blind input once, before the
 arbiter's first call, with the vote order's seed in its manifest; then, from the same inputs and
-the arbiter's decisions, ``CONSENSUS.json`` and its source record once.
+the arbiter's decisions, ``CONSENSUS.json`` and its source record once. **check-plan** and
+**check**: the arbiter's blind check of ⌈10 %⌉ of the agreements (drawn under the consensus
+manifest's seed), its manifest before the first check call and its record after; descriptive, no
+reference changes.
 
 **The gates and the bindings** (``full``). The fixation record read has the sha256 the
 registration at this commit names (``registered``). Pod 1's engineering-check record is equal (at
@@ -1896,6 +1904,77 @@ def consensus_main(args: argparse.Namespace) -> int:
     return 0
 
 
+def _consensus_manifest(args: argparse.Namespace) -> tuple[bytes, dict[str, Any], dict[str, Any]]:
+    """The consensus's manifest (``--manifest``), the labels checked against its sha256s."""
+    data = Path(args.manifest).read_bytes()
+    manifest = json.loads(data)
+    hashes, labels = _consensus_inputs(args)
+    for name, digest in hashes.items():
+        if manifest["inputs"][name] != digest:
+            refuse(f"the {name} labels are not the manifest's")
+    return data, manifest, labels
+
+
+def check_plan_main(args: argparse.Namespace) -> int:
+    """The agreements check's manifest (the drawn agreements, under the consensus manifest's seed)
+    and its blind input (no votes), each written once, before the arbiter's first check call."""
+    consensus_data, manifest, labels = _consensus_manifest(args)
+    drawn = sr.check_draw(labels["sonnet"], labels["grok"], seed=manifest["seed"])
+    unique = (Path(args.reference_input) / "unique.jsonl").read_bytes()
+    if sha256(unique) != manifest["inputs"]["unique.jsonl"]:
+        refuse("the reference input is not the consensus manifest's")
+    rows = {json.loads(line)["item_id"]: json.loads(line) for line in unique.decode().splitlines()}
+    blind = b""
+    for item in drawn:
+        row = {k: rows[item][k] for k in ("item_id", "prompt", "response")}
+        s3a.blind_checked(row, ("item_id", "prompt", "response"))
+        blind += (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+    record = {"kind": "study5-reference-check-plan", "consensus_manifest": sha256(consensus_data),
+              "seed": manifest["seed"], "drawn": drawn,
+              "check_input": {"sha256": sha256(blind), "items": len(drawn)},
+              "code": own_code(), "written_utc": _now_utc()}  # fmt: skip
+    out = Path(args.out)
+    write_once(out / "check-input.jsonl", blind)
+    data = encoded(record)
+    write_once(out / "check-manifest.json", data)
+    print(f"check plan: agreements {len(manifest['plan']['agreements'])} drawn {len(drawn)} "
+          f"manifest sha256 {sha256(data)}")  # fmt: skip
+    return 0
+
+
+def check_main(args: argparse.Namespace) -> int:
+    """The arbiter's check of the drawn agreements, written once: descriptive, no reference
+    changes. ``--checked``: its labels of exactly the drawn items; ``--checked-stops``: a JSON
+    list of the items of a stopped check call (their labels must be null)."""
+    consensus_data, manifest, labels = _consensus_manifest(args)
+    check_data = Path(args.check_manifest).read_bytes()
+    planned = json.loads(check_data)
+    if planned["consensus_manifest"] != sha256(consensus_data):
+        refuse("the check's manifest is not of this consensus manifest")
+    drawn = sr.check_draw(labels["sonnet"], labels["grok"], seed=manifest["seed"])
+    if drawn != planned["drawn"]:
+        refuse("the drawn agreements recomputed are not the check manifest's")
+    checked_data, checked = _labels_file(args.checked, "check")
+    stopped = json.loads(Path(args.checked_stops).read_text())
+    if set(stopped) - set(drawn) or any(checked.get(i) is not None for i in stopped):
+        refuse("a stopped check item must be drawn and have no label")
+    try:
+        found = sr.check_result(labels["sonnet"], labels["grok"], checked, seed=manifest["seed"])
+    except ValueError as exc:
+        refuse(f"the check: {exc}")
+    record = {"kind": "study5-reference-check", "check_manifest": sha256(check_data),
+              "checked_labels": sha256(checked_data), "stopped": sorted(stopped), **found,
+              "available": found["labeled"] > 0, "code": own_code(),
+              "written_utc": _now_utc()}  # fmt: skip
+    data = encoded(record)
+    write_once(Path(args.out) / "check-record.json", data)
+    print(
+        f"check: drawn {found['checked']} labeled {found['labeled']} failed {found['failed']} "
+        f"stopped {len(stopped)} rejected {found['rejected']} record sha256 {sha256(data)}"
+    )
+    return 0
+
+
 def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--runs-root", type=Path, required=True)
     parser.add_argument("--pod1", type=Path, required=True)
@@ -1924,11 +2003,18 @@ def parser_of() -> argparse.ArgumentParser:
     ready.add_argument("--pod1", type=Path, required=True)
     ready.add_argument("--pod2", type=Path, required=True)
     ready.add_argument("--fixation", type=Path, default=REPO_ROOT / FIXATION)
-    for name in ("consensus-plan", "consensus"):  # the reference consensus (amendments 11-12)
+    # the reference consensus and the agreements check (amendments 11-12)
+    for name in ("consensus-plan", "consensus", "check-plan", "check"):
         step = sub.add_parser(name)
         for annotator in ("sonnet", "grok", "gpt"):
             step.add_argument(f"--{annotator}", type=Path, required=True)
         step.add_argument("--out", type=Path, required=True)
+    for name in ("check-plan", "check"):
+        sub.choices[name].add_argument("--manifest", type=Path, required=True)  # the consensus's
+    sub.choices["check-plan"].add_argument("--reference-input", type=Path, required=True)
+    sub.choices["check"].add_argument("--check-manifest", type=Path, required=True)
+    sub.choices["check"].add_argument("--checked", type=Path, required=True)
+    sub.choices["check"].add_argument("--checked-stops", type=Path, required=True)
     plan_step = sub.choices["consensus-plan"]
     plan_step.add_argument("--reference-input", type=Path, required=True)
     plan_step.add_argument("--stops", type=Path, required=True)
@@ -1941,7 +2027,8 @@ def parser_of() -> argparse.ArgumentParser:
     return parser
 
 
-STEPS = {"ready": ready_main, "consensus-plan": consensus_plan_main, "consensus": consensus_main}
+STEPS = {"ready": ready_main, "consensus-plan": consensus_plan_main, "consensus": consensus_main,
+         "check-plan": check_plan_main, "check": check_main}  # fmt: skip
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -115,3 +115,40 @@ def test_the_cli_writes_the_plan_then_the_consensus(tmp_path: Path, monkeypatch)
                   str(out / "consensus-manifest.json"), "--arbiter",
                   str(tmp_path / "arbiter.json"), "--arbiter-stops",
                   str(tmp_path / "arbiter-stops.json")])  # fmt: skip
+
+
+def test_the_agreements_check_is_drawn_then_recorded(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "own_code", lambda: {"commit": "0" * 40, "dirty": False})
+    sonnet, grok, gpt = labels()
+    drawn = sr.check_draw(sonnet, grok, seed=7)
+    assert len(drawn) == 1 and drawn[0] in {"a1", "a2", "a3"}  # ⌈10 % × 3⌉
+    assert drawn == sr.check_draw(sonnet, grok, seed=7)
+    folder = tmp_path / "input"
+    folder.mkdir()
+    rows = [{"item_id": i, "prompt": f"p {i}", "response": f"r {i}"} for i in sonnet]
+    (folder / "unique.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    files = {}
+    for name, found in (("sonnet", sonnet), ("grok", grok), ("gpt", gpt)):
+        files[name] = tmp_path / f"{name}.json"
+        files[name].write_text(json.dumps(found))
+    given = [x for n in ("sonnet", "grok", "gpt") for x in (f"--{n}", str(files[n]))]
+    inputs = {n: cli.sha256(files[n].read_bytes()) for n in files}
+    inputs["unique.jsonl"] = cli.sha256((folder / "unique.jsonl").read_bytes())
+    manifest = tmp_path / "consensus-manifest.json"
+    manifest.write_text(json.dumps({"seed": 7, "inputs": inputs, "plan": {"agreements": ["x"]}}))
+    out = tmp_path / "out"
+    assert cli.main(["check-plan", *given, "--out", str(out), "--manifest", str(manifest),
+                     "--reference-input", str(folder)]) == 0  # fmt: skip
+    blind = [json.loads(line) for line in (out / "check-input.jsonl").read_text().splitlines()]
+    assert [row["item_id"] for row in blind] == drawn and "votes" not in blind[0]
+    (tmp_path / "checked.json").write_text(json.dumps({drawn[0]: None}))
+    (tmp_path / "stops.json").write_text(json.dumps(drawn))
+    step = ["check", *given, "--out", str(out), "--manifest", str(manifest), "--check-manifest",
+            str(out / "check-manifest.json"), "--checked", str(tmp_path / "checked.json"),
+            "--checked-stops", str(tmp_path / "stops.json")]  # fmt: skip
+    assert cli.main(step) == 0
+    record = json.loads((out / "check-record.json").read_text())
+    assert record["labeled"] == 0 and record["available"] is False and record["stopped"] == drawn
+    (tmp_path / "checked.json").write_text(json.dumps({drawn[0]: sonnet[drawn[0]]}))
+    with pytest.raises(SystemExit, match="no label"):
+        cli.main([str(tmp_path / "other") if a == str(out) else a for a in step])

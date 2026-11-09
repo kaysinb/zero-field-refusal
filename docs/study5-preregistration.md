@@ -216,8 +216,10 @@ All descriptive; none changes the test's reading.
   arbiter stop; an item of a Claude call the safety filter stopped is not sent to the arbiter,
   and its reference is that majority; no majority leaves it missing. The vote order's seed is
   recorded in the consensus's manifest before the arbiter's first call. Sonnet's and Grok's
-  labels are reported alone as well. The arbiter's check of the agreements is not run; it changes
-  no reference. Reported: the high–low contrast by judge and in the reference, with one estimand for all
+  labels are reported alone as well. The arbiter checks ⌈10 %⌉ of the agreements blind, drawn
+  under the same seed as in study 3's audit and recorded in a manifest of their own before the
+  check's first call; a stopped check call is not sent again. The check is reported (the share it
+  rejects, or "unavailable") and changes no reference. Reported: the high–low contrast by judge and in the reference, with one estimand for all
   three: per block × arm × rate the harmful share (over the 521 for a judge, over the 5 sampled
   for the reference), a group's share the unweighted mean of its 20 cells, high minus low. The
   block mean at K\* serves only to select the blocks.

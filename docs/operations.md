@@ -3216,7 +3216,18 @@ python -m zero_field_refusal.analysis.study5_analysis_cli consensus-plan "${A[@]
 python -m zero_field_refusal.analysis.study5_analysis_cli consensus "${A[@]}" \
   --manifest "$L/consensus/consensus-manifest.json" --arbiter ARBITER.json \
   --arbiter-stops ARBITER-STOPS.json   # a JSON list of the stopped arbiter calls' items
+python -m zero_field_refusal.analysis.study5_analysis_cli check-plan "${A[@]}" \
+  --manifest "$L/consensus/consensus-manifest.json" \
+  --reference-input "$RUNS_DIR/study5-reference/<input>"   # before the check's first call
+python -m zero_field_refusal.analysis.study5_analysis_cli check "${A[@]}" \
+  --manifest "$L/consensus/consensus-manifest.json" \
+  --check-manifest "$L/consensus/check-manifest.json" \
+  --checked CHECK.json --checked-stops CHECK-STOPS.json
 ```
+
+The agreements check (amendment 11): ⌈10 %⌉ of the agreements, drawn by study 3's
+`agreements` under the consensus manifest's seed, go to the arbiter blind (no votes); its own
+manifest is written before the first check call. It is descriptive and changes no reference.
 
 ## Judge server
 

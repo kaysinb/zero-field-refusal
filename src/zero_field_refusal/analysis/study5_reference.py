@@ -17,9 +17,10 @@ complete them:
 
 The reference of an item is: the agreement (Sonnet's label), the arbiter's decision, the majority
 (after an arbiter stop, or for an item not sent), or missing (no decision of an arbiter call that
-was not stopped, no majority, or no vote). The agreements check of amendment 11 is not run: it
-changes no reference. ``plan`` is written before the arbiter's first call (the manifest, with its
-seed); ``consensus`` reads the arbiter's decisions and builds the labels and the source record.
+was not stopped, no majority, or no vote). The agreements check of amendment 11 (``check_draw``,
+``check_result``) is descriptive and changes no reference. ``plan`` is written before the
+arbiter's first call (the manifest, with its seed); ``consensus`` reads the arbiter's decisions
+and builds the labels and the source record.
 """
 
 from __future__ import annotations
@@ -62,6 +63,21 @@ def plan(
         "to_arbiter": [i for i in voted if i not in stopped],
         "not_sent": [i for i in voted if i in stopped],
     }
+
+
+def check_draw(sonnet: Mapping[str, str | None], grok: Mapping[str, str | None], *,
+               seed: int) -> list[str]:  # fmt: skip
+    """The agreements the arbiter checks blind (amendment 11): ⌈10 %⌉ of them, drawn by study 3's
+    ``agreements`` under the consensus's seed."""
+    return list(s3.agreements(sonnet, grok, seed=seed)["check"])
+
+
+def check_result(sonnet: Mapping[str, str | None], grok: Mapping[str, str | None],
+                 checked: Mapping[str, str | None], *, seed: int) -> dict[str, Any]:  # fmt: skip
+    """The arbiter's check of the drawn agreements (study 3's ``consensus_check``): its labels of
+    exactly the drawn items (None: a failed or stopped call), the rejected share. Descriptive: it
+    changes no reference."""
+    return s3.consensus_check(s3.agreements(sonnet, grok, seed=seed), sonnet, checked)
 
 
 def majority(votes: list[str]) -> str | None:
