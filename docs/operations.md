@@ -2895,7 +2895,9 @@ the data inventories study 3's confirmation restored (`inventory-2026-10-11.tsv`
 `inventory-2026-10-14-study2-prompts.tsv`, `inventory-2026-10-14-study2-a-phase0.tsv`,
 `inventory-2026-10-15-study2-monitor-v2.tsv`, `inventory-2026-10-16-study2-stage0-v3-record.tsv`,
 `inventory-2026-10-16-study2-curvature-panel.tsv`, under `runs/archive/`). The campaign fetches
-study 3's streams itself. On a restarted Pod, add the inventories of what `DATA_DIR` already
+study 3's streams itself, through study 3's streams inventory
+`runs/archive/inventory-2026-11-05-study3-confirmation-c1-streams.tsv` (444 objects), which
+goes to the Pod with the other inventories under `runs/archive/`. On a restarted Pod, add the inventories of what `DATA_DIR` already
 holds: `runs/archive/inventory-2026-11-05-study3-confirmation-c1-streams.tsv` and the fresh
 streams' inventories under `study5/<ID>/inventories/`.
 
@@ -2922,6 +2924,12 @@ checks and pod 2's preflight name it, and the analysis computes its GPU code ide
 history. Do not squash or rebase it away; tag it when pod 1 starts,
 `git tag study5-pod1-<archive-id> <commit>` (e.g. `study5-pod1-pod1-20261109`), and push the
 tag with the branch.
+
+**After pod 1, before pod 2,** restore pod 1's archive into an empty temporary folder on a
+workstation (`restore-runs --archive-id <pod 1's ID> --dest <folder>`; if it exceeds 10 GB, its
+records and launcher journals only) and compare it with the inventories written on the Pod
+(`study5/<ID>/inventories/`): every row present, with its size and sha256. Pod 2 starts only
+after this passes.
 
 **Pod 2's preflight.** Before its first step, at every start, pod 2's driver refuses unless:
 - the checkout is clean at the plan's commit and its GPU code is the one
