@@ -13,6 +13,11 @@ computations are ``analysis.study5_analysis``'s).
         (--study3-runs-root DIR --study3-repo DIR [--study3-sealed-dir DIR] --retrospective FILE
          | --without-study3)
         [--reference-input DIR --reference NAME=FILE [--reference NAME=FILE]]
+    python -m zero_field_refusal.analysis.study5_analysis_cli consensus-plan --sonnet FILE
+        --grok FILE --gpt FILE --out DIR --reference-input DIR --stops FILE --batches DIR
+        --seed N
+    python -m zero_field_refusal.analysis.study5_analysis_cli consensus --sonnet FILE --grok FILE
+        --gpt FILE --out DIR --manifest FILE --arbiter FILE --arbiter-stops FILE
 
 **ready** (the pre-label check, before any fresh label; ``readiness``) reads the analysis's
 inputs and no label, and exits 1 naming each open technical gap (a plan fresh run not ended
@@ -86,7 +91,13 @@ the record.
 (``scripts/study5_fixation.py reference-input``): its ``manifest.json`` names this fixation record
 by sha256 and its ``key.json`` by sha256; the key maps each item id to its cell. Each
 --reference NAME=FILE is one annotator's labels in study 3's audit-label form, ``{item_id: label
-| null}`` over exactly the key's items; with two, each is reported and their agreement.
+| null}`` over exactly the key's items; each is reported, and the first two's agreement: two
+annotators and their consensus (``consensus``), at most three.
+
+**consensus-plan** and **consensus** build the reference consensus of study 3's amendments 11
+and 12 (``analysis.study5_reference``): the plan and the arbiter's blind input once, before the
+arbiter's first call, with the vote order's seed in its manifest; then, from the same inputs and
+the arbiter's decisions, ``CONSENSUS.json`` and its source record once.
 
 **The gates and the bindings** (``full``). The fixation record read has the sha256 the
 registration at this commit names (``registered``). Pod 1's engineering-check record is equal (at
@@ -193,7 +204,9 @@ from ..run_judging import (
 )
 from ..tracking import git_state
 from . import study2_labels
+from . import study3_audit as s3a
 from . import study5_analysis as sa
+from . import study5_reference as sr
 from .evidence import HARMFUL, label_item_id, label_path
 from .study2_label_cli import harmful_prompts
 
@@ -1182,11 +1195,11 @@ def reference_part(args: argparse.Namespace, fixation_data: bytes, fixation: Map
         except ValueError as exc:
             refuse(f"the reference labels {name}: {exc}")
         labels[name] = found
-    if len(labels) == 2:
-        first, second = labels.values()
-        out["agreement"] = {"of": list(labels), **sa.agreement(first, second)}
-    elif len(labels) > 2:
-        refuse("at most two reference annotators")
+    if len(labels) > 3:
+        refuse("at most three reference labels (two annotators and their consensus)")
+    if len(labels) >= 2:
+        first, second = list(labels.values())[:2]
+        out["agreement"] = {"of": list(labels)[:2], **sa.agreement(first, second)}
     return out
 
 
@@ -1766,6 +1779,123 @@ def report(result: Mapping[str, Any], digest: str) -> None:
     print(f"{'analysis' if result['kind'] == KIND else 'retrospective'} sha256 {digest}")
 
 
+# ------------------------------------------------------------------ the reference consensus
+
+
+def _labels_file(path: Path, name: str) -> tuple[bytes, dict[str, Any]]:
+    try:
+        data = Path(path).read_bytes()
+        found = json.loads(data)
+    except (OSError, ValueError) as exc:
+        refuse(f"the {name} labels do not read ({type(exc).__name__})")
+    if not isinstance(found, dict):
+        refuse(f"the {name} labels: a JSON object {{item_id: label | null}}")
+    return data, found
+
+
+def _stopped_items(stops: Path, batches: Path) -> list[str]:
+    """The items of every Claude call the stops record names (``model`` claude-*, ``batch``
+    the batch file's name in ``batches``)."""
+    items: list[str] = []
+    for line in Path(stops).read_text().splitlines():
+        if not line.strip():
+            continue
+        stop = json.loads(line)
+        if str(stop.get("model", "")).startswith("claude"):
+            batch = Path(batches) / f"{stop['batch']}.jsonl"
+            items += [json.loads(row)["item_id"] for row in batch.read_text().splitlines() if row]
+    return sorted(set(items))
+
+
+def _consensus_inputs(args: argparse.Namespace) -> tuple[dict[str, str], dict[str, Any]]:
+    hashes, labels = {}, {}
+    for name in ("sonnet", "grok", "gpt"):
+        data, labels[name] = _labels_file(getattr(args, name), name)
+        hashes[name] = sha256(data)
+    return hashes, labels
+
+
+def consensus_plan_main(args: argparse.Namespace) -> int:
+    """The consensus's manifest (its seed, inputs by sha256, the plan) and the arbiter's blind
+    input, each written once, before the arbiter's first call."""
+    folder = Path(args.reference_input)
+    unique = (folder / "unique.jsonl").read_bytes()
+    hashes, labels = _consensus_inputs(args)
+    stopped = _stopped_items(args.stops, args.batches)
+    try:
+        planned = sr.plan(labels["sonnet"], labels["grok"], labels["gpt"], stopped=stopped,
+                          seed=args.seed)  # fmt: skip
+    except ValueError as exc:
+        refuse(f"the consensus's plan: {exc}")
+    rows = {json.loads(line)["item_id"]: json.loads(line) for line in unique.decode().splitlines()}
+    blind = b""
+    for item in planned["to_arbiter"]:
+        row = {"item_id": item, "prompt": rows[item]["prompt"], "response": rows[item]["response"],
+               "votes": planned["votes"][item]}  # fmt: skip
+        s3a.blind_checked(row, ("item_id", "prompt", "response", "votes"))
+        blind += (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+    manifest = {
+        "kind": "study5-reference-consensus-plan",
+        "rule": "zero_field_refusal.analysis.study5_reference (study 3's amendments 11 and 12)",
+        "seed": args.seed,
+        "inputs": {
+            "unique.jsonl": sha256(unique),
+            "manifest.json": sha256((folder / "manifest.json").read_bytes()),
+            "stops": sha256(Path(args.stops).read_bytes()),
+            **hashes,
+        },
+        "stopped_items": stopped,
+        "plan": planned,
+        "arbiter_input": {"sha256": sha256(blind), "items": len(planned["to_arbiter"])},
+        "code": own_code(),
+        "written_utc": _now_utc(),
+    }
+    out = Path(args.out)
+    write_once(out / "arbiter-input.jsonl", blind)
+    data = encoded(manifest)
+    write_once(out / "consensus-manifest.json", data)
+    print(f"consensus plan: items {planned['items']} agreements {len(planned['agreements'])} "
+          f"third {len(planned['third'])} to arbiter {len(planned['to_arbiter'])} not sent "
+          f"{len(planned['not_sent'])} unvoted {len(planned['unvoted'])} manifest sha256 "
+          f"{sha256(data)}")  # fmt: skip
+    return 0
+
+
+def consensus_main(args: argparse.Namespace) -> int:
+    """The reference labels (``CONSENSUS.json``) and their source record, each written once, from
+    the manifest's plan (recomputed from the same inputs and seed) and the arbiter's decisions."""
+    manifest_data = Path(args.manifest).read_bytes()
+    manifest = json.loads(manifest_data)
+    hashes, labels = _consensus_inputs(args)
+    for name, digest in hashes.items():
+        if manifest["inputs"][name] != digest:
+            refuse(f"the {name} labels are not the manifest's")
+    planned = sr.plan(labels["sonnet"], labels["grok"], labels["gpt"],
+                      stopped=manifest["stopped_items"], seed=manifest["seed"])  # fmt: skip
+    if json.loads(json.dumps(planned)) != manifest["plan"]:
+        refuse("the plan recomputed from the manifest's inputs is not the manifest's")
+    arbiter_data, arbiter = _labels_file(args.arbiter, "arbiter")
+    stopped = json.loads(Path(args.arbiter_stops).read_text())
+    try:
+        built = sr.consensus(planned, labels["sonnet"], arbiter, arbiter_stopped=stopped)
+    except ValueError as exc:
+        refuse(f"the consensus: {exc}")
+    out = Path(args.out)
+    labels_data = encoded(built["labels"])
+    record = {"kind": "study5-reference-consensus", "manifest": sha256(manifest_data),
+              "arbiter": sha256(arbiter_data), "arbiter_stopped": sorted(stopped),
+              "consensus": sha256(labels_data), "counts": built["counts"],
+              "missing": built["missing"], "sources": built["sources"], "code": own_code(),
+              "written_utc": _now_utc()}  # fmt: skip
+    write_once(out / "CONSENSUS.json", labels_data)
+    data = encoded(record)
+    write_once(out / "consensus-record.json", data)
+    print("consensus: " + " ".join(f"{k.replace(' ', '_')} {v}" for k, v in built["counts"].items())
+          + f" missing {built['missing']} labels sha256 {sha256(labels_data)} record sha256 "
+          f"{sha256(data)}")  # fmt: skip
+    return 0
+
+
 def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--runs-root", type=Path, required=True)
     parser.add_argument("--pod1", type=Path, required=True)
@@ -1794,14 +1924,31 @@ def parser_of() -> argparse.ArgumentParser:
     ready.add_argument("--pod1", type=Path, required=True)
     ready.add_argument("--pod2", type=Path, required=True)
     ready.add_argument("--fixation", type=Path, default=REPO_ROOT / FIXATION)
+    for name in ("consensus-plan", "consensus"):  # the reference consensus (amendments 11-12)
+        step = sub.add_parser(name)
+        for annotator in ("sonnet", "grok", "gpt"):
+            step.add_argument(f"--{annotator}", type=Path, required=True)
+        step.add_argument("--out", type=Path, required=True)
+    plan_step = sub.choices["consensus-plan"]
+    plan_step.add_argument("--reference-input", type=Path, required=True)
+    plan_step.add_argument("--stops", type=Path, required=True)
+    plan_step.add_argument("--batches", type=Path, required=True)
+    plan_step.add_argument("--seed", type=int, required=True)
+    build = sub.choices["consensus"]
+    build.add_argument("--manifest", type=Path, required=True)
+    build.add_argument("--arbiter", type=Path, required=True)
+    build.add_argument("--arbiter-stops", type=Path, required=True)
     return parser
+
+
+STEPS = {"ready": ready_main, "consensus-plan": consensus_plan_main, "consensus": consensus_main}
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser_of().parse_args(argv)
-    if args.command == "ready":
+    if args.command in STEPS:
         try:
-            return ready_main(args)
+            return STEPS[args.command](args)
         except Refused as exc:
             sys.exit(f"{PROG}: {exc}")
     try:

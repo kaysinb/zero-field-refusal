@@ -3194,7 +3194,28 @@ python -m zero_field_refusal.analysis.study5_analysis_cli full --runs-root "$RUN
   --pod1 "$C/study5-pod1" --pod2 "$C/study5-pod2" --out "$RUNS_DIR/study5-final/analysis.json" \
   "${S3ARGS[@]}" --retrospective "$RUNS_DIR/study5-final/retrospective.json" \
   --reference-input "$RUNS_DIR/study5-reference/input" \
-  --reference sonnet=SONNET.json --reference grok=GROK.json
+  --reference sonnet=SONNET.json --reference grok=GROK.json --reference consensus=CONSENSUS.json
+```
+
+**The reference consensus** (the registration's reference for study 3's extreme blocks; study
+3's amendments 11 and 12; `analysis/study5_reference.py`): Sonnet and Grok label every item of
+the reference input blind, in batches of 25; GPT labels the items they disagree on (two-class)
+and those either failed (its input in the reference input's order, batches of 25). Then, before
+the arbiter's first call, `consensus-plan` writes the manifest (the vote order's seed, every
+input's sha256, the plan) and the arbiter's blind input (the items sent, each with its anonymous
+votes); the items of a Claude call the stops record names are not sent. After the arbiter,
+`consensus` recomputes the plan from the same inputs, refuses unless it is the manifest's, and
+writes `CONSENSUS.json` (`{item_id: label | null}`) and its source record, each once.
+
+```bash
+L="$RUNS_DIR/study5-reference/labeling-<input>"   # outside the checkout, 0700
+A=(--sonnet "$L/out/SONNET.json" --grok "$L/out/GROK.json" --gpt "$L/out/GPT.json" --out "$L/consensus")
+python -m zero_field_refusal.analysis.study5_analysis_cli consensus-plan "${A[@]}" \
+  --reference-input "$RUNS_DIR/study5-reference/<input>" --stops "$L/stops/stops.jsonl" \
+  --batches "$L/kit" --seed SEED
+python -m zero_field_refusal.analysis.study5_analysis_cli consensus "${A[@]}" \
+  --manifest "$L/consensus/consensus-manifest.json" --arbiter ARBITER.json \
+  --arbiter-stops ARBITER-STOPS.json   # a JSON list of the stopped arbiter calls' items
 ```
 
 ## Judge server
