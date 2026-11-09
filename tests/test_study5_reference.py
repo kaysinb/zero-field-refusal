@@ -152,3 +152,20 @@ def test_the_agreements_check_is_drawn_then_recorded(tmp_path: Path, monkeypatch
     (tmp_path / "checked.json").write_text(json.dumps({drawn[0]: sonnet[drawn[0]]}))
     with pytest.raises(SystemExit, match="no label"):
         cli.main([str(tmp_path / "other") if a == str(out) else a for a in step])
+
+
+def test_a_stopped_item_with_a_label_is_refused() -> None:
+    sonnet, grok, gpt = labels()
+    with pytest.raises(ValueError, match="stopped call carry a Sonnet label"):
+        sr.plan({**sonnet, "s1": H}, grok, gpt, stopped={"s1", "s2", "s3"}, seed=7)
+    with pytest.raises(ValueError, match="not items of the labels"):
+        sr.plan(sonnet, grok, gpt, stopped={"s1", "zz"}, seed=7)
+
+
+def test_the_sensitivity_drops_every_majority_reference() -> None:
+    sonnet, grok, gpt = labels()
+    planned = sr.plan(sonnet, grok, gpt, stopped={"s1", "s2", "s3"}, seed=7)
+    stopped = sr.consensus(planned, sonnet, {"d1": None}, arbiter_stopped=["d1"])
+    assert stopped["labels"]["s1"] == H and stopped["labels"]["d1"] == R
+    without = stopped["without_majority"]
+    assert without["s1"] is None and without["d1"] is None and without["a2"] == H

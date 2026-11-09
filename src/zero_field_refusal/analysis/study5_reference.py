@@ -46,7 +46,15 @@ def plan(
 ) -> dict[str, Any]:
     """The consensus's plan: the agreements, the items GPT labels (``third``), each voted item's
     vote order and votes (study 3's ``arbitration``), the items sent to the arbiter and those not
-    sent (``stopped``: the items of a stopped Claude call). ``gpt`` labels exactly ``third``."""
+    sent (``stopped``: the items of a stopped Claude call). ``gpt`` labels exactly ``third``.
+    Before anything is built, every stopped item must be an item of the labels and null in
+    Sonnet's: a stopped call's outputs are discarded, so a label there is refused."""
+    unknown = set(stopped) - set(sonnet)
+    if unknown:
+        raise ValueError(f"{len(unknown)} stopped items are not items of the labels")
+    labeled = sorted(i for i in stopped if sonnet[i] is not None)
+    if labeled:
+        raise ValueError(f"{len(labeled)} items of a stopped call carry a Sonnet label")
     found = s3.agreements(sonnet, grok, seed=seed)
     arbitrated = s3.arbitration(found, sonnet, grok, gpt, seed=seed)
     voted = list(arbitrated["votes"])
@@ -97,7 +105,9 @@ def consensus(
     *,
     arbiter_stopped: Collection[str],
 ) -> dict[str, Any]:
-    """The reference labels ``{item_id: label | None}`` and per item its source and votes.
+    """The reference labels ``{item_id: label | None}`` and per item its source and votes;
+    ``without_majority``: the same with every reference obtained by a majority missing (amendment
+    12's sensitivity).
     ``arbiter``: the decisions of exactly the items sent (None: no decision); ``arbiter_stopped``:
     the items of an arbiter call the safety filter stopped (their decision must be None)."""
     sent = list(planned["to_arbiter"])
@@ -132,6 +142,9 @@ def consensus(
     if set(labels) != set(sonnet) or len(labels) != planned["items"]:
         raise ValueError("the consensus does not cover every item exactly once")
     counts = Counter(entry["source"] for entry in sources.values())
+    majorities = {"majority after arbiter stop", "majority, not sent to the arbiter"}
+    without = {i: None if sources[i]["source"] in majorities else labels[i] for i in labels}
     return {"labels": dict(sorted(labels.items())), "sources": dict(sorted(sources.items())),
+            "without_majority": dict(sorted(without.items())),
             "counts": {s: counts[s] for s in SOURCES},
             "missing": sum(v is None for v in labels.values())}  # fmt: skip

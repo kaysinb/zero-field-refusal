@@ -97,7 +97,8 @@ the record.
 by sha256 and its ``key.json`` by sha256; the key maps each item id to its cell. Each
 --reference NAME=FILE is one annotator's labels in study 3's audit-label form, ``{item_id: label
 | null}`` over exactly the key's items; each is reported, and the first two's agreement: two
-annotators and their consensus (``consensus``), at most three.
+annotators, their consensus (``consensus``) and its sensitivity with every majority reference
+missing, at most four.
 
 **consensus-plan** and **consensus** build the reference consensus of study 3's amendments 11
 and 12 (``analysis.study5_reference``): the plan and the arbiter's blind input once, before the
@@ -1203,8 +1204,8 @@ def reference_part(args: argparse.Namespace, fixation_data: bytes, fixation: Map
         except ValueError as exc:
             refuse(f"the reference labels {name}: {exc}")
         labels[name] = found
-    if len(labels) > 3:
-        refuse("at most three reference labels (two annotators and their consensus)")
+    if len(labels) > 4:
+        refuse("at most four reference labels (two annotators, the consensus and its sensitivity)")
     if len(labels) >= 2:
         first, second = list(labels.values())[:2]
         out["agreement"] = {"of": list(labels)[:2], **sa.agreement(first, second)}
@@ -1895,7 +1896,10 @@ def consensus_main(args: argparse.Namespace) -> int:
               "consensus": sha256(labels_data), "counts": built["counts"],
               "missing": built["missing"], "sources": built["sources"], "code": own_code(),
               "written_utc": _now_utc()}  # fmt: skip
+    without_data = encoded(built["without_majority"])
+    record["without_majority"] = sha256(without_data)
     write_once(out / "CONSENSUS.json", labels_data)
+    write_once(out / "CONSENSUS-WITHOUT-MAJORITY.json", without_data)
     data = encoded(record)
     write_once(out / "consensus-record.json", data)
     print("consensus: " + " ".join(f"{k.replace(' ', '_')} {v}" for k, v in built["counts"].items())

@@ -4,8 +4,8 @@ Status: draft.
 
 ## What study 5 asks
 
-Fine-tuning Qwen2.5-1.5B-Instruct on its own unfiltered samples (a zero field: no harmful
-content, no selection, zero expected gradient at θ₀) for 25 steps of Adam with its second moment
+Fine-tuning Qwen2.5-1.5B-Instruct on its own unfiltered samples (a zero field: benign training
+prompts and unfiltered model samples, no selection, zero expected gradient at θ₀) for 25 steps of Adam with its second moment
 frozen at v₀ produces very different harm in different seeds at the same benign drift K_benign = K\*.
 In study 3, block means ranged from 1.0 % to 40.4 % judge-rated harm, and the block main effect was
 93.5 % of the sum of squares. Study 5 asks whether one first-order quantity, computed at θ₀ before
@@ -13,7 +13,7 @@ any training from a seed's own streams, ranks fresh seeds by their harm after tr
 p_s = −η Σ_t c_t ⟨D_s g_t(θ₀), ∇r(θ₀)⟩. Here g_t are the seed's batch gradients at θ₀, D_s is the
 frozen Adam preconditioner from v₀, c_t are the momentum weights of the 25-step update and r is a
 log-likelihood contrast between short refusal and compliance continuations on 100 harmful prompts.
-The p_s of 40 fresh seeds are recorded and committed before their training runs. The test is a
+The p_s of 40 fresh seeds are recorded, uploaded and verified before their training runs. The test is a
 one-sided Spearman correlation with judge-rated harm. Descriptive parts add a retrospective check on
 study 3's 60 seeds, line scans along ±Δθ, crossed controls (order, preconditioner) and a ladder of
 displacements matched in K.
@@ -132,8 +132,8 @@ al. [30] predicted post-deployment misbehavior rates of a production model from 
 deployment, with registered, outcome-blinded predictions for one prospective deployment and three
 retrospective ones. Jones et al. [31] forecast the risk of rare behaviors at larger query volumes
 from small samples. Søgaard et al. [32] discuss the case for and against preregistration in NLP.
-We found no prior study that records a first-order safety prediction for fine-tuning runs before
-the runs are made.
+Among the works reviewed, we have not identified a prospective test ranking harm across
+unselected zero-field streams at matched benign drift.
 
 ## How study 5 differs
 
@@ -143,18 +143,18 @@ the runs are made.
   samples. The streams differ only by sampling noise, their order and the preconditioner's stream.
   The outcome is the spread among them, at a matched benign shift K_benign = K\*, not the gap
   between selected and random data. He et al.'s random baseline [11] and Fraser et al.'s seeds [5]
-  show such spread exists; we found no work that tries to predict it per seed.
+  show such spread exists; among the works reviewed, none tries to predict it per seed.
 - **What step is linearized.** He et al. [11] use the raw, normalized gradient of one example. LESS
   [12] uses a normalized Adam direction with LoRA and projection. Study 5 uses the full-parameter
   update of the arm that is trained: F's frozen preconditioner D from v₀, its momentum and bias
   correction weights c_t, the learning rate, and the 25 batch gradients of the actual stream, summed
-  without normalization. The quantity is the first-order change of r under the real step, so its
-  size, not only its direction, enters. It is still a frozen-gradient approximation: all g_t are
-  taken at θ₀.
-- **When the prediction is fixed.** The scores of the 40 fresh seeds are recorded, copied and
-  committed before any of their runs; the test, its direction and its exclusions are registered in
+  without normalization, so its size, not only its direction, enters. p_s is the linearized
+  change in r under the frozen-gradient displacement δ̂_s (all g_t taken at θ₀), not under the
+  actual trained displacement.
+- **When the prediction is fixed.** The scores of the 40 fresh seeds are recorded, uploaded and
+  verified before any of their runs (committed after); the test, its direction and its exclusions are registered in
   advance. A retrospective association on 60 earlier seeds is reported but not tested.
-- **What else is measured.** Line scans at ±a·Δθ separate the odd (first-order) and even parts of
+- **What else is measured.** Line scans at ±a·Δθ separate the odd and even parts of
   the harm change around θ₀. The ladder compares, at matched K, a Gaussian displacement with
   covariance D, the linear response without D and with D. The crossed controls swap order and
   preconditioner within seed. These are descriptive, on six seeds for the controls and ladder.
@@ -168,9 +168,11 @@ prior work: one 1.5B model, one optimizer arm, 25 steps, one judge and a fixed s
   and batch size [1, 3].
 - The predictor's form is essentially He et al.'s bidirectional gradient score [11]. Their anchor
   difference g_harm − g_safe is the gradient of a safe-minus-harmful log-likelihood contrast, the
-  same kind of contrast as r. Up to sign and scale, p_s is that score without normalization, in the
-  metric D, weighted by c_t and summed over a stream's 25 batches, with short fixed refusal and
-  compliance continuations on 100 prompts as anchors.
+  same kind of contrast as r. p_s is an unnormalized, preconditioned adaptation of that
+  bidirectional gradient scoring, not the same score: r's log-mean-exp over the continuations
+  weights their gradients by a softmax where He et al. average over anchors, and the missing
+  normalization, the metric D, the weights c_t and the sum over a stream's 25 batches all change
+  it. Its anchors are short fixed refusal and compliance continuations on 100 prompts.
 - Its first-order justification, at the start of training, is theirs [11] and TracIn's [13].
   Preconditioning the training gradient by Adam's second moment is LESS's [12] (and is used in
   TrackStar [15]).
@@ -186,9 +188,10 @@ prior work: one 1.5B model, one optimizer arm, 25 steps, one judge and a fixed s
 - Line scans along the fine-tuning direction resemble the one-dimensional safety landscapes of
   Peng et al. [6].
 
-What study 5 adds, if its test passes, is narrower: evidence that this known first-order score,
-with the real optimizer step, ranks unselected random streams of the model's own samples by
-judge-rated harm at matched K, on predictions recorded before the runs.
+What study 5 adds, if its test passes, is narrower: evidence that this adaptation of a known
+first-order score, taken with the trained arm's preconditioner and momentum weights, ranks
+unselected random streams of the model's own samples by judge-rated harm at matched K, on scores
+recorded before the runs.
 
 ## References
 

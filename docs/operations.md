@@ -3194,7 +3194,8 @@ python -m zero_field_refusal.analysis.study5_analysis_cli full --runs-root "$RUN
   --pod1 "$C/study5-pod1" --pod2 "$C/study5-pod2" --out "$RUNS_DIR/study5-final/analysis.json" \
   "${S3ARGS[@]}" --retrospective "$RUNS_DIR/study5-final/retrospective.json" \
   --reference-input "$RUNS_DIR/study5-reference/input" \
-  --reference sonnet=SONNET.json --reference grok=GROK.json --reference consensus=CONSENSUS.json
+  --reference sonnet=SONNET.json --reference grok=GROK.json --reference consensus=CONSENSUS.json \
+  --reference without_majority=CONSENSUS-WITHOUT-MAJORITY.json
 ```
 
 **The reference consensus** (the registration's reference for study 3's extreme blocks; study
@@ -3205,7 +3206,10 @@ the arbiter's first call, `consensus-plan` writes the manifest (the vote order's
 input's sha256, the plan) and the arbiter's blind input (the items sent, each with its anonymous
 votes); the items of a Claude call the stops record names are not sent. After the arbiter,
 `consensus` recomputes the plan from the same inputs, refuses unless it is the manifest's, and
-writes `CONSENSUS.json` (`{item_id: label | null}`) and its source record, each once.
+writes `CONSENSUS.json` (`{item_id: label | null}`), `CONSENSUS-WITHOUT-MAJORITY.json` (the same
+with every reference obtained by a majority missing: amendment 12's sensitivity) and its source
+record, each once. A stopped call's items must be null in its annotator's labels, or the plan is
+refused.
 
 ```bash
 L="$RUNS_DIR/study5-reference/labeling-<input>"   # outside the checkout, 0700

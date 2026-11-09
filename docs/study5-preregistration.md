@@ -39,6 +39,12 @@ Prior work is reviewed in [study5-related-work.md](study5-related-work.md).
 - The surrogate's checks at θ₀ for both continuation sets, run on CPU before this registration
   (section "The continuation sets checked before registration"); they use no label and no stream.
 - Nothing about any study-5 seed: no study-5 stream, run or label exists.
+- The reference sample's labels: Sonnet's, Grok's and GPT's labels, the arbiter's decisions, the
+  agreements check (stopped, unavailable) and the consensus were made before this registration.
+  The consensus rule and its study-5 modifications above were written after the annotators'
+  labels and their agreement counts were known, before the arbiter's call; the reference contrast
+  had not been computed. This check is therefore not prospective, although no fresh training has
+  started.
 
 ## Protocol
 
@@ -115,10 +121,11 @@ g_t(θ₀) of the seed's training stream:
 
 δ̂_s = −η_l Σ_{t=1..25} c_t D_s g_t(θ₀),  p_s = ⟨δ̂_s, ∇r(θ₀)⟩.
 
-Up to sign and scale, p_s is He et al.'s bidirectional gradient score of the stream's batches,
-without their normalization, in the metric D (Adam's preconditioner, as in LESS) and weighted by
-F's momentum and bias-correction weights; unlike a selection score, its size is the first-order
-change of r under the actual 25-step update.
+This is an unnormalized, preconditioned adaptation of bidirectional gradient scoring (He et al.),
+with Adam's preconditioner as in LESS and F's momentum and bias-correction weights; r's
+log-mean-exp weights the continuations' gradients by a softmax where He et al. average over
+anchors. p_s is the linearized change in r under the frozen-gradient displacement δ̂_s, not under
+the actual trained displacement.
 
 A larger p_s means the first-order step moves r toward refusal. The registered hypothesis is that
 it goes with **less** judge-rated harm.
@@ -213,10 +220,14 @@ All descriptive; none changes the test's reading.
   under [amendment 12](study3-preregistration.md#amendment-12-safety-filter-stops-in-the-audits-labeling).
   The reference is their consensus: Sonnet's and Grok's shared two-class value where they agree;
   otherwise the arbiter's decision, or the strict majority of the available votes after an
-  arbiter stop; an item of a Claude call the safety filter stopped is not sent to the arbiter,
-  and its reference is that majority; no majority leaves it missing. The vote order's seed is
-  recorded in the consensus's manifest before the arbiter's first call. Sonnet's and Grok's
-  labels are reported alone as well. The arbiter checks ⌈10 %⌉ of the agreements blind, drawn
+  arbiter stop; no majority leaves it missing. Study 5 modifies study 3's procedure in two ways:
+  an item of a Claude call the safety filter stopped is not sent to the arbiter, and its reference
+  is the strict majority of its available votes (amendment 12 uses the majority only after an
+  arbiter stop); and a stopped call's items must be null in its annotator's labels, or the
+  consensus is refused. The vote order's seed is recorded in the consensus's manifest before the
+  arbiter's first call. Sonnet's and Grok's labels are reported alone as well, and, as amendment
+  12's sensitivity, the same contrast and bounds with every reference obtained by a majority
+  (after an arbiter stop or not sent) missing. The arbiter checks ⌈10 %⌉ of the agreements blind, drawn
   under the same seed as in study 3's audit and recorded in a manifest of their own before the
   check's first call; a stopped check call is not sent again. The check is reported (the share it
   rejects, or "unavailable") and changes no reference. Reported: the high–low contrast by judge and in the reference, with one estimand for all
