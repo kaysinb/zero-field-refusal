@@ -1,8 +1,8 @@
 # Study 5 preregistration
 
-Status: `draft`. Not yet registered. It binds from the commit that sets the status to
-`registered`, after the retrospective predictor (below) and before any fresh study-5 stream is
-generated. A later change goes through amendments, with what was known when it was decided.
+Status: `registered`. It binds from the commit that sets this status, made after the
+retrospective predictor (below) and before any fresh study-5 stream is generated. A later change
+goes through amendments, with what was known when it was decided.
 
 ## Question
 
@@ -34,10 +34,12 @@ Prior work is reviewed in [study5-related-work.md](study5-related-work.md).
 
 - Study 3's confirmation labels, its final report and the retrospective block decomposition above.
 - The retrospective predictor on study 3's 60 A–F blocks (section "Retrospective predictor"), computed
-  with the frozen specification below before this registration. *Its result is entered here when
-  it exists.*
+  with the frozen specification below before this registration: ρ = 0.188, opposite in sign to
+  the hypothesis, its interval including 0 (the section gives the numbers).
 - The surrogate's checks at θ₀ for both continuation sets, run on CPU before this registration
   (section "The continuation sets checked before registration"); they use no label and no stream.
+  Pod 1 ran them again at θ₀ on the GPU for the second set, which passed every check, and its
+  engineering check reran study 3's F runs of seed 10403 at both rates bit-identically.
 - Nothing about any study-5 seed: no study-5 stream, run or label exists.
 - The reference sample's labels: Sonnet's, Grok's and GPT's labels, the arbiter's decisions, the
   agreements check (stopped, unavailable) and the consensus were made before this registration.
@@ -136,15 +138,25 @@ On study 3's 60 A–F confirmation blocks: p_s from each seed's archived trainin
 streams, against F's harm at K\* in that block. Reported as a retrospective association, Spearman ρ
 with a block-bootstrap interval. It is not a test.
 
-*Result: pending.* At registration the retrospective record's sha256 is entered here with its
-result.
+**Result.** All 60 blocks are supported. ρ(p_s, F's harm at K\*) = 0.188, with a 95 %
+block-bootstrap interval of −0.110 to 0.461 (10 000 resamples). Its sign is opposite to the
+registered hypothesis, and the interval includes 0. The descriptive associations are:
+
+- ρ(p_s, F's refusal share at K\*) = −0.182;
+- ρ(p_s, h) on the 482 judged prompts outside the surrogate overlap = 0.191;
+- ρ with h of the stream features: ended share −0.053, mean tokens 0.067, phrase share 0.016.
+
+The record (`study5-retrospective`) has sha256
+`aa7770c6d760325754862bc858782ab4a649ca4b078be4e484d08b68505261ac`. It was computed from a clean
+checkout at f5d4eb5, with study 3's checkout at 1f6179a. The hypothesis and the test below were
+written before this result and are not changed by it.
 
 ## The confirmatory test
 
 - **Seeds:** 50000–50039, fresh, unselected, in order (n = 40). *If the researcher decides on
   n = 24 before generation: 50000–50023.* The choice is committed before generation in
-  `docs/study5-confirmatory-seeds.json` (n and its seeds); its sha256 is entered here at
-  registration. Every execution of the fresh-seed campaign and the analysis check the seeds
+  `docs/study5-confirmatory-seeds.json` (n and its seeds), sha256
+  `e366e08dd70e003f86e720ff6904f5688da2166489d40b9b1d06384c7e04b31c` (n = 40). Every execution of the fresh-seed campaign and the analysis check the seeds
   against it.
 - **Before training:** every seed's streams and v₀ are generated, p_s is computed and the
   predictions record (p_s per seed, its sha256) is copied to the artifact bucket and the copy
@@ -237,8 +249,8 @@ All descriptive; none changes the test's reading.
 
 **Fixation record.** `docs/study5-fixation.json` fixes the seeds, the permutation test and the
 bootstrap (counts, RNG seeds, formulas, the test's null and alternative), the interval levels,
-the extreme blocks, the reference sample, the contrast's estimand and the surrogate overlap; its
-sha256 is entered here at registration. Analysis details
+the extreme blocks, the reference sample, the contrast's estimand and the surrogate overlap. Its
+sha256 is `a030bb469b4ff72d2720e7ca3192e3336eeb54c60825c8fe8b14419723043268`. Analysis details
 not stated above (the scale grid of the ladder, the feature matching rule, the judge's reply
 parsing, the handling of missing labels) are those of the code at the registration commit, as
 documented in `docs/operations.md`.
