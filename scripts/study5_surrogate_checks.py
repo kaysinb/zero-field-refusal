@@ -6,7 +6,7 @@ extraction"), written as one JSON record.
 
 Each panel must hold --panel-size prompts (default 100) and the model must be float32.
 CONFIG names the model and the prompt sets (``model``, ``data``, ``execution``); SPEC is the
-surrogate (default ``configs/study5/surrogate.yaml``). The record holds the surrogate's sha256,
+surrogate (default ``configs/study5/surrogate-2.yaml``). The record holds the surrogate's sha256,
 the model, the prompt manifest's sha256, the numerics in force, every check with its numbers,
 and per prompt (by id) the difference and the continuations' log-probabilities. stdout carries
 numbers, ids and hashes only, never a prompt or a continuation. An existing record is never

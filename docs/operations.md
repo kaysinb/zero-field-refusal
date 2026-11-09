@@ -2951,10 +2951,13 @@ archive and the retrospective record written by the analysis's `retrospective` b
 registration. A refusal names what does not stand; nothing has run.
 
 **The surrogate's spec.** Both plans name one spec, `--surrogate` (default
-`configs/study5/surrogate.yaml`, a path in the checkout), with its sha256 in `plan.json`, and pass
-it to the checks, every predictor and every endpoint's r. If the checks at θ₀ fail (exit 2), the
-second set goes in a new file beside the first (the first stays as the record) and both plans
-take `--surrogate configs/study5/<the new file>`. The new file is a GPU path: commit it, record a
+`configs/study5/surrogate-2.yaml`, a path in the checkout), with its sha256 in `plan.json`, and
+pass it to the checks, every predictor and every endpoint's r. The default is the second set:
+the first, `configs/study5/surrogate.yaml` (kept as the record), failed one check at θ₀ when the
+checks were run on CPU before the registration (`docs/study5-surrogate-precheck/`), and the
+second is it without that continuation. If the checks at θ₀ fail on pod 1 (exit 2), the sets are
+changed once more, by removing the failing continuations only, never by adding one: a new file
+beside the others, and both plans take `--surrogate configs/study5/<the new file>`. The new file is a GPU path: commit it, record a
 new `docs/study5-code-identity.json`, and run pod 1 again from the engineering check (a new
 `--out`, the gates rerun under the new identity) before the retrospective predictor; the analysis
 requires one surrogate sha256 across the checks, every predictor record and every endpoint record.

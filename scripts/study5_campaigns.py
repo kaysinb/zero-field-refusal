@@ -154,7 +154,7 @@ registration there and the plan's fresh seeds exactly its seeds (``--n`` default
 another is refused); pod 1's engineering-check record (``--engineering-check``) equal for reruns
 under the plan's GPU code identity; pod 1's surrogate-checks record (``--surrogate-checks``)
 passed, under that identity, of the plan's surrogate (the same sha256). Both plans name one
-surrogate spec (``--surrogate``, default ``configs/study5/surrogate.yaml``, a path in the
+surrogate spec (``--surrogate``, default ``configs/study5/surrogate-2.yaml``, a path in the
 checkout) and its sha256, and pass it to the checks, the predictor and the endpoint's r. A second
 set, after failed checks, is a new file there: a GPU path, so a new
 ``docs/study5-code-identity.json`` and the engineering check again come first.
@@ -218,7 +218,7 @@ SEEDS_FILE = "docs/study5-confirmatory-seeds.json"
 # The surrogate's spec (scripts/study5_surrogate_checks.py, study5_predict.py and
 # study5_surrogate_endpoint.py take it by --surrogate): a second set, if the checks at θ₀ fail,
 # goes in a new file of the checkout, named here by --surrogate of both plans
-SURROGATE = "configs/study5/surrogate.yaml"
+SURROGATE = "configs/study5/surrogate-2.yaml"  # the second set (surrogate.yaml without R4)
 RECEIPT_NAME = "predictions-receipt.json"  # beside the predictions record
 CLOSE = "close"
 # Replaced in a step's argv by the execution attempt's id when the step runs (``execute``)

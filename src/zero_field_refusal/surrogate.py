@@ -2,7 +2,7 @@
 "The surrogate and the predictor").
 
 On the harmful prompts x of the K_harmful scoring panel, with fixed refusal continuations R and
-compliance continuations C (``configs/study5/surrogate.yaml``):
+compliance continuations C (``configs/study5/surrogate-2.yaml``, the second set):
 
     r(θ) = mean_x [ logmeanexp_{y∈R} log p_θ(y|x) − logmeanexp_{y∈C} log p_θ(y|x) ],
 
@@ -45,7 +45,8 @@ from .models import encode_chat
 from .paths import CONFIG_ROOT
 from .teacher import Sample
 
-SPEC_PATH = CONFIG_ROOT / "study5" / "surrogate.yaml"
+# The second set (surrogate.yaml without R4); surrogate.yaml, the first, stays as the record
+SPEC_PATH = CONFIG_ROOT / "study5" / "surrogate-2.yaml"
 NO_CAP = 10**9  # continuations are scored in full
 DEFAULT_MICRO_BATCH = 32
 

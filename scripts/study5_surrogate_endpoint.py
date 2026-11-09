@@ -15,7 +15,7 @@ order: the run's recorded checkpoint (``inputs.endpoint_checkpoint``: sha256, st
 the recorded one; θ₀'s model, its trainable tensors hashed against the run's θ₀; then the
 trainable parameters set from the checkpoint (exactly the trainable set's names; the frozen ones
 stay θ₀'s) and ``surrogate.prompt_values`` on the harmful panel of SPEC (default
-``configs/study5/surrogate.yaml``; it must hold --panel-size prompts, default 100) and on its
+``configs/study5/surrogate-2.yaml``; it must hold --panel-size prompts, default 100) and on its
 benign panel, in fp32, the micro-batch of the checks at θ₀ (``execution.eval_batch_size``);
 r is their mean (``surrogate.surrogate_value``'s). The record holds the seed, the run id and
 config hash, the checkpoint's sha256, step and names hash, θ₀'s and the endpoint's trainable

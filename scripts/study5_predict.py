@@ -10,7 +10,7 @@ its ``optimizer.lr`` = η and its ``seed``), one seed per call; the run itself i
 seed's training stream must hold ``train.steps`` batches and its preconditioner stream must exist
 (``scripts/generate_teacher.py``); nothing is generated here. In order, on one fp32 model at θ₀:
 v₀ by the run's own code path, D = (√v₀ + ε)⁻¹, ∇r over the trainable set on the harmful panel of
-SPEC (default ``configs/study5/surrogate.yaml``; it must hold --panel-size prompts, default 100),
+SPEC (default ``configs/study5/surrogate-2.yaml``; it must hold --panel-size prompts, default 100),
 u = D ⊙ ∇r, then for each of the run's batches its gradient g_t at θ₀ and ⟨g_t, u⟩;
 p = −η Σ_t c_t ⟨g_t, u⟩ (``linear_response``). The record holds p, the per-step inner products,
 the weights c_t, η, β₁, ε, the steps, the hashes of θ₀'s trainable tensors and of v₀ as the run

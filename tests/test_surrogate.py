@@ -25,7 +25,8 @@ PROMPTS = ["w1 w2", "w3 w4 w5", "w6", "w7 w8 w9 w10", "w11 w12"]
 REFUSALS = ["w20 w21", "w22", "w23 w24 w25"]
 COMPLIANCES = ["w30 w31 w32", "w33", "w34 w35"]
 QWEN = ("Qwen/Qwen2.5-1.5B-Instruct", "989aa7980e4cf806f80c7fef2b1adb7bc71aa306")
-# The pinned Qwen tokenizer's ids of each continuation of configs/study5/surrogate.yaml, recorded
+# The pinned Qwen tokenizer's ids of each continuation of configs/study5/surrogate.yaml (the first
+# set; the second, the default, drops R4, index 4), recorded
 # on the pinned revision; each equals the ids the same text gets in context, after the template.
 QWEN_IDS = {
     "R": [[40, 2776, 14589, 11, 714, 358, 646, 944], [40, 646, 944, 1492, 448, 429],
@@ -84,7 +85,8 @@ def test_continuation_tokens_follow_assistant_prefix_qwen() -> None:
     rendered = tok.apply_chat_template([{"role": "user", "content": prompt}],
                                        add_generation_prompt=True, tokenize=False)  # fmt: skip
     rows = surrogate.continuation_rows(tok, [prompt], spec.continuations, spec.max_tokens)
-    assert [list(r.response_ids) for r in rows] == QWEN_IDS["R"] + QWEN_IDS["C"]
+    second_r = QWEN_IDS["R"][:4] + QWEN_IDS["R"][5:]  # the second set: R4 dropped
+    assert [list(r.response_ids) for r in rows] == second_r + QWEN_IDS["C"]
     special = set(tok.all_special_ids)
     for text, row in zip(spec.continuations, rows, strict=True):
         assert list(row.prompt_ids) == prefix
@@ -94,10 +96,22 @@ def test_continuation_tokens_follow_assistant_prefix_qwen() -> None:
 
 
 def test_spec_is_the_registered_surrogate() -> None:
+    """The default is the second set: the first (configs/study5/surrogate.yaml, kept as the
+    record) without R4, every other field the same."""
     spec = surrogate.load_spec()
+    assert surrogate.SPEC_PATH.name == "surrogate-2.yaml"
     assert spec.refusals == ("I'm sorry, but I can't", "I can't help with that",
                              "I cannot assist with", "Sorry, I can't provide",
-                             "I won't be able to help", "As an AI, I can't")  # fmt: skip
+                             "As an AI, I can't")  # fmt: skip
+    first = surrogate.load_spec(surrogate.SPEC_PATH.with_name("surrogate.yaml"))
+    assert first.refusals == ("I'm sorry, but I can't", "I can't help with that",
+                              "I cannot assist with", "Sorry, I can't provide",
+                              "I won't be able to help", "As an AI, I can't")  # fmt: skip
+    assert first.refusals[:4] + first.refusals[5:] == spec.refusals
+    assert first.sha256 != spec.sha256
+    assert (first.compliances, first.harmful_panel, first.benign_panel, first.max_tokens,
+            first.rank_share) == (spec.compliances, spec.harmful_panel, spec.benign_panel,
+                                  spec.max_tokens, spec.rank_share)  # fmt: skip
     assert spec.compliances == ("Sure, here is", "Certainly! Here's", "Here is a step-by-step",
                                 "Of course. To", "Sure! First,", "Here's how you can")  # fmt: skip
     assert (spec.harmful_panel, spec.benign_panel) == ("harmful_kl", "alpaca_benign_kl")

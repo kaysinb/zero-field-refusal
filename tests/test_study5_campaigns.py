@@ -230,7 +230,7 @@ def test_pod1_theta0_surrogate_and_retrospective(where, tmp_path):
     surrogate = [s for s in steps(plan, "surrogate") if s.kind == "run"]
     assert [s.argv[0] for s in surrogate] == ["scripts/study5_surrogate_checks.py"]
     assert surrogate[0].on_fail == "stop"
-    assert surrogate[0].argv[-2:] == ("--surrogate", "configs/study5/surrogate.yaml")
+    assert surrogate[0].argv[-2:] == ("--surrogate", "configs/study5/surrogate-2.yaml")
     retro = steps(plan, "retrospective")
     seeds, _ = camp.study3_cohort()
     fetch = retro[1]
@@ -262,26 +262,27 @@ def test_both_plans_name_one_surrogate_spec_and_pass_it_on(where, tmp_path, monk
     given to the checks, every predictor and every endpoint's r; a second set is another file."""
     from zero_field_refusal.surrogate import load_spec
 
-    default = load_spec(REPO_ROOT / "configs" / "study5" / "surrogate.yaml").sha256
+    spec_path = "configs/study5/surrogate-2.yaml"
+    default = load_spec(REPO_ROOT / spec_path).sha256
     for plan, count in ((pod1(where), 1 + 60), (pod2(where, 24), 2 * 24)):
         found = surrogate_steps(plan)
         assert len(found) == count
         for step in found:
-            assert step.argv[step.argv.index("--surrogate") + 1] == "configs/study5/surrogate.yaml"
-        assert (plan.surrogate, plan.surrogate_sha256) == ("configs/study5/surrogate.yaml", default)
+            assert step.argv[step.argv.index("--surrogate") + 1] == spec_path
+        assert (plan.surrogate, plan.surrogate_sha256) == (spec_path, default)
         assert plan.to_json()["surrogate_sha256"] == default
     # a second set: a new file in the checkout, named by --surrogate of both plans
     repo = tmp_path / "repo"
-    second = repo / "configs" / "study5" / "surrogate-2.yaml"
+    second = repo / "configs" / "study5" / "surrogate-3.yaml"
     second.parent.mkdir(parents=True)
-    text = (REPO_ROOT / "configs" / "study5" / "surrogate.yaml").read_text()
+    text = (REPO_ROOT / "configs" / "study5" / "surrogate-2.yaml").read_text()
     second.write_text(text.replace("version: 1", "version: 2"))
     monkeypatch.setattr(camp, "REPO", repo)
     plan = camp.pod2_plan(archive_id="t2", commit=COMMIT, gpu_code=GPU, n=24,
-                          surrogate="configs/study5/surrogate-2.yaml", **where)  # fmt: skip
+                          surrogate="configs/study5/surrogate-3.yaml", **where)  # fmt: skip
     assert plan.surrogate_sha256 == load_spec(second).sha256 != default
     for step in surrogate_steps(plan):
-        assert step.argv[step.argv.index("--surrogate") + 1] == "configs/study5/surrogate-2.yaml"
+        assert step.argv[step.argv.index("--surrogate") + 1] == "configs/study5/surrogate-3.yaml"
     for bad in ("/abs/surrogate.yaml", "../surrogate.yaml", "configs/study5/none.yaml"):
         with pytest.raises(ValueError, match="--surrogate"):
             camp.pod2_plan(archive_id="t2", commit=COMMIT, gpu_code=GPU, n=24, surrogate=bad,
@@ -333,7 +334,7 @@ def test_pod2_starts_only_on_pod1s_gates(where, tmp_path):
 
     plan = pod2(where, 24)
     plan.gpu_code = HEAD["sha256"]
-    spec = load_spec(REPO_ROOT / "configs" / "study5" / "surrogate.yaml").sha256
+    spec = load_spec(REPO_ROOT / "configs" / "study5" / "surrogate-2.yaml").sha256
     eng, checks = tmp_path / "eng.json", tmp_path / "checks.json"
 
     def checks_record(**extra):
@@ -353,7 +354,7 @@ def test_pod2_starts_only_on_pod1s_gates(where, tmp_path):
     eng.write_text(json.dumps(engineering_record()))
     for record, problem in (
         (checks_record(passes=False), "did not pass"),
-        (checks_record(surrogate_sha256="0" * 64), "not of configs/study5/surrogate.yaml"),
+        (checks_record(surrogate_sha256="0" * 64), "not of configs/study5/surrogate-2.yaml"),
         (checks_record(git={"commit": HEAD["commit"], "dirty": True}), "not clean"),
     ):
         checks.write_text(json.dumps(record))
