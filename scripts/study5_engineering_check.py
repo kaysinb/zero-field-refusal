@@ -27,10 +27,12 @@ checkpoints. Three storage details are canonicalized before the comparison, noth
 ``sha256`` (inside ``endpoint_checkpoint`` and ``step_checkpoints``) is not compared, because
 ``torch.save`` writes the file's own name into its archive. The endpoint state is instead compared
 by its tensors: with ``--endpoint-tensors CONFIG_HASH=SHA256`` (the archived run's endpoint
-tensors hash, ``tensor_hash.tensors_sha256``, as its surrogate endpoint record holds it), the
-rerun's checkpoint must hash to its own recorded file sha256 and its tensors to SHA256. A pair
-whose archived run recorded an endpoint checkpoint and has no such value cannot be checked (an
-error).
+tensors hash, ``tensor_hash.tensors_sha256``, as its surrogate endpoint record holds it) and
+``--rerun-endpoint-tensors RECORD`` (``scripts/study5_tensor_hash.py``'s record of the reruns:
+each checkpoint's file against its recorded sha256 and its tensors hash), the rerun's file must
+match its record and its tensors SHA256. A pair whose archived run recorded an endpoint checkpoint
+and has no such value, or whose rerun has none hashed, cannot be checked (an error). This script
+loads no checkpoint itself.
 
 The record holds the checkout's commit and GPU code identity (``code``) and, per pair, the config
 hash, both run ids, the rerun's recorded commit and cleanness (``rerun_commit``,
@@ -61,7 +63,6 @@ import yaml
 
 from zero_field_refusal import code_identity
 from zero_field_refusal.analysis.record_normalize import normalize
-from zero_field_refusal.tensor_hash import file_sha256, tensors_sha256
 from zero_field_refusal.tracking import git_state
 
 SKIPPED = ("wandb", "judge", "judge-superseded")  # top-level folders never compared or opened
@@ -237,9 +238,11 @@ def _endpoint(run: Path) -> dict[str, Any] | None:
     return found if isinstance(found, dict) else None
 
 
-def endpoint_tensors(archived: Path, rerun: Path, expected: str | None) -> dict[str, Any] | None:
+def endpoint_tensors(archived: Path, rerun: Path, expected: str | None,
+                     hashed: dict[str, Any] | None) -> dict[str, Any] | None:  # fmt: skip
     """The endpoint state's comparison by tensors (module docstring); None when neither run
-    recorded an endpoint checkpoint."""
+    recorded an endpoint checkpoint. ``hashed`` is ``scripts/study5_tensor_hash.py``'s record of
+    the reruns (this script loads no checkpoint)."""
     left, right = _endpoint(archived), _endpoint(rerun)
     if left is None and right is None:
         return None
@@ -248,26 +251,29 @@ def endpoint_tensors(archived: Path, rerun: Path, expected: str | None) -> dict[
                          "its config hash")  # fmt: skip
     if right is None:
         return {"expected": expected, "rerun": None, "equal": False, "reason": "no checkpoint"}
-    path = Path(right["path"])
-    if not path.is_file():
-        raise CheckError(f"{rerun.name}: its endpoint checkpoint {path.name} is missing")
-    if file_sha256(path) != right.get("sha256"):
+    found = (hashed or {}).get(rerun.name)
+    if found is None:
+        raise CheckError(f"{rerun.name}: an endpoint checkpoint and no hash of its tensors "
+                         "(--rerun-endpoint-tensors)")  # fmt: skip
+    if found.get("file_ok") is not True:
         return {"expected": expected, "rerun": None, "equal": False,
-                "reason": "the file does not hash to its record"}  # fmt: skip
-    import torch  # only a check with an endpoint loads a checkpoint
-
-    state = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
-    found = tensors_sha256(list(state.items()))
-    return {"expected": expected, "rerun": found, "equal": found == expected}
+                "reason": found.get("reason", "the file does not match its record")}  # fmt: skip
+    return {
+        "expected": expected,
+        "rerun": found["tensors_sha256"],
+        "equal": found["tensors_sha256"] == expected,
+    }
 
 
 def check(archived: list[Path], rerun: list[Path],
-          expected_tensors: dict[str, str] | None = None) -> dict[str, Any]:  # fmt: skip
+          expected_tensors: dict[str, str] | None = None,
+          hashed: dict[str, Any] | None = None) -> dict[str, Any]:  # fmt: skip
     left, right = by_hash(archived, "archived"), by_hash(rerun, "rerun")
     pairs = []
     for found in sorted(left.keys() & right.keys()):
         files = compare_runs(left[found], right[found])
-        tensors = endpoint_tensors(left[found], right[found], (expected_tensors or {}).get(found))
+        tensors = endpoint_tensors(left[found], right[found], (expected_tensors or {}).get(found),
+                                   hashed)  # fmt: skip
         equal = all(f["equal"] for f in files) and (tensors is None or tensors["equal"])
         pairs.append({"config_hash": found, "archived": left[found].name,
                       "rerun": right[found].name, **rerun_git(right[found]),
@@ -333,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ignore", action="append", default=[], choices=("step_checkpoints",))
     parser.add_argument("--endpoint-tensors", action="append", default=[],
                         metavar="CONFIG_HASH=SHA256")  # fmt: skip
+    parser.add_argument("--rerun-endpoint-tensors", type=Path)  # study5_tensor_hash.py's record
     args = parser.parse_args(argv)
     expected = {}
     for item in args.endpoint_tensors:
@@ -347,7 +354,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"record exists: {args.out}")
         return ERROR
     try:
-        record = check(args.archived, args.rerun, expected)
+        hashed = (json.loads(args.rerun_endpoint_tensors.read_text(encoding="utf-8"))
+                  if args.rerun_endpoint_tensors else None)  # fmt: skip
+        record = check(args.archived, args.rerun, expected, hashed)
     except (CheckError, UnicodeDecodeError) as exc:
         print(f"error: {exc}")
         return ERROR

@@ -223,7 +223,9 @@ def _with_endpoint(run: Path, ckpt: Path, sha: str, directory: str, steps=None) 
 def test_storage_is_canonicalized_and_the_endpoint_compared_by_its_tensors(tmp_path):
     """Extension 2: a rerun that saves its endpoint in another folder under another name (so its
     file hash differs) and records a null step list is equal when its tensors are the archived
-    ones; other tensors differ; no expected value is an error."""
+    ones (hashed by scripts/study5_tensor_hash.py); other tensors differ; a missing expected
+    value or a missing rerun hash is an error. The check itself loads no checkpoint."""
+    hasher = script_module(REPO_ROOT / "scripts" / "study5_tensor_hash.py", "s5_tensor_hash")
     a = fake_run(tmp_path / "a", "run-a")
     b = fake_run(tmp_path / "b", "run-b")
     ckpt_a, ckpt_b = tmp_path / "a.pt", tmp_path / "other-name.pt"
@@ -237,24 +239,33 @@ def test_storage_is_canonicalized_and_the_endpoint_compared_by_its_tensors(tmp_p
     (a / "config.yaml").write_text("seed: 1\nexperiment: study3\ntracking:\n"
                                    "  endpoint_checkpoint: /root/ckpt/study5\n")  # fmt: skip
     _with_endpoint(b, ckpt_b, sha_b, "/workspace/ckpt/pod4", steps=None)
-    state = torch.load(ckpt_a, weights_only=True)
     from zero_field_refusal.tensor_hash import tensors_sha256
 
-    expected = tensors_sha256(list(state.items()))
+    expected = tensors_sha256(list(torch.load(ckpt_a, weights_only=True).items()))
+    hashed = tmp_path / "hashed.json"
+    assert hasher.main([str(b), "--out", str(hashed)]) == 0
+    assert json.loads(hashed.read_text())["run-b"] == {"file_ok": True, "tensors_sha256": expected}
     out = tmp_path / "r.json"
     argv = ["--archived", str(a), "--rerun", str(b), "--out", str(out)]
-    assert check.main([*argv, "--endpoint-tensors", f"aaaaaaaaaaaa={expected}"]) == 0
-    record = json.loads(out.read_text())
-    assert record["pairs"][0]["endpoint_tensors"]["equal"] is True
-    assert check.main(argv[:-1] + [str(tmp_path / "r2.json")]) == 1  # no expected value: error
-    _checkpoint(ckpt_b, 2.0)  # other tensors under the same name: the file no longer matches
-    out3 = tmp_path / "r3.json"
-    assert check.main([*argv[:-1], str(out3), "--endpoint-tensors",
-                       f"aaaaaaaaaaaa={expected}"]) == 2  # fmt: skip
+    good = ["--endpoint-tensors", f"aaaaaaaaaaaa={expected}", "--rerun-endpoint-tensors",
+            str(hashed)]  # fmt: skip
+    assert check.main([*argv, *good]) == 0
+    assert json.loads(out.read_text())["pairs"][0]["endpoint_tensors"]["equal"] is True
+    assert check.main([*argv[:-1], str(tmp_path / "r1.json"), "--rerun-endpoint-tensors",
+                       str(hashed)]) == 1  # no expected value: an error  # fmt: skip
+    assert check.main([*argv[:-1], str(tmp_path / "r2.json"), "--endpoint-tensors",
+                       f"aaaaaaaaaaaa={expected}"]) == 1  # no rerun hash: an error  # fmt: skip
+    _checkpoint(ckpt_b, 2.0)  # other tensors, same name: the file no longer matches its record
+    hashed2 = tmp_path / "hashed2.json"
+    assert hasher.main([str(b), "--out", str(hashed2)]) == 0
+    assert json.loads(hashed2.read_text())["run-b"]["file_ok"] is False
     sha_b2 = hashlib.sha256(ckpt_b.read_bytes()).hexdigest()
     _with_endpoint(b, ckpt_b, sha_b2, "/workspace/ckpt/pod4", steps=None)
+    hashed3 = tmp_path / "hashed3.json"
+    assert hasher.main([str(b), "--out", str(hashed3)]) == 0
     out4 = tmp_path / "r4.json"
-    assert check.main([*argv[:-1], str(out4), "--endpoint-tensors",
-                       f"aaaaaaaaaaaa={expected}"]) == 2  # fmt: skip
+    assert check.main([*argv[:-1], str(out4), "--endpoint-tensors", f"aaaaaaaaaaaa={expected}",
+                       "--rerun-endpoint-tensors", str(hashed3)]) == 2  # fmt: skip
     tensors = json.loads(out4.read_text())["pairs"][0]["endpoint_tensors"]
     assert tensors["equal"] is False and tensors["rerun"] != expected
+    assert hasher.main([str(b), "--out", str(hashed3)]) == 1  # never overwritten

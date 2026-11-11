@@ -355,6 +355,7 @@ topics:
   - scripts/study5_pairs.py
   - scripts/study5_tokens.py
   - scripts/study5_force.py
+  - scripts/study5_tensor_hash.py
   - src/zero_field_refusal/vectors.py
   - src/zero_field_refusal/vector_points.py
   - scripts/study5_surrogate_endpoint.py

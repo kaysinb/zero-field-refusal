@@ -763,6 +763,12 @@ def test_pod4_extension_2(where, tmp_path):
     assert all(seen[s] is None for s in range(50004, 50040))
     checks = [s for s in steps(plan, "replays") if s.gate == "engineering"]
     assert len(checks) == 10 and all(s.on_fail == "stop" for s in checks)
+    hashes = [s for s in steps(plan, "replays") if "scripts/study5_tensor_hash.py" in s.argv]
+    assert len(hashes) == 10 and all(s.on_fail == "stop" for s in hashes)
+    for h, c in zip(hashes, checks, strict=True):  # each check reads its group's tensor hashes
+        assert c.argv[c.argv.index("--rerun-endpoint-tensors") + 1] == h.outputs[0]
+        expected = [c.argv[i + 1] for i, a in enumerate(c.argv) if a == "--endpoint-tensors"]
+        assert len(expected) == 4 and all("=" in e for e in expected)
     assert ["--ignore" in s.argv for s in checks] == [True] + [False] * 9
     fetches = {s.argv[s.argv.index("--run-id") + 1] for s in steps(plan) if "fetch-run" in s.argv}
     assert fetches == {camp.POD2_ORDER_RUN, *camp.POD2_FRESH_L.values()}

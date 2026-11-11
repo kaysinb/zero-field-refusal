@@ -3314,7 +3314,10 @@ as the `pod4` campaign of `scripts/study5_campaigns.py` (`pod4_plan`). Its new c
   `scripts/study5_vectors.py` (the Gram, μ̂, leave-one-out means, mixtures, removals),
   `scripts/study5_pairs.py` (dots, cosines, distances, r at checkpoints),
   `scripts/study5_tokens.py` (token readouts) and `scripts/study5_force.py` (the force pilot);
-- `scripts/study5_engineering_check.py --ignore step_checkpoints`.
+- `scripts/study5_engineering_check.py --ignore step_checkpoints` and its tensor comparison of
+  the endpoints (`--endpoint-tensors`, `--rerun-endpoint-tensors`), with
+  `scripts/study5_tensor_hash.py` hashing the reruns' endpoint tensors (the check, an analysis
+  script, loads no checkpoint).
 
 **GPU code.** Recorded in `docs/study5-extension-2-code-identity.json` with the paths changed
 from extension 1's record. The driver refuses another GPU code, a registration without the

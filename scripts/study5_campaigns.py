@@ -1482,6 +1482,7 @@ POD4_MINUTES = {
     "linear": 6.5,  # assumed: v₀, 85 batch gradients, three r readouts, K on both panels twice
     "linear-q": 4.5,  # the same without the K readouts (--no-k): predictions of q only
     "pairs": 3.0,  # assumed: checkpoints read and hashed, r at each
+    "tensor-hash": 3.0,  # assumed: four 5.24 GB endpoints hashed as files and as tensors
     "tokens": 6.0,
     "force": 45.0,  # assumed: two steps × three ε × four panel gradients of 25 batches, halves
     "panels": 2 * PANEL_RESPONSES * STREAM_PER_RESPONSE,
@@ -1690,10 +1691,15 @@ def pod4_plan(
                            minutes=minute, group=group)  # fmt: skip
         for s, c in zip(seeds, cells, strict=True):
             replays[s] = (name, label(c))
+        hashed = b.record("replays", f"tensors-{group}.json")
+        step(f"replays/{group}/tensors", with_runs("--unless", hashed, "--",
+             "scripts/study5_tensor_hash.py", *[f"{{run:{label(c)}}}" for c in cells], "--out",
+             hashed, campaign=name), on_fail="stop", outputs=(str(hashed),), group=group,
+             minutes_key="tensor-hash")  # fmt: skip
         check = b.record("replays", f"check-{group}.json")
         argv = ["--", "scripts/study5_engineering_check.py", "--archived",
                 *[pod2_run(s) for s in seeds], "--rerun", *[f"{{run:{label(c)}}}" for c in cells],
-                "--out", check]  # fmt: skip
+                "--out", check, "--rerun-endpoint-tensors", hashed]  # fmt: skip
         argv += [x for s in seeds for x in ("--endpoint-tensors",
                                             "=".join(POD2_ENDPOINTS[s]))]  # fmt: skip
         if twins:
@@ -1701,7 +1707,7 @@ def pod4_plan(
         step(f"replays/{group}/check", with_runs(*argv, campaign=name), on_fail="stop",
              outputs=(str(check),), group=group, minutes_key="engineering-check",
              gate="engineering")  # fmt: skip
-        paths = [b.rel(check)]
+        paths = [b.rel(hashed), b.rel(check)]
         for s, twin in twins.items():
             items = [(f"run:{{run:{replays[s][1]}}}:{t}", f"run:{{run:{label(twin)}}}:{t}")
                      for t in (*TWIN_STEPS, UPDATES)]  # fmt: skip
