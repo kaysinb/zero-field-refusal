@@ -452,8 +452,10 @@ note before any E2 outcome is read.
 **M1. Replays and the common component.**
 - Each of the 40 fresh η_l runs is rerun with its endpoint checkpoint, in groups of four. Each
   group is compared with pod 2's runs by `scripts/study5_engineering_check.py`; a difference stops
-  the campaign. Only the list of step checkpoints that four of the replays save (M5, M6) is left
-  out of that comparison (`--ignore step_checkpoints`).
+  the campaign. The endpoint state is compared by its tensors, against the hash pod 2's surrogate
+  endpoint record holds for each run; storage details (the checkpoint folder, a file's own name
+  inside its archive, an absent step list) are not compared. The list of step checkpoints that
+  four of the replays save (M5, M6) is left out (`--ignore step_checkpoints`).
 - From Δθ_i = θ₂₅,i − θ₀ (the trainable set), the following are computed:
   - the Gram matrix G_ij = ⟨Δθ_i, Δθ_j⟩;
   - ‖μ‖² estimated free of the noise as the mean of G_ij over i ≠ j;

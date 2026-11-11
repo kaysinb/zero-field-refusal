@@ -689,14 +689,28 @@ class Builder:
             timeout=timeout_of(MINUTES["small"]),
         )
 
-    def close(self, checkpoints: tuple[tuple[str, str], ...] = ()) -> None:
+    def close(
+        self, checkpoints: tuple[tuple[str, str], ...] = (), records: tuple[str, ...] = ()
+    ) -> None:
         """The close: with ``checkpoints`` (each fresh η_l run's launcher campaign and label),
         first a deadline window for their export, then the export of every recorded endpoint
         checkpoint not yet verified in the archive (``cmd_export_checkpoints``; its record in
-        ``close/``); then the plan, the campaigns, the receipts and that record to the bucket,
+        ``close/``); with ``records`` (folders relative to the runs root, pod 4), those folders
+        archived to the attempt's own place, so that a block that never reached its archive keeps
+        its records; then the plan, the campaigns, the receipts and that record to the bucket,
         and the deadline 15 minutes ahead."""
         self.current = []
         include = ["plan.json", "campaigns", "receipts"]
+        if records:
+            include.append(CLOSE)
+            inventory = self.out / CLOSE / f"records-{ATTEMPT}.tsv"
+            argv = ["archive", "--inventory", inventory, "--remote", f"{self.attempt}/runs",
+                    "--root", self.runs, "--inventories-remote", f"{self.attempt}/inventories",
+                    "--attempt-remote", f"{self.attempt}/runs"]  # fmt: skip
+            for path in records:
+                argv += ["--mutable-path", path]
+            self.step(f"{CLOSE}/records", self.own(*argv), on_fail="record", always=True,
+                      kind="archive", minutes="archive")  # fmt: skip
         if checkpoints:
             # set in order, before the export: the close's own deadline comes last
             self.step(f"{CLOSE}/export-deadline",
@@ -712,7 +726,8 @@ class Builder:
                 argv += ["--run", f"{campaign}={run_label}"]
             self.step(f"{CLOSE}/checkpoints", self.own(*argv), on_fail="record", always=True,
                       minutes=2 * MINUTES["checkpoint"])  # fmt: skip
-            include.append(CLOSE)
+            if CLOSE not in include:
+                include.append(CLOSE)
         self.step(
             f"{CLOSE}/archive",
             self.own(
@@ -1385,6 +1400,51 @@ POD2_FRESH_L = {  # pod 2's fresh η_l runs (the replays' archived twins), by se
     50038: "20261110T181849Z-s5-fresh-1.3e-05-s50038-s50038-83886ff4-a1",
     50039: "20261110T185234Z-s5-fresh-1.3e-05-s50039-s50039-74838283-a1",
 }
+# pod 2's fresh η_l runs: (config hash, the endpoint's trainable tensors hash as its surrogate
+# endpoint record holds it), the replays' expected endpoints (study5_engineering_check.py
+# --endpoint-tensors)
+POD2_ENDPOINTS = {
+    50000: ("f3e969f1c2f0", "48ebf1e849ece2acaf1f9fc8474898c71b36691771b99e9421ddd896158b4924"),
+    50001: ("52976e1f6c44", "60c4a7683726e23ccd21579294e835e53d84fb15d7beec43777095c0c4043057"),
+    50002: ("99efec8b692b", "b14dd160e9d23ddef92738fc17698be2e5c568c58c0b668ff8d67615561167d1"),
+    50003: ("21cff731cd08", "ea97c0d628a5581c62556c118b97fd26994b0486cfa7c9b4520027aaf3232675"),
+    50004: ("c431ca6cd040", "f1bf7e3a3683b21d3c558994f6e266482b24f1019fbc53a99ca475619e532ff3"),
+    50005: ("d5d976a37510", "cf4fd5b134577f52f5b9acd94f5684965ae85cab624b5f1c4341d179b2488fc9"),
+    50006: ("cbb2a2346600", "df6e412d1fa296378ac5feba4270ad265a6df959b7d3ae80acf8c4e03aeb5864"),
+    50007: ("bdb0949001cd", "601018809750fbb528e5a1190a19df4c8734bc52d21460fec084620c7984b982"),
+    50008: ("5ceafe6ba7c3", "9627d1cf0bcbee0c43b32ec96865744042727c82f02312c908d8d8ff62cc73fd"),
+    50009: ("0c547c549141", "6ed04c1d5b7759a08bb64025d82ced358b920570efa95640819949821c5ada88"),
+    50010: ("7191026ac2c4", "7f8fc93ed30d75965375892e47f472d728b1899f75ad02ebc39eada633e3b026"),
+    50011: ("1e205b37d419", "7ac680c5e4dddb15b17c59a792eaf421277d8a5d343d163d1c1aa87aab731009"),
+    50012: ("1c4109be778b", "68e3e178c6d783b66de65128e23196a3c6e1e03da94edf6dc7bb8ec2f021731b"),
+    50013: ("966528554bd1", "785d5b8b80509fcdca9deb9a54a65cb2c2a8ce854a3f93564d0775aab36e34aa"),
+    50014: ("6fb06d91c01e", "85ee698c17dc328669993d6ac8b36852d3630921765f6f7a138510f3eb22345d"),
+    50015: ("5ff1ca1bc35a", "8078318814f0e49c526201c64bcb0e28f9b6901041b85f1d8dc12831ccbc9371"),
+    50016: ("f76d4a7191eb", "a2fcdd930f4f5ef55e45cc68de936186915f5e94a85cdff0efa07dd439e56d81"),
+    50017: ("d466168f8a6f", "c91edd6eb036eaeb21752dae94da20c35133892ea89bb301fb764c7cc84d8a74"),
+    50018: ("ff1d7425e19a", "4954396239d1a63f4753dd8d04a2bff6952d7f6a0d4f2944a31cfc24806e7ea1"),
+    50019: ("b5fb1a8b6d92", "a8ddad3273940a11811076a665b8b75b569b36c5e5a570eacd09900cd5d5ed9b"),
+    50020: ("e68806dbc0a2", "021ed875667af6ea3ed74a4f8c6090e9ecc0fa001f718c7c9df0d777354c6f9b"),
+    50021: ("880d44ea24ee", "59025e205de2a99dae61a1ff6696b6511f5e7d5cc58b9932f934e2e8f1aa415c"),
+    50022: ("0b14001f75ac", "425cfb5b8db681152a15c14f27a3427c220c0ffd53f34b83e92c084ccc1c86e1"),
+    50023: ("7ea652155308", "d20d9b54faa38ce6e9230cc48a7db62107e72dd0ce14665ea3eb6f1cd10fc5c8"),
+    50024: ("8c5627af3237", "f28f1bcbd403f85bbdd8c684109dd2c4758dab3dde73b4cf276bd3d7a956651c"),
+    50025: ("42bf277ba718", "868e5a0360e8e9058816d9ebe11809a0402f9ae8aad5136eb88a1630ba750e16"),
+    50026: ("5d6e821339ae", "557a2720f8f0f7f0945fbd35f6c5fab3d436b04b0ba4cf12cdefc76b31e5bcad"),
+    50027: ("68d7fd80adda", "e3b2bdb2e41680caa061884fadc6978c01eaaf1f5632bd481be8d164dc71e332"),
+    50028: ("24cd96c31794", "deda0ab4af93c2f4606ab701777c9d5e7d95a0b2dc606e30043043ff226ebcd6"),
+    50029: ("2b1b74235620", "2ac97b100e5cf196631eae79b09007bab0c8cef3cded305f81a383daab24eb56"),
+    50030: ("51436cb3133e", "5b9fb08c3105d31e94c07d60d7256080cecdeca71818f17fe37b7765d2dacef3"),
+    50031: ("23f99580fded", "9b898b783d6f5947ab07cff10abfff2ce75358e136d6217c711ebe4ac34933f3"),
+    50032: ("bfc26888eb43", "2c180349027e639b1290570b07b833b189118c874eae65f8018fb938c3cb86e1"),
+    50033: ("65961fb9d610", "5442736344ae9c216ea70d0ffe86537b01602092cfe0710fcb179ad84cf1f746"),
+    50034: ("b8b714337449", "c38fcdda54c742596f1087c5f55a9247d61bcb61fdadf007ac5916393c022dba"),
+    50035: ("4b54149c07c3", "7f6dcab0f0b26f7329ab798412d54124689ed7aaa2d31532c370f4a124dddaea"),
+    50036: ("4a2e4971fde0", "726c7682c282a64338f2e642c50365081a024b0fe4281d4ee0974e8134a1f83f"),
+    50037: ("555109822a26", "710f311d9e608e6e40786a29643aba3190f7ea3ff4bfbe3b538dff093f3f34b9"),
+    50038: ("83886ff40487", "dff35a346c041c27c390e75479cbcf4c286206ae1d42178051bc296ab7ac5c39"),
+    50039: ("748382835e47", "08fec5139f298dd59672a6424dbed71d7b912771a82792c1881e5896a426e9fd"),
+}
 EXT2_SEEDS = tuple(range(FRESH_FIRST, FRESH_FIRST + 40))  # the 40 fresh seeds
 EXT2_GROUP = 4  # seeds per replay or linear group: each group admitted on its own
 M_SEEDS = CONTROL_SEEDS  # M3, M4's removals, the δ_lin points evaluated in full, the shuffles
@@ -1465,7 +1525,15 @@ def pod4_plan(
     gpu_code: str,
     surrogate: str = SURROGATE,
 ) -> Plan:
-    """Pod 4's plan, extension 2 (module docstring, "Pod 4")."""
+    """Pod 4's plan, extension 2 (docs/operations.md, "Study 5, extension 2: pod 4").
+
+    Evidence and disposable files: the run directories and every record (``*.json`` under
+    ``study5_records/<id>/``) are evidence, archived as their group ends; the checkpoints and the
+    vector files (``*.pt`` under ``--checkpoints``) are disposable, reproducible from the replays,
+    and removed only by ``purge`` and ``drop-checkpoints`` once the records that read them are in
+    a verified archive (``archived_problems``). The replays' endpoints are never removed here.
+    A writer of a vector folder moves an earlier incomplete folder aside first (``--aside-dir``);
+    a step whose input a diverged δ_lin did not write records that instead (``--only-if``)."""
     spec = surrogate_spec(surrogate)
     b = Builder("pod4", archive_id, out, runs, data, checkpoints)
     b.admit = True  # each block and group admitted only when it and the close fit the cap
@@ -1481,23 +1549,41 @@ def pod4_plan(
     def pod2_run(seed: int) -> Path:
         return fetched / POD2_FRESH_L[seed]
 
-    def settle(name: str, folder: Path, records: Path, group: str = "", keep: bool = False):
-        """The folder's JSON records copied to ``records``; its vector files removed (kept with
-        ``keep``) once their records are there."""
-        argv = ["settle", "--dir", folder, "--records", records]
-        step(name, b.own(*argv, *(["--keep"] if keep else [])), group=group,
+    def with_runs(*argv, campaign: str | None = None) -> tuple[str, ...]:
+        return b.own("with-runs", "--runs", b.runs, "--campaign", campaign or eng, *argv)
+
+    def settle(name: str, folder: Path, records: Path, group: str = "") -> None:
+        step(name, b.own("settle", "--dir", folder, "--records", records), group=group,
              minutes_key="settle")  # fmt: skip
+
+    def purge(name: str, folder: Path, inventories, consumers, group: str = "") -> None:
+        argv = ["purge", "--dir", folder, "--runs", b.runs]
+        argv += [x for inv in inventories for x in ("--inventory", inv)]
+        argv += [x for c in consumers for x in ("--consumer", c)]
+        step(name, b.own(*argv), group=group, minutes_key="settle")
+
+    def drop(name: str, campaign: str, labels, inventories, consumers, *, endpoint: bool,
+             group: str = "") -> None:  # fmt: skip
+        argv = ["drop-checkpoints", "--runs", b.runs, "--campaign", campaign]
+        argv += [x for lab in labels for x in ("--run", lab)]
+        argv += [x for inv in inventories for x in ("--inventory", inv)]
+        argv += [x for c in consumers for x in ("--consumer", c)]
+        step(name, b.own(*argv, *(["--endpoint"] if endpoint else [])), group=group,
+             minutes_key="settle")  # fmt: skip
+
+    def inventory(archive_step: Step) -> str:
+        return archive_step.outputs[0]
 
     def vector_run(name: str, label_: str, seed: int, source: tuple[str, ...], *,
                    points: tuple[float, ...] = (1.0,), full: tuple[float, ...] = (),
                    match: bool = False, sign: int = 1, campaign: str | None = None,
-                   group: str = "") -> tuple[str, str]:  # fmt: skip
-        """A vector run (scripts/study5_vector_points.py) through with-runs: its record and run
-        directory, relative to the runs root."""
+                   only_if: Path | None = None, group: str = "") -> tuple[str, str]:  # fmt: skip
+        """A vector run (scripts/study5_vector_points.py): its record and run directory,
+        relative to the runs root. With ``only_if``, an absent input is recorded instead."""
         record = b.record("points", f"{label_}.json")
         run_id = f"s5-{b.id}-{label_.replace('_', '-')}"
-        argv = ["with-runs", "--runs", b.runs, "--campaign", campaign or eng, "--aside",
-                f"{VECTOR_EXPERIMENT}/{run_id}", "--unless", record, "--",
+        guard = ("--only-if", only_if, "--else-record", record) if only_if is not None else ()
+        argv = [*guard, "--aside", f"{VECTOR_EXPERIMENT}/{run_id}", "--unless", record, "--",
                 "scripts/study5_vector_points.py", *fresh_args(seed), *source, "--label", label_,
                 "--points", *points, "--out", record, "--run-id", run_id, "--surrogate",
                 spec[0]]  # fmt: skip
@@ -1507,15 +1593,31 @@ def pod4_plan(
             argv += ["--match"]
         if sign != 1:
             argv += ["--sign", sign]
-        step(name, b.own(*argv), outputs=(str(record),), group=group,
+        step(name, with_runs(*argv, campaign=campaign), outputs=(str(record),), group=group,
              minutes_key=vector_minutes(len(points), len(full), match))  # fmt: skip
         return b.rel(record), f"{VECTOR_EXPERIMENT}/{run_id}"
 
     def linear(name: str, config: tuple[str, ...], folder: Path, reference: tuple[str, ...],
-               group: str = "") -> None:  # fmt: skip
-        step(name, ("scripts/study5_linear_replay.py", *config, "--out-dir", folder, *reference,
-                    "--surrogate", spec[0]),
-             outputs=(str(folder / "record.json"),), group=group, minutes_key="linear")  # fmt: skip
+               group: str = "") -> str:  # fmt: skip
+        """δ̂, δ_lin, q and K of one order into ``folder`` (an incomplete one moved aside)."""
+        record = folder / "record.json"
+        step(name, with_runs("--unless", record, "--aside-dir", folder, "--",
+                             "scripts/study5_linear_replay.py", *config, "--out-dir", folder,
+                             *reference, "--surrogate", spec[0]),
+             outputs=(str(record),), group=group, minutes_key="linear")  # fmt: skip
+        return str(record)
+
+    def pairs(name: str, seed: int, items: list[tuple[str, str]], record: Path, *,
+              r: bool = False, only_if: Path | None = None, campaign: str | None = None,
+              group: str = "") -> str:  # fmt: skip
+        guard = ("--only-if", only_if, "--else-record", record) if only_if is not None else ()
+        argv = [*guard, "--unless", record, "--", "scripts/study5_pairs.py", *fresh_args(seed)]
+        for a, z in items:
+            argv += ["--pair", a, z]
+        argv += [*(["--r"] if r else []), "--out", record, "--surrogate", spec[0]]
+        step(name, with_runs(*argv, campaign=campaign), outputs=(str(record),), group=group,
+             minutes_key="pairs")  # fmt: skip
+        return b.rel(record)
 
     # ---- engineering: pod 2's order control of 50000 rerun; any failure stops (as pod 3)
     b.begin()
@@ -1534,10 +1636,10 @@ def pod4_plan(
          "--gpu-code", gpu_code), kind="launch", on_fail="stop",
          minutes_key="fresh-upper")  # fmt: skip
     check = b.record("engineering-check.json")
-    step("engineering/check", b.own("with-runs", "--runs", b.runs, "--campaign", eng, "--",
-         "scripts/study5_engineering_check.py", "--archived", fetched / POD2_ORDER_RUN, "--rerun",
-         f"{{run:{label(cell)}}}", "--out", check), on_fail="stop", outputs=(str(check),),
-         minutes_key="engineering-check", gate="engineering")  # fmt: skip
+    step("engineering/check", with_runs("--", "scripts/study5_engineering_check.py", "--archived",
+         fetched / POD2_ORDER_RUN, "--rerun", f"{{run:{label(cell)}}}", "--out", check),
+         on_fail="stop", outputs=(str(check),), minutes_key="engineering-check",
+         gate="engineering")  # fmt: skip
     b.runs_archive("engineering/archive", mutable=(b.rel(check),), campaign=eng)
     b.end("engineering")
 
@@ -1556,7 +1658,9 @@ def pod4_plan(
          minutes_key="panels")  # fmt: skip
     b.end("fetch")
 
-    # ---- M1's replays (each checked against pod 2's run), M6's twins on the first four seeds
+    # ---- M1's replays, each group checked against pod 2's runs (tensors of the endpoints);
+    # M6's twins on the first four seeds, their pairs; then the twins' checkpoints and the
+    # originals' step checkpoints (not their endpoints) dropped once the pairs are archived
     replays: dict[int, tuple[str, str]] = {}  # seed -> (campaign, label)
     b.begin()
     for i in range(0, len(EXT2_SEEDS), EXT2_GROUP):
@@ -1575,50 +1679,55 @@ def pod4_plan(
         for s, c in zip(seeds, cells, strict=True):
             replays[s] = (name, label(c))
         check = b.record("replays", f"check-{group}.json")
-        ignore = ("--ignore", "step_checkpoints") if twins else ()
-        step(f"replays/{group}/check", b.own("with-runs", "--runs", b.runs, "--campaign", name,
-             "--", "scripts/study5_engineering_check.py", "--archived",
-             *[pod2_run(s) for s in seeds], "--rerun", *[f"{{run:{label(c)}}}" for c in cells],
-             "--out", check, *ignore), on_fail="stop", outputs=(str(check),), group=group,
-             minutes_key="engineering-check", gate="engineering")  # fmt: skip
+        argv = ["--", "scripts/study5_engineering_check.py", "--archived",
+                *[pod2_run(s) for s in seeds], "--rerun", *[f"{{run:{label(c)}}}" for c in cells],
+                "--out", check]  # fmt: skip
+        argv += [x for s in seeds for x in ("--endpoint-tensors",
+                                            "=".join(POD2_ENDPOINTS[s]))]  # fmt: skip
+        if twins:
+            argv += ["--ignore", "step_checkpoints"]
+        step(f"replays/{group}/check", with_runs(*argv, campaign=name), on_fail="stop",
+             outputs=(str(check),), group=group, minutes_key="engineering-check",
+             gate="engineering")  # fmt: skip
         paths = [b.rel(check)]
         for s, twin in twins.items():
-            record = b.record("twins", f"s{s}.json")
-            pairs = []
-            for t in (*TWIN_STEPS, UPDATES):
-                pairs += ["--pair", f"run:{{run:{replays[s][1]}}}:{t}",
-                          f"run:{{run:{label(twin)}}}:{t}"]  # fmt: skip
-            step(f"replays/{group}/twins-s{s}", b.own("with-runs", "--runs", b.runs,
-                 "--campaign", name, "--unless", record, "--", "scripts/study5_pairs.py",
-                 *fresh_args(s), *pairs, "--r", "--out", record, "--surrogate", spec[0]),
-                 outputs=(str(record),), group=group, minutes_key="pairs")  # fmt: skip
-            paths.append(b.rel(record))
-            drop = ["drop-checkpoints", "--runs", b.runs, "--campaign", name, "--require", record,
-                    "--run", label(twin), "--endpoint"]  # fmt: skip
-            if s != FORCE_SEED:  # the force pilot reads 50000's later
-                drop += ["--run", replays[s][1]]
-            step(f"replays/{group}/drop-s{s}", b.own(*drop), group=group, minutes_key="settle")
-        b.runs_archive(f"replays/{group}/archive", paths=paths, campaign=name, group=group)
+            items = [(f"run:{{run:{replays[s][1]}}}:{t}", f"run:{{run:{label(twin)}}}:{t}")
+                     for t in (*TWIN_STEPS, UPDATES)]  # fmt: skip
+            paths.append(pairs(f"replays/{group}/twins-s{s}", s, items,
+                               b.record("twins", f"s{s}.json"), r=True, campaign=name,
+                               group=group))  # fmt: skip
+        archived = b.runs_archive(f"replays/{group}/archive", paths=paths, campaign=name,
+                                  group=group)  # fmt: skip
+        for s, twin in twins.items():
+            consumers = [b.rel(b.record("twins", f"s{s}.json"))]
+            drop(f"replays/{group}/drop-twin-s{s}", name, [label(twin)], [inventory(archived)],
+                 consumers, endpoint=True, group=group)  # fmt: skip
+            if s != FORCE_SEED:  # the force pilot reads 50000's step checkpoints later
+                drop(f"replays/{group}/drop-steps-s{s}", name, [replays[s][1]],
+                     [inventory(archived)], consumers, endpoint=False, group=group)  # fmt: skip
     b.end("replays")
 
     def replay_dir(seed: int) -> str:
         campaign, run_label = replays[seed]
         return f"{{run:{run_label}@{campaign}}}"
 
-    # ---- M1's vectors: ∇r(θ₀), the Gram, μ̂, the leave-one-out means, mixtures and removals
+    # ---- M1's vectors: ∇r(θ₀), then the Gram, μ̂, the leave-one-out means, mixtures, removals
     b.begin()
     grad = vec / "grad_r"
-    linear("vectors/grad-r", (*fresh_args(first), "--grad-r-only"), grad, ())
+    step("vectors/grad-r", with_runs("--unless", grad / "record.json", "--aside-dir", grad, "--",
+         "scripts/study5_linear_replay.py", *fresh_args(first), "--grad-r-only", "--out-dir",
+         grad, "--surrogate", spec[0]), on_fail="stop", outputs=(str(grad / "record.json"),),
+         minutes_key="grad-r")  # fmt: skip
     m1 = vec / "m1"
-    step("vectors/vectors", b.own("with-runs", "--runs", b.runs, "--campaign", eng, "--",
+    step("vectors/vectors", with_runs("--unless", m1 / "record.json", "--aside-dir", m1, "--",
          "scripts/study5_vectors.py", *fresh_args(first), "--runs",
          *[replay_dir(s) for s in EXT2_SEEDS], "--checkpoints", b.checkpoints, "--out-dir", m1,
          "--grad-r", grad / "grad_r.pt", "--loo-seeds", *M_SEEDS, "--removal-seeds", *M_SEEDS,
          "--mixtures", MIXTURES), on_fail="stop", outputs=(str(m1 / "record.json"),),
          minutes_key="vectors")  # fmt: skip
-    settle("vectors/settle-grad-r", grad, b.record("vectors", "grad_r"), keep=True)
-    settle("vectors/settle", m1, b.record("vectors", "m1"), keep=True)
-    b.runs_archive("vectors/archive", paths=(b.rel(b.record("vectors")),))
+    settle("vectors/settle-grad-r", grad, b.record("vectors", "grad_r"))
+    settle("vectors/settle", m1, b.record("vectors", "m1"))
+    varchived = b.runs_archive("vectors/archive", paths=(b.rel(b.record("vectors")),))
     b.end("vectors")
 
     # ---- M5: the force pilot on seed 50000 at steps 5 and 10, two panels
@@ -1628,46 +1737,56 @@ def pod4_plan(
     for panel in PANEL_SEEDS:
         record = b.record("force", f"s{FORCE_SEED}-panel{panel}.json")
         steps_ = [x for t in FORCE_STEPS for x in ("--step", t)]
-        step(f"force/panel{panel}", b.own("with-runs", "--runs", b.runs, "--campaign", eng, "--",
+        step(f"force/panel{panel}", with_runs("--unless", record, "--",
              "scripts/study5_force.py", *fresh_args(FORCE_SEED), "--panel-config", f"seed={panel}",
              "train.steps=50", "schedule.evaluate_at=[50]", "--run", replay_dir(FORCE_SEED),
              "--checkpoints", b.checkpoints, *steps_, "--out", record, "--epsilon",
              *FORCE_EPSILONS, "--project", *projections, "--split-halves"),
              outputs=(str(record),), minutes_key="force")  # fmt: skip
         force_paths.append(b.rel(record))
-    step("force/drop", b.own("drop-checkpoints", "--runs", b.runs, "--campaign",
-         replays[FORCE_SEED][0], "--require", *[b.runs / p for p in force_paths], "--run",
-         replays[FORCE_SEED][1]), minutes_key="settle")  # fmt: skip
-    b.runs_archive("force/archive", paths=force_paths)
+    archived = b.runs_archive("force/archive", paths=force_paths)
+    drop("force/drop-steps", replays[FORCE_SEED][0], [replays[FORCE_SEED][1]],
+         [inventory(archived)], force_paths, endpoint=False)  # fmt: skip
+    vectors_record = f"{b.rel(b.record('vectors', 'm1'))}/record.json"
+    purge("force/purge-grad-r", grad, [inventory(varchived), inventory(archived)],
+          [vectors_record, *force_paths])  # fmt: skip
     b.end("force")
 
-    # ---- M2: δ̂ and δ_lin of every seed's own order, their points and cosines with Δθ
+    # ---- M2: δ̂ and δ_lin (q, K) of every seed's own order; θ₀ + δ_lin in full on 50000-50005;
+    # the cosines with Δθ; then the vector files purged once their consumers are archived
     b.begin()
     for i in range(0, len(EXT2_SEEDS), EXT2_GROUP):
         seeds = EXT2_SEEDS[i : i + EXT2_GROUP]
         group = f"g{seeds[0]}"
-        paths, run_dirs = [], []
+        paths, run_dirs, consumers = [], [], {}
         for s in seeds:
             folder = vec / "linear" / f"s{s}"
             linear(f"linear/{group}/s{s}", fresh_args(s), folder, ("--reference-run",
                    pod2_run(s)), group=group)  # fmt: skip
-            full = (1.0,) if s in M_SEEDS else ()
-            rec, run_dir = vector_run(f"linear/{group}/s{s}-points", f"dlin_s{s}", s,
-                                      ("--vector", folder / "delta_lin.pt"), full=full,
-                                      group=group)  # fmt: skip
-            paths.append(rec)
-            run_dirs.append((run_dir, rec))
-            pairs_rec = b.record("linear", f"pairs-s{s}.json")
-            step(f"linear/{group}/s{s}-pairs", b.own("with-runs", "--runs", b.runs, "--campaign",
-                 eng, "--unless", pairs_rec, "--", "scripts/study5_pairs.py", *fresh_args(s),
-                 "--pair", f"vector:{folder / 'delta_lin.pt'}", f"run:{replay_dir(s)}:{UPDATES}",
-                 "--pair", f"vector:{folder / 'delta_hat.pt'}", f"run:{replay_dir(s)}:{UPDATES}",
-                 "--out", pairs_rec), outputs=(str(pairs_rec),), group=group,
-                 minutes_key="pairs")  # fmt: skip
-            paths.append(b.rel(pairs_rec))
-            settle(f"linear/{group}/s{s}-settle", folder, b.record("linear", f"s{s}"), group)
-            paths.append(b.rel(b.record("linear", f"s{s}")))
-        b.runs_archive(f"linear/{group}/archive", paths=paths, run_dirs=run_dirs, group=group)
+            target = b.record("linear", f"s{s}")
+            settle(f"linear/{group}/s{s}-settle", folder, target, group)
+            mine = [b.rel(target / "record.json")]
+            hat = pairs(f"linear/{group}/s{s}-pairs-hat", s,
+                        [(f"vector:{folder / 'delta_hat.pt'}", f"run:{replay_dir(s)}:{UPDATES}")],
+                        b.record("linear", f"pairs-hat-s{s}.json"), group=group)  # fmt: skip
+            lin = pairs(f"linear/{group}/s{s}-pairs-lin", s,
+                        [(f"vector:{folder / 'delta_lin.pt'}", f"run:{replay_dir(s)}:{UPDATES}")],
+                        b.record("linear", f"pairs-lin-s{s}.json"),
+                        only_if=folder / "delta_lin.pt", group=group)  # fmt: skip
+            mine += [hat, lin]
+            if s in M_SEEDS:  # θ₀ + δ_lin evaluated in full, for the labels
+                rec, run_dir = vector_run(f"linear/{group}/s{s}-points", f"dlin_s{s}", s,
+                                          ("--vector", folder / "delta_lin.pt"), full=(1.0,),
+                                          only_if=folder / "delta_lin.pt", group=group)  # fmt: skip
+                mine.append(rec)
+                run_dirs.append((run_dir, rec))
+            paths += [b.rel(target), *mine[1:]]
+            consumers[s] = mine
+        archived = b.runs_archive(f"linear/{group}/archive", paths=sorted(set(paths)),
+                                  run_dirs=run_dirs, group=group)  # fmt: skip
+        for s in seeds:
+            purge(f"linear/{group}/s{s}-purge", vec / "linear" / f"s{s}", [inventory(archived)],
+                  consumers[s], group)  # fmt: skip
     group = "controls"  # the six registered order controls' orders: the criterion's pairs
     paths = []
     for s in M_SEEDS:
@@ -1676,103 +1795,120 @@ def pod4_plan(
                ("--reference-fresh-run", pod2_run(s)), group=group)  # fmt: skip
         settle(f"linear/{group}/s{s}-settle", folder, b.record("linear-control", f"s{s}"), group)
         paths.append(b.rel(b.record("linear-control", f"s{s}")))
-    b.runs_archive(f"linear/{group}/archive", paths=paths, group=group)
+    archived = b.runs_archive(f"linear/{group}/archive", paths=paths, group=group)
+    for s in M_SEEDS:
+        purge(f"linear/{group}/s{s}-purge", vec / "linear-control" / f"s{s}",
+              [inventory(archived)], [f"{b.rel(b.record('linear-control', f's{s}'))}/record.json"],
+              group)  # fmt: skip
     b.end("linear")
 
     # ---- predictions only, for extension 1's twenty new orders (no E2 run is read)
     b.begin()
-    paths = []
     for s in ORDER_SEEDS:
         group = f"s{s}"
+        paths, made = [], []
         for offset in ORDER_OFFSETS:
-            folder = vec / "sealed" / f"s{s}-order{offset // 1000}"
+            tag = f"s{s}-order{offset // 1000}"
+            folder = vec / "sealed" / tag
             linear(f"sealed/{group}/order{offset // 1000}", (CONTROL_ORDER, rate(ETA_L),
                    f"seed={s}", f"train.order_seed={s + offset}"), folder,
                    ("--reference-fresh-run", pod2_run(s)), group=group)  # fmt: skip
-            target = b.record("sealed", f"s{s}-order{offset // 1000}")
+            target = b.record("sealed", tag)
             settle(f"sealed/{group}/order{offset // 1000}-settle", folder, target, group)
             paths.append(b.rel(target))
-    b.runs_archive("sealed/archive", paths=paths)
+            made.append((folder, f"{b.rel(target)}/record.json"))
+        archived = b.runs_archive(f"sealed/{group}/archive", paths=paths, group=group)
+        for folder, record in made:
+            purge(f"sealed/{group}/{folder.name}-purge", folder, [inventory(archived)], [record],
+                  group)  # fmt: skip
     b.end("sealed")
 
-    # ---- M3 (small amplitudes, tokens) and M4 (removals per seed; signs and mixtures)
+    # ---- M3 (small amplitudes, tokens) and M4's removals per seed; then, in a group of their
+    # own, M4's parity, matched K and mixtures; the vector files purged after both are archived
     b.begin()
-    paths, run_dirs = [], []
-
-    def keep_point(found: tuple[str, str]) -> None:
-        paths.append(found[0])
-        run_dirs.append((found[1], found[0]))
-
+    inventories, consumers = [], []
     for s in M_SEEDS:
         group = f"s{s}"
+        paths, run_dirs = [], []
         source = ("--f-run", replay_dir(s), "--checkpoints", b.checkpoints)
-        keep_point(vector_run(f"points/{group}/small", f"small_s{s}", s, source,
-                              points=SMALL_POINTS, campaign=replays[s][0],
-                              group=group))  # fmt: skip
+        rec, run_dir = vector_run(f"points/{group}/small", f"small_s{s}", s, source,
+                                  points=SMALL_POINTS, campaign=replays[s][0],
+                                  group=group)  # fmt: skip
+        paths.append(rec)
+        run_dirs.append((run_dir, rec))
         tokens = b.record("tokens", f"s{s}.json")
-        step(f"points/{group}/tokens", b.own("with-runs", "--runs", b.runs, "--campaign",
-             replays[s][0], "--unless", tokens, "--", "scripts/study5_tokens.py", *fresh_args(s),
-             *source, "--scales", *TOKEN_SCALES, "--out", tokens, "--surrogate", spec[0]),
+        step(f"points/{group}/tokens", with_runs("--unless", tokens, "--",
+             "scripts/study5_tokens.py", *fresh_args(s), *source, "--scales", *TOKEN_SCALES,
+             "--out", tokens, "--surrogate", spec[0], campaign=replays[s][0]),
              outputs=(str(tokens),), group=group, minutes_key="tokens")  # fmt: skip
         paths.append(b.rel(tokens))
         for kind in ("mean", "mixture"):
-            keep_point(vector_run(f"points/{group}/removal-{kind}", f"r{kind}_s{s}", s,
-                                  ("--vector", m1 / f"removal_{kind}_{s}.pt"), full=(1.0,),
-                                  group=group))  # fmt: skip
+            rec, run_dir = vector_run(f"points/{group}/removal-{kind}", f"r{kind}_s{s}", s,
+                                      ("--vector", m1 / f"removal_{kind}_{s}.pt"), full=(1.0,),
+                                      group=group)  # fmt: skip
+            paths.append(rec)
+            run_dirs.append((run_dir, rec))
+            consumers.append(rec)
+        archived = b.runs_archive(f"points/{group}/archive", paths=paths, run_dirs=run_dirs,
+                                  group=group)  # fmt: skip
+        inventories.append(inventory(archived))
+    group = "global"
+    paths, run_dirs = [], []
     mean = ("--vector", m1 / "mean.pt")
     for name, label_, kw in (
-        ("points/mean", "mean", {"points": (1.0, -1.0, 2.0, -2.0), "full": (1.0, -1.0, 2.0, -2.0)}),
-        ("points/mean-k", "mean_k", {"match": True}),
-        ("points/mean-neg-k", "mean_neg_k", {"match": True, "sign": -1}),
+        ("points/global/mean", "mean",
+         {"points": (1.0, -1.0, 2.0, -2.0), "full": (1.0, -1.0, 2.0, -2.0)}),
+        ("points/global/mean-k", "mean_k", {"match": True}),
+        ("points/global/mean-neg-k", "mean_neg_k", {"match": True, "sign": -1}),
     ):  # fmt: skip
-        keep_point(vector_run(name, label_, first, mean, **kw))
+        rec, run_dir = vector_run(name, label_, first, mean, group=group, **kw)
+        paths.append(rec)
+        run_dirs.append((run_dir, rec))
     for k in range(1, MIXTURES + 1):
-        keep_point(vector_run(f"points/mix{k}", f"mix{k}", first,
-                              ("--vector", m1 / f"mixture_{k}.pt"), full=(1.0,),
-                              match=True))  # fmt: skip
-    settle("points/settle-m1", m1, b.record("vectors", "m1"))  # the vector files go
-    b.runs_archive("points/archive", paths=paths, run_dirs=run_dirs)
+        rec, run_dir = vector_run(f"points/global/mix{k}", f"mix{k}", first,
+                                  ("--vector", m1 / f"mixture_{k}.pt"), full=(1.0,), match=True,
+                                  group=group)  # fmt: skip
+        paths.append(rec)
+        run_dirs.append((run_dir, rec))
+    archived = b.runs_archive("points/global/archive", paths=paths, run_dirs=run_dirs,
+                              group=group)  # fmt: skip
+    purge("points/global/purge-m1", m1, [*inventories, inventory(archived)],
+          [*consumers, *paths, *force_paths], group)  # fmt: skip
     b.end("points")
 
-    # ---- M6: single adjacent swaps on four seeds, the edited orders' predictions
-    b.begin()
-    for s in SWAP_SEEDS:
-        group = f"s{s}"
-        edits = [(f"swap{t}", f"{{kind: swap_batches, step: {t}}}") for t in SWAP_STEPS]
-        cells = [edit_cell(s, tag, edit) for tag, edit in edits]
-        _, name = b.launch(f"swaps-{group}", "swaps", cells, minutes=len(cells) * F_RUN,
-                           group=group)  # fmt: skip
-        paths = []
-        for tag, edit in [*edits, ("twin", TWIN_EDIT)]:
-            folder = vec / "edits" / f"s{s}-{tag}"
-            linear(f"swaps/{group}/{tag}-predict", edit_args(s, edit), folder,
-                   ("--reference-fresh-run", pod2_run(s)), group=group)  # fmt: skip
-            target = b.record("edits", f"s{s}-{tag}")
-            settle(f"swaps/{group}/{tag}-settle", folder, target, group)
-            paths.append(b.rel(target))
-        b.runs_archive(f"swaps/{group}/archive", paths=paths, campaign=name, group=group)
-    b.end("swaps")
+    # ---- M6: single adjacent swaps on four seeds; every edited order's predictions
+    def edited_block(block: str, seeds, edits_of) -> None:
+        b.begin()
+        for s in seeds:
+            group = f"s{s}"
+            edits = edits_of(s)
+            cells = [edit_cell(s, tag, edit) for tag, edit in edits if tag != "twin"]
+            _, name = b.launch(f"{block}-{group}", block, cells, minutes=len(cells) * F_RUN,
+                               group=group)  # fmt: skip
+            paths, made = [], []
+            for tag, edit in edits:
+                folder = vec / "edits" / f"s{s}-{tag}"
+                linear(f"{block}/{group}/{tag}-predict", edit_args(s, edit), folder,
+                       ("--reference-fresh-run", pod2_run(s)), group=group)  # fmt: skip
+                target = b.record("edits", f"s{s}-{tag}")
+                settle(f"{block}/{group}/{tag}-settle", folder, target, group)
+                paths.append(b.rel(target))
+                made.append((folder, f"{b.rel(target)}/record.json"))
+            archived = b.runs_archive(f"{block}/{group}/archive", paths=paths, campaign=name,
+                                      group=group)  # fmt: skip
+            for folder, record in made:
+                purge(f"{block}/{group}/{folder.name}-purge", folder, [inventory(archived)],
+                      [record], group)  # fmt: skip
+        b.end(block)
 
+    edited_block("swaps", SWAP_SEEDS, lambda s: [
+        *[(f"swap{t}", f"{{kind: swap_batches, step: {t}}}") for t in SWAP_STEPS],
+        ("twin", TWIN_EDIT)])  # fmt: skip
     # ---- step 2: early and late shuffles of whole batches, with their predictions
-    b.begin()
-    for s in M_SEEDS:
-        group = f"s{s}"
-        edits = [(f"shuffle{a}-{z}-{d}", shuffle_edit(a, z, d)) for a, z in SHUFFLE_RANGES
-                 for d in SHUFFLE_DRAWS]  # fmt: skip
-        cells = [edit_cell(s, tag, edit) for tag, edit in edits]
-        _, name = b.launch(f"shuffles-{group}", "shuffles", cells, minutes=len(cells) * F_RUN,
-                           group=group)  # fmt: skip
-        paths = []
-        for tag, edit in edits:
-            folder = vec / "edits" / f"s{s}-{tag}"
-            linear(f"shuffles/{group}/{tag}-predict", edit_args(s, edit), folder,
-                   ("--reference-fresh-run", pod2_run(s)), group=group)  # fmt: skip
-            target = b.record("edits", f"s{s}-{tag}")
-            settle(f"shuffles/{group}/{tag}-settle", folder, target, group)
-            paths.append(b.rel(target))
-        b.runs_archive(f"shuffles/{group}/archive", paths=paths, campaign=name, group=group)
-    b.end("shuffles")
-    b.close()
+    edited_block("shuffles", M_SEEDS, lambda s: [
+        (f"shuffle{a}-{z}-{d}", shuffle_edit(a, z, d)) for a, z in SHUFFLE_RANGES
+        for d in SHUFFLE_DRAWS])  # fmt: skip
+    b.close(records=(b.rel(b.records), VECTOR_EXPERIMENT))
     return b.plan(commit, gpu_code, None, spec)
 
 
@@ -2686,6 +2822,20 @@ def cmd_with_runs(args) -> int:
         moved = move_aside(args.runs, args.aside)
         if moved is not None:
             print(f"moved aside {args.aside} to {moved.relative_to(args.runs)}")
+    if args.aside_dir and not done:  # extension 2: an incomplete output folder, kept aside
+        folder = Path(args.aside_dir)
+        if folder.is_dir() and any(folder.iterdir()):
+            target = folder.with_name(f"{folder.name}.aside-{_stamp()}")
+            folder.rename(target)
+            print(f"moved aside {folder.name} to {target.name}")
+    if args.only_if and not Path(args.only_if).exists():  # extension 2: the input was not made
+        out = Path(args.else_record)
+        if not out.exists():
+            reason = "its producer did not write it (its record says why)"
+            write_json(out, {"available": False, "missing": Path(args.only_if).name,
+                             "reason": reason})  # fmt: skip
+        print(f"unavailable: {Path(args.only_if).name}")
+        return 0
     if args.restore_label and not done:  # after a Pod stop: the checkpoint from its archive
         restore_checkpoint(args)
     argv = substituted(command, args.runs, args.campaign)
@@ -2693,9 +2843,9 @@ def cmd_with_runs(args) -> int:
 
 
 def cmd_settle(args) -> int:
-    """Extension 2: the JSON records of ``--dir`` (a vector folder) copied to ``--records`` (an
-    identical copy already there is kept; another is refused), then, unless ``--keep``, every
-    vector file there whose record is in ``--records`` removed. Nothing else is touched."""
+    """Extension 2: the JSON records of ``--dir`` (a vector folder on the volume) copied to
+    ``--records`` (in the runs root, archived with its block); an identical copy already there is
+    kept, another refused. Nothing is removed here (``purge``)."""
     folder, records = args.dir, args.records
     if not folder.is_dir():
         raise StepError(f"{folder}: no such folder")
@@ -2712,24 +2862,56 @@ def cmd_settle(args) -> int:
         partial.write_bytes(data)
         os.replace(partial, target)
         copied += 1
+    print(f"settle {folder.name}: copied {copied}")
+    return 0
+
+
+def archived_problems(runs: Path, inventories: list[Path], consumers: list[str]) -> list[str]:
+    """Why the ``consumers`` (records relative to the runs root) are not yet safely kept: each
+    must exist and appear in one of the archive ``inventories`` (written only after the archive
+    verified it) with status ok and the local file's sha256."""
+    rows: dict[str, dict[str, str]] = {}
+    problems = []
+    for inventory in inventories:
+        if not Path(inventory).is_file():
+            problems.append(f"{Path(inventory).name}: not archived yet")
+            continue
+        rows.update({row["path"]: row for row in read_inventory(Path(inventory))})
+    for rel in consumers:
+        local = runs / safe_rel(rel)
+        row = rows.get(rel)
+        if not local.is_file():
+            problems.append(f"{rel}: not written")
+        elif row is None or row.get("status") != "ok" or row.get("sha256") != sha256_of(local):
+            problems.append(f"{rel}: not in a verified archive")
+    return problems
+
+
+def cmd_purge(args) -> int:
+    """Extension 2: the disposable vector files (``*.pt``) of ``--dir`` removed once every
+    ``--consumer`` record is written and archived (``archived_problems``); otherwise nothing is
+    removed and the step fails, so that a failed consumer can be rerun on the same inputs. Records
+    (``*.json``) are evidence and stay."""
+    problems = archived_problems(args.runs, args.inventory, args.consumer)
+    if problems:
+        raise StepError(f"kept: {problems[0]}")
     removed = 0
-    if not args.keep:
-        for path in sorted(folder.glob("*.pt")):
-            if (records / f"{path.name}.json").is_file():
-                path.unlink()
-                removed += 1
-    print(f"settle {folder.name}: copied {copied} removed {removed}")
+    for path in sorted(args.dir.glob("*.pt")):
+        path.unlink()
+        removed += 1
+    print(f"purge {args.dir.name}: removed {removed}")
     return 0
 
 
 def cmd_drop_checkpoints(args) -> int:
     """Extension 2: the step checkpoints (and, with ``--endpoint``, the endpoint checkpoint) that
     each ``--run`` label's completed run in ``--campaign`` recorded, removed once every
-    ``--require`` file exists; a file is removed only when its bytes hash to the recorded sha256
-    (otherwise it is kept and the step fails)."""
-    missing = [str(p) for p in args.require if not Path(p).is_file()]
-    if missing:
-        raise StepError(f"not yet written: {missing[0]}")
+    ``--consumer`` record is written and archived (``archived_problems``); a file is removed only
+    when its bytes hash to the recorded sha256 (otherwise it is kept and the step fails).
+    Checkpoints are disposable: the records that read them are the evidence."""
+    problems = archived_problems(args.runs, args.inventory, args.consumer)
+    if problems:
+        raise StepError(f"kept: {problems[0]}")
     removed, kept = 0, []
     for run_label in args.run:
         run_dir = completed_run(args.runs, args.campaign, run_label)
@@ -3475,12 +3657,17 @@ def parser_of() -> argparse.ArgumentParser:
     p = sub.add_parser("settle")
     p.add_argument("--dir", type=Path, required=True)
     p.add_argument("--records", type=Path, required=True)
-    p.add_argument("--keep", action="store_true")
+    p = sub.add_parser("purge")
+    p.add_argument("--dir", type=Path, required=True)
+    p.add_argument("--runs", type=Path, required=True)
+    p.add_argument("--inventory", type=Path, action="append", required=True)
+    p.add_argument("--consumer", action="append", required=True)
     p = sub.add_parser("drop-checkpoints")
     p.add_argument("--runs", type=Path, required=True)
     p.add_argument("--campaign", required=True)
     p.add_argument("--run", action="append", required=True)
-    p.add_argument("--require", type=Path, nargs="+", required=True)
+    p.add_argument("--inventory", type=Path, action="append", required=True)
+    p.add_argument("--consumer", action="append", required=True)
     p.add_argument("--endpoint", action="store_true")
     p = sub.add_parser("with-runs")
     p.add_argument("--runs", type=Path, required=True)
@@ -3492,6 +3679,9 @@ def parser_of() -> argparse.ArgumentParser:
     p.add_argument("--restore-remote")
     p.add_argument("--restore-inventory", type=Path)
     p.add_argument("--restore-inventories-remote")
+    p.add_argument("--aside-dir")  # extension 2: an incomplete output folder moved aside first
+    p.add_argument("--only-if")  # extension 2: run only when this input exists
+    p.add_argument("--else-record")  # ... else write this record of its absence
     p.add_argument("command", nargs=argparse.REMAINDER)
     p = sub.add_parser("archive")
     p.add_argument("--inventory", type=Path, required=True)
@@ -3561,6 +3751,7 @@ COMMANDS = {
     "pod4": cmd_pod,
     "deadline": cmd_deadline,
     "settle": cmd_settle,
+    "purge": cmd_purge,
     "drop-checkpoints": cmd_drop_checkpoints,
     "fetch-streams": cmd_fetch_streams,
     "fetch-run": cmd_fetch_run,

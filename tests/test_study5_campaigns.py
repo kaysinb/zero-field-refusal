@@ -804,7 +804,7 @@ def test_pod4_extension_2(where, tmp_path):
     assert "--sign" in next(s for s in points if "mean_neg_k" in s.argv).argv
     commands = {s.argv[1] for s in steps(plan) if s.argv[0] == "scripts/study5_campaigns.py"}
     assert not commands & {"checkpoint", "check-checkpoints", "export-checkpoints"}
-    assert {"settle", "drop-checkpoints"} <= commands
+    assert {"settle", "drop-checkpoints", "purge"} <= commands
 
 
 def test_pod4_needs_extension_2s_gpu_code_registration_and_root(where, monkeypatch, tmp_path):
@@ -839,24 +839,53 @@ def test_run_references_inside_arguments_and_across_campaigns(tmp_path, monkeypa
     assert calls == [("own", "a"), ("other", "b"), ("third", "c")]
 
 
-def test_settle_copies_records_and_removes_only_recorded_vectors(tmp_path):
+def _inventory(path, rows) -> None:
+    lines = ["path\tsize\tsha256\tmd5_b64\turl\tstatus"]
+    lines += [f"{rel}\t1\t{sha}\tx\tgs://b/{rel}\t{status}" for rel, sha, status in rows]
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_settle_copies_records_and_removes_nothing(tmp_path):
     folder, records = tmp_path / "vec", tmp_path / "records"
     folder.mkdir()
-    for name in ("a.pt", "b.pt"):
-        (folder / name).write_bytes(b"tensor")
+    (folder / "a.pt").write_bytes(b"tensor")
     (folder / "a.pt.json").write_text("{}")
     (folder / "record.json").write_text('{"x": 1}')
-    assert camp.main(["settle", "--dir", str(folder), "--records", str(records), "--keep"]) == 0
-    assert sorted(p.name for p in folder.iterdir()) == ["a.pt", "a.pt.json", "b.pt",
-                                                        "record.json"]  # fmt: skip
     assert camp.main(["settle", "--dir", str(folder), "--records", str(records)]) == 0
-    assert sorted(p.name for p in folder.iterdir()) == ["a.pt.json", "b.pt", "record.json"]
+    assert camp.main(["settle", "--dir", str(folder), "--records", str(records)]) == 0  # again
+    assert sorted(p.name for p in folder.iterdir()) == ["a.pt", "a.pt.json", "record.json"]
     assert sorted(p.name for p in records.iterdir()) == ["a.pt.json", "record.json"]
     (folder / "record.json").write_text('{"x": 2}')
     assert camp.main(["settle", "--dir", str(folder), "--records", str(records)]) == 1
 
 
-def test_drop_checkpoints_needs_the_records_and_the_recorded_bytes(tmp_path, monkeypatch):
+def test_purge_needs_every_consumer_in_a_verified_archive(tmp_path):
+    """Vector files go only once every record that read them is written and in an archive's
+    inventory with status ok and the local bytes; otherwise nothing is removed."""
+    runs, folder = tmp_path / "runs", tmp_path / "vec"
+    (runs / "rec").mkdir(parents=True)
+    folder.mkdir()
+    (folder / "v.pt").write_bytes(b"tensor")
+    (folder / "v.pt.json").write_text("{}")
+    consumer = runs / "rec" / "points.json"
+    inventory = tmp_path / "inv.tsv"
+    argv = ["purge", "--dir", str(folder), "--runs", str(runs), "--inventory", str(inventory),
+            "--consumer", "rec/points.json"]  # fmt: skip
+    assert camp.main(argv) == 1  # no inventory, no record
+    consumer.write_text('{"r": 1}')
+    assert camp.main(argv) == 1  # written, not archived
+    sha = hashlib.sha256(consumer.read_bytes()).hexdigest()
+    _inventory(inventory, [("rec/points.json", sha, "MISMATCH remote=1,x")])
+    assert camp.main(argv) == 1  # archived wrongly
+    _inventory(inventory, [("rec/points.json", "0" * 64, "ok")])
+    assert camp.main(argv) == 1  # another file's bytes
+    assert (folder / "v.pt").exists()
+    _inventory(inventory, [("rec/points.json", sha, "ok")])
+    assert camp.main(argv) == 0
+    assert sorted(p.name for p in folder.iterdir()) == ["v.pt.json"]  # the record stays
+
+
+def test_drop_checkpoints_needs_archived_consumers_and_the_recorded_bytes(tmp_path, monkeypatch):
     run = tmp_path / "run"
     run.mkdir()
     files = {}
@@ -871,17 +900,61 @@ def test_drop_checkpoints_needs_the_records_and_the_recorded_bytes(tmp_path, mon
     }
     (run / "meta.json").write_text(json.dumps({"inputs": inputs}))  # fmt: skip
     monkeypatch.setattr(camp, "completed_run", lambda runs, campaign, run_label: run)
-    record = tmp_path / "pairs.json"
+    record, inventory = tmp_path / "pairs.json", tmp_path / "inv.tsv"
     argv = ["drop-checkpoints", "--runs", str(tmp_path), "--campaign", "c", "--run", "x",
-            "--require", str(record)]  # fmt: skip
-    assert camp.main(argv) == 1 and all(p.exists() for p in files.values())  # no record yet
+            "--inventory", str(inventory), "--consumer", "pairs.json"]  # fmt: skip
+    assert camp.main(argv) == 1 and all(p.exists() for p in files.values())  # nothing archived
     record.write_text("{}")
+    _inventory(inventory, [("pairs.json", hashlib.sha256(b"{}").hexdigest(), "ok")])
     files[3].write_bytes(b"other")
     assert camp.main(argv) == 1  # a file that is not the recorded one is kept
     assert not files[2].exists() and files[3].exists() and files[25].exists()
     files[3].write_bytes(b"theta3")
+    assert camp.main(argv) == 0 and files[25].exists()  # the endpoint only with --endpoint
     assert camp.main([*argv, "--endpoint"]) == 0
     assert not any(p.exists() for p in files.values())
+
+
+def test_pod4_removes_only_after_a_verified_archive_and_never_a_replays_endpoint(where):
+    """Every purge and drop names inventories of archive steps that come before it; the twins'
+    endpoints may go, the replays' never; the δ_lin consumers run only when δ_lin was written."""
+    plan = pod4(where)
+    archived = set()
+    for s in steps(plan):
+        if s.kind == "archive":
+            archived.update(s.outputs)
+        if s.argv[:2] in (("scripts/study5_campaigns.py", "purge"),
+                          ("scripts/study5_campaigns.py", "drop-checkpoints")):  # fmt: skip
+            named = [s.argv[i + 1] for i, a in enumerate(s.argv) if a == "--inventory"]
+            assert named and set(named) <= archived, s.name
+            assert "--consumer" in s.argv
+        if s.argv[:2] == ("scripts/study5_campaigns.py", "drop-checkpoints"):
+            runs_ = [s.argv[i + 1] for i, a in enumerate(s.argv) if a == "--run"]
+            if "--endpoint" in s.argv:
+                assert all("-edit-twin-" in r for r in runs_), s.name
+        if "scripts/study5_pairs.py" in s.argv and "delta_lin.pt" in " ".join(s.argv):
+            assert "--only-if" in s.argv
+    close = steps(plan, "close")
+    records = next(s for s in close if s.name == "close/records")
+    assert records.always and "--mutable-path" in records.argv
+    for s in steps(plan):  # the deletions and settles only copy or remove inside the volume
+        if s.argv[:2] == ("scripts/study5_campaigns.py", "purge"):
+            folder = s.argv[s.argv.index("--dir") + 1]
+            assert folder.startswith("/root/ckpt/study5/vec/")
+
+
+def test_pod4_windows_cover_their_groups(where):
+    """After the first seed group of a block only the block's snapshot and receipt run outside a
+    group: every other step is inside a group with a window of its own."""
+    plan = pod4(where)
+    for block in plan.blocks:
+        seen, tail = False, []
+        for s in block.steps:
+            if s.group:
+                seen, tail = True, []
+            elif seen and s.kind != "deadline":
+                tail.append(s.name)
+        assert all(n.endswith(("/snapshot", "/receipt")) for n in tail), (block.name, tail)
 
 
 def test_no_plan_holds_a_bucket_path_or_a_key(where, monkeypatch):
@@ -2433,3 +2506,23 @@ def test_the_close_deadline_is_never_above_the_cap_and_a_short_window_is_said(
     assert found["short"] is True and found["effective_minutes"] < 8
     final = close["close/deadline"]
     assert "--record" in final.argv and "--reserve" not in final.argv
+
+
+def test_with_runs_records_an_absent_input_and_keeps_an_incomplete_folder(tmp_path):
+    record = tmp_path / "rec" / "points.json"
+    argv = ["with-runs", "--runs", str(tmp_path), "--campaign", "c", "--only-if",
+            str(tmp_path / "delta_lin.pt"), "--else-record", str(record), "--",
+            "scripts/does_not_exist.py"]  # fmt: skip
+    assert camp.main(argv) == 0  # the command never runs
+    assert json.loads(record.read_text()) == {
+        "available": False, "missing": "delta_lin.pt",
+        "reason": "its producer did not write it (its record says why)"}  # fmt: skip
+    folder = tmp_path / "vec" / "s1"
+    folder.mkdir(parents=True)
+    (folder / "delta_hat.pt").write_bytes(b"partial")
+    argv = ["with-runs", "--runs", str(tmp_path), "--campaign", "c", "--aside-dir", str(folder),
+            "--", "scripts/does_not_exist.py"]  # fmt: skip
+    camp.main(argv)  # the command fails; the incomplete folder was moved aside first
+    kept = [p for p in (tmp_path / "vec").iterdir() if p.name.startswith("s1.aside-")]
+    assert len(kept) == 1 and (kept[0] / "delta_hat.pt").read_bytes() == b"partial"
+    assert not folder.exists()

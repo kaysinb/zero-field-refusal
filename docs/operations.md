@@ -3325,21 +3325,36 @@ another archive (`own_root_problems`, as for pod 3, with `study5_vector/` runs a
 and the vector files live on it (`--checkpoints`, an absolute folder on the volume), never on the
 container disk. One window, the cap set for the whole campaign; each block and group is admitted
 only when 1.5 × its estimated minutes and the close's 10 minutes fit before the cap.
-`settle` keeps a vector folder's records and removes its vector files once they are used;
-`drop-checkpoints` removes step and twin checkpoints once the records that read them exist.
+**Evidence and disposable files.** Run directories and records (`*.json` under
+`study5_records/<ID>/`) are evidence, archived as each group ends; the close archives the records
+folder and the vector runs to the attempt's place as well, so a block cut short keeps its records.
+Checkpoints and vector files (`*.pt` under `--checkpoints`) are disposable: `settle` only copies a
+vector folder's records into the runs root; `purge` (vector files) and `drop-checkpoints` (the
+twins' checkpoints, the originals' step checkpoints) remove them only once every record that read
+them is in a verified archive inventory with its bytes, so a failed consumer can be rerun on the
+same inputs. The replays' endpoints stay for the whole campaign.
+
+**A restart.** A writer of a vector folder (`study5_linear_replay.py`, `study5_vectors.py`) runs
+through `with-runs --aside-dir`: an earlier incomplete folder is renamed `<folder>.aside-<time>`
+(kept) and the step writes into an empty one; a complete folder is recognized by its
+`record.json`. A δ_lin that diverged writes no `delta_lin.pt`; its consumers then write a record
+of its absence (`with-runs --only-if … --else-record …`) instead of failing. An aside folder is
+removed by hand after the campaign, once the step it belonged to has a record.
 
 **Blocks:**
 1. `engineering`: pod 2's order control of 50000 rerun; any failure stops.
 2. `fetch`: the 40 seeds' streams, pod 2's 40 fresh η_l runs, two panels of 1000 fresh θ₀
    responses (seeds 59990, 59991).
 3. `replays`: the 40 fresh η_l cells in groups of four, each group checked against pod 2's runs
-   as a gate (`--ignore step_checkpoints` on the first group); the twins and their pairs.
+   as a gate, the endpoints by their tensors (`--endpoint-tensors`; `--ignore step_checkpoints`
+   on the first group); the twins and their pairs.
 4. `vectors`: ∇r(θ₀), then the Gram and the vector files.
 5. `force`: the pilot on seed 50000, two panels.
-6. `linear`: δ̂, δ_lin and q of the 40 seeds' own orders, θ₀ + δ_lin's readout (evaluated in full
-   on 50000–50005), the cosines with Δθ; the six registered order controls' orders.
+6. `linear`: δ̂, δ_lin, q and K of the 40 seeds' own orders, θ₀ + δ_lin evaluated in full on
+   50000–50005, the cosines with Δθ; the six registered order controls' orders.
 7. `sealed`: δ̂, δ_lin and q only, for extension 1's twenty new orders. No E2 run is read.
-8. `points`: M3's small amplitudes and tokens, M4's removals, parity, matched K and mixtures.
+8. `points`: M3's small amplitudes and tokens and M4's removals per seed, then M4's parity,
+   matched K and mixtures in a group of their own.
 9. `swaps`: three adjacent swaps on four seeds, with the predictions of every edited order.
 10. `shuffles`: early and late shuffles on six seeds, with their predictions.
 11. `close`.
