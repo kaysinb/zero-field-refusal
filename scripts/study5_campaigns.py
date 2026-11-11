@@ -3697,6 +3697,17 @@ def gate_problems(plan: Plan, engineering: Path | None, checks: Path | None) -> 
 POD3_PREFIX = "pod3-"  # pod 3's archive namespace: never pod 1's or pod 2's
 
 
+def _earlier_attempt(folder: Path, plan: Plan) -> bool:
+    """A campaign folder an earlier attempt of the same pod and archive id wrote (its
+    ``plan.json``): a stopped campaign goes on from a new --out (module docstring, "Resumable")."""
+    try:
+        stored = json.loads((folder / "plan.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (isinstance(stored, dict) and stored.get("pod") == plan.pod
+            and stored.get("archive_id") == plan.archive_id)  # fmt: skip
+
+
 def own_root_problems(plan: Plan) -> list[str]:
     """Pod 3 writes only into a runs root and an archive namespace of its own, so that it can
     neither move nor reuse a registered run or record: its archive id starts with ``pod3-``, and
@@ -3704,7 +3715,8 @@ def own_root_problems(plan: Plan) -> list[str]:
     no records folder of another id under ``study5_records/``, no launcher journal of another
     campaign under ``launch/``, no run under ``study5/`` or ``study3/`` whose ``meta.json`` names
     another archive (or that has none that reads), no scan or ladder run of another id, no
-    campaign folder under ``campaigns/`` but the plan's own --out."""
+    campaign folder under ``campaigns/`` but the plan's own --out and those of earlier attempts
+    of the same pod and archive id (``_earlier_attempt``)."""
     problems, own = [], f"study5-{plan.archive_id}-"
     prefix = POD4_PREFIX if plan.pod == "pod4" else POD3_PREFIX
     if not plan.archive_id.startswith(prefix):
@@ -3731,7 +3743,8 @@ def own_root_problems(plan: Plan) -> list[str]:
         other += [f"{experiment}/{p.name}" for p in children(experiment)
                   if not p.name.startswith(f"s5-{plan.archive_id}-")]  # fmt: skip
     out = plan.out.resolve()
-    other += [f"campaigns/{p.name}" for p in children("campaigns") if p.resolve() != out]
+    other += [f"campaigns/{p.name}" for p in children("campaigns")
+              if p.resolve() != out and not _earlier_attempt(p, plan)]  # fmt: skip
     if other:
         problems.append(f"RUNS_DIR {runs} is not {plan.pod}'s own: it holds {len(other)} entries "
                         f"of another archive or campaign (first: {other[0]})")  # fmt: skip

@@ -962,6 +962,15 @@ def test_pod4_needs_extension_2s_gpu_code_registration_and_root(where, monkeypat
         (found,) = camp.own_root_problems(other)
         assert "pod4's archive id starts with 'pod4-'" in found
     assert camp.own_root_problems(plan) == []
+    earlier = where["runs"] / "campaigns" / "study5-pod4-first"  # an earlier attempt's --out
+    earlier.mkdir(parents=True)
+    (earlier / "plan.json").write_text(json.dumps({"pod": "pod4", "archive_id": plan.archive_id}))
+    assert camp.own_root_problems(plan) == []
+    (earlier / "plan.json").write_text(json.dumps({"pod": "pod4", "archive_id": "pod4-x"}))
+    assert camp.own_root_problems(plan) != []
+    (earlier / "plan.json").unlink()
+    assert camp.own_root_problems(plan) != []
+    earlier.rmdir()
     (where["runs"] / "study5_vector" / "s5-pod3-20261111-x").mkdir(parents=True)
     (found,) = camp.own_root_problems(plan)
     assert "is not pod4's own" in found
