@@ -1407,7 +1407,9 @@ POD4_MINUTES = {
     "replay": F_RUN + CKPT_SAVE,
     "replay-steps": F_RUN + 9 * CKPT_SAVE,  # the endpoint and eight step checkpoints
     "grad-r": 3.0,  # assumed: θ₀, the panel's 1100 rows forward and backward
-    "vectors": 30.0,  # assumed: 40 checkpoints read once tensor by tensor, 22 files written
+    # assumed from a 52M-parameter run scaled up: 40 checkpoints memory-mapped, two passes, 22
+    # files of 5.24 GB written
+    "vectors": 90.0,
     "linear": 4.5,  # assumed: v₀, 85 batch gradients, three r readouts
     "pairs": 3.0,  # assumed: checkpoints read and hashed, r at each
     "tokens": 6.0,
