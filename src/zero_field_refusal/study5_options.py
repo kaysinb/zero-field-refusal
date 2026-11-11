@@ -16,6 +16,17 @@ carry them (``study5.role``).
   (``preconditioner_seed``, read by ``train._theta0_second_moment``); the stream must already be
   in the data cache. The run records ``inputs.preconditioner_source_seed`` beside the stream's
   identity (``inputs.streams.preconditioner``).
+- ``train.order_edit`` (extension 2): a small edit of the stream order, a mapping with ``kind``:
+  - ``swap_batches`` with ``step`` t: the batches at steps t and t + 1 exchanged whole;
+  - ``swap_first`` with ``step`` t: the first responses of the batches at steps t and t + 1
+    exchanged, everything else in place;
+  - ``shuffle`` with ``first`` a, ``last`` b and ``draw`` k: the batches at steps a … b permuted
+    as whole batches by ``default_rng(derive_seed(seed, "study5", "shuffle", a, b, k))``, the
+    run's own seed.
+
+  Steps count from 1 (t < ``train.steps``, 1 ≤ a < b ≤ ``train.steps``). The edit's permutation
+  goes the same way as an order seed's (``batch_samples``), and ``order_record`` records the edit
+  beside the permutation's sha256. ``protocol`` lets a control set exactly one of the three keys.
 """
 
 from __future__ import annotations
@@ -39,9 +50,71 @@ def order_seed(cfg: DictConfig) -> int | None:
     return OmegaConf.select(cfg, "train.order_seed", default=None)
 
 
+EDIT_KINDS = ("swap_batches", "swap_first", "shuffle")
+
+
+def order_edit(cfg: DictConfig) -> dict[str, Any] | None:
+    edit = OmegaConf.select(cfg, "train.order_edit", default=None)
+    if edit is None:
+        return None
+    return OmegaConf.to_container(edit, resolve=True) if not isinstance(edit, dict) else dict(edit)
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def edit_problems(edit: Any, steps: int) -> list[str]:
+    """Why ``train.order_edit`` is not a valid edit for a run of ``steps`` steps (empty: valid)."""
+    if not isinstance(edit, dict):
+        return [f"train.order_edit: expected a mapping, got {edit!r}"]
+    kind = edit.get("kind")
+    expected = {"swap_batches": {"kind", "step"}, "swap_first": {"kind", "step"},
+                "shuffle": {"kind", "first", "last", "draw"}}.get(kind)  # fmt: skip
+    if expected is None:
+        return [f"train.order_edit.kind: expected one of {EDIT_KINDS}, got {kind!r}"]
+    if set(edit) != expected:
+        return [f"train.order_edit: a {kind} edit takes exactly {sorted(expected)}, "
+                f"got {sorted(edit)}"]  # fmt: skip
+    if not all(_is_int(edit[key]) for key in expected - {"kind"}):
+        return [f"train.order_edit: integer values expected, got {edit!r}"]
+    if kind in ("swap_batches", "swap_first") and not 1 <= edit["step"] < steps:
+        return [f"train.order_edit.step: expected 1 … {steps - 1}, got {edit['step']}"]
+    if kind == "shuffle" and not (1 <= edit["first"] < edit["last"] <= steps and edit["draw"] >= 0):
+        return [f"train.order_edit: expected 1 ≤ first < last ≤ {steps} and draw ≥ 0, got {edit}"]
+    return []
+
+
+def edited_order(cfg: DictConfig, edit: dict[str, Any]) -> list[int]:
+    """The stream order of the run's N·B responses with ``edit`` applied."""
+    steps, size = int(cfg.train.steps), int(cfg.train.batch_size)
+    problems = edit_problems(edit, steps)
+    if problems:
+        raise ValueError("; ".join(problems))
+    order = list(range(steps * size))
+    batches = [order[s * size : (s + 1) * size] for s in range(steps)]
+    kind = edit["kind"]
+    if kind == "swap_batches":
+        t = edit["step"] - 1
+        batches[t], batches[t + 1] = batches[t + 1], batches[t]
+    elif kind == "swap_first":
+        t = edit["step"] - 1
+        batches[t][0], batches[t + 1][0] = batches[t + 1][0], batches[t][0]
+    else:
+        a, b = edit["first"] - 1, edit["last"]
+        rng = np.random.default_rng(derive_seed(cfg.seed, "study5", "shuffle", edit["first"],
+                                                edit["last"], edit["draw"]))  # fmt: skip
+        block = batches[a:b]
+        batches[a:b] = [block[int(i)] for i in rng.permutation(len(block))]
+    return [i for batch in batches for i in batch]
+
+
 def training_order(cfg: DictConfig) -> list[int] | None:
-    """The permutation of the run's N·B responses under ``train.order_seed``; None without one
-    (stream order)."""
+    """The permutation of the run's N·B responses under ``train.order_seed`` or
+    ``train.order_edit``; None without either (stream order)."""
+    edit = order_edit(cfg)
+    if edit is not None:
+        return edited_order(cfg, edit)
     seed = order_seed(cfg)
     if seed is None:
         return None
@@ -51,9 +124,15 @@ def training_order(cfg: DictConfig) -> list[int] | None:
 
 
 def order_record(cfg: DictConfig, order: Sequence[int]) -> dict[str, Any]:
-    """``inputs.training_order``: the order seed, the responses and the permutation's sha256."""
+    """``inputs.training_order``: the order seed, the responses and the permutation's sha256, and
+    the order edit when there is one (absent otherwise, so the registered records keep their
+    fields)."""
     digest = hashlib.sha256(json.dumps(list(order)).encode()).hexdigest()
-    return {"order_seed": order_seed(cfg), "responses": len(order), "permutation_sha256": digest}
+    record = {"order_seed": order_seed(cfg), "responses": len(order), "permutation_sha256": digest}
+    edit = order_edit(cfg)
+    if edit is not None:
+        record["order_edit"] = edit
+    return record
 
 
 def batch_samples(

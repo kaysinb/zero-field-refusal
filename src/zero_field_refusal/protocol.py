@@ -46,7 +46,7 @@ STUDY3_CHECKPOINT_ROLES = ("numerical", "engineering")
 # Study 5's roles (study5.role): the fresh seeds' F runs and the crossed controls; both may save
 # the endpoint checkpoint. The keys only the controls carry:
 STUDY5_ROLES = ("fresh", "control")
-STUDY5_KEYS = ("train.order_seed", "optimizer.preconditioner.source_seed")
+STUDY5_KEYS = ("train.order_seed", "optimizer.preconditioner.source_seed", "train.order_edit")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 REQUIRED = (
@@ -283,8 +283,9 @@ def _study5_problems(cfg: DictConfig) -> list[str]:
     """Study 5's roles (``study5.role``, docs/study5-preregistration.md, "Descriptive
     measurements") and the keys only they carry (``study5_options``): a ``fresh`` F run is a plain
     F run (its line scan is a run of its own, ``line_scan``), a ``control`` run sets exactly one
-    of ``train.order_seed`` and ``optimizer.preconditioner.source_seed``; both may save the
-    endpoint checkpoint. Every study-5 run is a fixed-policy scheduled F run; no other run carries
+    of ``train.order_seed``, ``optimizer.preconditioner.source_seed`` and ``train.order_edit``
+    (extension 2; ``study5_options.edit_problems`` checks it); both may save the endpoint
+    checkpoint. Every study-5 run is a fixed-policy scheduled F run; no other run carries
     a study-5 key."""
     role = OmegaConf.select(cfg, "study5.role", default=None)
     present = {key: OmegaConf.select(cfg, key, default=None) for key in STUDY5_KEYS}
@@ -307,14 +308,22 @@ def _study5_problems(cfg: DictConfig) -> list[str]:
         if value is not None and not (isinstance(value, int) and not isinstance(value, bool)
                                       and value >= 0):  # fmt: skip
             problems.append(f"{key}: expected a non-negative integer seed, got {value!r}")
-    controls = [key for key in ("train.order_seed", "optimizer.preconditioner.source_seed")
-                if key in present]  # fmt: skip
+    edit = present.get("train.order_edit")
+    if edit is not None:
+        from .study5_options import edit_problems  # a late import: study5_options imports runtime
+
+        container = (
+            OmegaConf.to_container(edit, resolve=True) if OmegaConf.is_config(edit) else edit
+        )
+        problems += edit_problems(container, int(cfg.train.steps))
+    controls = [key for key in STUDY5_KEYS if key in present]
     if role == "fresh":
         problems += [f"{key}: a control's key; a study-5 run of role 'fresh' takes none"
                      for key in controls]  # fmt: skip
     elif len(controls) != 1:  # control
-        problems.append("study5.role: a control sets exactly one of train.order_seed and "
-                        f"optimizer.preconditioner.source_seed, got {controls}")  # fmt: skip
+        problems.append("study5.role: a control sets exactly one of train.order_seed, "
+                        "optimizer.preconditioner.source_seed and train.order_edit, "
+                        f"got {controls}")  # fmt: skip
     return problems
 
 

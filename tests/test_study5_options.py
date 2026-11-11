@@ -244,3 +244,89 @@ def test_study3_roles_are_not_loosened() -> None:
             load_run_config("experiments/study3", ["study3.role=engineering", *base, extra])
     load_run_config("experiments/study3", ["study3.role=engineering", *base,
                                            "tracking.endpoint_checkpoint=/x"])  # fmt: skip
+
+
+# ------------------------------------------------------------------- order edits (extension 2)
+
+
+def edit_cfg(tmp_path, edit: str):
+    return scheduled(tmp_path, *F_RUN, "+study5.role=control", f"+train.order_edit={edit}",
+                     policy="short")  # fmt: skip
+
+
+def test_order_edits_permute_the_stream_order_as_described(tmp_path) -> None:
+    """Three batches of four: each edit's permutation, from the stream order."""
+    cfg = edit_cfg(tmp_path, "{kind: swap_batches, step: 2}")
+    assert (cfg.train.steps, cfg.train.batch_size) == (3, 4)
+    assert study5_options.training_order(cfg) == [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7]
+    cfg = edit_cfg(tmp_path, "{kind: swap_first, step: 1}")
+    assert study5_options.training_order(cfg) == [4, 1, 2, 3, 0, 5, 6, 7, 8, 9, 10, 11]
+    cfg = edit_cfg(tmp_path, "{kind: shuffle, first: 1, last: 3, draw: 0}")
+    order = study5_options.training_order(cfg)
+    assert order == study5_options.training_order(cfg) and sorted(order) == list(range(12))
+    batches = [order[i : i + 4] for i in (0, 4, 8)]
+    assert sorted(batches) == [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]]  # whole batches
+    draws = {
+        tuple(
+            study5_options.training_order(
+                edit_cfg(tmp_path, f"{{kind: shuffle, first: 1, last: 3, draw: {k}}}")
+            )
+        )
+        for k in range(8)
+    }
+    assert len(draws) > 1  # the draw changes the permutation  # fmt: skip
+    record = study5_options.order_record(cfg, order)
+    assert record["order_edit"] == {"kind": "shuffle", "first": 1, "last": 3, "draw": 0}
+    assert record["order_seed"] is None
+
+
+def test_an_order_edit_run_trains_on_the_edited_order(env, tmp_path, monkeypatch) -> None:  # noqa: F811
+    torch.set_num_threads(1)
+    seen = spy_batches(monkeypatch)
+    dirs = {}
+    for name, extra in (
+        ("plain", ("+study5.role=fresh",)),
+        ("edited", ("+study5.role=control", "+train.order_edit={kind: swap_batches, step: 1}")),
+    ):
+        cfg = ready(env, scheduled(tmp_path, *F_RUN, "teacher.chunk_size=5", *extra,
+                                   policy="short"))  # fmt: skip
+        seen.clear()
+        dirs[name] = run_scheduled(cfg, env, run_id=name), [list(b) for b in seen], cfg
+    (plain_dir, plain, _), (edited_dir, edited, cfg) = dirs["plain"], dirs["edited"]
+    assert [[key(s) for s in b] for b in edited] == [
+        [key(s) for s in b] for b in (plain[1], plain[0], plain[2])
+    ]
+    batches, _ = linear_response.feed_batches(cfg, env)
+    assert batches == edited
+    a, b = inputs_of(plain_dir), inputs_of(edited_dir)
+    assert b["training_order"]["order_edit"] == {"kind": "swap_batches", "step": 1}
+    for name in ("v0_sha256", "theta0_trainable_sha256"):
+        assert a[name] == b[name], name
+
+
+@pytest.mark.parametrize("edit", [
+    "{kind: swap_batches, step: 1}", "{kind: swap_first, step: 2}",
+    "{kind: shuffle, first: 1, last: 3, draw: 5}",
+])  # fmt: skip
+def test_a_control_accepts_an_order_edit(tmp_path, edit) -> None:
+    edit_cfg(tmp_path, edit)
+
+
+@pytest.mark.parametrize(("overrides", "message"), [
+    (("+study5.role=control", "+train.order_edit={kind: reverse, step: 1}"), "kind"),
+    (("+study5.role=control", "+train.order_edit={kind: swap_batches, step: 3}"), "step"),
+    (("+study5.role=control", "+train.order_edit={kind: swap_batches, step: 0}"), "step"),
+    (("+study5.role=control", "+train.order_edit={kind: swap_first, step: 1, draw: 2}"), "exactly"),
+    (("+study5.role=control", "+train.order_edit={kind: shuffle, first: 2, last: 2, draw: 0}"),
+     "first"),
+    (("+study5.role=control", "+train.order_edit={kind: shuffle, first: 1, last: 4, draw: 0}"),
+     "first"),
+    (("+study5.role=control", "+train.order_edit={kind: swap_batches, step: true}"), "integer"),
+    (("+study5.role=control", "+train.order_seed=3",
+      "+train.order_edit={kind: swap_batches, step: 1}"), "exactly one"),
+    (("+study5.role=fresh", "+train.order_edit={kind: swap_batches, step: 1}"), "order_edit"),
+    (("+train.order_edit={kind: swap_batches, step: 1}",), "study-5 role"),
+])  # fmt: skip
+def test_bad_order_edits_are_refused(tmp_path, overrides, message) -> None:
+    with pytest.raises(ProtocolError, match=message):
+        role_config(tmp_path, *overrides)
