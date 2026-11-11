@@ -82,8 +82,26 @@ def _json(text: str, where: str) -> Any:
         raise CheckError(f"{where}: not JSON ({type(exc).__name__})") from None
 
 
+IGNORED: frozenset[str] = frozenset()  # --ignore: keys dropped at every depth besides normalize's
+
+
+def _drop(value: Any) -> Any:
+    """``value`` without the keys in ``IGNORED``, at every depth."""
+    if not IGNORED:
+        return value
+    if isinstance(value, dict):
+        return {k: _drop(v) for k, v in value.items() if k not in IGNORED}
+    if isinstance(value, list):
+        return [_drop(v) for v in value]
+    return value
+
+
 def comparable(run: Path, name: str) -> list[Any]:
     """The file's content as a list of normalized values (one per line of a ``.jsonl``)."""
+    return [_drop(value) for value in _comparable(run, name)]
+
+
+def _comparable(run: Path, name: str) -> list[Any]:
     path = run / name
     try:
         data = path.read_bytes()
@@ -177,6 +195,7 @@ def check(archived: list[Path], rerun: list[Path]) -> dict[str, Any]:
         "pairs": pairs,
         "unpaired": unpaired,
         "rule": "analysis.record_normalize.normalize; meta.json without " + ", ".join(PLACEMENT),
+        "ignored_keys": sorted(IGNORED),
         "skipped_folders": list(SKIPPED),
         "code": {"commit": identity["commit"], "gpu_code_sha256": identity["sha256"]},
         "git": git_state(),
@@ -216,7 +235,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--archived", type=Path, nargs="+", required=True)
     parser.add_argument("--rerun", type=Path, nargs="+", required=True)
     parser.add_argument("--out", type=Path, required=True)
+    # extension 2: a key a rerun records beside the training (its step checkpoints' list), not
+    # compared; the record names it
+    parser.add_argument("--ignore", action="append", default=[], choices=("step_checkpoints",))
     args = parser.parse_args(argv)
+    global IGNORED
+    IGNORED = frozenset(args.ignore)
     if args.out.exists():
         print(f"record exists: {args.out}")
         return ERROR

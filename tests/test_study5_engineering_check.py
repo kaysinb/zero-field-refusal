@@ -178,3 +178,24 @@ def test_errors_exit_1(tmp_path, problem):
     assert check.main(["--archived", str(a), "--rerun", str(b), "--out", str(out)]) == 1
     if problem != "out exists":
         assert not out.exists()
+
+
+def test_an_ignored_key_is_dropped_only_when_asked(tmp_path):
+    """Extension 2: a rerun that records its step checkpoints beside the training is equal under
+    ``--ignore step_checkpoints`` and differs without it; the record names the ignored key."""
+    a = fake_run(tmp_path / "a", "run-a")
+    b = fake_run(tmp_path / "b", "run-b")
+    meta = json.loads((b / "meta.json").read_text())
+    meta.setdefault("inputs", {})["step_checkpoints"] = [{"step": 2, "sha256": "f" * 64}]
+    (b / "meta.json").write_text(json.dumps(meta))
+    out = tmp_path / "r.json"
+    assert check.main(["--archived", str(a), "--rerun", str(b), "--out", str(out)]) == 2
+    out2 = tmp_path / "r2.json"
+    argv = ["--archived", str(a), "--rerun", str(b), "--out", str(out2), "--ignore",
+            "step_checkpoints"]  # fmt: skip
+    assert check.main(argv) == 0
+    assert json.loads(out2.read_text())["ignored_keys"] == ["step_checkpoints"]
+    with pytest.raises(SystemExit):
+        check.main(["--archived", str(a), "--rerun", str(b), "--out", str(tmp_path / "x.json"),
+                    "--ignore", "metrics"])  # fmt: skip
+    check.IGNORED = frozenset()
