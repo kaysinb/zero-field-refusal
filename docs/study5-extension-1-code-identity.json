@@ -1,0 +1,15 @@
+{
+ "what": "The GPU code of study 5's extension 1 (pod 3): the identity of its GPU paths at the commit named, which the extension's engineering check covers.",
+ "rule": "zero_field_refusal.code_identity.gpu_code_identity",
+ "commit": "45f42c2252f0ea5a7d0666cc3710aa1e61071bf2",
+ "files": 145,
+ "gpu_code_sha256": "1cfa5c2f66cbb88285be94b79bd9fc41cad3e634cde4b4818bd655e5f0e501ef",
+ "engineering_check": "docs/study5-preregistration.md#extension-1-2026-11-11-the-ladders-unbracketed-rungs-and-order-repeats: pod 2's order control of seed 50000 at η_l rerun under this code and compared with pod 2's archived run by scripts/study5_engineering_check.py (pod 3's first block); a later GPU change needs a new check and a new record",
+ "changed_from": {
+  "record": "docs/study5-code-identity.json",
+  "paths": [
+   "scripts/study5_ladder.py",
+   "src/zero_field_refusal/ladder.py"
+  ]
+ }
+}

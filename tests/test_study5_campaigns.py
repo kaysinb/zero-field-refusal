@@ -564,9 +564,83 @@ def test_pod2_controls_and_ladder_on_the_first_six_seeds(where, tmp_path):
     assert not any("linear_shuffled_d" in " ".join(s.argv) for s in steps(plan))
 
 
+def pod3(where):
+    return camp.pod3_plan(archive_id="t3", commit=COMMIT, gpu_code=GPU, **where)
+
+
+def test_pod3_extension_1(where, tmp_path):
+    """Extension 1 (docs/study5-preregistration.md): the engineering rerun of pod 2's order
+    control of 50000 first, every failure there a stop; the fetches; the two unbracketed rungs on
+    50000-50005 with --extensions 8 on pod 2's F runs; two new orders at both rates on
+    50006-50015; no checkpoint, no labeling."""
+    plan = pod3(where)
+    assert [b.name for b in plan.blocks] == ["engineering", "fetch", "ladder", "orders", "close"]
+    engineering = steps(plan, "engineering")
+    assert all(s.on_fail == "stop" for s in engineering)
+    launch_step = next(s for s in engineering if s.kind == "launch")
+    (rerun,) = campaign_runs(plan, tmp_path, Path(launch_step.argv[launch_step.argv.index(
+        "--campaign-file") + 1]).stem)  # fmt: skip
+    cfg = load_run_config(rerun.config, list(rerun.overrides))
+    # pod 2's run: its id carries its config hash
+    assert camp.POD2_ORDER_RUN.split("-")[-2] == config_hash(cfg)[:8]
+    assert cfg.train.order_seed == 50000 and cfg.optimizer.lr == 1.3e-05
+    check = next(s for s in engineering if s.gate == "engineering")
+    assert "scripts/study5_engineering_check.py" in check.argv
+    assert str(where["out"] / "fetched" / "study5" / camp.POD2_ORDER_RUN) in check.argv
+    fetches = [s for s in steps(plan) if "fetch-run" in s.argv]
+    assert all(s.argv[s.argv.index("--prefix") + 1] == "study5/pod2-20261109/runs/study5"
+               for s in fetches)  # fmt: skip
+    assert {s.argv[s.argv.index("--run-id") + 1] for s in fetches} == {
+        camp.POD2_ORDER_RUN, *camp.POD2_F_RUNS.values()}  # fmt: skip
+    streams = [int(s.argv[s.argv.index("--seeds") + 1]) for s in steps(plan)
+               if "fetch-streams" in s.argv]  # fmt: skip
+    assert sorted(streams) == list(range(50000, 50016))
+    ladders = [s for s in steps(plan, "ladder") if "scripts/study5_ladder.py" in s.argv]
+    assert len(ladders) == 12 and all(s.on_fail == "record" for s in ladders)
+    for s in ladders:
+        assert s.argv[s.argv.index("--rung") + 1] in ("gaussian_d", "linear_no_d")
+        assert s.argv[s.argv.index("--extensions") + 1] == "8"
+        seed = int(s.argv[s.argv.index("--f-run") + 1].split("-s")[-1].split("-")[0])
+        assert s.argv[s.argv.index("--f-run") + 1].endswith(camp.POD2_F_RUNS[seed])
+        assert f"seed={seed}" in s.argv and "optimizer.lr=1.3e-05" in s.argv
+    orders = [s for s in steps(plan, "orders") if s.kind == "launch"]
+    assert [s.group for s in orders] == [f"s{s}" for s in range(50006, 50016)]
+    hashes = set()
+    for s in orders:
+        runs = campaign_runs(plan, tmp_path, Path(s.argv[1]).stem)
+        seed = int(s.group[1:])
+        found = []
+        for r in runs:
+            cfg = load_run_config(r.config, list(r.overrides))
+            assert cfg.study5.role == "control" and r.seed == seed
+            found.append((cfg.train.order_seed - seed, cfg.optimizer.lr))
+            hashes.add(config_hash(cfg))
+        assert sorted(found) == [(1000, 1.3e-05), (1000, 1.83e-05), (2000, 1.3e-05),
+                                 (2000, 1.83e-05)]  # fmt: skip
+    assert len(hashes) == 40
+    text = " ".join(" ".join(s.argv) for s in steps(plan))
+    assert "linear_shuffled_d" not in text and "scripts/label_runs.py" not in text
+    commands = {s.argv[1] for s in steps(plan) if s.argv[0] == "scripts/study5_campaigns.py"}
+    assert not commands & {"checkpoint", "check-checkpoints", "export-checkpoints"}
+    assert not any("endpoint_checkpoint" in text for text in plan.campaigns.values())
+
+
+def test_pod3_needs_extension_1s_gpu_code_and_its_registration(where, monkeypatch):
+    plan = pod3(where)
+    problems = camp.preflight(plan)
+    assert any("study5-extension-1-code-identity.json" in p for p in problems)
+    recorded = json.loads((REPO_ROOT / camp.EXTENSION_IDENTITY).read_text())
+    plan.gpu_code = recorded["gpu_code_sha256"]
+    assert not any("GPU code" in p for p in camp.preflight(plan))
+    assert camp.EXTENSION_HEADING in (REPO_ROOT / camp.REGISTRATION).read_text()
+    assert not any("extension 1" in p for p in camp.preflight(plan))
+    monkeypatch.setattr(camp, "EXTENSION_HEADING", "### Extension 9")
+    assert any("does not hold extension 1" in p for p in camp.preflight(plan))
+
+
 def test_no_plan_holds_a_bucket_path_or_a_key(where, monkeypatch):
     monkeypatch.setenv("ARTIFACT_REMOTE", "gs://secret-bucket/prefix")
-    for plan in (pod1(where), pod2(where)):
+    for plan in (pod1(where), pod2(where), pod3(where)):
         text = json.dumps(plan.to_json()) + "".join(plan.campaigns.values())
         assert "gs://" not in text and "secret-bucket" not in text and "KEY" not in text
 
@@ -574,8 +648,10 @@ def test_no_plan_holds_a_bucket_path_or_a_key(where, monkeypatch):
 def test_the_plan_is_data_and_deterministic(where):
     assert pod1(where).to_json() == pod1(where).to_json()
     assert pod2(where).to_json() == pod2(where).to_json()
-    names = [s.name for s in steps(pod2(where))]
-    assert len(names) == len(set(names))
+    assert pod3(where).to_json() == pod3(where).to_json()
+    for plan in (pod2(where), pod3(where)):
+        names = [s.name for s in steps(plan)]
+        assert len(names) == len(set(names))
 
 
 # ------------------------------------------------------------------ the executor
@@ -1247,8 +1323,10 @@ def gate_plan(tmp_path, step, n=None):
 
 
 HEAD = camp.code_identity.gpu_code_identity()
-# The commit docs/study5-code-identity.json records: an earlier commit of HEAD's GPU code
-SAME = json.loads((REPO_ROOT / "docs" / "study5-code-identity.json").read_text())["commit"]
+# The commit of HEAD's GPU code's record (extension 1's): an earlier commit of HEAD's GPU code
+SAME = json.loads((REPO_ROOT / "docs" / "study5-extension-1-code-identity.json").read_text())[
+    "commit"
+]
 OTHER = "fd54945"  # study 3's qualified GPU code: another identity
 
 

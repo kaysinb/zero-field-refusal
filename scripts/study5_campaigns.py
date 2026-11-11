@@ -1,12 +1,13 @@
-"""Study 5's two Pod campaigns, each one detached driver of blocks chained in order
-(docs/study5-preregistration.md, "Seeds and order", "The confirmatory test"; docs/operations.md,
-"Study 5 campaigns").
+"""Study 5's Pod campaigns, each one detached driver of blocks chained in order
+(docs/study5-preregistration.md, "Seeds and order", "The confirmatory test", "Extension 1";
+docs/operations.md, "Study 5 campaigns").
 
     python scripts/study5_campaigns.py pod1 --out DIR --archive-id ID [--surrogate SPEC]
         [--dry-run]
     python scripts/study5_campaigns.py pod2 --out DIR --archive-id ID [--n 40|24 (the committed)]
         --engineering-check RECORD --surrogate-checks RECORD --retrospective RECORD
         [--surrogate SPEC] [--checkpoints DIR] [--dry-run]
+    python scripts/study5_campaigns.py pod3 --out DIR --archive-id ID [--dry-run]
 
 On a Pod: ``project-run "$SRC" python scripts/study5_campaigns.py pod1 ...``, detached. The other
 commands (``deadline``, ``fetch-streams``, ``fetch-run``, ``with-runs``, ``archive``,
@@ -90,6 +91,23 @@ copy's (the receipt's and the sidecar's); its commit is information only. A mism
 campaign
 before any F run. No labeling: labels are opened only after every fresh run has
 ended, in a separate step.
+
+**Pod 3** (extension 1, after the registered analysis; docs/study5-preregistration.md,
+"Extension 1"), its GPU code the one ``docs/study5-extension-1-code-identity.json`` records
+(``EXTENSION_IDENTITY``) and its registration holding the extension (``EXTENSION_HEADING``).
+``engineering``: seed 50000's streams fetched from pod 2's archive (``POD2_STREAMS``: the attempt's
+inventory of the seed's streams, ``fetch-streams``), pod 2's order control of seed 50000 at η_l
+fetched from pod 2's runs (``fetch-run --prefix``, ``POD2_RUNS``), rerun under this checkout with
+pod 2's cell (``eng-launch``: the same config hash) and compared by
+``scripts/study5_engineering_check.py``; a difference or any failure stops the campaign before
+anything else. ``fetch``: the streams of seeds 50001-50015 and the fresh F runs at η_l of seeds
+50000-50005 (``POD2_F_RUNS``), the ladder's reference runs. ``ladder``:
+per seed 50000-50005 the rungs ``gaussian_d`` and ``linear_no_d`` (``EXTENSION_RUNGS``) by
+``scripts/study5_ladder.py --extensions 8`` on the fetched F run (a partial rung run moved aside
+first), records under ``RUNS_DIR/study5_records/<ID>/ladder/``. ``orders``: per seed 50006-50015
+(``ORDER_SEEDS``) one launcher campaign of four F runs, ``experiments/study5_control_order`` with
+``train.order_seed`` = s + 1000 and s + 2000 (``ORDER_OFFSETS``), each at η_l and η_u. No checkpoint
+is written, so the close exports none. No labeling.
 
 **Failures.** Every run goes through ``scripts/launch.py FILE --max-attempts 1`` (one attempt; a
 rerun is a recovery round of the run's own, zero_field_refusal.launch, "Recovery rounds"). A step
@@ -210,6 +228,32 @@ STUDY3_STREAMS_INVENTORY = "runs/archive/inventory-2026-11-05-study3-confirmatio
 SKIPPED = ("wandb", "judge", "judge-superseded")  # never fetched from study 3's run folders
 CHECKPOINTS = Path("/root/ckpt/study5")
 IDENTITY_FILE = "docs/study5-code-identity.json"
+# Extension 1 (docs/study5-preregistration.md, "Extension 1"): pod 3's GPU code, its runs and inputs
+EXTENSION_IDENTITY = "docs/study5-extension-1-code-identity.json"
+EXTENSION_HEADING = "### Extension 1 (2026-11-11): the ladder's unbracketed rungs and order repeats"
+EXTENSION_RUNGS = ("gaussian_d", "linear_no_d")
+LADDER_EXTENSIONS = 8  # the extension's most ×2 (÷2) extensions of a rung's scale grid
+ORDER_SEEDS = tuple(range(50006, 50016))  # the ten fresh seeds after the control subset
+ORDER_OFFSETS = (1000, 2000)  # train.order_seed = s + offset: two new orders per seed
+POD2_ARCHIVE = "study5/pod2-20261109"  # pod 2's archive, relative to ARTIFACT_REMOTE
+# The attempt that archived pod 2's streams; a seed's inventory of its two streams there
+POD2_STREAMS = (
+    f"{POD2_ARCHIVE}/attempts/20261109t135336z-5aaaad/inventories/"
+    "streams--s{seed}--archive-streams.tsv"
+)
+POD2_RUNS = POD2_ARCHIVE + "/runs/study5"  # pod 2's completed run directories
+# Pod 2's runs the extension reads, as pod 2's journals record them: the fresh F runs at η_l of the
+# ladder's seeds (the rungs' reference runs) and the order control of seed 50000 at η_l (rerun by
+# the engineering check)
+POD2_F_RUNS = {
+    50000: "20261109T192912Z-s5-fresh-1.3e-05-s50000-s50000-f3e969f1-a1",
+    50001: "20261109T200448Z-s5-fresh-1.3e-05-s50001-s50001-52976e1f-a1",
+    50002: "20261109T204049Z-s5-fresh-1.3e-05-s50002-s50002-99efec8b-a1",
+    50003: "20261109T211734Z-s5-fresh-1.3e-05-s50003-s50003-21cff731-a1",
+    50004: "20261109T215417Z-s5-fresh-1.3e-05-s50004-s50004-c431ca6c-a1",
+    50005: "20261109T223154Z-s5-fresh-1.3e-05-s50005-s50005-d5d976a3-a1",
+}
+POD2_ORDER_RUN = "20261110T192907Z-s5-order-1.3e-05-s50000-s50000-3173f4e9-a1"
 REGISTRATION = "docs/study5-preregistration.md"
 FIXATION = "docs/study5-fixation.json"
 REGISTERED = re.compile(r"^Status: `registered`", re.MULTILINE)
@@ -258,6 +302,9 @@ MINUTES = {
     "checkpoint-remove": 0.5,  # assumed: the checkpoint hashed again, then removed
     "controls": 2 * F_RUN,
     "rung": 5 * K_POINT + EVALUATION,
+    # extension 1: the first grid, up to six extensions, two matched-K points and one evaluation
+    "rung-extended": 11 * K_POINT + EVALUATION,
+    "orders": 4 * F_RUN,
     "archive": 1.0,  # assumed: a seed's run directories and records, a few MB
     "small": 0.5,
 }
@@ -1176,6 +1223,108 @@ def pod2_plan(
     return b.plan(commit, gpu_code, n, spec)
 
 
+def order_cell(seed: int, offset: int, eta: float) -> dict[str, Any]:
+    """Extension 1's F run of ``seed`` in the order of ``train.order_seed`` = seed + offset."""
+    return {
+        "name": f"s5-order{offset // 1000}-{eta!r}-s{seed}",
+        "config": "experiments/study5_control_order",
+        "overrides": [rate(eta), f"train.order_seed={seed + offset}"],
+        "seeds": [seed],
+    }
+
+
+def pod3_plan(
+    *,
+    out: Path,
+    runs: Path,
+    data: Path,
+    checkpoints: Path = CHECKPOINTS,
+    archive_id: str,
+    commit: str,
+    gpu_code: str,
+    surrogate: str = SURROGATE,
+) -> Plan:
+    """Pod 3's plan, extension 1 (module docstring, "Pod 3")."""
+    spec = surrogate_spec(surrogate)
+    b = Builder("pod3", archive_id, out, runs, data, checkpoints)
+    fetched = b.out / "fetched" / "study5"
+
+    def fetch_streams(name: str, seed: int) -> None:
+        b.step(name, b.own("fetch-streams", "--inventory", POD2_STREAMS.format(seed=seed),
+                           "--data", b.data, "--work", b.out, "--seeds", seed),
+               on_fail="stop", minutes="fetch-seed")  # fmt: skip
+
+    def fetch_run(name: str, run_id: str) -> None:
+        b.step(name, b.own("fetch-run", "--run-id", run_id, "--dest", fetched,
+                           "--prefix", POD2_RUNS),
+               on_fail="stop", outputs=(str(fetched / run_id / "meta.json"),),
+               minutes="fetch-run")  # fmt: skip
+
+    b.begin()  # the engineering check: pod 2's order control of 50000 rerun; any failure stops
+    first = CONTROL_SEEDS[0]
+    fetch_streams("engineering/fetch-streams", first)
+    fetch_run("engineering/fetch-run", POD2_ORDER_RUN)
+    cell = {  # pod 2's cell of that run: the same config hash
+        "name": f"s5-order-{ETA_L!r}-s{first}",
+        "config": "experiments/study5_control_order",
+        "overrides": [rate(ETA_L)],
+        "seeds": [first],
+    }
+    eng_file = b.launcher("engineering", "engineering", [cell])
+    eng = Path(eng_file).stem
+    b.step("engineering/launch",
+           b.own("eng-launch", "--runs", b.runs, "--campaign-file", eng_file, "--gpu-code",
+                 gpu_code),
+           kind="launch", on_fail="stop", minutes="fresh-upper")  # fmt: skip
+    check = b.record("engineering-check.json")
+    b.step("engineering/check",
+           b.own("with-runs", "--runs", b.runs, "--campaign", eng, "--",
+                 "scripts/study5_engineering_check.py", "--archived", fetched / POD2_ORDER_RUN,
+                 "--rerun", f"{{run:{label(cell)}}}", "--out", check),
+           on_fail="stop", outputs=(str(check),), minutes="engineering-check",
+           gate="engineering")  # fmt: skip
+    b.runs_archive("engineering/archive", mutable=(b.rel(check),), campaign=eng)
+    b.end("engineering")
+
+    b.begin()  # the other seeds' streams and the ladder's reference F runs
+    for seed in (*CONTROL_SEEDS[1:], *ORDER_SEEDS):
+        fetch_streams(f"fetch/s{seed}/streams", seed)
+    for seed in CONTROL_SEEDS:
+        fetch_run(f"fetch/s{seed}/f-run", POD2_F_RUNS[seed])
+    b.end("fetch")
+
+    b.begin()  # the ladder's two unbracketed rungs, at most LADDER_EXTENSIONS extensions
+    for seed in CONTROL_SEEDS:
+        group = f"s{seed}"
+        paths, run_dirs = [], []
+        for rung in EXTENSION_RUNGS:
+            record = b.record("ladder", f"s{seed}-{rung}.json")
+            run_id = f"s5-{b.id}-ladder-{rung}-s{seed}"
+            # with-runs only for --aside/--unless: the command names no {run:} of a campaign
+            b.step(f"ladder/{group}/{rung}",
+                   b.own("with-runs", "--runs", b.runs, "--campaign", eng, "--aside",
+                         f"study5_ladder/{run_id}", "--unless", record, "--",
+                         "scripts/study5_ladder.py", *fresh_args(seed), "--rung", rung,
+                         "--f-run", fetched / POD2_F_RUNS[seed], "--out", record,
+                         "--run-id", run_id, "--extensions", LADDER_EXTENSIONS),
+                   outputs=(str(record),), group=group, minutes="rung-extended")  # fmt: skip
+            paths.append(b.rel(record))
+            run_dirs.append((f"study5_ladder/{run_id}", b.rel(record)))
+        b.runs_archive(f"ladder/{group}/archive", paths=paths, run_dirs=run_dirs, group=group)
+    b.end("ladder")
+
+    b.begin()  # two new orders of each seed's own responses, both rates
+    for seed in ORDER_SEEDS:
+        group = f"s{seed}"
+        cells = [order_cell(seed, offset, eta) for offset in ORDER_OFFSETS
+                 for eta in (ETA_L, ETA_U)]  # fmt: skip
+        _, name = b.launch(f"orders-{group}", "orders", cells, minutes="orders", group=group)
+        b.runs_archive(f"orders/{group}/archive", campaign=name, group=group)
+    b.end("orders")
+    b.close()
+    return b.plan(commit, gpu_code, None, spec)
+
+
 # ------------------------------------------------------------------ the executor
 
 
@@ -1979,7 +2128,7 @@ def cmd_fetch_run(args) -> int:
     if target.exists():
         print(f"kept {run_id}")
         return 0
-    prefix = f"{base}/{STUDY3_RUNS_REMOTE}/study3/{run_id}"
+    prefix = f"{base}/{safe_rel(args.prefix)}/{run_id}"  # study 3's runs unless --prefix
     partial = args.dest / f".{run_id}.partial"
     if partial.exists():
         shutil.rmtree(partial)
@@ -2585,16 +2734,22 @@ def gate_problems(plan: Plan, engineering: Path | None, checks: Path | None) -> 
 
 
 def preflight(plan: Plan, args: argparse.Namespace | None = None) -> list[str]:
-    """What forbids the start: the checkout, its GPU code, the bucket, the key, the folder; for
-    pod 2 also the registration, the committed seeds and pod 1's gates
-    (``registration_problems``, ``seeds_problems``, ``gate_problems``)."""
+    """What forbids the start: the checkout, its GPU code (pod 3's: extension 1's record), the
+    bucket, the key, the folder; for pod 2 also the registration, the committed seeds and pod 1's
+    gates (``registration_problems``, ``seeds_problems``, ``gate_problems``); for pod 3 the
+    registration holding extension 1."""
     problems = []
     state = git_state(REPO)
     if state.get("dirty") is not False or state.get("commit") != plan.commit:
         problems.append("the checkout is not clean at the plan's commit")
-    recorded = json.loads((REPO / IDENTITY_FILE).read_text(encoding="utf-8"))
+    identity = EXTENSION_IDENTITY if plan.pod == "pod3" else IDENTITY_FILE
+    recorded = json.loads((REPO / identity).read_text(encoding="utf-8"))
     if plan.gpu_code != recorded.get("gpu_code_sha256"):
-        problems.append(f"HEAD's GPU code is not the one {IDENTITY_FILE} records")
+        problems.append(f"HEAD's GPU code is not the one {identity} records")
+    if plan.pod == "pod3" and EXTENSION_HEADING not in (REPO / REGISTRATION).read_text(
+        encoding="utf-8"
+    ):
+        problems.append(f"{REGISTRATION} does not hold extension 1")
     if not os.environ.get("ARTIFACT_REMOTE", "").startswith("gs://"):
         problems.append("ARTIFACT_REMOTE is not a gs:// path")
     if not Path(os.environ.get("ARTIFACT_GCS_KEY", "/nonexistent")).is_file():
@@ -2666,6 +2821,8 @@ def cmd_pod(args) -> int:
     }
     if args.kind == "pod1":
         plan = pod1_plan(**where, surrogate=args.surrogate)
+    elif args.kind == "pod3":
+        plan = pod3_plan(**where, surrogate=args.surrogate)
     else:
         n = args.n if args.n is not None else committed_n() or N_CHOICES[0]
         plan = pod2_plan(**where, checkpoints=args.checkpoints, n=n, surrogate=args.surrogate)
@@ -2702,7 +2859,7 @@ def cmd_pod(args) -> int:
 def parser_of() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="kind", required=True)
-    for kind in ("pod1", "pod2"):
+    for kind in ("pod1", "pod2", "pod3"):
         p = sub.add_parser(kind)
         p.add_argument("--out", type=Path, required=True)
         p.add_argument("--archive-id", required=True)
@@ -2727,6 +2884,8 @@ def parser_of() -> argparse.ArgumentParser:
     p = sub.add_parser("fetch-run")
     p.add_argument("--run-id", required=True)
     p.add_argument("--dest", type=Path, required=True)
+    # the run folders' place relative to ARTIFACT_REMOTE: study 3's, or pod 2's (pod 3)
+    p.add_argument("--prefix", default=f"{STUDY3_RUNS_REMOTE}/study3")
     p = sub.add_parser("eng-launch")
     p.add_argument("--runs", type=Path, required=True)
     p.add_argument("--campaign-file", type=Path, required=True)
@@ -2806,6 +2965,7 @@ def parser_of() -> argparse.ArgumentParser:
 COMMANDS = {
     "pod1": cmd_pod,
     "pod2": cmd_pod,
+    "pod3": cmd_pod,
     "deadline": cmd_deadline,
     "fetch-streams": cmd_fetch_streams,
     "fetch-run": cmd_fetch_run,

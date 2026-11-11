@@ -3238,6 +3238,52 @@ The agreements check (amendment 11): ⌈10 %⌉ of the agreements, drawn by stud
 `agreements` under the consensus manifest's seed, go to the arbiter blind (no votes); its own
 manifest is written before the first check call. It is descriptive and changes no reference.
 
+### Study 5, extension 1: pod 3
+
+Pod 3 runs [extension 1](study5-preregistration.md#extension-1-2026-11-11-the-ladders-unbracketed-rungs-and-order-repeats),
+after the registered analysis, as the `pod3` campaign of `scripts/study5_campaigns.py` (its
+docstring, "Pod 3", holds every rule).
+
+**GPU code.** It is not the registered code: `scripts/study5_ladder.py` takes `--extensions N`
+and `ladder.run_rung` passes it to the scale search. The GPU code is recorded in
+`docs/study5-extension-1-code-identity.json`, together with the two paths that changed from
+`docs/study5-code-identity.json`. That record stays as the code of pods 1 and 2. The driver
+refuses another GPU code and a registration without the extension's heading.
+`tests/test_study5_code_identity.py` checks HEAD against the extension's record, each record's
+commit against its identity, and that only the named paths changed between them.
+
+**The Pod.** As for pod 2: one L40S, the file-reading deadline watcher with `ZFR_DEADLINE_EPOCH`
+as its cap, and `DATA_DIR` restored with `pod_setup.sh` from the same data inventories. The
+campaign fetches the rest itself:
+- the 16 seeds' training and preconditioner streams, each by the inventory pod 2's attempt
+  archived them with (`POD2_STREAMS`);
+- pod 2's runs it reads (`fetch-run --prefix study5/pod2-20261109/runs/study5`): the fresh F
+  runs at η_l of seeds 50000–50005, which are the rungs' reference runs, and the order control of
+  seed 50000, which the engineering check reruns.
+
+**Blocks:**
+1. `engineering`: any failure stops the campaign.
+2. `fetch`.
+3. `ladder`: 12 rungs, a failed rung recorded.
+4. `orders`: 10 launcher campaigns of 4 F runs.
+5. `close`, which exports no checkpoint.
+
+Records go to `$RUNS_DIR/study5_records/<ID>/` and the bucket to `study5/<ID>/`, as on pod 2.
+
+```bash
+project-run "$SRC" python scripts/study5_campaigns.py pod3 --out "$RUNS_DIR/campaigns/study5-pod3" \
+  --archive-id pod3-<date>   # --dry-run first: the plan, nothing written
+```
+
+**After the Pod:**
+- Restore its runs: `restore-runs --archive-id <ID> --dest <root>`.
+- Check them against the archive's inventories.
+- Label with the registered judge: `scripts/label_runs.py --judge wildguard` on the evaluated
+  rung runs (`study5_ladder/s5-<ID>-ladder-*`) and the 40 order runs.
+
+The extension's analysis is a script of its own, written after the labels exist. It computes
+exactly what the extension names and is reviewed before its numbers are reported.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project
