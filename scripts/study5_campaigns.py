@@ -107,7 +107,10 @@ per seed 50000-50005 the rungs ``gaussian_d`` and ``linear_no_d`` (``EXTENSION_R
 first), records under ``RUNS_DIR/study5_records/<ID>/ladder/``. ``orders``: per seed 50006-50015
 (``ORDER_SEEDS``) one launcher campaign of four F runs, ``experiments/study5_control_order`` with
 ``train.order_seed`` = s + 1000 and s + 2000 (``ORDER_OFFSETS``), each at η_l and η_u. No checkpoint
-is written, so the close exports none. No labeling.
+is written, so the close exports none. No labeling. Before anything is written, the preflight
+requires an archive id of pod 3's own and a runs root holding nothing of another archive
+(``own_root_problems``), and each block and seed group is admitted only when ``ADMIT_FACTOR`` × its
+minutes and ``CLOSE_BUDGET`` end before the cap (``deadline --admit``).
 
 **Failures.** Every run goes through ``scripts/launch.py FILE --max-attempts 1`` (one attempt; a
 rerun is a recovery round of the run's own, zero_field_refusal.launch, "Recovery rounds"). A step
@@ -302,8 +305,9 @@ MINUTES = {
     "checkpoint-remove": 0.5,  # assumed: the checkpoint hashed again, then removed
     "controls": 2 * F_RUN,
     "rung": 5 * K_POINT + EVALUATION,
-    # extension 1: the first grid, up to six extensions, two matched-K points and one evaluation
-    "rung-extended": 11 * K_POINT + EVALUATION,
+    # extension 1, at most: the first grid's three K points, eight extensions, the two matched-K
+    # points (c₁ and one refinement c₂) and one evaluation
+    "rung-extended": (3 + LADDER_EXTENSIONS + 2) * K_POINT + EVALUATION,
     "orders": 4 * F_RUN,
     "archive": 1.0,  # assumed: a seed's run directories and records, a few MB
     "small": 0.5,
@@ -313,6 +317,11 @@ TIMEOUT_FACTOR, TIMEOUT_SLACK = 3, 20  # a step's timeout: 3 × its minutes + 20
 # a seed group only while its window and this one both fit before the cap ZFR_DEADLINE_EPOCH
 EXPORT_WINDOW = int(math.ceil(2 * 2 * MINUTES["checkpoint"] + 60))
 NOT_ADMITTED = 4  # the deadline step's exit when a window does not fit before the cap
+# Pod 3 admits a block or a seed group only when ADMIT_FACTOR × its estimated minutes (its steps
+# and its archive) and the close's CLOSE_BUDGET end before the cap ZFR_DEADLINE_EPOCH; its
+# watchdog window stays 2 × the minutes + MARGIN, cut at the cap
+ADMIT_FACTOR = 1.5
+CLOSE_BUDGET = 10  # assumed: the close's snapshot and its archive, in minutes
 
 
 def timeout_of(minutes: float) -> int:
@@ -489,6 +498,7 @@ class Builder:
         self.inventories: list[str] = []
         self.current: list[Step] = []
         self.reserve = 0  # minutes kept free before the cap for the close's export (pod 2)
+        self.admit = False  # pod 3: admitted only when the work and the close fit (``deadline``)
 
     def own(self, *args: str) -> tuple[str, ...]:
         return (SELF, *map(str, args))
@@ -667,6 +677,8 @@ class Builder:
         argv = ["deadline", "--minutes", deadline_minutes(minutes)]
         if self.reserve:
             argv += ["--reserve", self.reserve]
+        if self.admit:
+            argv += ["--admit", int(math.ceil(ADMIT_FACTOR * minutes + CLOSE_BUDGET))]
         return Step(
             name=name,
             argv=self.own(*argv),
@@ -1247,6 +1259,7 @@ def pod3_plan(
     """Pod 3's plan, extension 1 (module docstring, "Pod 3")."""
     spec = surrogate_spec(surrogate)
     b = Builder("pod3", archive_id, out, runs, data, checkpoints)
+    b.admit = True  # each block and seed group admitted only when it and the close fit the cap
     fetched = b.out / "fetched" / "study5"
 
     def fetch_streams(name: str, seed: int) -> None:
@@ -2058,12 +2071,25 @@ def cmd_deadline(args) -> int:
     is min(requested, cap), printed and (``--record``) recorded with both. With ``--reserve``,
     the window is admitted only when it and the reserved minutes (the close's export) both end
     before the cap; otherwise nothing is written and the step exits ``NOT_ADMITTED``. With
-    ``--needs``, a window shorter than that is said so explicitly."""
+    ``--needs``, a window shorter than that is said so explicitly. With ``--admit`` (pod 3), the
+    work is admitted only when that many minutes from now end before the cap (the work, its
+    archive and the close); otherwise nothing is written and the step exits ``NOT_ADMITTED``,
+    and the window itself stays the requested one, cut at the cap."""
     now = int(time.time())
     requested, cap = now + 60 * args.minutes, deadline_cap()
     found: dict[str, Any] = {"kind": "study5-deadline", "requested": _iso(requested),
                              "cap": _iso(cap), "minutes": args.minutes,
-                             "reserve_minutes": args.reserve, "written_utc": _iso(now)}  # fmt: skip
+                             "reserve_minutes": args.reserve, "admit_minutes": args.admit,
+                             "written_utc": _iso(now)}  # fmt: skip
+    if args.admit and cap is not None and now + 60 * args.admit > cap:
+        found |= {"admitted": False, "effective": None}
+        print(
+            f"not admitted: the work and the close need {args.admit} min, past the cap "
+            f"{_iso(cap)}: no further group, the close follows"
+        )
+        if args.record:
+            write_json(args.record, found)
+        return NOT_ADMITTED
     if args.reserve and cap is not None and requested + 60 * args.reserve > cap:
         found |= {"admitted": False, "effective": None}
         print(
@@ -2733,11 +2759,55 @@ def gate_problems(plan: Plan, engineering: Path | None, checks: Path | None) -> 
     return problems
 
 
+POD3_PREFIX = "pod3-"  # pod 3's archive namespace: never pod 1's or pod 2's
+
+
+def own_root_problems(plan: Plan) -> list[str]:
+    """Pod 3 writes only into a runs root and an archive namespace of its own, so that it can
+    neither move nor reuse a registered run or record: its archive id starts with ``pod3-``, and
+    the runs root holds nothing of another archive (each a refusal before anything is written):
+    no records folder of another id under ``study5_records/``, no launcher journal of another
+    campaign under ``launch/``, no run under ``study5/`` or ``study3/`` whose ``meta.json`` names
+    another archive (or that has none that reads), no scan or ladder run of another id, no
+    campaign folder under ``campaigns/`` but the plan's own --out."""
+    problems, own = [], f"study5-{plan.archive_id}-"
+    if not plan.archive_id.startswith(POD3_PREFIX):
+        problems.append(f"--archive-id {plan.archive_id}: pod 3's archive id starts with "
+                        f"{POD3_PREFIX!r}, never pod 1's or pod 2's")  # fmt: skip
+    runs = plan.runs
+
+    def children(name: str) -> list[Path]:
+        folder = runs / name
+        return sorted(folder.iterdir()) if folder.is_dir() else []
+
+    other = [p.name for p in children("study5_records") if p.name != plan.archive_id]
+    other += [p.name for p in children("launch") if not p.name.startswith(own)]
+    for experiment in ("study5", "study3"):
+        for run_dir in children(experiment):
+            try:
+                meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+                archive_id = meta["campaign"]["header"]["archive_id"]
+            except (OSError, ValueError, KeyError, TypeError):
+                archive_id = None
+            if archive_id != plan.archive_id:
+                other.append(f"{experiment}/{run_dir.name}")
+    for experiment in (SCAN_EXPERIMENT, "study5_ladder"):
+        other += [f"{experiment}/{p.name}" for p in children(experiment)
+                  if not p.name.startswith(f"s5-{plan.archive_id}-")]  # fmt: skip
+    out = plan.out.resolve()
+    other += [f"campaigns/{p.name}" for p in children("campaigns") if p.resolve() != out]
+    if other:
+        problems.append(f"RUNS_DIR {runs} is not pod 3's own: it holds {len(other)} entries of "
+                        f"another archive or campaign (first: {other[0]})")  # fmt: skip
+    return problems
+
+
 def preflight(plan: Plan, args: argparse.Namespace | None = None) -> list[str]:
     """What forbids the start: the checkout, its GPU code (pod 3's: extension 1's record), the
     bucket, the key, the folder; for pod 2 also the registration, the committed seeds and pod 1's
     gates (``registration_problems``, ``seeds_problems``, ``gate_problems``); for pod 3 the
-    registration holding extension 1."""
+    registration holding extension 1 and a runs root and archive id of its own
+    (``own_root_problems``)."""
     problems = []
     state = git_state(REPO)
     if state.get("dirty") is not False or state.get("commit") != plan.commit:
@@ -2750,6 +2820,8 @@ def preflight(plan: Plan, args: argparse.Namespace | None = None) -> list[str]:
         encoding="utf-8"
     ):
         problems.append(f"{REGISTRATION} does not hold extension 1")
+    if plan.pod == "pod3":
+        problems += own_root_problems(plan)
     if not os.environ.get("ARTIFACT_REMOTE", "").startswith("gs://"):
         problems.append("ARTIFACT_REMOTE is not a gs:// path")
     if not Path(os.environ.get("ARTIFACT_GCS_KEY", "/nonexistent")).is_file():
@@ -2875,6 +2947,7 @@ def parser_of() -> argparse.ArgumentParser:
     p.add_argument("--minutes", type=int, required=True)
     p.add_argument("--reserve", type=int, default=0)  # minutes kept free before the cap
     p.add_argument("--needs", type=float)  # minutes the window must hold (the close's export)
+    p.add_argument("--admit", type=int, default=0)  # pod 3: minutes the work and close need
     p.add_argument("--record", type=Path)
     p = sub.add_parser("fetch-streams")
     p.add_argument("--inventory", required=True)

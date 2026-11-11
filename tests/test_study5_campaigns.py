@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import shutil
 import signal
@@ -636,6 +637,95 @@ def test_pod3_needs_extension_1s_gpu_code_and_its_registration(where, monkeypatc
     assert not any("extension 1" in p for p in camp.preflight(plan))
     monkeypatch.setattr(camp, "EXTENSION_HEADING", "### Extension 9")
     assert any("does not hold extension 1" in p for p in camp.preflight(plan))
+
+
+def _meta(runs, rel, archive_id):
+    path = runs / rel / "meta.json"
+    path.parent.mkdir(parents=True)
+    header = {"study": 5, "pod": archive_id.split("-")[0], "archive_id": archive_id}
+    path.write_text(json.dumps({"campaign": {"name": "x", "header": header}}))
+
+
+def _pod3_root(tmp_path, name):
+    """A runs root holding pod 3's own entries only (as at a restart) and its plan."""
+    where = {"out": tmp_path / name / "runs" / "campaigns" / "study5-pod3",
+             "runs": tmp_path / name / "runs", "data": tmp_path / name / "data",
+             "checkpoints": Path("/root/ckpt/study5")}  # fmt: skip
+    plan = camp.pod3_plan(archive_id="pod3-20261111", commit=COMMIT, gpu_code=GPU, **where)
+    runs = where["runs"]
+    _meta(runs, "study5/20261111T000000Z-s5-order1-1.3e-05-s50006-s50006-aaaaaaaa-a1",
+          "pod3-20261111")  # fmt: skip
+    (runs / "study5_records" / "pod3-20261111").mkdir(parents=True)
+    (runs / "launch").mkdir()
+    (runs / "launch" / "study5-pod3-20261111-orders-s50006.jsonl").write_text("")
+    (runs / "study5_ladder" / "s5-pod3-20261111-ladder-linear_no_d-s50000").mkdir(parents=True)
+    plan.out.mkdir(parents=True)
+    return plan, runs
+
+
+@pytest.mark.parametrize("entry", [
+    "pod2-order-run", "pod2-records", "pod2-journal", "run-without-meta", "pod2-ladder-run",
+    "pod2-scan-run", "pod2-campaign-folder",
+])  # fmt: skip
+def test_pod3_needs_a_runs_root_of_its_own(tmp_path, entry):
+    """Pod 3 never writes into a root that holds another archive's runs, records, journals or
+    campaign folders: refused before anything is written; its own entries pass (a restart)."""
+    plan, runs = _pod3_root(tmp_path, entry)
+    assert camp.own_root_problems(plan) == []
+    {
+        "pod2-order-run": lambda: _meta(runs, f"study5/{camp.POD2_ORDER_RUN}", "pod2-20261109"),
+        "pod2-records": lambda: (runs / "study5_records" / "pod2-20261109").mkdir(),
+        "pod2-journal": lambda: (
+            runs / "launch" / "study5-pod2-20261109-controls-s50000.jsonl").write_text(""),
+        "run-without-meta": lambda: (runs / "study5" / "20261109T000000Z-s5-fresh").mkdir(),
+        "pod2-ladder-run": lambda: (
+            runs / "study5_ladder" / "s5-pod2-20261109-ladder-linear-s50000").mkdir(),
+        "pod2-scan-run": lambda: (
+            runs / "study5_scan" / "s5-pod2-20261109-scan-s50000").mkdir(parents=True),
+        "pod2-campaign-folder": lambda: (runs / "campaigns" / "study5-pod2").mkdir(),
+    }[entry]()  # fmt: skip
+    (found,) = camp.own_root_problems(plan)
+    assert "is not pod 3's own" in found
+
+
+def test_pod3_needs_an_archive_id_of_its_own(where):
+    for archive_id in ("pod2-20261109", "pod1-20261109", "t3"):
+        plan = camp.pod3_plan(archive_id=archive_id, commit=COMMIT, gpu_code=GPU, **where)
+        (found,) = camp.own_root_problems(plan)
+        assert "pod 3's archive id starts with 'pod3-'" in found
+    plan = camp.pod3_plan(archive_id="pod3-20261111", commit=COMMIT, gpu_code=GPU, **where)
+    assert camp.own_root_problems(plan) == []
+
+
+def test_pod3_admits_a_group_only_when_its_work_and_the_close_fit_before_the_cap(
+    where, tmp_path, monkeypatch
+):
+    """Pod 3's blocks and seed groups are admitted only when 1.5 × their estimated minutes and
+    the close's 10 minutes end before the cap; the watchdog window stays 2 × the minutes + 60,
+    cut at the cap, so an admitted group is never stopped early by its own window."""
+    plan = pod3(where)
+    deadlines = [s for b in plan.blocks if b.name != "close" for s in b.steps
+                 if s.kind == "deadline"]  # fmt: skip
+    assert deadlines and not any("--reserve" in s.argv for s in deadlines)
+    assert all(s.on_fail == "stop" for s in deadlines)
+    group = next(s for s in deadlines if s.group == "s50006")
+    work = sum(s.minutes for s in steps(plan, "orders")
+               if s.group == "s50006" and s.kind != "deadline")  # fmt: skip
+    assert work == pytest.approx(4 * camp.F_RUN + camp.MINUTES["archive"])
+    admit = int(group.argv[group.argv.index("--admit") + 1])
+    assert admit == math.ceil(1.5 * work + 10)
+    window = minutes_of(group)
+    assert window == camp.deadline_minutes(work) > admit
+    now = int(time.time())
+    target = deadline_env(monkeypatch, tmp_path, now + 60 * admit - 120)
+    record = tmp_path / "rec.json"
+    assert camp.main([*group.argv[1:], "--record", str(record)]) == camp.NOT_ADMITTED
+    assert not target.exists() and json.loads(record.read_text())["admitted"] is False
+    cap = now + 60 * admit + 300  # the work and the close fit, the full window does not
+    deadline_env(monkeypatch, tmp_path, cap)
+    assert camp.main([*group.argv[1:], "--record", str(record)]) == 0
+    assert int(target.read_text()) == cap and json.loads(record.read_text())["admitted"]
+    assert not any("--admit" in s.argv for s in steps(pod2(where, 24)))
 
 
 def test_no_plan_holds_a_bucket_path_or_a_key(where, monkeypatch):
@@ -2119,6 +2209,9 @@ def test_a_ladder_rungs_minutes_cover_its_matched_k_step(where):
     rung = next(s for s in steps(pod2(where)) if s.name == "controls/s50000/ladder-linear")
     assert rung.minutes == pytest.approx(5 * camp.K_POINT + camp.EVALUATION) == 10.6
     assert rung.timeout == camp.timeout_of(10.6)
+    rung = next(s for s in steps(pod3(where)) if s.name == "ladder/s50000/gaussian_d")
+    # extension 1, at most: 3 grid points, 8 extensions, c₁ and c₂, then one evaluation
+    assert rung.minutes == pytest.approx(13 * camp.K_POINT + camp.EVALUATION) == 22.6
 
 
 # ------------------------------------------------------------------ the deadlines and the cap

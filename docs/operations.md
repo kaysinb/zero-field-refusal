@@ -3249,6 +3249,21 @@ and `ladder.run_rung` passes it to the scale search. The GPU code is recorded in
 `docs/study5-extension-1-code-identity.json`, together with the two paths that changed from
 `docs/study5-code-identity.json`. That record stays as the code of pods 1 and 2. The driver
 refuses another GPU code and a registration without the extension's heading.
+
+**A root of its own.** Before anything is written, pod 3 refuses:
+- an archive id outside `pod3-…`;
+- a `RUNS_DIR` that holds anything of another archive: records under `study5_records/`, launcher
+  journals under `launch/`, runs under `study5/` or `study3/` whose `meta.json` names another
+  archive (or does not read), scan or ladder runs of another id, or campaign folders other than
+  its `--out` (`own_root_problems`).
+
+So it can neither move pod 2's runs aside nor reuse pod 2's ladder records. A run directory
+without a readable `meta.json` (a run cut off before its start was written) is moved aside by hand.
+
+**Admission.** Each block and seed group is admitted only when 1.5 × its estimated minutes (its
+steps and its archive) and the close's 10 minutes end before `ZFR_DEADLINE_EPOCH` (`deadline
+--admit`). Otherwise the step fails, which is a stop, and the close follows. The watchdog window
+stays 2 × the minutes + 60, cut at the cap.
 `tests/test_study5_code_identity.py` checks HEAD against the extension's record, each record's
 commit against its identity, and that only the named paths changed between them.
 
