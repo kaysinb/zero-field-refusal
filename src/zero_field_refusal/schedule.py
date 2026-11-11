@@ -61,6 +61,11 @@ or on a non-finite weight, writes no file and records ``None``. The file's exist
 run's success: the later evaluation and the terminal record decide that. The save only reads the
 parameters (host copies) and draws no random numbers. A relative directory is read against the
 working directory; the strings "None" and "null" are refused (``_require_checkpoint_dir``).
+``tracking.step_checkpoints`` (a list of steps t < ``train.steps``, null in ``base``, outside the
+config hash; study 5's extension 2) saves θ_t the same way right after update t, as
+``<dir>/<run_id>-step-<t>.pt``, and records the growing list of their records under
+``inputs.step_checkpoints`` (and in ``summary.json``). It needs ``endpoint_checkpoint`` and, like
+it, only reads the parameters.
 
 **Study 5's options** (docs/study5-preregistration.md, "Descriptive measurements";
 ``study5_options``, each absent by default and carried by the study-5 roles only): ``train.
@@ -502,6 +507,7 @@ def run_scheduled(
         raise ValueError("run_scheduled needs run_type=train")
     schedule = Schedule.from_config(cfg)
     _require_checkpoint_dir(cfg.tracking.get("endpoint_checkpoint", None))
+    save_steps = _step_checkpoints(cfg)
     seed_everything(derive_seed(cfg.seed, "torch"))
     started = time.perf_counter()
     with Run(cfg, run_id=run_id) as run:
@@ -559,6 +565,7 @@ def run_scheduled(
         checkpoint = None if checkpoint_dir is None else (
             Path(checkpoint_dir).expanduser().resolve() / f"{run.run_id}.pt")  # fmt: skip
         recorded = False
+        step_records: list[dict[str, Any]] = []
         for step in range(schedule.steps if reason is None else 0):
             batch = feed.batch(step)
             optimizer.zero_grad(set_to_none=True)
@@ -580,6 +587,11 @@ def run_scheduled(
                 loop.rejected = {"step": step, "loss": stats["loss"],
                                  "grad_norm": stats["grad_norm"], "applied": True}  # fmt: skip
                 break
+            if checkpoint is not None and loop.steps in save_steps:  # θ_t, t < train.steps
+                at = checkpoint.with_name(f"{run.run_id}-step-{loop.steps}.pt")
+                step_records.append(save_endpoint(trainable, at, loop.steps))
+                run.record_inputs({"step_checkpoints": step_records})
+                run.summarize({"step_checkpoints": step_records})
             if checkpoint is not None and loop.steps == cfg.train.steps:
                 saved = {"endpoint_checkpoint": save_endpoint(trainable, checkpoint, loop.steps)}
                 run.summarize(saved)  # the record, not the outcome: the terminal record decides
@@ -632,6 +644,29 @@ def _require_checkpoint_dir(directory: Any) -> None:
             f"tracking.endpoint_checkpoint is {directory!r}: give a directory, or null (YAML) to "
             "switch the checkpoint off"
         )
+
+
+def _step_checkpoints(cfg: DictConfig) -> frozenset[int]:
+    """``tracking.step_checkpoints``: the steps t (1 ≤ t < train.steps) after whose update θ_t is
+    saved beside the endpoint checkpoint, as ``<run_id>-step-<t>.pt``; absent or null: none. It
+    needs ``tracking.endpoint_checkpoint`` (the directory). A bad value fails before any work."""
+    steps = cfg.tracking.get("step_checkpoints", None)
+    if steps is None:
+        return frozenset()
+    if cfg.tracking.get("endpoint_checkpoint", None) is None:
+        raise ValueError(
+            "tracking.step_checkpoints needs tracking.endpoint_checkpoint (the directory)"
+        )
+    values = list(steps) if not isinstance(steps, (str, int)) else None
+    total = int(cfg.train.steps)
+    if not values or not all(
+        isinstance(t, int) and not isinstance(t, bool) and 1 <= t < total for t in values
+    ):
+        raise ValueError(
+            f"tracking.step_checkpoints is {steps!r}: give a non-empty list of steps in 1 … "
+            f"{total - 1} (the endpoint is the endpoint checkpoint's)"
+        )
+    return frozenset(values)
 
 
 def save_endpoint(

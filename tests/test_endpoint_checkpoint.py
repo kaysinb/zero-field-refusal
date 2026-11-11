@@ -222,3 +222,77 @@ def test_the_checkpoint_leaves_the_cuda_rng_alone(env, tmp_path) -> None:
         run_scheduled(cfg, env, run_id=f"cuda-{ckpt == 'null'}")
         states.append(torch.cuda.get_rng_state())
     assert torch.equal(*states)
+
+
+# --------------------------------------------------- step checkpoints (study 5, extension 2)
+
+
+def test_step_checkpoints_change_no_training(env, tmp_path, monkeypatch) -> None:
+    """θ_t saved after updates 1, 3 and 10 of arm F: the run, its records, its endpoint file and
+    the random generators are bit for bit those of the run without them."""
+    built = built_optimizers(monkeypatch)
+    out = {}
+    for name, extra in (("off", ()), ("on", ("tracking.step_checkpoints=[1,3,10]",))):
+        ckpt = tmp_path / f"ckpt-{name}"
+        cfg = arm_config(env, tmp_path, "adam_frozen", f"tracking.endpoint_checkpoint={ckpt}",
+                         *extra)  # fmt: skip
+        run_dir = run_scheduled(cfg, env, run_id=f"twin-{name}")
+        params = [p for g in built[-1].param_groups for p in g["params"]]
+        meta = json.loads((run_dir / "meta.json").read_text())
+        out[name] = {
+            "metrics": scientific(read_jsonl(run_dir / "metrics.jsonl")),
+            "records": [read_jsonl(run_dir / f) for f in ("monitor.jsonl", "evaluations.jsonl")],
+            "params": [p.detach().clone() for p in params],
+            "files": sorted(p.name for p in ckpt.glob("*")),
+            "steps": meta["inputs"].get("step_checkpoints"),
+            "rng": rng_state(),
+        }
+    off, on = out["off"], out["on"]
+    assert off["metrics"] == on["metrics"] and off["records"] == on["records"]
+    assert all(torch.equal(a, b) for a, b in zip(off["params"], on["params"], strict=True))
+    assert same_rng(off["rng"], on["rng"])
+    off_end = torch.load(tmp_path / "ckpt-off" / "twin-off.pt", weights_only=True)
+    on_end = torch.load(tmp_path / "ckpt-on" / "twin-on.pt", weights_only=True)
+    assert list(off_end) == list(on_end)
+    assert all(torch.equal(off_end[n], on_end[n]) for n in off_end)
+    assert off["files"] == ["twin-off.pt"] and off["steps"] is None
+    assert on["files"] == [
+        "twin-on-step-1.pt",
+        "twin-on-step-10.pt",
+        "twin-on-step-3.pt",
+        "twin-on.pt",
+    ]
+    assert [r["step"] for r in on["steps"]] == [1, 3, 10]
+    for r in on["steps"]:
+        assert r["sha256"] == hashlib.sha256(Path(r["path"]).read_bytes()).hexdigest()
+
+
+def test_a_step_checkpoint_is_the_prefix_runs_endpoint(env, tmp_path) -> None:
+    """θ_10 of a 25-step arm-F run is the endpoint of the same run stopped after 10 updates: the
+    fixed schedule's updates do not depend on the number of steps."""
+    long_dir, short_dir = tmp_path / "long", tmp_path / "short"
+    cfg = arm_config(env, tmp_path, "adam_frozen", f"tracking.endpoint_checkpoint={long_dir}",
+                     "tracking.step_checkpoints=[10]")  # fmt: skip
+    run_scheduled(cfg, env, run_id="long")
+    cfg = arm_config(env, tmp_path, "adam_frozen", f"tracking.endpoint_checkpoint={short_dir}",
+                     "train.steps=10", "schedule.evaluate_at=[10]")  # fmt: skip
+    run_scheduled(cfg, env, run_id="short")
+    a = torch.load(long_dir / "long-step-10.pt", weights_only=True)
+    b = torch.load(short_dir / "short.pt", weights_only=True)
+    assert list(a) == list(b) and all(torch.equal(a[n], b[n]) for n in a)
+
+
+@pytest.mark.parametrize("value", ["[0]", "[25]", "[]", "[2.5]", "[true]", "5", "[3,30]"])
+def test_bad_step_checkpoints_are_refused_before_any_work(env, tmp_path, value) -> None:
+    ckpt = tmp_path / "ckpt"
+    cfg = arm_config(env, tmp_path, "adam_frozen", f"tracking.endpoint_checkpoint={ckpt}",
+                     f"tracking.step_checkpoints={value}")  # fmt: skip
+    with pytest.raises(ValueError, match="step_checkpoints"):
+        run_scheduled(cfg, env, run_id="bad")
+    assert not ckpt.exists()
+
+
+def test_step_checkpoints_need_the_endpoint_directory(env, tmp_path) -> None:
+    cfg = arm_config(env, tmp_path, "adam_frozen", "tracking.step_checkpoints=[3]")
+    with pytest.raises(ValueError, match="endpoint_checkpoint"):
+        run_scheduled(cfg, env, run_id="bad")

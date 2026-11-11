@@ -16,6 +16,8 @@ tracking:
                             # and, for an arm that reads it, of v₀ (study 3)
   endpoint_checkpoint: null # a path: the step-25 checkpoint is saved there (study 3's numerical
                             # and engineering runs; protocol.check_run_config refuses it for others)
+  step_checkpoints: null    # a list of steps t < train.steps: θ_t saved beside the endpoint
+                            # checkpoint as <run_id>-step-<t>.pt (study 5, extension 2)
   wandb:
     enabled: true
     required: false         # true: a failure to start W&B stops the run
