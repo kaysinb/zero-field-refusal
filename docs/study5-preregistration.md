@@ -414,3 +414,161 @@ beside.
 
 **Limits.** Six (E1) and ten (E2) seeds. The same model, protocol, judge and 521 prompts as
 registered. The decomposition is descriptive and carries no test.
+
+### Extension 2 (2026-11-11): diagnostics of the erosion's mechanism
+
+**Status:** an exploratory extension, decided after the registered result was known and written
+before any of its runs. Its results are reported apart from the registered ones and change no
+registered reading. Extension 1's order repeats (E2) are not read here. For E2's twenty new
+orders, this extension computes only predictions from θ₀ and the order (δ̂, δ_lin and q, below),
+and no measurement of an E2 run. A prospective test on the E2 runs is fixed in a separate dated
+note before any E2 outcome is read.
+
+**What is known when it is written:**
+- the registered analysis, extension 1's record, and the exploratory checks listed there;
+- the E1 rungs of extension 1 are running;
+- no E2 outcome has been read: no label, K_harmful, K_monitor, utility or r of an E2 run;
+- at a = 0.25 along ±Δθ, the per-seed medians of the odd and even parts of harm are +1.06 pp
+  (positive at 27 of 40 seeds) and +1.01 pp (33 of 40). The reverse point's K_benign is 3–440
+  times the forward one's, so the odd/even split of harm at equal a is not at equal K.
+
+**Two readings this extension separates.** Both may hold together.
+- **(D) A common drift.** Training on θ₀'s own samples has zero expected gradient only at θ₀.
+  Away from it, the lopsided benign KL turns the sampling noise into a mean push shared by all
+  seeds, which lowers r.
+- **(E) An even readout.** Curvature feedback leaves each displacement in directions where the
+  benign data restores little, and r and refusal fall to second order along any such
+  displacement, whatever its sign. No common direction is needed.
+
+**Data and code.**
+- The 40 fresh seeds' η_l runs and their surrogate endpoint records.
+- The surrogate of the registration (`configs/study5/surrogate-2.yaml`, harmful panel of 100).
+- K_benign and K_harmful on the registered panels.
+- Every run is arm F at η_l, with the seed's own v₀ and streams.
+- The GPU code is a new identity, recorded before the runs. Its default path is checked as in
+  extension 1: pod 2's order control of seed 50000 at η_l is rerun and must equal the archived
+  run. A difference stops the campaign before any other part.
+
+**M1. Replays and the common component.**
+- Each of the 40 fresh η_l runs is rerun with its endpoint checkpoint, in groups of four. Each
+  group is compared with pod 2's runs by `scripts/study5_engineering_check.py`; a difference stops
+  the campaign. Only the list of step checkpoints that four of the replays save (M5, M6) is left
+  out of that comparison (`--ignore step_checkpoints`).
+- From Δθ_i = θ₂₅,i − θ₀ (the trainable set), the following are computed:
+  - the Gram matrix G_ij = ⟨Δθ_i, Δθ_j⟩;
+  - ‖μ‖² estimated free of the noise as the mean of G_ij over i ≠ j;
+  - the mean μ̂ = Σ_i Δθ_i / 40, and μ̂_{−i} over the other 39 seeds;
+  - the means of the odd-indexed and even-indexed seeds (in seed order) and their cosine;
+  - p_i = ⟨Δθ_i, μ̂_{−i}⟩ / ‖μ̂_{−i}‖, with its coefficient of variation, and Spearman's ρ of
+    p_i with h_i over the 39 supported seeds;
+  - ⟨Δθ_i, ∇r(θ₀)⟩ against Δr_i = r(θ₂₅,i) − r(θ₀) from the endpoint records, with the mean
+    and its seed-level standard error.
+
+**M2. The linearized replay.**
+- For each of the 40 seeds at η_l in its own order, two displacements are computed from θ₀ and
+  the seed's 25 batches, with the frozen D, β₁ = 0.9 and the exact bias correction:
+  - **δ̂**: the update recursion driven by the gradients g_t(θ₀);
+  - **δ_lin**: the same recursion driven by g_t(θ₀) + H_t δ_{t−1}. H_t is the Hessian of
+    batch t's loss at θ₀ and δ_{t−1} is the recursion's own displacement before step t.
+- H_t δ is taken as the central difference
+  [g_t(θ₀ + εδ) − g_t(θ₀ − εδ)] / (2ε) with ε = 10⁻².
+- At steps 5, 15 and 25 the product is also taken with ε/2 and 2ε, and the largest relative
+  difference is reported.
+- δ_lin is reported `diverged` if its norm exceeds 10 ‖Δθ_i‖ or is not finite at any step.
+- Reported per seed at the natural rate, for δ̂ and δ_lin:
+  - the cosine with Δθ_i and the norm ratio;
+  - K_benign and K_harmful at θ₀ + δ;
+  - q = r(θ₀ + δ) − r(θ₀).
+- Over the seeds: ρ(q, Δr). On the six registered order-control pairs, δ_lin and q are also
+  computed for each control's order. The sign of the pair's q difference is compared with the
+  signs of its K_harmful and harm differences.
+- **The validation criterion of δ_lin**, fixed here for the later note:
+  - ρ(q, Δr) > 0 at one-sided p < 0.05 over the seeds where δ_lin did not diverge;
+  - the mean q lies between 0.5 and 2 times the mean Δr;
+  - on the six order-control pairs, the q difference has the sign of the harm difference
+    (lower q, more harm) on at least 5.
+- **E2's twenty new orders** (`train.order_seed` = s + 1000 and s + 2000, s = 50006–50015, at
+  η_l): δ̂, δ_lin and q only, written to a record. No E2 run is read.
+
+**M3. Small amplitudes and tokens** (seeds 50000–50005).
+- Points θ₀ + aΔθ_i, a ∈ {±0.1, ±0.05, ±0.025}. At each point:
+  - r;
+  - the mean log-probabilities of the refusal and compliance openings on both surrogate panels;
+  - K_benign and K_harmful.
+- Locality is read by halving a: the odd part [r(a) − r(−a)]/2 is local where it halves with a,
+  and the even part [r(a) + r(−a)]/2 − r(θ₀) is local where it quarters.
+- Token level at a ∈ {±0.1, ±1}, on the 400 θ₀ responses of the benign K panel. At every
+  response token:
+  - the entropy of the model's next-token distribution;
+  - its probability mass on the tokens whose θ₀ probability is below 10⁻³;
+  - the change of the sampled token's log-probability.
+
+  Each is reported as a mean over tokens.
+
+**M4. Sign interventions** (directions from M1). At each point:
+- the readouts are r (primary), K_benign, K_harmful and the utility;
+- the 521 greedy responses are generated for labeling.
+
+The points:
+- **Parity:** θ₀ + μ̂ and θ₀ − μ̂ at equal amplitude, at the natural scale (μ̂ itself) and at 2μ̂.
+- **Matched K:** each of ±μ̂ scaled to K\* by the registered scale search, with at most 8
+  extensions as in extension 1.
+- **Balanced-sign mixtures:**
+  - m_k = Σ_j s_{k,j} Δθ_j / 40 for k = 1, 2, 3. Exactly 20 of the signs s_{k,j} are +1, from a
+    permutation drawn by `numpy.random.default_rng(derive_seed(k, "study5", "mixture"))`;
+  - each is scaled to ‖μ̂‖ and evaluated at the natural scale and at matched K.
+
+  An additive common component cancels exactly in each.
+- **Removal** on seeds 50000–50005, at the natural scale:
+  - Δθ_i − μ̂_{−i} against Δθ_i − m_{−i};
+  - m_{−i} is a balanced-sign mixture of 38 of the other 39 seeds: the largest remaining seed is
+    left out, and the signs come from `derive_seed(i, "study5", "removal")`;
+  - m_{−i} is scaled so that the removed vector has the norm of μ̂_{−i}.
+
+**M5. Force trace, a pilot.**
+- Seed 50000's replay (M1) saves checkpoints at steps 1, 2, 3, 5, 8, 10, 12 and 18 besides its
+  endpoint. Two independent panels of 1000 fresh θ₀ responses come from the training streams of
+  seeds 59990 and 59991, which no run trains on.
+- With ĝ a panel's mean gradient and δ_t = θ_t − θ₀:
+
+  f̂_t = ĝ(θ₀ + δ_t) − ĝ(θ₀) − [ĝ(θ₀ + εδ_t) − ĝ(θ₀ − εδ_t)] / (2ε),
+
+  at ε = 5·10⁻², 10⁻² and 5·10⁻³ (in fp32 the points θ₀ ± εδ_t round at about 10⁻³–10⁻² of εδ_t,
+  so the largest ε is kept as a check), on each panel and on its two halves, at t = 5 and 10.
+- Reported:
+  - the projections of D f̂_t on μ̂_{−i} and on ∇r(θ₀);
+  - the norm of D f̂_t;
+  - the two panels' agreement.
+
+  A wider trace is a later decision.
+
+**M6. Sensitivity of the order** (seeds 50000–50003, η_l, full evaluation for labeling):
+- **Single adjacent batch swaps:** the stream order with the batches at steps t and t + 1
+  exchanged, at t = 2, 12 and 23 (`train.order_edit`, kind `swap_batches`; 12 runs).
+- **Twins:** the stream order with the first responses of the batches at steps 2 and 3
+  exchanged (kind `swap_first`). Both twins have checkpoints at steps 2, 3, 5, 8, 12 and 18 and
+  at the endpoint 25: the stream-order twin is the seed's replay (M1), the edited twin a run of
+  its own. Reported over the steps:
+  ‖θ_t − θ′_t‖ and r(θ_t), r(θ′_t).
+- **Early and late shuffles** on seeds 50000–50005: the batches at steps 1–5, or 21–25,
+  permuted as whole batches, two draws each (k = 0, 1). The permutation is drawn by
+  `numpy.random.default_rng(derive_seed(s, "study5", "shuffle", a, b, k))`, with a … b = 1 … 5 or
+  21 … 25 (`train.order_edit`, kind `shuffle`).
+- Each edited order is also given its δ̂, δ_lin and q. Its outcome is read as an excess over
+  these predictions: first order already predicts early shuffles to matter more than late ones.
+
+**Labels.** WildGuard, pinned as registered, on:
+- the M4 points;
+- the M6 runs;
+- θ₀ + δ_lin at the natural rate for seeds 50000–50005.
+
+No E2 run is labeled or read under this extension.
+
+**What is reported.** Every quantity above per seed and point, with the utility and every
+diverged, unbracketed or out-of-tolerance case. Means are reported over the seeds where a
+quantity exists, with seed-level standard errors where several seeds enter. Nothing here is a
+test except the δ_lin criterion, which only selects the later note's predictor.
+
+**Limits.** One model, protocol, judge and set of 521 prompts, as registered. Six seeds in M3,
+M4 removal and M6 shuffles, four in M6 swaps, one in M5. The linearized replay is a
+linearization in the parameters at θ₀ and says nothing about other expansions.
