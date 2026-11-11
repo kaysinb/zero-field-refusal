@@ -430,3 +430,55 @@ def test_several_reruns_of_one_config_are_each_compared(tmp_path):
     assert [(p["rerun"], p["exact"], p["within_tolerance"]) for p in record["pairs"]] == [
         ("run-b1", False, True), ("run-b2", True, True)]  # fmt: skip
     assert record["exact"] is False and record["passed"] is True
+
+
+def test_types_the_config_and_incomplete_answers_never_pass_by_the_tolerance(tmp_path):
+    """A step of true against 1, a float of config.yaml or meta.json moved within the
+    tolerance, and an answer without its text all fail; the incomplete answer is not counted as
+    one of the two different answers."""
+    a = fake_run(tmp_path / "a", "run-a")
+    _metrics(a, {"step": 1, "loss": 1.5})
+    (a / "config.yaml").write_text("seed: 1\nexperiment: study3\noptimizer:\n  lr: 1.0e-05\n")
+    _answers(a, ["abcd", "efgh"])
+    flag = fake_run(tmp_path / "flag", "run-b")
+    _metrics(flag, {"step": True, "loss": 1.5})
+    shutil.copy(a / "config.yaml", flag / "config.yaml")
+    _answers(flag, ["abcd", "efgh"])
+    for extra, name in (((), "flag-bitwise.json"), (("--tolerance", "1e-4"), "flag.json")):
+        code, record = _run_check(tmp_path, a, flag, *extra, name=name)
+        assert code == 2 and record["exact"] is False and record["passed"] is False
+    config = fake_run(tmp_path / "config", "run-b")
+    _metrics(config, {"step": 1, "loss": 1.5})
+    (config / "config.yaml").write_text(
+        "seed: 1\nexperiment: study3\noptimizer:\n  lr: 1.00000001e-05\n"
+    )
+    _answers(config, ["abcd", "efgh"])
+    code, record = _run_check(tmp_path, a, config, "--tolerance", "1e-4", name="config.json")
+    entry = next(f for f in record["pairs"][0]["files"] if f["name"] == "config.yaml")
+    assert code == 2 and entry["within_tolerance"] is False
+    meta = fake_run(tmp_path / "meta", "run-b")
+    _metrics(meta, {"step": 1, "loss": 1.5})
+    shutil.copy(a / "config.yaml", meta / "config.yaml")
+    _answers(meta, ["abcd", "efgh"])
+    found = json.loads((meta / "meta.json").read_text())
+    found["inputs"]["v0_norm"] = 1.0 + 1e-9
+    (meta / "meta.json").write_text(json.dumps(found))
+    archived_meta = json.loads((a / "meta.json").read_text())
+    archived_meta["inputs"]["v0_norm"] = 1.0
+    (a / "meta.json").write_text(json.dumps(archived_meta))
+    code, record = _run_check(tmp_path, a, meta, "--tolerance", "1e-4", name="meta.json")
+    assert code == 2 and record["within_tolerance"] is False
+    archived_meta["inputs"].pop("v0_norm")
+    (a / "meta.json").write_text(json.dumps(archived_meta))
+    textless = fake_run(tmp_path / "textless", "run-b")
+    _metrics(textless, {"step": 1, "loss": 1.5})
+    shutil.copy(a / "config.yaml", textless / "config.yaml")
+    _answers(textless, ["abcd", "efgh"])
+    path = textless / "responses" / "harmful_evaluation.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    del rows[0]["text"]
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    code, record = _run_check(tmp_path, a, textless, "--tolerance", "1e-4", name="textless.json")
+    entry = next(f for f in record["pairs"][0]["files"] if f["name"].startswith("responses/"))
+    assert code == 2 and entry["answers_complete"] is False and "answers_differing" not in entry
+    assert record["answers_differing"] == 0

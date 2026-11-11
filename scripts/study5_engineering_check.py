@@ -44,20 +44,24 @@ top-level keys that differ (names only, never values). A file under ``responses/
 of it is stored or printed. stdout carries file names, counts and hashes only.
 
 **Numerical equivalence** (``--tolerance REL``; docs/study5-preregistration.md, "Extension 2
-amendment"). The canonicalization above stays; a differing file is then compared by type,
-line by line. The structure, the keys, and every leaf that is not a finite float are exact:
-identities and hashes, steps and counts, booleans, termination states. A finite float x of the
-rerun passes against the archived y when |x − y| ≤ 10⁻⁹ + REL·|y|, wherever it stands (summaries
-and ``observations/`` too); a differing file of another kind is compared byte for byte. The
-greedy answers (``responses/``) are compared answer by answer: the same items in the same order,
-at most two answers different per file; each different answer is recorded by its item id, the
-sha256 of both texts and its first differing token, never by its text. Endpoint tensors that
-differ pass only through ``--endpoint-distance CONFIG_HASH=RECORD``, ``scripts/study5_pairs.py``'s
-record of the archived run's checkpoint (fetched back from its archive, by the sha256 its run
-recorded) against the rerun's endpoint: ‖θ_rerun − θ_archived‖ / ‖θ_archived − θ₀‖ ≤ REL. For a
-differing open line file whose lines record a step, the largest relative drift of each differing
-line is kept (``by_step``). Several reruns of one config (``--rerun``) are each compared, for a
-run without an endpoint checkpoint.
+amendment"). The canonicalization above stays; every comparison respects the JSON type
+(``true`` is not ``1``, ``1`` is not ``1.0``). A differing file is compared by type, line by line:
+the structure, the keys and every leaf that is not a finite float are exact (identities and
+hashes, steps and counts, booleans, termination states). A finite float x of the rerun passes
+against the archived y when |x − y| ≤ 10⁻⁹ + REL·|y|, wherever it stands (summaries and
+``observations/`` too). ``config.yaml`` and ``meta.json`` (the config and the run's identity),
+and a differing file that is not JSON, stay exact. The greedy answers (``responses/``) are
+compared answer by answer: every answer complete on both sides (its identity, ``text``,
+``response_ids`` and ``ended``, each of its type) with the same keys, the same items in the same
+order, only those fields different, and at most two answers so per file. An incomplete answer,
+or one that differs elsewhere, fails the file without counting against the two. Each different
+answer is recorded by its item id, the sha256 of both texts and its first differing token, never
+by its text. Endpoint tensors that differ pass only through ``--endpoint-distance
+CONFIG_HASH=RECORD``, ``scripts/study5_pairs.py``'s record of the archived run's checkpoint
+(fetched back from its archive, by the sha256 its run recorded) against the rerun's endpoint:
+‖θ_rerun − θ_archived‖ / ‖θ_archived − θ₀‖ ≤ REL. For a differing open line file whose lines
+record a step, the largest relative drift of each differing line is kept (``by_step``). Several
+reruns of one config (``--rerun``) are each compared, for a run without an endpoint checkpoint.
 
 The record states ``exact`` (every file equal after the canonicalization, every endpoint's tensors
 equal) and, under the tolerance, ``within_tolerance`` apart, per file, per pair and in all, with
@@ -251,7 +255,7 @@ def _numerical(left: list[Any], right: list[Any], sealed: bool) -> dict[str, Any
         by_step = [
             [a["step"], f[2]]
             for a, b, f in zip(left, right, found, strict=True)
-            if a != b and isinstance(a, dict) and isinstance(a.get("step"), int)
+            if not same(a, b) and isinstance(a, dict) and isinstance(a.get("step"), int)
         ]
         if by_step:
             entry["by_step"] = by_step
@@ -275,42 +279,85 @@ def _first_token(a: Any, b: Any) -> int | None:
     return min(len(x), len(y)) if len(x) != len(y) else None
 
 
+ANSWER_PAYLOAD = {"text": str, "response_ids": list, "ended": bool}  # what may differ, typed
+ANSWER_DERIVED = ("keyword_refusal",)  # read from the text where it is recorded
+
+
+def same(a: Any, b: Any) -> bool:
+    """Equality that respects the JSON type: ``true`` is not ``1`` and ``1`` is not ``1.0``
+    (Python's own ``==`` treats them as equal)."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(same(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b, strict=True))
+    return a == b or (isinstance(a, float) and a != a and b != b)
+
+
+def _of_type(x: Any, kind: type) -> bool:
+    """``x`` of the JSON type ``kind``; a boolean is never an integer."""
+    return isinstance(x, bool) if kind is bool else isinstance(x, kind) and not isinstance(x, bool)
+
+
+def _answer_shape(line: Any) -> bool:
+    """A complete answer: its identity and every payload field, each of its type."""
+    return (
+        isinstance(line, dict)
+        and all(k in line for k in ANSWER_KEYS)
+        and all(k in line and _of_type(line[k], t) for k, t in ANSWER_PAYLOAD.items())
+        and all(_of_type(x, int) for x in line["response_ids"])
+    )
+
+
 def _answers(left: list[Any], right: list[Any]) -> dict[str, Any]:
-    """A differing greedy-answer file under the tolerance: the same answers in the same order
-    (``ANSWER_KEYS`` exact), at most ``ANSWERS_ALLOWED`` of them different; each different one
-    by its item id, both texts' sha256 and its first differing token (no text is kept)."""
-    keys = [[a.get(k) for k in ANSWER_KEYS] if isinstance(a, dict) else None for a in left]
-    if len(left) != len(right) or keys != [
-        [b.get(k) for k in ANSWER_KEYS] if isinstance(b, dict) else None for b in right
-    ]:
-        return {"within_tolerance": False, "answers_same_items": False}
+    """A differing greedy-answer file under the tolerance: every answer complete on both sides
+    (``_answer_shape``) with the same keys, the same answers in the same order (``ANSWER_KEYS``
+    exact), only the payload (``ANSWER_PAYLOAD``, and what is derived from it) different, and at
+    most ``ANSWERS_ALLOWED`` answers so; each different one recorded by its item id, both texts'
+    sha256 and its first differing token (no text is kept). An answer that is not complete, or
+    differs elsewhere, fails the file without counting against the allowance."""
+    if len(left) != len(right):
+        return {"within_tolerance": False, "answers_complete": False}
+    may_differ = {*ANSWER_PAYLOAD, *ANSWER_DERIVED}
+    for a, b in zip(left, right, strict=True):
+        if not (_answer_shape(a) and _answer_shape(b)) or a.keys() != b.keys():
+            return {"within_tolerance": False, "answers_complete": False}
+        if not all(same(a[k], b[k]) for k in a if k not in may_differ):
+            return {"within_tolerance": False, "answers_complete": True,
+                    "answers_same_items": False}  # fmt: skip
     changed = [{"item_id": a.get("item_id"), "archived_sha256": _answer_sha(a),
                 "rerun_sha256": _answer_sha(b), "first_token": _first_token(a, b)}
-               for a, b in zip(left, right, strict=True) if a != b]  # fmt: skip
-    return {"within_tolerance": len(changed) <= ANSWERS_ALLOWED, "answers_same_items": True,
-            "answers_differing": len(changed), "answers": changed}  # fmt: skip
+               for a, b in zip(left, right, strict=True) if not same(a, b)]  # fmt: skip
+    return {"within_tolerance": len(changed) <= ANSWERS_ALLOWED, "answers_complete": True,
+            "answers_same_items": True, "answers_differing": len(changed),
+            "answers": changed}  # fmt: skip
+
+
+EXACT_FILES = ("config.yaml", "meta.json")  # the config and the run's identity: never a tolerance
 
 
 def compare_file(archived: Path, rerun: Path, name: str) -> dict[str, Any]:
     left, right = comparable(archived, name), comparable(rerun, name)
-    if left == right:
+    if same(left, right):
         return {"name": name, "equal": True}
-    differing = sum(a != b for a, b in zip(left, right, strict=False)) + abs(len(left) - len(right))
+    differing = sum(not same(a, b) for a, b in zip(left, right, strict=False))
+    differing += abs(len(left) - len(right))
     entry: dict[str, Any] = {"name": name, "equal": False, "lines": [len(left), len(right)],
                              "differing_lines": differing}  # fmt: skip
     folder = name.split("/", 1)[0]
     if TOLERANCE is not None:
         if folder == GREEDY:
             entry |= _answers(left, right)
-        elif name.endswith((".json", ".jsonl")) or name == "config.yaml":
-            entry |= _numerical(left, right, folder in SEALED)
+        elif name in EXACT_FILES or not name.endswith((".json", ".jsonl")):
+            entry["within_tolerance"] = False  # exact: no tolerance
         else:
-            entry["within_tolerance"] = False  # compared byte for byte: no tolerance
+            entry |= _numerical(left, right, folder in SEALED)
     if folder not in SEALED:
         keys = set()
         for a, b in zip(left, right, strict=False):
-            if a != b and isinstance(a, dict) and isinstance(b, dict):
-                keys |= {k for k in a.keys() | b.keys() if a.get(k) != b.get(k)}
+            if not same(a, b) and isinstance(a, dict) and isinstance(b, dict):
+                keys |= {k for k in a.keys() | b.keys() if not same(a.get(k), b.get(k))}
         entry["keys"] = sorted(keys)
     return entry
 

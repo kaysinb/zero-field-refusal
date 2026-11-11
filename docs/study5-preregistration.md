@@ -593,15 +593,17 @@ is prospective for them; it was decided with the mismatch above known.
 **The rule** (`scripts/study5_engineering_check.py --tolerance 1e-4`). It replaces "must equal
 the archived run" and "a difference stops the campaign" in "Data and code" and M1; the existing
 canonicalization stays.
-- Exact: input identities (θ₀, v₀, streams, file hashes, config), the record structure, item
-  identities, counts, steps, booleans and termination states.
+- Exact, with the JSON type respected (`true` is not `1`): input identities (θ₀, v₀, streams,
+  file hashes), the config and the run's metadata, the record structure, item identities, counts,
+  steps, booleans and termination states.
 - Each finite floating-point measurement x of a rerun passes against the archived y when
   |x − y| ≤ 10⁻⁹ + 10⁻⁴·|y|, wherever it is recorded (summaries and observations included).
 - Endpoint tensors that differ: the archived run's endpoint checkpoint is fetched back from its
   archive and verified by the sha256 its run recorded. The full trainable-vector distance
   ‖θ_rerun − θ_archived‖ / ‖θ_archived − θ₀‖ must not exceed 10⁻⁴.
-- Greedy answers to the 521 harmful prompts: the same items in the same order, at most two
-  different answers per run. Each different answer is recorded by its item id, the sha256 of
+- Greedy answers to the 521 harmful prompts: every answer complete on both sides, the same items
+  in the same order, at most two different answers per run. An incomplete answer fails the check
+  and does not count as one of the two. Each different answer is recorded by its item id, the sha256 of
   both texts and its first differing token, with the count over the seeds. Both answer sets are
   kept. A changed answer is labeled on its own, or the analysis carries an explicit k/521 bound;
   the archived label is never reused for it silently. Factual answers and benchmark letters are
@@ -625,7 +627,8 @@ subtraction can amplify its share further. On seed 50000, on the same inputs:
 - one force measurement (panel 59990, step 5, ε = 10⁻²) is made twice with its vector saved;
   reported are the vectors' difference and both sets of projections;
 - the twins' floor: the seed's replay is run again in its own order, with checkpoints at the
-  twins' steps. ‖θ_t − θ″_t‖ and r are reported over those steps, beside the twins'
+  twins' steps. Its config is the replay's; it is kept in a run folder of its own, so that the
+  completed replay is not taken for it. ‖θ_t − θ″_t‖ and r are reported over those steps, beside the twins'
   ‖θ_t − θ′_t‖.
 
 The ε-convergence checks of M2 and M5 stay. Each rerun check also records, per step, the largest

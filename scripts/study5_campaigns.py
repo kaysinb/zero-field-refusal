@@ -1515,6 +1515,7 @@ TWIN_EDIT = "{kind: swap_first, step: 2}"
 TWIN_STEPS = (2, 3, 5, 8, 12, 18)
 FORCE_SEED, FORCE_STEPS = 50000, (5, 10)
 FORCE_REPEAT_EPSILON = 1e-2  # the amendment's repeated force measurement
+FLOOR_EXPERIMENT = "study5_floor"  # the twins' floor run: the replay again, apart from it
 FORCE_SEED_STEPS = (1, 2, 3, 5, 8, 10, 12, 18)  # the force pilot's steps and the twins'
 PANEL_SEEDS, PANEL_RESPONSES = (59990, 59991), 1000  # streams no studied run trains on
 SMALL_POINTS = (0.1, -0.1, 0.05, -0.05, 0.025, -0.025)
@@ -1563,6 +1564,16 @@ def replay_cell(b: Builder, seed: int, steps: tuple[int, ...] = ()) -> dict[str,
         overrides.append(f"tracking.step_checkpoints=[{','.join(map(str, steps))}]")
     return {"name": f"s5-fresh-{ETA_L!r}-s{seed}", "config": FRESH[0], "overrides": overrides,
             "seeds": [seed]}  # fmt: skip
+
+
+def floor_cell(b: Builder, seed: int) -> dict[str, Any]:
+    """The twins' numerical floor (the amendment): the seed's replay again, its config and so its
+    config hash unchanged, with the twins' step checkpoints, in an experiment folder of its own
+    (``FLOOR_EXPERIMENT``; ``experiment`` is outside the config hash), so that the launcher, which
+    reuses a completed run of the same experiment and config hash, runs it anew."""
+    cell = replay_cell(b, seed, TWIN_STEPS)
+    return {**cell, "name": f"s5-floor-{ETA_L!r}-s{seed}",
+            "overrides": [*cell["overrides"], f"experiment={FLOOR_EXPERIMENT}"]}  # fmt: skip
 
 
 def edit_cell(seed: int, tag: str, edit: str, extra: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -1740,6 +1751,7 @@ def pod4_plan(
     # checkpoints and the originals' step checkpoints (not their endpoints) dropped once the
     # pairs are archived
     replays: dict[int, tuple[str, str]] = {}  # seed -> (campaign, label)
+    floor_read: tuple[list[str], list[str]] = ([], [])  # the floor's inventory and record
     pod2_checkpoints = b.checkpoints / "pod2"
     b.begin()
     for i in range(0, len(EXT2_SEEDS), EXT2_GROUP):
@@ -1759,7 +1771,7 @@ def pod4_plan(
             replays[s] = (name, label(c))
         floor = None  # (campaign, label) of the unchanged-order repeat
         if FORCE_SEED in seeds:
-            repeat = replay_cell(b, FORCE_SEED, TWIN_STEPS)
+            repeat = floor_cell(b, FORCE_SEED)
             _, again = b.launch(f"repeat-{group}", "replays", [repeat],
                                 minutes=minutes["replay-steps"], group=group)  # fmt: skip
             floor = (again, label(repeat))
@@ -1783,7 +1795,8 @@ def pod4_plan(
                   [(f"ckpt:{fetched_ckpt}:{sha}", f"run:{{run:{label(c)}}}:{UPDATES}")],
                   distances[s], only_if=fetched_ckpt, campaign=name, group=group)  # fmt: skip
             step(f"replays/{group}/remove-s{s}", b.own("remove-fetched", "--path", fetched_ckpt,
-                 "--sha256", sha), group=group, minutes_key="settle")  # fmt: skip
+                 "--sha256", sha, "--record", distances[s]), group=group,
+                 minutes_key="settle")  # fmt: skip
         check = b.record("replays", f"check-{group}.json")
         argv = ["--", "scripts/study5_engineering_check.py", "--archived",
                 *[pod2_run(s) for s in seeds], "--rerun", *[f"{{run:{label(c)}}}" for c in cells],
@@ -1825,9 +1838,10 @@ def pod4_plan(
                 drop(f"replays/{group}/drop-steps-s{s}", name, [replays[s][1]],
                      [inventory(archived)], consumers, endpoint=False, group=group)  # fmt: skip
         if floor is not None:
+            floor_record = b.rel(b.record("twins", f"floor-s{FORCE_SEED}.json"))
+            floor_read = ([inventory(archived)], [floor_record])
             drop(f"replays/{group}/drop-repeat", floor[0], [floor[1]], [inventory(archived)],
-                 [b.rel(b.record("twins", f"floor-s{FORCE_SEED}.json"))], endpoint=True,
-                 group=group)  # fmt: skip
+                 [floor_record], endpoint=True, group=group)  # fmt: skip
     b.end("replays")
 
     def replay_dir(seed: int) -> str:
@@ -1879,7 +1893,7 @@ def pod4_plan(
              f"seed={PANEL_SEEDS[0]}", "train.steps=50", "schedule.evaluate_at=[50]", "--run",
              replay_dir(FORCE_SEED), "--checkpoints", b.checkpoints, "--step", FORCE_STEPS[0],
              "--out", record, "--epsilon", FORCE_REPEAT_EPSILON, "--project", *projections,
-             "--save-force", saved[k]), outputs=(str(record),),
+             "--split-halves", "--save-force", saved[k]), outputs=(str(record),),
              minutes_key="force-repeat")  # fmt: skip
         force_paths.append(b.rel(record))
     name_ = (
@@ -1892,8 +1906,11 @@ def pod4_plan(
     repeat_records = [p for p in force_paths if "/force-repeat/" in f"/{p}"]
     for k, folder_ in saved.items():
         purge(f"force/purge-repeat-{k}", folder_, [inventory(farchived)], repeat_records)
+    # FORCE_SEED's step checkpoints go only once the force records and the twins' floor (which
+    # read them too) are in verified archives
     drop("force/drop-steps", replays[FORCE_SEED][0], [replays[FORCE_SEED][1]],
-         [inventory(farchived)], force_paths, endpoint=False)  # fmt: skip
+         [inventory(farchived), *floor_read[0]], [*force_paths, *floor_read[1]],
+         endpoint=False)  # fmt: skip
     vectors_record = f"{b.rel(b.record('vectors', 'm1'))}/record.json"
     purge("force/purge-grad-r", grad, [inventory(varchived), inventory(farchived)],
           [vectors_record, *force_paths])  # fmt: skip
@@ -3333,11 +3350,21 @@ def cmd_fetch_endpoint(args) -> int:
 
 
 def cmd_remove_fetched(args) -> int:
-    """A checkpoint ``fetch-endpoint`` fetched, removed once read: only a file of ``--sha256``
-    (a copy of an archived object); an absent one is nothing to do."""
+    """A checkpoint ``fetch-endpoint`` fetched, removed once read: only when ``--record``, the
+    distance record that reads it, is written (``scripts/study5_pairs.py``'s, its first item this
+    file by ``--sha256``), and only a file of that sha256 (a copy of an archived object); an absent
+    one is nothing to do. Otherwise it stays, for the record to be computed again."""
     if not args.path.exists():
         print(f"{args.path.name}: not on the disk")
         return 0
+    try:
+        record = json.loads(args.record.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise StepError(f"{args.path.name}: its distance record is not written; it stays") from None
+    rows = record.get("pairs") if isinstance(record, dict) else None
+    first = (rows[0].get("a") or {}) if isinstance(rows, list) and len(rows) == 1 else {}
+    if record.get("kind") != "study5-pairs" or first.get("sha256") != args.sha256:
+        raise StepError(f"{args.path.name}: its distance record does not read it; it stays")
     if sha256_of(args.path) != args.sha256:
         raise StepError(f"{args.path.name}: not of sha256 {args.sha256}; it stays")
     args.path.unlink()
@@ -3713,8 +3740,9 @@ def own_root_problems(plan: Plan) -> list[str]:
     neither move nor reuse a registered run or record: its archive id starts with ``pod3-``, and
     the runs root holds nothing of another archive (each a refusal before anything is written):
     no records folder of another id under ``study5_records/``, no launcher journal of another
-    campaign under ``launch/``, no run under ``study5/`` or ``study3/`` whose ``meta.json`` names
-    another archive (or that has none that reads), no scan or ladder run of another id, no
+    campaign under ``launch/``, no run under ``study5/``, ``study3/`` or ``study5_floor/`` whose
+    ``meta.json`` names another archive (or that has none that reads), no scan or ladder run of
+    another id, no
     campaign folder under ``campaigns/`` but the plan's own --out and those of earlier attempts
     of the same pod and archive id (``_earlier_attempt``)."""
     problems, own = [], f"study5-{plan.archive_id}-"
@@ -3730,7 +3758,7 @@ def own_root_problems(plan: Plan) -> list[str]:
 
     other = [p.name for p in children("study5_records") if p.name != plan.archive_id]
     other += [p.name for p in children("launch") if not p.name.startswith(own)]
-    for experiment in ("study5", "study3"):
+    for experiment in ("study5", "study3", FLOOR_EXPERIMENT):
         for run_dir in children(experiment):
             try:
                 meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
@@ -3990,6 +4018,7 @@ def parser_of() -> argparse.ArgumentParser:
     p = sub.add_parser("remove-fetched")
     p.add_argument("--path", type=Path, required=True)
     p.add_argument("--sha256", required=True)
+    p.add_argument("--record", type=Path, required=True)  # the distance record that read it
     p = sub.add_parser("restore-runs")  # a Pod's runs from the bucket, for the analysis
     p.add_argument("--archive-id", required=True)
     p.add_argument("--dest", type=Path, required=True)

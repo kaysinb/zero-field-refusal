@@ -755,6 +755,7 @@ def test_pod4_extension_2(where, tmp_path):
                 assert config_hash(cfg)[:8] == camp.POD2_FRESH_L[r.seed].split("-")[-2]
                 assert list(steps_) == list(camp.TWIN_STEPS)
                 assert cfg.tracking.endpoint_checkpoint == "/root/ckpt/study5"
+                assert cfg.experiment == r.experiment == camp.FLOOR_EXPERIMENT
                 continue
             if cfg.study5.role == "fresh":
                 assert config_hash(cfg)[:8] == camp.POD2_FRESH_L[r.seed].split("-")[-2]
@@ -860,6 +861,20 @@ def test_pod4_amendment_numerical_equivalence(where):
         s for s in all_steps if s.name == f"replays/g{camp.FORCE_SEED}/floor-s{camp.FORCE_SEED}"
     ]
     assert len(floor) == 1 and "--r" in floor[0].argv
+    for f in fetched:  # a fetched checkpoint goes only once its distance record read it
+        group, seed = f.name.split("/")[1], f.name.rsplit("-s", 1)[1]
+        remove = next(s for s in all_steps if s.name == f"replays/{group}/remove-s{seed}")
+        distance = next(s for s in all_steps if s.name == f"replays/{group}/distance-s{seed}")
+        assert remove.argv[remove.argv.index("--record") + 1] == distance.outputs[0]
+    (drop_steps,) = [s for s in steps(plan, "force") if s.name == "force/drop-steps"]
+    consumers = [drop_steps.argv[i + 1] for i, a in enumerate(drop_steps.argv) if a == "--consumer"]
+    assert any(floor[0].outputs[0].endswith(c) for c in consumers)  # the floor read them too
+    floor_archive = next(s for s in all_steps if s.name == f"replays/g{camp.FORCE_SEED}/archive")
+    named = [drop_steps.argv[i + 1] for i, a in enumerate(drop_steps.argv) if a == "--inventory"]
+    assert floor_archive.outputs[0] in named
+    for k in ("a", "b"):  # accumulated as the primary measurement is
+        (repeat,) = [s for s in steps(plan, "force") if s.name == f"force/repeat-{k}"]
+        assert "--split-halves" in repeat.argv
     linear = steps(plan, "linear")
     assert any(s.name == f"linear/g{camp.FORCE_SEED}/s{camp.FORCE_SEED}-repeat" for s in linear)
     force = [s.name for s in steps(plan, "force")]
@@ -885,6 +900,29 @@ def test_pod4_amendment_numerical_equivalence(where):
     assert "found a difference" in camp.gate_problem(
         "engineering", _write(where, "e.json", earlier), plan
     )
+
+
+def test_pod4_floor_repeat_runs_anew_beside_the_completed_replay(where, tmp_path):
+    """The launcher reuses a completed run of the same experiment and config hash: the floor
+    repeat has the replay's config hash, in an experiment folder of its own, so with the replay
+    completed the replay is done and the repeat is not."""
+    from zero_field_refusal.launch import assess
+
+    plan = pod4(where)
+    launches = [s for s in steps(plan, "replays") if s.kind == "launch"]
+    first, repeat = (campaign_runs(plan, tmp_path, Path(s.argv[1]).stem) for s in launches[:2])
+    replay = next(r for r in first if r.seed == camp.FORCE_SEED and "-fresh-" in r.cell)
+    (floor,) = repeat
+    assert floor.config_hash == replay.config_hash and floor.experiment != replay.experiment
+    runs = tmp_path / "runs"
+    done = runs / replay.experiment / f"20261111T000000Z-x-{replay.config_hash[:8]}-a1"
+    done.mkdir(parents=True)
+    (done / "meta.json").write_text(json.dumps({"config_hash": replay.config_hash,
+                                                "status": "completed"}))  # fmt: skip
+    found = assess(replay, runs)
+    assert found.done == done or done.name in found.conflicts  # seen: reused or refused
+    found = assess(floor, runs)
+    assert found.done is None and not found.conflicts and not found.technical
 
 
 def _write(where, name, record) -> Path:
@@ -942,8 +980,16 @@ def test_fetch_endpoint_fetches_only_differing_tensors_by_the_archived_sha(tmp_p
     (dest / "pod2-run-a1.pt").unlink()
     argv[argv.index("--sha256") + 1] = "0" * 64  # not shown verified in its archive
     assert camp.main(argv) == 1 and not (dest / "pod2-run-a1.pt").exists()
-    remove = ["remove-fetched", "--path", str(dest / "pod2-run-a1.pt"), "--sha256", sha]
+    record = tmp_path / "distance.json"
+    remove = ["remove-fetched", "--path", str(dest / "pod2-run-a1.pt"), "--sha256", sha,
+              "--record", str(record)]  # fmt: skip
     assert camp.main(remove) == 0  # nothing there
+    (dest / "pod2-run-a1.pt").write_bytes(content)
+    assert camp.main(remove) == 1 and (dest / "pod2-run-a1.pt").exists()  # no record yet
+    record.write_text(json.dumps({"available": False, "missing": "pod2-run-a1.pt"}))
+    assert camp.main(remove) == 1 and (dest / "pod2-run-a1.pt").exists()  # not computed
+    row = {"a": {"kind": "ckpt", "sha256": sha}, "b": {"kind": "ckpt"}, "distance": 1.0}
+    record.write_text(json.dumps({"kind": "study5-pairs", "pairs": [row]}))
     (dest / "pod2-run-a1.pt").write_bytes(b"something else")
     assert camp.main(remove) == 1 and (dest / "pod2-run-a1.pt").exists()
     (dest / "pod2-run-a1.pt").write_bytes(content)
