@@ -1,0 +1,9 @@
+# Study 5's edited orders (docs/study5-preregistration.md, "Extension 2", M6): the seed's own 500
+# responses in the stream order with one small edit (train.order_edit: swap_batches, swap_first or
+# shuffle, study5_options), with the seed's own v₀. The rate, the seed and the edit come from the
+# campaign (the edit as +train.order_edit={kind: …, …}); no scan.
+defaults:
+  - experiments/study5
+
+study5:
+  role: control

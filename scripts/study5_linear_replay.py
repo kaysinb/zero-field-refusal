@@ -78,6 +78,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from omegaconf import OmegaConf
 
 from zero_field_refusal import ladder, linear_response, surrogate, vectors
 from zero_field_refusal.config import config_hash
@@ -304,15 +305,29 @@ def panel_record(spec: surrogate.SurrogateSpec, items: list[dict]) -> dict[str, 
 def reference_of(args: argparse.Namespace, cfg) -> dict[str, Any] | None:
     """The reference norm X of the divergence rule: ``--reference-norm``, or the step-N
     ``displacement_norm`` of the F run at ``--reference-run`` (``ladder.read_f_run``: this
-    config's run, all its updates), with the identities that run recorded."""
+    config's run, all its updates) or at ``--reference-fresh-run`` (the seed's fresh F run at the
+    same rate, for another order of the same responses), with the identities that run
+    recorded."""
     if args.reference_norm is not None:
         x = float(args.reference_norm)
         if not (math.isfinite(x) and x > 0):
             raise ValueError(f"--reference-norm {x!r}: a finite positive norm is needed")
         return {"norm": x, "source": "--reference-norm"}
-    if args.reference_run is None:
+    if args.reference_fresh_run is not None:  # the seed's fresh F run at the same rate
+        fresh = OmegaConf.load(Path(args.reference_fresh_run) / "config.yaml")  # its own config
+        role = OmegaConf.select(fresh, "study5.role", default=None)
+        if (role, int(fresh.seed), float(fresh.optimizer.lr)) != (
+            "fresh",
+            int(cfg.seed),
+            float(cfg.optimizer.lr),
+        ):
+            raise ValueError(f"--reference-fresh-run {args.reference_fresh_run}: not this seed's "
+                             "fresh F run at this rate")  # fmt: skip
+        f_run = ladder.read_f_run(args.reference_fresh_run, fresh)
+    elif args.reference_run is None:
         return None
-    f_run = ladder.read_f_run(args.reference_run, cfg)
+    else:
+        f_run = ladder.read_f_run(args.reference_run, cfg)
     return {"norm": f_run["displacement_norm"], "source": f_run["displacement_source"],
             "run_id": f_run["run_id"], "config_hash": f_run["config_hash"],
             "theta0_trainable_sha256": f_run["theta0_trainable_sha256"],
@@ -616,6 +631,8 @@ def main(argv: list[str] | None = None) -> int:
     reference = parser.add_mutually_exclusive_group()
     reference.add_argument("--reference-norm", type=float)
     reference.add_argument("--reference-run", type=Path)
+    # an edited, sealed or control order: the norm of the seed's fresh F run at the same rate
+    reference.add_argument("--reference-fresh-run", type=Path)
     parser.add_argument("--surrogate", type=Path, default=surrogate.SPEC_PATH)
     parser.add_argument("--panel-size", type=int, default=100)
     parser.add_argument("--grad-r-only", action="store_true")

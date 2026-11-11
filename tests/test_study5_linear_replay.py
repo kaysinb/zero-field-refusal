@@ -426,6 +426,16 @@ def test_script_end_to_end(env, tmp_path, monkeypatch, capsys) -> None:  # noqa:
     ordered, ordered_record = vectors.load_vector(ordered_dir / "delta_hat.pt", names)
     assert ordered_record["provenance"]["order"] == study5_options.order_record(ordered_cfg, order)
     assert json.loads((ordered_dir / "record.json").read_text())["order"]["order_seed"] == 7
+    # the same control order against the seed's fresh run's norm (its own config, seed and rate)
+    fresh_ref = tmp_path / "ordered-fresh-ref"
+    argv_ref = [*config, *control, "--out-dir", str(fresh_ref), "--check-steps", "2",
+                "--reference-fresh-run", str(f_dir), *common]  # fmt: skip
+    assert REPLAY.main(argv_ref) == 0
+    ref = json.loads((fresh_ref / "record.json").read_text())["reference"]
+    assert ref["run_id"] == "f-fresh" and ref["norm"] == monitor[0]["displacement_norm"]
+    other_seed = [*config, *control, "seed=1", "--out-dir", str(tmp_path / "x"),
+                  "--reference-fresh-run", str(f_dir), *common]  # fmt: skip
+    assert REPLAY.main(other_seed) == 1 and not (tmp_path / "x" / "record.json").exists()
     ordered_batches, _ = linear_response.feed_batches(ordered_cfg, env)
     assert ordered_batches != batches
     closed = linear_response.linear_displacement(
