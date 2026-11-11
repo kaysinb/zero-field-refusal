@@ -685,14 +685,14 @@ def test_pod3_needs_a_runs_root_of_its_own(tmp_path, entry):
         "pod2-campaign-folder": lambda: (runs / "campaigns" / "study5-pod2").mkdir(),
     }[entry]()  # fmt: skip
     (found,) = camp.own_root_problems(plan)
-    assert "is not pod 3's own" in found
+    assert "is not pod3's own" in found
 
 
 def test_pod3_needs_an_archive_id_of_its_own(where):
     for archive_id in ("pod2-20261109", "pod1-20261109", "t3"):
         plan = camp.pod3_plan(archive_id=archive_id, commit=COMMIT, gpu_code=GPU, **where)
         (found,) = camp.own_root_problems(plan)
-        assert "pod 3's archive id starts with 'pod3-'" in found
+        assert "pod3's archive id starts with 'pod3-'" in found
     plan = camp.pod3_plan(archive_id="pod3-20261111", commit=COMMIT, gpu_code=GPU, **where)
     assert camp.own_root_problems(plan) == []
 
@@ -728,9 +728,165 @@ def test_pod3_admits_a_group_only_when_its_work_and_the_close_fit_before_the_cap
     assert not any("--admit" in s.argv for s in steps(pod2(where, 24)))
 
 
+def pod4(where):
+    return camp.pod4_plan(archive_id="pod4-20261112", commit=COMMIT, gpu_code=GPU, **where)
+
+
+def test_pod4_extension_2(where, tmp_path):
+    """Extension 2 (docs/study5-preregistration.md): the engineering rerun first; the 40 replays
+    are pod 2's fresh η_l cells (the same config hashes), checked against pod 2's runs; step
+    checkpoints only on the twins' and the force pilot's seeds; the twins' edited order; the
+    sealed orders only as predictions from θ₀; the swaps and shuffles as edited orders."""
+    plan = pod4(where)
+    assert [b.name for b in plan.blocks] == ["engineering", "fetch", "replays", "vectors", "force",
+                                             "linear", "sealed", "points", "swaps", "shuffles",
+                                             "close"]  # fmt: skip
+    assert all(s.on_fail == "stop" for s in steps(plan, "engineering"))
+    replays = [s for s in steps(plan, "replays") if s.kind == "launch"]
+    assert [s.group for s in replays] == [f"g{s}" for s in range(50000, 50040, 4)]
+    seen = {}
+    for launch_step in replays:
+        for r in campaign_runs(plan, tmp_path, Path(launch_step.argv[1]).stem):
+            cfg = load_run_config(r.config, list(r.overrides))
+            steps_ = cfg.tracking.step_checkpoints
+            if cfg.study5.role == "fresh":
+                assert config_hash(cfg)[:8] == camp.POD2_FRESH_L[r.seed].split("-")[-2]
+                assert cfg.tracking.endpoint_checkpoint == "/root/ckpt/study5"
+                seen[r.seed] = None if steps_ is None else list(steps_)
+            else:  # a twin: the first responses of the batches at steps 2 and 3 exchanged
+                assert r.seed in camp.SWAP_SEEDS
+                assert dict(cfg.train.order_edit) == {"kind": "swap_first", "step": 2}
+                assert list(steps_) == list(camp.TWIN_STEPS)
+    assert sorted(seen) == list(range(50000, 50040))
+    assert seen[50000] == list(camp.FORCE_SEED_STEPS)
+    assert all(seen[s] == list(camp.TWIN_STEPS) for s in (50001, 50002, 50003))
+    assert all(seen[s] is None for s in range(50004, 50040))
+    checks = [s for s in steps(plan, "replays") if s.gate == "engineering"]
+    assert len(checks) == 10 and all(s.on_fail == "stop" for s in checks)
+    assert ["--ignore" in s.argv for s in checks] == [True] + [False] * 9
+    fetches = {s.argv[s.argv.index("--run-id") + 1] for s in steps(plan) if "fetch-run" in s.argv}
+    assert fetches == {camp.POD2_ORDER_RUN, *camp.POD2_FRESH_L.values()}
+    # the sealed orders: twenty predictions from θ₀, nothing of any E2 run
+    sealed = [s for s in steps(plan, "sealed") if "scripts/study5_linear_replay.py" in s.argv]
+    found = sorted((int(next(a for a in s.argv if a.startswith("seed=")).split("=")[1]),
+                    int(next(a for a in s.argv if a.startswith("train.order_seed="))
+                        .split("=")[1])) for s in sealed)  # fmt: skip
+    assert found == sorted((s, s + o) for s in range(50006, 50016) for o in (1000, 2000))
+    assert all("--reference-fresh-run" in s.argv for s in sealed)
+    text = " ".join(" ".join(s.argv) for s in steps(plan))
+    assert "s5-order1-" not in text and "s5-order2-" not in text and "pod3-" not in text
+    assert "scripts/label_runs.py" not in text
+    sealed_text = " ".join(" ".join(s.argv) for s in steps(plan, "sealed"))
+    for script in ("study5_vector_points", "study5_pairs", "study5_tokens", "launch.py"):
+        assert script not in sealed_text
+    # the edited orders: swaps on four seeds, shuffles on six; each with its predictions
+    hashes = set()
+    for block, count in (("swaps", 3), ("shuffles", 4)):
+        for launch_step in [s for s in steps(plan, block) if s.kind == "launch"]:
+            runs = campaign_runs(plan, tmp_path, Path(launch_step.argv[1]).stem)
+            assert len(runs) == count
+            for r in runs:
+                cfg = load_run_config(r.config, list(r.overrides))
+                assert cfg.study5.role == "control" and cfg.optimizer.lr == 1.3e-05
+                hashes.add(config_hash(cfg))
+    assert len(hashes) == 4 * 3 + 6 * 4
+    predictions = [s for s in steps(plan, "swaps") if "scripts/study5_linear_replay.py" in s.argv]
+    assert len(predictions) == 4 * 4  # three swaps and the twin edit per seed
+    points = [s for s in steps(plan, "points") if "scripts/study5_vector_points.py" in s.argv]
+    labels = sorted(s.argv[s.argv.index("--label") + 1] for s in points)
+    assert labels == sorted(["mean", "mean_k", "mean_neg_k", "mix1", "mix2", "mix3",
+                             *[f"small_s{s}" for s in range(50000, 50006)],
+                             *[f"rmean_s{s}" for s in range(50000, 50006)],
+                             *[f"rmixture_s{s}" for s in range(50000, 50006)]])  # fmt: skip
+    for s in points:
+        if s.argv[s.argv.index("--label") + 1] in ("mean_k", "mean_neg_k", "mix1"):
+            assert "--match" in s.argv
+    assert "--sign" in next(s for s in points if "mean_neg_k" in s.argv).argv
+    commands = {s.argv[1] for s in steps(plan) if s.argv[0] == "scripts/study5_campaigns.py"}
+    assert not commands & {"checkpoint", "check-checkpoints", "export-checkpoints"}
+    assert {"settle", "drop-checkpoints"} <= commands
+
+
+def test_pod4_needs_extension_2s_gpu_code_registration_and_root(where, monkeypatch, tmp_path):
+    plan = pod4(where)
+    problems = camp.preflight(plan)
+    assert any("study5-extension-2-code-identity.json" in p for p in problems) or not (
+        REPO_ROOT / camp.EXT2_IDENTITY).exists()  # fmt: skip
+    monkeypatch.setattr(camp, "EXT2_HEADING", "### Extension 9")
+    assert any("does not hold extension 2" in p for p in camp.preflight(plan))
+    for archive_id in ("pod3-20261111", "pod2-20261109", "t4"):
+        other = camp.pod4_plan(archive_id=archive_id, commit=COMMIT, gpu_code=GPU, **where)
+        (found,) = camp.own_root_problems(other)
+        assert "pod4's archive id starts with 'pod4-'" in found
+    assert camp.own_root_problems(plan) == []
+    (where["runs"] / "study5_vector" / "s5-pod3-20261111-x").mkdir(parents=True)
+    (found,) = camp.own_root_problems(plan)
+    assert "is not pod4's own" in found
+
+
+def test_run_references_inside_arguments_and_across_campaigns(tmp_path, monkeypatch):
+    calls = []
+
+    def completed(runs, campaign, run_label):
+        calls.append((campaign, run_label))
+        return runs / campaign / run_label
+
+    monkeypatch.setattr(camp, "completed_run", completed)
+    argv = ["x", "{run:a}", "run:{run:b@other}:5", "--pair", "{run:c@third}"]
+    out = camp.substituted(argv, tmp_path, "own")
+    assert out == ["x", str(tmp_path / "own" / "a"), f"run:{tmp_path / 'other' / 'b'}:5",
+                   "--pair", str(tmp_path / "third" / "c")]  # fmt: skip
+    assert calls == [("own", "a"), ("other", "b"), ("third", "c")]
+
+
+def test_settle_copies_records_and_removes_only_recorded_vectors(tmp_path):
+    folder, records = tmp_path / "vec", tmp_path / "records"
+    folder.mkdir()
+    for name in ("a.pt", "b.pt"):
+        (folder / name).write_bytes(b"tensor")
+    (folder / "a.pt.json").write_text("{}")
+    (folder / "record.json").write_text('{"x": 1}')
+    assert camp.main(["settle", "--dir", str(folder), "--records", str(records), "--keep"]) == 0
+    assert sorted(p.name for p in folder.iterdir()) == ["a.pt", "a.pt.json", "b.pt",
+                                                        "record.json"]  # fmt: skip
+    assert camp.main(["settle", "--dir", str(folder), "--records", str(records)]) == 0
+    assert sorted(p.name for p in folder.iterdir()) == ["a.pt.json", "b.pt", "record.json"]
+    assert sorted(p.name for p in records.iterdir()) == ["a.pt.json", "record.json"]
+    (folder / "record.json").write_text('{"x": 2}')
+    assert camp.main(["settle", "--dir", str(folder), "--records", str(records)]) == 1
+
+
+def test_drop_checkpoints_needs_the_records_and_the_recorded_bytes(tmp_path, monkeypatch):
+    run = tmp_path / "run"
+    run.mkdir()
+    files = {}
+    for step in (2, 3, 25):
+        path = tmp_path / f"r-step-{step}.pt"
+        path.write_bytes(f"theta{step}".encode())
+        files[step] = path
+    sha = {k: hashlib.sha256(v.read_bytes()).hexdigest() for k, v in files.items()}
+    inputs = {
+        "step_checkpoints": [{"path": str(files[t]), "sha256": sha[t], "step": t} for t in (2, 3)],
+        "endpoint_checkpoint": {"path": str(files[25]), "sha256": sha[25], "step": 25},
+    }
+    (run / "meta.json").write_text(json.dumps({"inputs": inputs}))  # fmt: skip
+    monkeypatch.setattr(camp, "completed_run", lambda runs, campaign, run_label: run)
+    record = tmp_path / "pairs.json"
+    argv = ["drop-checkpoints", "--runs", str(tmp_path), "--campaign", "c", "--run", "x",
+            "--require", str(record)]  # fmt: skip
+    assert camp.main(argv) == 1 and all(p.exists() for p in files.values())  # no record yet
+    record.write_text("{}")
+    files[3].write_bytes(b"other")
+    assert camp.main(argv) == 1  # a file that is not the recorded one is kept
+    assert not files[2].exists() and files[3].exists() and files[25].exists()
+    files[3].write_bytes(b"theta3")
+    assert camp.main([*argv, "--endpoint"]) == 0
+    assert not any(p.exists() for p in files.values())
+
+
 def test_no_plan_holds_a_bucket_path_or_a_key(where, monkeypatch):
     monkeypatch.setenv("ARTIFACT_REMOTE", "gs://secret-bucket/prefix")
-    for plan in (pod1(where), pod2(where), pod3(where)):
+    for plan in (pod1(where), pod2(where), pod3(where), pod4(where)):
         text = json.dumps(plan.to_json()) + "".join(plan.campaigns.values())
         assert "gs://" not in text and "secret-bucket" not in text and "KEY" not in text
 
@@ -739,7 +895,8 @@ def test_the_plan_is_data_and_deterministic(where):
     assert pod1(where).to_json() == pod1(where).to_json()
     assert pod2(where).to_json() == pod2(where).to_json()
     assert pod3(where).to_json() == pod3(where).to_json()
-    for plan in (pod2(where), pod3(where)):
+    assert pod4(where).to_json() == pod4(where).to_json()
+    for plan in (pod2(where), pod3(where), pod4(where)):
         names = [s.name for s in steps(plan)]
         assert len(names) == len(set(names))
 
