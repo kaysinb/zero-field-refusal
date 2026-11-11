@@ -306,6 +306,12 @@ def test_script_end_to_end(env, tmp_path, monkeypatch, capsys) -> None:  # noqa:
             "--reference-run", str(f_dir), *common]  # fmt: skip
     assert REPLAY.main(argv) == 0
     record = json.loads((out / "record.json").read_text())
+    # K at θ₀ + δ̂ and θ₀ + δ_lin, as the evaluation computes it, on both K panels
+    for which in ("delta_hat", "delta_lin"):
+        k = record["K"][which]
+        assert set(k) == {"K_benign", "K_harmful"} and all(v >= 0 for v in k.values())
+    assert record["K"]["delta_lin_unavailable"] is None
+    assert set(record["K"]["streams"]) == {"kl_benign", "kl_harmful"}
     printed = capsys.readouterr().out
 
     model = env.new_model()
@@ -485,6 +491,8 @@ def test_script_end_to_end(env, tmp_path, monkeypatch, capsys) -> None:  # noqa:
     assert div["status"] == "diverged" and div["reason"] == "bound"
     assert div["norm"] > diverged["reference"]["bound"] >= div["previous_norm"]
     assert diverged["q_lin"] is None and diverged["r"]["delta_lin"] is None
+    assert diverged["K"]["delta_lin"] is None and diverged["K"]["delta_hat"]["K_benign"] >= 0
+    assert diverged["K"]["delta_lin_unavailable"].startswith("diverged")
     assert (large / "delta_hat.pt").exists() and not (large / "delta_lin.pt").exists()
     assert set(diverged["vectors"]) == {"delta_hat"}
     assert diverged["restored_trainable_sha256"] == theta0_sha

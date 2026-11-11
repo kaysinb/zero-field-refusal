@@ -46,6 +46,11 @@ of SPEC (``--surrogate``, default ``configs/study5/surrogate-2.yaml``; it must h
 ``--panel-size`` prompts, default 100), in micro-batches of ``execution.eval_batch_size``, r the
 mean over prompts; q_hat = r(θ₀ + δ̂) − r(θ₀), q_lin = r(θ₀ + δ_lin) − r(θ₀).
 
+**K.** K_benign and K_harmful at θ₀ + δ̂ and θ₀ + δ_lin, as the run's evaluation computes them
+(``evaluation.sequence_kl`` against θ₀ over the scoring panel's ``kl_benign`` and ``kl_harmful``
+samples, ``train.Evaluator``'s cut). A diverged δ_lin has none: the record says so
+(``K.delta_lin_unavailable``) and δ̂'s are always there. ``--no-k`` skips them.
+
 **Outputs** in DIR: ``delta_hat.pt`` and ``delta_lin.pt`` by ``vectors.save_vector`` (kinds
 ``delta_hat`` and ``delta_lin``; provenance: seed, rate, steps, β₁, ε_adam, ε, the order record
 or ``stream``, the config hash, the streams' identity and v₀'s hash), then ``record.json``: the
@@ -82,10 +87,15 @@ from omegaconf import OmegaConf
 
 from zero_field_refusal import ladder, linear_response, surrogate, vectors
 from zero_field_refusal.config import config_hash
-from zero_field_refusal.evaluation import set_point
+from zero_field_refusal.evaluation import sequence_kl, set_point
 from zero_field_refusal.models import freeze
 from zero_field_refusal.protocol import load_run_config
-from zero_field_refusal.runtime import configure_numerics, device_name, environment
+from zero_field_refusal.runtime import (
+    configure_numerics,
+    device_name,
+    environment,
+    load_stream_for,
+)
 from zero_field_refusal.seeding import derive_seed, seed_everything
 from zero_field_refusal.study5_options import order_record, training_order
 from zero_field_refusal.tensor_hash import tensors_sha256
@@ -368,6 +378,19 @@ def _common(cfg, env, spec: surrogate.SurrogateSpec, numerics: dict) -> dict[str
 # ------------------------------------------------------------------------------- the two modes
 
 
+def k_panels(cfg, env) -> tuple[dict[str, list], dict[str, Any]]:
+    """The scoring panel's K samples as ``train.Evaluator`` reads them (``kl_harmful`` and
+    ``kl_benign``, each cut to ``eval.kl.limit`` prompts when a limit is set), and their streams'
+    identities."""
+    samples, identities = {}, {}
+    limit, per_prompt = cfg.eval.kl.limit, cfg.eval.kl.samples_per_prompt
+    for kind in ("kl_harmful", "kl_benign"):
+        found, manifest = load_stream_for(cfg, env, kind, None)
+        samples[kind] = found[: limit * per_prompt] if limit else found
+        identities[kind] = {"sha256": manifest["sha256"], "count": len(samples[kind])}
+    return samples, identities
+
+
 def run(
     cfg,
     env,
@@ -378,6 +401,7 @@ def run(
     check_steps: Sequence[int] = CHECK_STEPS,
     reference: Mapping[str, Any] | None = None,
     panel_size: int = 100,
+    k_readouts: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """The replay of ``cfg``'s seed and order in ``env``: (record, vectors), vectors holding
     ``names``, ``provenance``, ``delta_hat`` and ``delta_lin`` (None when diverged)."""
@@ -443,10 +467,33 @@ def run(
 
     r0, r_hat = r_at(None), r_at(delta_hat)
     r_lin = None if delta_lin is None else r_at(delta_lin)
+    surrogate_seconds = time.perf_counter() - began
+
+    # K_benign and K_harmful at θ₀ + δ̂ and θ₀ + δ_lin, as the run's evaluation computes them
+    began = time.perf_counter()
+    k_record: dict[str, Any] | None = None
+    if k_readouts:
+        samples, k_streams = k_panels(cfg, env)
+        ref_model = env.new_model()
+        ref_model.requires_grad_(False)
+        k_micro = int(cfg.execution.micro_batch_size)
+
+        def k_at(delta: Named) -> dict[str, float | None]:
+            with torch.no_grad():
+                set_point(trainable, start, [delta[name] for name in names], 1.0)
+            return {f"K_{kind.removeprefix('kl_')}": _number(sequence_kl(
+                model, ref_model, found, pad_id=env.pad_id, micro_batch_size=k_micro,
+            ).mean().item()) for kind, found in samples.items()}  # fmt: skip
+
+        k_record = {"delta_hat": k_at(delta_hat), "streams": k_streams,
+                    "delta_lin": None if delta_lin is None else k_at(delta_lin),
+                    "delta_lin_unavailable": None if delta_lin is not None else
+                    "diverged: no delta_lin"}  # fmt: skip
+        del ref_model
     with torch.no_grad():
         set_point(trainable, start, start, 0.0)
     final = tensors_sha256(trainable)
-    surrogate_seconds = time.perf_counter() - began
+    k_seconds = time.perf_counter() - began
 
     hat_norm = vectors.norm(delta_hat)
     norms: dict[str, Any] = {"delta_hat": hat_norm, "delta_lin": None, "difference": None,
@@ -482,6 +529,7 @@ def run(
               "delta_lin": None if r_lin is None else _number(r_lin)},
         "q_hat": _number(r_hat - r0),
         "q_lin": None if r_lin is None else _number(r_lin - r0),
+        "K": k_record,
         "norms": norms,
         "per_step": result["per_step"],
         "checks": result["checks"],
@@ -497,7 +545,8 @@ def run(
         **common,
         "memory": _memory(device),
         "seconds": {"setup": setup_seconds, "replay": replay_seconds,
-                    "surrogate": surrogate_seconds, "total": time.perf_counter() - started},
+                    "surrogate": surrogate_seconds, "k": k_seconds,
+                    "total": time.perf_counter() - started},
         "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),
     }  # fmt: skip
     provenance = {"seed": int(cfg.seed), "lr": lr, "steps": int(cfg.train.steps), "beta1": beta1,
@@ -636,6 +685,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--surrogate", type=Path, default=surrogate.SPEC_PATH)
     parser.add_argument("--panel-size", type=int, default=100)
     parser.add_argument("--grad-r-only", action="store_true")
+    parser.add_argument("--no-k", action="store_true")  # skip the K readouts (tests)
     args = parser.parse_args(argv)
     files = [RECORD, *([FILES["grad_r"]] if args.grad_r_only
                        else [FILES["delta_hat"], FILES["delta_lin"]])]  # fmt: skip
@@ -665,7 +715,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             record, vecs = run(cfg, env, spec, numerics, epsilon=args.epsilon,
                                check_steps=check_steps, reference=ref,
-                               panel_size=args.panel_size)  # fmt: skip
+                               panel_size=args.panel_size, k_readouts=not args.no_k)  # fmt: skip
         write(args.out_dir, record, vecs)
     except (ValueError, OSError) as exc:
         print(f"{type(exc).__name__}: {exc}")
