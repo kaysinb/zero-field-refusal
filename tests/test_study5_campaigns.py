@@ -743,12 +743,19 @@ def test_pod4_extension_2(where, tmp_path):
                                              "close"]  # fmt: skip
     assert all(s.on_fail == "stop" for s in steps(plan, "engineering"))
     replays = [s for s in steps(plan, "replays") if s.kind == "launch"]
-    assert [s.group for s in replays] == [f"g{s}" for s in range(50000, 50040, 4)]
+    assert [s.group for s in replays] == ["g50000", *[f"g{s}" for s in range(50000, 50040, 4)]]
     seen = {}
     for launch_step in replays:
-        for r in campaign_runs(plan, tmp_path, Path(launch_step.argv[1]).stem):
+        stem = Path(launch_step.argv[1]).stem
+        for r in campaign_runs(plan, tmp_path, stem):
             cfg = load_run_config(r.config, list(r.overrides))
             steps_ = cfg.tracking.step_checkpoints
+            if "-repeat-" in stem:  # the twins' floor: FORCE_SEED's replay again, its order kept
+                assert r.seed == camp.FORCE_SEED and cfg.study5.role == "fresh"
+                assert config_hash(cfg)[:8] == camp.POD2_FRESH_L[r.seed].split("-")[-2]
+                assert list(steps_) == list(camp.TWIN_STEPS)
+                assert cfg.tracking.endpoint_checkpoint == "/root/ckpt/study5"
+                continue
             if cfg.study5.role == "fresh":
                 assert config_hash(cfg)[:8] == camp.POD2_FRESH_L[r.seed].split("-")[-2]
                 assert cfg.tracking.endpoint_checkpoint == "/root/ckpt/study5"
@@ -811,6 +818,136 @@ def test_pod4_extension_2(where, tmp_path):
     commands = {s.argv[1] for s in steps(plan) if s.argv[0] == "scripts/study5_campaigns.py"}
     assert not commands & {"checkpoint", "check-checkpoints", "export-checkpoints"}
     assert {"settle", "drop-checkpoints", "purge"} <= commands
+
+
+def test_pod4_amendment_numerical_equivalence(where):
+    """The amendment (docs/study5-preregistration.md): every rerun check under the tolerance; the
+    replays' endpoints whose tensors differ measured against pod 2's checkpoint, fetched back by
+    its archived sha256 and removed once read; the noise repeats on FORCE_SEED."""
+    plan = pod4(where)
+    tol = str(camp.EXT2_TOLERANCE["relative"])
+    (eng,) = [s for s in steps(plan, "engineering") if s.gate == "engineering"]
+    assert eng.argv[eng.argv.index("--tolerance") + 1] == tol
+    assert eng.outputs[0].endswith("engineering-check-numerical.json")
+    all_steps = steps(plan, "replays")
+    checks = [s for s in all_steps if s.gate == "engineering"]
+    fetched = [s for s in all_steps if s.argv[:2] == ("scripts/study5_campaigns.py",
+                                                       "fetch-endpoint")]  # fmt: skip
+    assert len(fetched) == 40
+    names = [s.name for s in all_steps]
+    for f in fetched:
+        seed = int(f.name.rsplit("-s", 1)[1])
+        assert f.argv[f.argv.index("--sha256") + 1] == camp.POD2_CHECKPOINT_SHA256[seed]
+        assert f.argv[f.argv.index("--expected") + 1] == camp.POD2_ENDPOINTS[seed][1]
+        assert f.argv[f.argv.index("--remote") + 1] == f"{camp.POD2_ARCHIVE}/checkpoints"
+        group = f.name.split("/")[1]
+        distance = next(s for s in all_steps if s.name == f"replays/{group}/distance-s{seed}")
+        remove = next(s for s in all_steps if s.name == f"replays/{group}/remove-s{seed}")
+        check = next(s for s in checks if s.group == group)
+        assert names.index(f.name) < names.index(distance.name) < names.index(remove.name)
+        assert names.index(distance.name) < names.index(check.name)
+        target = f"{f.argv[f.argv.index('--dest') + 1]}/{camp.POD2_FRESH_L[seed]}.pt"
+        assert target.startswith("/root/ckpt/study5/pod2/")
+        assert distance.argv[distance.argv.index("--only-if") + 1] == target
+        assert f"ckpt:{target}:{camp.POD2_CHECKPOINT_SHA256[seed]}" in distance.argv
+        assert remove.argv[remove.argv.index("--path") + 1] == target
+        records = [check.argv[i + 1] for i, a in enumerate(check.argv)
+                   if a == "--endpoint-distance"]  # fmt: skip
+        assert f"{camp.POD2_ENDPOINTS[seed][0]}={distance.outputs[0]}" in records
+    assert len(checks) == 10
+    assert all(c.argv[c.argv.index("--tolerance") + 1] == tol for c in checks)
+    floor = [
+        s for s in all_steps if s.name == f"replays/g{camp.FORCE_SEED}/floor-s{camp.FORCE_SEED}"
+    ]
+    assert len(floor) == 1 and "--r" in floor[0].argv
+    linear = steps(plan, "linear")
+    assert any(s.name == f"linear/g{camp.FORCE_SEED}/s{camp.FORCE_SEED}-repeat" for s in linear)
+    force = [s.name for s in steps(plan, "force")]
+    assert {"force/repeat-a", "force/repeat-b", "force/repeat-pairs"} <= set(force)
+    good = {
+        "kind": "study5-engineering-check",
+        "exact": False,
+        "passed": True,
+        "within_tolerance": True,
+        "tolerance": dict(camp.EXT2_TOLERANCE),
+        "pairs": [],
+    }
+    assert camp.gate_problem("engineering", _write(where, "g.json", good), plan) == (
+        "the engineering check holds no pair")  # fmt: skip
+    other = {**good, "tolerance": {**camp.EXT2_TOLERANCE, "relative": 1e-3}}
+    assert "another tolerance" in camp.gate_problem("engineering", _write(where, "o.json", other),
+                                                    plan)  # fmt: skip
+    failed = {**good, "passed": False}
+    assert "found a difference" in camp.gate_problem(
+        "engineering", _write(where, "f.json", failed), plan
+    )
+    earlier = {"kind": "study5-engineering-check", "equal": False, "pairs": []}
+    assert "found a difference" in camp.gate_problem(
+        "engineering", _write(where, "e.json", earlier), plan
+    )
+
+
+def _write(where, name, record) -> Path:
+    path = where["runs"] / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record))
+    return path
+
+
+def test_pod4_numerical_check_keeps_the_earlier_reruns_and_records(where):
+    """A restart on the volume of the first attempt: the bitwise record stays and is archived,
+    and the diagnostic rerun beside it enters the numerical check with the campaign's own."""
+    records = where["runs"] / "study5_records" / "pod4-20261112"
+    records.mkdir(parents=True)
+    (records / "engineering-check.json").write_text("{}")
+    diag = where["runs"] / camp.POD4_DIAG / camp.POD4_DIAG_RERUN
+    diag.mkdir(parents=True)
+    plan = pod4(where)
+    (eng,) = [s for s in steps(plan, "engineering") if s.gate == "engineering"]
+    reruns = eng.argv[eng.argv.index("--rerun") + 1 : eng.argv.index("--out")]
+    assert len(reruns) == 2 and reruns[1] == str(diag)
+    (archive,) = [s for s in steps(plan, "engineering") if s.name == "engineering/archive"]
+    paths = [archive.argv[i + 1] for i, a in enumerate(archive.argv) if a == "--path"]
+    assert paths == ["study5_records/pod4-20261112/engineering-check.json", camp.POD4_DIAG]
+
+
+def test_fetch_endpoint_fetches_only_differing_tensors_by_the_archived_sha(tmp_path, monkeypatch):
+    run = tmp_path / "runs" / "replay-a1"
+    run.mkdir(parents=True)
+    monkeypatch.setattr(camp, "completed_run", lambda runs, campaign, run_label: run)
+    hashed = tmp_path / "hashed.json"
+    hashed.write_text(json.dumps({"replay-a1": {"file_ok": True, "tensors_sha256": "a" * 64}}))
+    content = b"pod2 checkpoint"
+    sha = hashlib.sha256(content).hexdigest()
+    calls = []
+    monkeypatch.setattr(camp, "archived_earlier", lambda args, name, recorded: recorded == sha)
+    monkeypatch.setattr(camp, "artifact_remote", lambda: "gs://bucket")
+
+    def fake_gcloud(argv):
+        calls.append(argv)
+        Path(argv[-1]).write_bytes(content)
+        return ""
+
+    monkeypatch.setattr(camp, "gcloud", fake_gcloud)
+    dest = tmp_path / "pod2"
+    argv = ["fetch-endpoint", "--runs", str(tmp_path / "runs"), "--campaign", "c", "--label", "x",
+            "--hashed", str(hashed), "--expected", "a" * 64, "--run-id", "pod2-run-a1",
+            "--sha256", sha, "--remote", "study5/pod2/checkpoints", "--inventories-remote",
+            "study5/pod2/inventories", "--dest", str(dest)]  # fmt: skip
+    assert camp.main(argv) == 0 and not calls and not dest.exists()  # equal tensors
+    argv[argv.index("--expected") + 1] = "b" * 64
+    assert camp.main(argv) == 0 and len(calls) == 1
+    assert (dest / "pod2-run-a1.pt").read_bytes() == content
+    assert camp.main(argv) == 0 and len(calls) == 1  # already there with its sha256
+    (dest / "pod2-run-a1.pt").unlink()
+    argv[argv.index("--sha256") + 1] = "0" * 64  # not shown verified in its archive
+    assert camp.main(argv) == 1 and not (dest / "pod2-run-a1.pt").exists()
+    remove = ["remove-fetched", "--path", str(dest / "pod2-run-a1.pt"), "--sha256", sha]
+    assert camp.main(remove) == 0  # nothing there
+    (dest / "pod2-run-a1.pt").write_bytes(b"something else")
+    assert camp.main(remove) == 1 and (dest / "pod2-run-a1.pt").exists()
+    (dest / "pod2-run-a1.pt").write_bytes(content)
+    assert camp.main(remove) == 0 and not (dest / "pod2-run-a1.pt").exists()
 
 
 def test_pod4_needs_extension_2s_gpu_code_registration_and_root(where, monkeypatch, tmp_path):
@@ -936,8 +1073,9 @@ def test_pod4_removes_only_after_a_verified_archive_and_never_a_replays_endpoint
             assert "--consumer" in s.argv
         if s.argv[:2] == ("scripts/study5_campaigns.py", "drop-checkpoints"):
             runs_ = [s.argv[i + 1] for i, a in enumerate(s.argv) if a == "--run"]
-            if "--endpoint" in s.argv:
-                assert all("-edit-twin-" in r for r in runs_), s.name
+            if "--endpoint" in s.argv:  # the twins' and the floor repeat's, never a replay's
+                campaign = s.argv[s.argv.index("--campaign") + 1]
+                assert all("-edit-twin-" in r for r in runs_) or "-repeat-" in campaign, s.name
         if "scripts/study5_pairs.py" in s.argv and "delta_lin.pt" in " ".join(s.argv):
             assert "--only-if" in s.argv
     close = steps(plan, "close")

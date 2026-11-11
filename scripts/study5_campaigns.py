@@ -1454,6 +1454,58 @@ POD2_ENDPOINTS = {
     50038: ("83886ff40487", "dff35a346c041c27c390e75479cbcf4c286206ae1d42178051bc296ab7ac5c39"),
     50039: ("748382835e47", "08fec5139f298dd59672a6424dbed71d7b912771a82792c1881e5896a426e9fd"),
 }
+# pod 2's fresh η_l runs: the endpoint checkpoint file's sha256 as its archive's inventory
+# shows it verified (study5/pod2-20261109/inventories/checkpoint-<run id>.tsv), by seed
+POD2_CHECKPOINT_SHA256 = {
+    50000: "cc908d6c7e6da8e0abb7230bea211d3772d3ff4ee9545e9964c36af3ab0aa465",
+    50001: "bea679963e2594bd55a4ae842dcf6114592464be9f49039195298bc8a546f976",
+    50002: "3e9e131a83d75a17ace3a1f7321708ef5d90bfa430756a8926ba3aa83b68cf7b",
+    50003: "0fc612f954f7352b5a1c6dfdc033b1be86709fa09155f62d9edf86e86d545336",
+    50004: "eec2d659ddd5266b7e44e172b50f212262f68a0ded8352e1d53b169fd647b41d",
+    50005: "6bbd3b876b97acff718194eb2f4645cd7f1458e393e4fa7e52c5129e22ed7e48",
+    50006: "3b89a4cf434301e61ba33c9f274375bb1b30217bc737a5a3d59ef6ff86cc0074",
+    50007: "0e25a210a19d79679b36ff509019713fae9e2712d041773293df7d98f9947c5f",
+    50008: "80bcd21e3780ce4fe264efbff89feb30067ddf1308274cf0a956f5ca36847cc4",
+    50009: "04218bb742f422c16cda5418519e2104017bfd5c5070c67c67926bfb2fe6d889",
+    50010: "85b565bef6b60fae3550f15b61a12d39da3e5fdfa1083bc3297f833c1355c424",
+    50011: "6306775f12e57192420d374c81e2dea5a4aa15f14fc19c7f97064287e976cac8",
+    50012: "b9042a38e2a848202c520a9f3467640b83ef33e9b786c1d7b82bbd0afa38f8de",
+    50013: "f03cedf366a7ba2cb96d7d741aa476abf39deee088e01224651e817a73541933",
+    50014: "03d0711335244a90ef6e081956fc17a0f49ba02b6479f1c12325217138bab5b1",
+    50015: "f72f0785ab9a76bd65960d0e3937754dde11439ef70346972ade86bd5e04c5d1",
+    50016: "55e1202dd77dee21e1912206056714a046107dab772a6766864eefd44d53584d",
+    50017: "938b8141cae6ef9a715d9182a3f5676355ae6e7c1fc7c5dbda3187d38485186d",
+    50018: "39572f93596309099baefe8c310802d36b546efbdb59b94cee28ed487f5a1ccd",
+    50019: "cc6bc6bffa6caa8b49d5f84652b174b8cd0775f1e3f686fb19e9ffda9b87388c",
+    50020: "90a57af6eb013e1589a145ae1b21a504319477cc2c0bbe42457f263b8013d933",
+    50021: "796e06308a2baffbbc7fc33f6956fd6165ce8de675193c28dad88ff2ec7f1b49",
+    50022: "d84b42096763dd36dae935706d730612f532ad105bd5069b3783cb58c923928a",
+    50023: "a5804b72a22b8817b58b1423b5b871f028fc75349ae2d31d791fdc19d3c682ab",
+    50024: "2b29b5a5185e00370918a359cf047685d706fc8df9bd41dba21f5a9589104d45",
+    50025: "720e2e7b238167c16c635052ffbf78dd4aa6db01fcdea7f78a1f93384fc2cdb5",
+    50026: "e6133c3ea19c8f4a420c3f01471ec77b6cc444b5785766f20daff378fff69806",
+    50027: "a8b3b8118c5bd5dc531b8cc8dab276d9ff4af9cc1160be49babf327960b0abb2",
+    50028: "da9b2da8a0b551419b0d7a31b4d8d34f7fb0b139d88760b23a44814dc99bb3d3",
+    50029: "8c30cf92c7d127efcc8ead9a56fee3ad33f6cb8717da6ef071f0e4a5d86152a4",
+    50030: "4d0da3038770474a8409d11eec88a505c76a3357c0bdb17a739cd600271b44c3",
+    50031: "f64c3dc90a88ee5d4fc6aa298ecd92b5735467246846b266e39600cba625f203",
+    50032: "c210339619989144951325f18acb3567cea1b1e820387fd0858dea0dffe80c4f",
+    50033: "bfeb29ab244caa418afa3e70136e3a35c04df172cb8934f7aa170556a6fcd668",
+    50034: "31154e93e2f4ebd6cf1827db16fe655db3082ca343ef10af038b11aea6de784e",
+    50035: "414daa4e2401c5213b768d3e326f8bde9717f3cbfb0e70c01844518a18666344",
+    50036: "2db209d629f8667c87cdf526935cec12941cb9db3ff40d824bed8bb689ac061e",
+    50037: "db3ecbec0633d0da6591c0442e96c91a587fab620f9f147ba394397e93b3c9a7",
+    50038: "8dae551e130deb4112c99d37a4435d1298380fc55db1199df0d1b2d6c3d64042",
+    50039: "40643cef96e6be0666550d118190d0237ab112e0e478663d883f409ee1575090",
+}
+# the diagnostic rerun of pod 4's first attempt (the order control's second rerun), copied
+# into the runs root, and its run directory there
+POD4_DIAG = "study5_diag"
+POD4_DIAG_RERUN = "study5/20261111T164620Z-s5-order-1.3e-05-s50000-s50000-3173f4e9-a1"
+# extension 2's numerical equivalence (docs/study5-preregistration.md, "Extension 2
+# amendment"), as study5_engineering_check.py --tolerance records it
+EXT2_TOLERANCE = {"relative": 1e-4, "absolute": 1e-9, "answers_allowed": 2,
+                  "endpoint_distance": 1e-4}  # fmt: skip
 EXT2_SEEDS = tuple(range(FRESH_FIRST, FRESH_FIRST + 40))  # the 40 fresh seeds
 EXT2_GROUP = 4  # seeds per replay or linear group: each group admitted on its own
 M_SEEDS = CONTROL_SEEDS  # M3, M4's removals, the δ_lin points evaluated in full, the shuffles
@@ -1462,6 +1514,7 @@ SWAP_STEPS = (2, 12, 23)
 TWIN_EDIT = "{kind: swap_first, step: 2}"
 TWIN_STEPS = (2, 3, 5, 8, 12, 18)
 FORCE_SEED, FORCE_STEPS = 50000, (5, 10)
+FORCE_REPEAT_EPSILON = 1e-2  # the amendment's repeated force measurement
 FORCE_SEED_STEPS = (1, 2, 3, 5, 8, 10, 12, 18)  # the force pilot's steps and the twins'
 PANEL_SEEDS, PANEL_RESPONSES = (59990, 59991), 1000  # streams no studied run trains on
 SMALL_POINTS = (0.1, -0.1, 0.05, -0.05, 0.025, -0.025)
@@ -1483,6 +1536,8 @@ POD4_MINUTES = {
     "linear-q": 4.5,  # the same without the K readouts (--no-k): predictions of q only
     "pairs": 3.0,  # assumed: checkpoints read and hashed, r at each
     "tensor-hash": 3.0,  # assumed: four 5.24 GB endpoints hashed as files and as tensors
+    "force-repeat": 12.0,  # assumed: one step and one ε of the force run, its vector saved
+    "fetch-endpoint": 4.0,  # assumed: a 5.24 GB checkpoint fetched and hashed at about 25 MB/s
     "tokens": 6.0,
     "force": 45.0,  # assumed: two steps × three ε × four panel gradients of 25 batches, halves
     "panels": 2 * PANEL_RESPONSES * STREAM_PER_RESPONSE,
@@ -1648,12 +1703,18 @@ def pod4_plan(
     step("engineering/launch", b.own("eng-launch", "--runs", b.runs, "--campaign-file", eng_file,
          "--gpu-code", gpu_code), kind="launch", on_fail="stop",
          minutes_key="fresh-upper")  # fmt: skip
-    check = b.record("engineering-check.json")
+    # under the amendment, every rerun of the order control on this volume in one numerical
+    # check: the campaign's own and the diagnostic rerun beside it (POD4_DIAG); the first
+    # attempt's bitwise record stays as written, archived with them
+    diag = b.runs / POD4_DIAG
+    reruns = [f"{{run:{label(cell)}}}", *([diag / POD4_DIAG_RERUN] if diag.is_dir() else [])]
+    earlier = [b.rel(p) for p in (b.record("engineering-check.json"), diag) if p.exists()]
+    check = b.record("engineering-check-numerical.json")
     step("engineering/check", with_runs("--", "scripts/study5_engineering_check.py", "--archived",
-         fetched / POD2_ORDER_RUN, "--rerun", f"{{run:{label(cell)}}}", "--out", check),
-         on_fail="stop", outputs=(str(check),), minutes_key="engineering-check",
-         gate="engineering")  # fmt: skip
-    b.runs_archive("engineering/archive", mutable=(b.rel(check),), campaign=eng)
+         fetched / POD2_ORDER_RUN, "--rerun", *reruns, "--out", check, "--tolerance",
+         EXT2_TOLERANCE["relative"]), on_fail="stop", outputs=(str(check),),
+         minutes_key="engineering-check", gate="engineering")  # fmt: skip
+    b.runs_archive("engineering/archive", paths=earlier, mutable=(b.rel(check),), campaign=eng)
     b.end("engineering")
 
     # ---- the other seeds' streams, pod 2's fresh η_l runs, two fresh panels
@@ -1671,10 +1732,15 @@ def pod4_plan(
          minutes_key="panels")  # fmt: skip
     b.end("fetch")
 
-    # ---- M1's replays, each group checked against pod 2's runs (tensors of the endpoints);
-    # M6's twins on the first four seeds, their pairs; then the twins' checkpoints and the
-    # originals' step checkpoints (not their endpoints) dropped once the pairs are archived
+    # ---- M1's replays, each group checked against pod 2's runs by numerical equivalence (the
+    # amendment): tensors of the endpoints, and where they differ the distance to pod 2's
+    # checkpoint fetched back from its archive (removed once read); M6's twins on the first four
+    # seeds, their pairs, and in FORCE_SEED's group an unchanged-order repeat of its replay with
+    # the twins' checkpoints (the twins' numerical floor); then the twins' and the repeat's
+    # checkpoints and the originals' step checkpoints (not their endpoints) dropped once the
+    # pairs are archived
     replays: dict[int, tuple[str, str]] = {}  # seed -> (campaign, label)
+    pod2_checkpoints = b.checkpoints / "pod2"
     b.begin()
     for i in range(0, len(EXT2_SEEDS), EXT2_GROUP):
         seeds = EXT2_SEEDS[i : i + EXT2_GROUP]
@@ -1691,38 +1757,77 @@ def pod4_plan(
                            minutes=minute, group=group)  # fmt: skip
         for s, c in zip(seeds, cells, strict=True):
             replays[s] = (name, label(c))
+        floor = None  # (campaign, label) of the unchanged-order repeat
+        if FORCE_SEED in seeds:
+            repeat = replay_cell(b, FORCE_SEED, TWIN_STEPS)
+            _, again = b.launch(f"repeat-{group}", "replays", [repeat],
+                                minutes=minutes["replay-steps"], group=group)  # fmt: skip
+            floor = (again, label(repeat))
         hashed = b.record("replays", f"tensors-{group}.json")
         step(f"replays/{group}/tensors", with_runs("--unless", hashed, "--",
              "scripts/study5_tensor_hash.py", *[f"{{run:{label(c)}}}" for c in cells], "--out",
              hashed, campaign=name), on_fail="stop", outputs=(str(hashed),), group=group,
              minutes_key="tensor-hash")  # fmt: skip
+        distances = {}
+        for s, c in zip(seeds, cells, strict=True):
+            sha = POD2_CHECKPOINT_SHA256[s]
+            fetched_ckpt = pod2_checkpoints / f"{POD2_FRESH_L[s]}.pt"
+            step(f"replays/{group}/fetch-s{s}", b.own("fetch-endpoint", "--runs", b.runs,
+                 "--campaign", name, "--label", label(c), "--hashed", hashed, "--expected",
+                 POD2_ENDPOINTS[s][1], "--run-id", POD2_FRESH_L[s], "--sha256", sha, "--remote",
+                 f"{POD2_ARCHIVE}/checkpoints", "--inventories-remote",
+                 f"{POD2_ARCHIVE}/inventories", "--dest", pod2_checkpoints), group=group,
+                 minutes_key="fetch-endpoint")  # fmt: skip
+            distances[s] = b.record("replays", f"distance-s{s}.json")
+            pairs(f"replays/{group}/distance-s{s}", s,
+                  [(f"ckpt:{fetched_ckpt}:{sha}", f"run:{{run:{label(c)}}}:{UPDATES}")],
+                  distances[s], only_if=fetched_ckpt, campaign=name, group=group)  # fmt: skip
+            step(f"replays/{group}/remove-s{s}", b.own("remove-fetched", "--path", fetched_ckpt,
+                 "--sha256", sha), group=group, minutes_key="settle")  # fmt: skip
         check = b.record("replays", f"check-{group}.json")
         argv = ["--", "scripts/study5_engineering_check.py", "--archived",
                 *[pod2_run(s) for s in seeds], "--rerun", *[f"{{run:{label(c)}}}" for c in cells],
-                "--out", check, "--rerun-endpoint-tensors", hashed]  # fmt: skip
+                "--out", check, "--rerun-endpoint-tensors", hashed, "--tolerance",
+                EXT2_TOLERANCE["relative"]]  # fmt: skip
         argv += [x for s in seeds for x in ("--endpoint-tensors",
                                             "=".join(POD2_ENDPOINTS[s]))]  # fmt: skip
+        argv += [x for s in seeds for x in ("--endpoint-distance",
+                                            f"{POD2_ENDPOINTS[s][0]}={distances[s]}")]  # fmt: skip
         if twins:
             argv += ["--ignore", "step_checkpoints"]
         step(f"replays/{group}/check", with_runs(*argv, campaign=name), on_fail="stop",
              outputs=(str(check),), group=group, minutes_key="engineering-check",
              gate="engineering")  # fmt: skip
-        paths = [b.rel(hashed), b.rel(check)]
+        paths = [b.rel(hashed), b.rel(check), *[b.rel(d) for d in distances.values()]]
         for s, twin in twins.items():
             items = [(f"run:{{run:{replays[s][1]}}}:{t}", f"run:{{run:{label(twin)}}}:{t}")
                      for t in (*TWIN_STEPS, UPDATES)]  # fmt: skip
             paths.append(pairs(f"replays/{group}/twins-s{s}", s, items,
                                b.record("twins", f"s{s}.json"), r=True, campaign=name,
                                group=group))  # fmt: skip
-        archived = b.runs_archive(f"replays/{group}/archive", paths=paths, campaign=name,
+        if floor is not None:
+            items = [(f"run:{{run:{replays[FORCE_SEED][1]}@{name}}}:{t}",
+                      f"run:{{run:{floor[1]}@{floor[0]}}}:{t}")
+                     for t in (*TWIN_STEPS, UPDATES)]  # fmt: skip
+            paths.append(pairs(f"replays/{group}/floor-s{FORCE_SEED}", FORCE_SEED, items,
+                               b.record("twins", f"floor-s{FORCE_SEED}.json"), r=True,
+                               campaign=name, group=group))  # fmt: skip
+        archived = b.runs_archive(f"replays/{group}/archive", paths=paths,
+                                  campaign=(name, floor[0]) if floor else name,
                                   group=group)  # fmt: skip
         for s, twin in twins.items():
             consumers = [b.rel(b.record("twins", f"s{s}.json"))]
+            if s == FORCE_SEED and floor is not None:
+                consumers.append(b.rel(b.record("twins", f"floor-s{FORCE_SEED}.json")))
             drop(f"replays/{group}/drop-twin-s{s}", name, [label(twin)], [inventory(archived)],
                  consumers, endpoint=True, group=group)  # fmt: skip
             if s != FORCE_SEED:  # the force pilot reads 50000's step checkpoints later
                 drop(f"replays/{group}/drop-steps-s{s}", name, [replays[s][1]],
                      [inventory(archived)], consumers, endpoint=False, group=group)  # fmt: skip
+        if floor is not None:
+            drop(f"replays/{group}/drop-repeat", floor[0], [floor[1]], [inventory(archived)],
+                 [b.rel(b.record("twins", f"floor-s{FORCE_SEED}.json"))], endpoint=True,
+                 group=group)  # fmt: skip
     b.end("replays")
 
     def replay_dir(seed: int) -> str:
@@ -1762,7 +1867,31 @@ def pod4_plan(
              *FORCE_EPSILONS, "--project", *projections, "--split-halves"),
              outputs=(str(record),), minutes_key="force")  # fmt: skip
         force_paths.append(b.rel(record))
+    # the amendment's noise check: one force measurement made twice on the same inputs (the
+    # first panel, the first step, ε = FORCE_REPEAT_EPSILON), its vector saved each time; the
+    # two vectors compared by their difference, the records by their projections
+    saved = {}
+    for k in ("a", "b"):
+        record = b.record("force-repeat", f"{k}.json")
+        saved[k] = vec / "force-repeat" / k
+        step(f"force/repeat-{k}", with_runs("--unless", record, "--aside-dir", saved[k], "--",
+             "scripts/study5_force.py", *fresh_args(FORCE_SEED), "--panel-config",
+             f"seed={PANEL_SEEDS[0]}", "train.steps=50", "schedule.evaluate_at=[50]", "--run",
+             replay_dir(FORCE_SEED), "--checkpoints", b.checkpoints, "--step", FORCE_STEPS[0],
+             "--out", record, "--epsilon", FORCE_REPEAT_EPSILON, "--project", *projections,
+             "--save-force", saved[k]), outputs=(str(record),),
+             minutes_key="force-repeat")  # fmt: skip
+        force_paths.append(b.rel(record))
+    name_ = (
+        f"force-step-{FORCE_STEPS[0]}-eps-{FORCE_REPEAT_EPSILON:g}.pt"  # study5_force.force_path
+    )
+    force_paths.append(pairs("force/repeat-pairs", FORCE_SEED,
+                             [(f"vector:{saved['a'] / name_}", f"vector:{saved['b'] / name_}")],
+                             b.record("force-repeat", "pairs.json")))  # fmt: skip
     farchived = b.runs_archive("force/archive", paths=force_paths)
+    repeat_records = [p for p in force_paths if "/force-repeat/" in f"/{p}"]
+    for k, folder_ in saved.items():
+        purge(f"force/purge-repeat-{k}", folder_, [inventory(farchived)], repeat_records)
     drop("force/drop-steps", replays[FORCE_SEED][0], [replays[FORCE_SEED][1]],
          [inventory(farchived)], force_paths, endpoint=False)  # fmt: skip
     vectors_record = f"{b.rel(b.record('vectors', 'm1'))}/record.json"
@@ -1792,6 +1921,30 @@ def pod4_plan(
                         b.record("linear", f"pairs-lin-s{s}.json"),
                         only_if=folder / "delta_lin.pt", group=group)  # fmt: skip
             mine += [hat, lin]
+            if s == first:  # the amendment's repeat: the same computation on the same inputs
+                again = vec / "linear-repeat" / f"s{s}"
+                linear(f"linear/{group}/s{s}-repeat", fresh_args(s), again, ("--reference-run",
+                       pod2_run(s)), group=group)  # fmt: skip
+                repeat_target = b.record("linear-repeat", f"s{s}")
+                settle(f"linear/{group}/s{s}-repeat-settle", again, repeat_target, group)
+                hat_items = [
+                    (f"vector:{folder / 'delta_hat.pt'}", f"vector:{again / 'delta_hat.pt'}"),
+                    (f"vector:{again / 'delta_hat.pt'}", f"run:{replay_dir(s)}:{UPDATES}"),
+                ]
+                lin_items = [
+                    (f"vector:{folder / 'delta_lin.pt'}", f"vector:{again / 'delta_lin.pt'}"),
+                    (f"vector:{again / 'delta_lin.pt'}", f"run:{replay_dir(s)}:{UPDATES}"),
+                ]
+                repeat_pairs = [
+                    pairs(f"linear/{group}/s{s}-repeat-pairs-hat", s, hat_items,
+                          b.record("linear-repeat", f"pairs-hat-s{s}.json"), group=group),
+                    pairs(f"linear/{group}/s{s}-repeat-pairs-lin", s, lin_items,
+                          b.record("linear-repeat", f"pairs-lin-s{s}.json"),
+                          only_if=again / "delta_lin.pt", group=group),
+                ]  # fmt: skip
+                mine += repeat_pairs  # they read this seed's own vectors too
+                paths.append(b.rel(repeat_target))
+                repeated = [b.rel(repeat_target / "record.json"), *repeat_pairs]
             if s in M_SEEDS:  # θ₀ + δ_lin evaluated in full, for the labels
                 rec, run_dir = vector_run(f"linear/{group}/s{s}-points", f"dlin_s{s}", s,
                                           ("--vector", folder / "delta_lin.pt"), full=(1.0,),
@@ -1805,6 +1958,9 @@ def pod4_plan(
         for s in seeds:
             purge(f"linear/{group}/s{s}-purge", vec / "linear" / f"s{s}", [inventory(archived)],
                   consumers[s], group)  # fmt: skip
+            if s == first:
+                purge(f"linear/{group}/s{s}-repeat-purge", vec / "linear-repeat" / f"s{s}",
+                      [inventory(archived)], repeated, group)  # fmt: skip
     group = "controls"  # the six registered order controls' orders: the criterion's pairs
     paths = []
     for s in M_SEEDS:
@@ -2212,8 +2368,15 @@ def gate_problem(kind: str, path: Path, plan: Plan) -> str | None:
             published_problem(path, path.parent / RECEIPT_NAME, required=False)
         )
     if kind == "engineering":
-        if record.get("equal") is not True:
+        # the verdict: ``passed`` (exact, or within extension 2's numerical equivalence when the
+        # record holds a tolerance; ``exact`` and ``within_tolerance`` apart), or an earlier
+        # record's ``equal``
+        verdict = record.get("passed") if "passed" in record else record.get("equal")
+        if verdict is not True:
             return "the engineering check found a difference"
+        found = record.get("tolerance")
+        if found is not None and found != EXT2_TOLERANCE:
+            return "the engineering check passed under another tolerance"
         if not record.get("pairs"):
             return "the engineering check holds no pair"
         for pair in record["pairs"]:
@@ -3131,6 +3294,57 @@ def restore_checkpoint(args) -> None:
     print(f"checkpoint {run_id} restored from its archive, sha256 {recorded}")
 
 
+def cmd_fetch_endpoint(args) -> int:
+    """Extension 2's endpoint distance (docs/study5-preregistration.md, "Extension 2
+    amendment"): when a replay's endpoint tensors (``scripts/study5_tensor_hash.py``'s record,
+    ``--hashed``) are not the archived run's (``--expected``), the archived run's endpoint
+    checkpoint is fetched back into ``--dest`` from its verified archive (``archived_earlier``:
+    the object, and its archive's inventory showing ``--sha256``), and its sha256 checked before
+    it is put in place. Equal
+    tensors, or a replay file that does not match its own record (the check fails it), fetch
+    nothing; a file already there with that sha256 is kept."""
+    run = completed_run(args.runs, args.campaign, args.label)
+    found = json.loads(args.hashed.read_text(encoding="utf-8")).get(run.name) or {}
+    if found.get("file_ok") is not True:
+        print(f"endpoint of {run.name} does not match its record: nothing fetched")
+        return 0
+    if found.get("tensors_sha256") == args.expected:
+        print(f"endpoint tensors of {run.name} equal the archived run's: nothing fetched")
+        return 0
+    name = f"{safe_rel(args.run_id)}.pt"
+    path = args.dest / name
+    if path.exists() and sha256_of(path) == args.sha256:
+        print(f"checkpoint {args.run_id} already fetched, sha256 {args.sha256}")
+        return 0
+    where = argparse.Namespace(remote=args.remote, inventory=args.dest / ".none.tsv",
+                               inventories_remote=args.inventories_remote)  # fmt: skip
+    if not archived_earlier(where, name, args.sha256):
+        raise StepError(f"{name}: not in the bucket")
+    args.dest.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f".{name}.fetch")
+    partial.unlink(missing_ok=True)
+    gcloud(["cp", "--quiet", f"{artifact_remote()}/{args.remote}/{name}", str(partial)])
+    if sha256_of(partial) != args.sha256:
+        partial.unlink()
+        raise StepError(f"{name}: the copy fetched back is not of sha256 {args.sha256}")
+    os.replace(partial, path)
+    print(f"checkpoint {args.run_id} fetched from its archive, sha256 {args.sha256}")
+    return 0
+
+
+def cmd_remove_fetched(args) -> int:
+    """A checkpoint ``fetch-endpoint`` fetched, removed once read: only a file of ``--sha256``
+    (a copy of an archived object); an absent one is nothing to do."""
+    if not args.path.exists():
+        print(f"{args.path.name}: not on the disk")
+        return 0
+    if sha256_of(args.path) != args.sha256:
+        raise StepError(f"{args.path.name}: not of sha256 {args.sha256}; it stays")
+    args.path.unlink()
+    print(f"{args.path.name}: removed (a copy of its archive)")
+    return 0
+
+
 def checkpoint_inventory(name: str) -> str:
     """The bucket name of a checkpoint archive's inventory, by the checkpoint (``<run id>.pt``):
     one run's checkpoint, written once, so the inventory never changes either."""
@@ -3754,6 +3968,15 @@ def parser_of() -> argparse.ArgumentParser:
     for name in ("--campaign", "--label", "--remote", "--inventories-remote"):
         p.add_argument(name, required=True)
     p.add_argument("--keep", action="store_true")  # archived and verified, not removed
+    p = sub.add_parser("fetch-endpoint")  # extension 2: an archived endpoint, for its distance
+    for name in ("--runs", "--hashed", "--dest"):
+        p.add_argument(name, type=Path, required=True)
+    for name in ("--campaign", "--label", "--expected", "--run-id", "--sha256", "--remote",
+                 "--inventories-remote"):  # fmt: skip
+        p.add_argument(name, required=True)
+    p = sub.add_parser("remove-fetched")
+    p.add_argument("--path", type=Path, required=True)
+    p.add_argument("--sha256", required=True)
     p = sub.add_parser("restore-runs")  # a Pod's runs from the bucket, for the analysis
     p.add_argument("--archive-id", required=True)
     p.add_argument("--dest", type=Path, required=True)
@@ -3802,6 +4025,8 @@ COMMANDS = {
     "receipt": cmd_receipt,
     "check-checkpoints": cmd_check_checkpoints,
     "checkpoint": cmd_checkpoint,
+    "fetch-endpoint": cmd_fetch_endpoint,
+    "remove-fetched": cmd_remove_fetched,
     "completion": cmd_completion,
     "restore-runs": cmd_restore_runs,
     "export-checkpoints": cmd_export_checkpoints,

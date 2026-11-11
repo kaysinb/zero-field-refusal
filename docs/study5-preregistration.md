@@ -575,3 +575,61 @@ test except the δ_lin criterion, which only selects the later note's predictor.
 **Limits.** One model, protocol, judge and set of 521 prompts, as registered. Six seeds in M3,
 M4 removal and M6 shuffles, four in M6 swaps, one in M5. The linearized replay is a
 linearization in the parameters at θ₀ and says nothing about other expansions.
+
+### Extension 2 amendment (2026-11-11): numerical equivalence of reruns
+
+**Why.** This amendment was written after an engineering mismatch, before any measurement of
+extension 2. Pod 2's order control of seed 50000 at η_l was rerun twice with extension 2's GPU code
+on one Pod. The second rerun equals the archived run bit for bit. The first differs from step 3 on.
+By the end, K_benign and K_harmful differ by at most 1.6·10⁻⁶ relative, the step scalars by
+1.2·10⁻⁶, and the per-item measurements (KL, held-out NLL) by 3.3·10⁻⁵. Its 521 greedy answers,
+222 factual answers and 500 benchmark letters are identical. The runs execute with
+`execution.deterministic` false, and the observations are consistent with nondeterministic
+floating-point reductions; they do not identify a kernel. The archived runs are themselves one
+such realization, so bit equality with them cannot be required of every rerun. For the remaining
+measurements of extension 2, this amendment replaces bit equality with numerical equivalence. It
+is prospective for them; it was decided with the mismatch above known.
+
+**The rule** (`scripts/study5_engineering_check.py --tolerance 1e-4`). It replaces "must equal
+the archived run" and "a difference stops the campaign" in "Data and code" and M1; the existing
+canonicalization stays.
+- Exact: input identities (θ₀, v₀, streams, file hashes, config), the record structure, item
+  identities, counts, steps, booleans and termination states.
+- Each finite floating-point measurement x of a rerun passes against the archived y when
+  |x − y| ≤ 10⁻⁹ + 10⁻⁴·|y|, wherever it is recorded (summaries and observations included).
+- Endpoint tensors that differ: the archived run's endpoint checkpoint is fetched back from its
+  archive and verified by the sha256 its run recorded. The full trainable-vector distance
+  ‖θ_rerun − θ_archived‖ / ‖θ_archived − θ₀‖ must not exceed 10⁻⁴.
+- Greedy answers to the 521 harmful prompts: the same items in the same order, at most two
+  different answers per run. Each different answer is recorded by its item id, the sha256 of
+  both texts and its first differing token, with the count over the seeds. Both answer sets are
+  kept. A changed answer is labeled on its own, or the analysis carries an explicit k/521 bound;
+  the archived label is never reused for it silently. Factual answers and benchmark letters are
+  exact.
+- A check outside the rule stops the campaign for a technical diagnosis; it is not a scientific
+  rejection.
+- No repeat replaces a completed replay to obtain agreement. Every attempt and its original
+  verdict stay recorded: the first rerun's bitwise record is kept, and both reruns enter the
+  numerical record.
+- The record states `exact` and `within_tolerance` apart.
+
+**Unchanged.** The 10‖Δθ_i‖ divergence rule of δ_lin. A case near it is reported as numerically
+ambiguous; no favorable repeat settles it. The sealed orders' predictions come from θ₀, and
+nothing here gives access to an E2 outcome.
+
+**Numerical floors of the small contrasts.** Equivalence at the endpoint does not bound a finite
+difference: noise in a gradient enters a central difference amplified by about 1/ε, and the force
+subtraction can amplify its share further. On seed 50000, on the same inputs:
+- the linearized replay is computed twice; reported are the differences of the two δ̂ and two
+  δ_lin vectors, and of their q, K and cosines with Δθ;
+- one force measurement (panel 59990, step 5, ε = 10⁻²) is made twice with its vector saved;
+  reported are the vectors' difference and both sets of projections;
+- the twins' floor: the seed's replay is run again in its own order, with checkpoints at the
+  twins' steps. ‖θ_t − θ″_t‖ and r are reported over those steps, beside the twins'
+  ‖θ_t − θ′_t‖.
+
+The ε-convergence checks of M2 and M5 stay. Each rerun check also records, per step, the largest
+relative drift of the scalars. Parameter distances exist only at checkpointed steps. An effect
+that cannot be told from its floor is not interpreted. A reported contrast of order 10⁻³ needs
+repeat variation well below 10⁻⁴, preferably 10⁻⁵; otherwise it is reported as numerically
+unresolved. Training stays in its registered, non-deterministic execution mode.

@@ -3317,7 +3317,15 @@ as the `pod4` campaign of `scripts/study5_campaigns.py` (`pod4_plan`). Its new c
 - `scripts/study5_engineering_check.py --ignore step_checkpoints` and its tensor comparison of
   the endpoints (`--endpoint-tensors`, `--rerun-endpoint-tensors`), with
   `scripts/study5_tensor_hash.py` hashing the reruns' endpoint tensors (the check, an analysis
-  script, loads no checkpoint).
+  script, loads no checkpoint);
+- the [amendment](study5-preregistration.md#extension-2-amendment-2026-11-11-numerical-equivalence-of-reruns)'s
+  numerical equivalence: `study5_engineering_check.py --tolerance 1e-4` (typed comparison,
+  at most two different greedy answers, `exact` and `within_tolerance` apart) with
+  `--endpoint-distance` (a `study5_pairs.py` record of pod 2's endpoint checkpoint against the
+  replay's); the driver's `fetch-endpoint` (pod 2's checkpoint fetched back from its archive by
+  the sha256 its inventory shows, only for a replay whose endpoint tensors differ) and
+  `remove-fetched` (the copy removed once read). The engineering gate reads `passed`, and a
+  record's tolerance must be the registered one (`EXT2_TOLERANCE`).
 
 **GPU code.** Recorded in `docs/study5-extension-2-code-identity.json` with the paths changed
 from extension 1's record. The driver refuses another GPU code, a registration without the
@@ -3345,16 +3353,24 @@ of its absence (`with-runs --only-if … --else-record …`) instead of failing.
 removed by hand after the campaign, once the step it belonged to has a record.
 
 **Blocks:**
-1. `engineering`: pod 2's order control of 50000 rerun; any failure stops.
+1. `engineering`: pod 2's order control of 50000 rerun; every rerun of it on the volume (the
+   campaign's own and the first attempt's diagnostic rerun, `study5_diag/`) checked by numerical
+   equivalence into `engineering-check-numerical.json`; the first attempt's bitwise record
+   (`engineering-check.json`) stays and is archived with them; any failure stops.
 2. `fetch`: the 40 seeds' streams, pod 2's 40 fresh η_l runs, two panels of 1000 fresh θ₀
    responses (seeds 59990, 59991).
 3. `replays`: the 40 fresh η_l cells in groups of four, each group checked against pod 2's runs
-   as a gate, the endpoints by their tensors (`--endpoint-tensors`; `--ignore step_checkpoints`
-   on the first group); the twins and their pairs.
+   by numerical equivalence as a gate, the endpoints by their tensors (`--endpoint-tensors`;
+   `--ignore step_checkpoints` on the first group) and, where they differ, by their distance to
+   pod 2's checkpoint fetched back (`fetch-endpoint`, `study5_pairs.py`, `remove-fetched`); the
+   twins and their pairs; in the first group, seed 50000's replay again in its own order with the
+   twins' checkpoints, paired with the replay (the twins' numerical floor).
 4. `vectors`: ∇r(θ₀), then the Gram and the vector files.
-5. `force`: the pilot on seed 50000, two panels.
+5. `force`: the pilot on seed 50000, two panels; one measurement (panel 59990, step 5,
+   ε = 10⁻²) made twice with its vector saved, the two vectors paired.
 6. `linear`: δ̂, δ_lin, q and K of the 40 seeds' own orders, θ₀ + δ_lin evaluated in full on
-   50000–50005, the cosines with Δθ; the six registered order controls' orders.
+   50000–50005, the cosines with Δθ; seed 50000's computation repeated on the same inputs and
+   paired with the first; the six registered order controls' orders.
 7. `sealed`: δ̂, δ_lin and q only, for extension 1's twenty new orders. No E2 run is read.
 8. `points`: M3's small amplitudes and tokens and M4's removals per seed, then M4's parity,
    matched K and mixtures in a group of their own.

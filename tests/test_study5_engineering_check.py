@@ -69,7 +69,7 @@ def test_two_runs_of_one_code_are_equal_and_one_byte_differs(env, tmp_path, caps
     out = tmp_path / "equal.json"
     assert check.main(["--archived", str(archived), "--rerun", str(rerun), "--out", str(out)]) == 0
     record = json.loads(out.read_text())
-    assert record["equal"] is True and len(record["pairs"]) == 1
+    assert record["exact"] is True and record["passed"] is True and len(record["pairs"]) == 1
     pair = record["pairs"][0]
     names = {f["name"] for f in pair["files"]}
     assert {"metrics.jsonl", "summary.json", "terminal.json", "meta.json", "config.yaml",
@@ -86,7 +86,7 @@ def test_two_runs_of_one_code_are_equal_and_one_byte_differs(env, tmp_path, caps
         code = check.main(["--archived", str(archived), "--rerun", str(changed), "--out", str(out)])
         assert code == 2, name
         record = json.loads(out.read_text())
-        assert record["equal"] is False
+        assert record["exact"] is False and record["passed"] is False
         assert [f["name"] for f in record["pairs"][0]["files"] if not f["equal"]] == [name]
 
 
@@ -269,3 +269,164 @@ def test_storage_is_canonicalized_and_the_endpoint_compared_by_its_tensors(tmp_p
     tensors = json.loads(out4.read_text())["pairs"][0]["endpoint_tensors"]
     assert tensors["equal"] is False and tensors["rerun"] != expected
     assert hasher.main([str(b), "--out", str(hashed3)]) == 1  # never overwritten
+
+
+# ------------------------------------------------------------- extension 2: numerical equivalence
+
+
+def _metrics(run: Path, *lines: dict) -> None:
+    (run / "metrics.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+
+
+def _run_check(tmp_path: Path, a: Path, b: Path, *extra: str, name: str = "r.json"):
+    out = tmp_path / name
+    code = check.main(["--archived", str(a), "--rerun", str(b), "--out", str(out), *extra])
+    record = json.loads(out.read_text()) if out.exists() else None
+    check.TOLERANCE = None
+    return code, record
+
+
+def test_floats_pass_within_the_tolerance_and_every_other_leaf_is_exact(tmp_path):
+    """|x − y| ≤ 1e-9 + REL·|y| for finite floats (y archived); integers, strings, booleans and
+    the structure exact; without --tolerance the bitwise rule stays."""
+    a = fake_run(tmp_path / "a", "run-a")
+    _metrics(a, {"step": 0, "loss": 1.5, "K": 0.0, "ok": True},
+             {"step": 1, "loss": 2.0, "K": 3.0, "ok": True})  # fmt: skip
+    cases = {
+        "close": ({"step": 0, "loss": 1.5 * (1 + 5e-5), "K": 5e-10, "ok": True}, 0),
+        "beyond": ({"step": 0, "loss": 1.5 * (1 + 2e-4), "K": 0.0, "ok": True}, 2),
+        "near zero": ({"step": 0, "loss": 1.5, "K": 2e-9, "ok": True}, 2),
+        "an integer": ({"step": 3, "loss": 1.5, "K": 0.0, "ok": True}, 2),
+        "a boolean": ({"step": 0, "loss": 1.5, "K": 0.0, "ok": False}, 2),
+        "a key": ({"step": 0, "loss": 1.5, "K": 0.0, "ok": True, "x": 1.0}, 2),
+    }
+    for case, (first, code) in cases.items():
+        b = fake_run(tmp_path / case, "run-b")
+        _metrics(b, first, {"step": 1, "loss": 2.0, "K": 3.0, "ok": True})
+        found, record = _run_check(tmp_path, a, b, "--tolerance", "1e-4", name=f"{case}.json")
+        assert found == code, case
+        assert record["exact"] is False and record["passed"] is (code == 0), case
+        assert record["within_tolerance"] is (code == 0), case
+        entry = next(f for f in record["pairs"][0]["files"] if f["name"] == "metrics.jsonl")
+        assert entry["within_tolerance"] is (code == 0), case
+        if case == "close":
+            assert entry["by_step"] == [[0, pytest.approx(5e-5, rel=1e-3)]]
+            assert record["tolerance"] == {
+                "relative": 1e-4,
+                "absolute": 1e-9,
+                "answers_allowed": 2,
+                "endpoint_distance": 1e-4,
+            }
+    b = fake_run(tmp_path / "bitwise", "run-b")
+    _metrics(b, cases["close"][0], {"step": 1, "loss": 2.0, "K": 3.0, "ok": True})
+    code, record = _run_check(tmp_path, a, b, name="bitwise.json")
+    assert code == 2 and record["passed"] is False and "within_tolerance" not in record
+    meta = json.loads((b / "meta.json").read_text())
+    meta["inputs"]["v0_sha256"] = "e" * 64  # an input identity: exact under the tolerance too
+    (b / "meta.json").write_text(json.dumps(meta))
+    _metrics(b, {"step": 0, "loss": 1.5, "K": 0.0, "ok": True},
+             {"step": 1, "loss": 2.0, "K": 3.0, "ok": True})  # fmt: skip
+    code, record = _run_check(tmp_path, a, b, "--tolerance", "1e-4", name="input.json")
+    assert code == 2 and record["within_tolerance"] is False
+
+
+def _answers(run: Path, texts: list[str], ids=None) -> None:
+    ids = ids or [f"h{i}" for i in range(len(texts))]
+    rows = [{"condition": "final", "item_id": i, "response_ids": [ord(c) for c in t], "text": t,
+             "ended": True} for i, t in zip(ids, texts, strict=True)]  # fmt: skip
+    (run / "responses" / "harmful_evaluation.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows)
+    )
+
+
+def test_at_most_two_greedy_answers_differ_and_none_is_kept_as_text(tmp_path, capsys):
+    a = fake_run(tmp_path / "a", "run-a")
+    _answers(a, ["abcd", "efgh", "ijkl", "mnop"])
+    two = fake_run(tmp_path / "two", "run-b")
+    _answers(two, ["abXd", SECRET, "ijkl", "mnop"])
+    capsys.readouterr()
+    code, record = _run_check(tmp_path, a, two, "--tolerance", "1e-4", name="two.json")
+    printed = capsys.readouterr()
+    assert code == 0 and record["answers_differing"] == 2
+    entry = next(f for f in record["pairs"][0]["files"] if f["name"].startswith("responses/"))
+    assert [x["item_id"] for x in entry["answers"]] == ["h0", "h1"]
+    assert entry["answers"][0]["first_token"] == 2 and entry["answers"][1]["first_token"] == 0
+    assert entry["answers"][1]["rerun_sha256"] == hashlib.sha256(SECRET.encode()).hexdigest()
+    assert SECRET not in json.dumps(record) and SECRET not in printed.out + printed.err
+    three = fake_run(tmp_path / "three", "run-b")
+    _answers(three, ["abXd", "eXgh", "iXkl", "mnop"])
+    code, record = _run_check(tmp_path, a, three, "--tolerance", "1e-4", name="three.json")
+    assert code == 2 and record["answers_differing"] == 3
+    moved = fake_run(tmp_path / "moved", "run-b")
+    _answers(moved, ["abcd", "efgh", "ijkl", "mnop"], ids=["h0", "h1", "h3", "h2"])
+    code, record = _run_check(tmp_path, a, moved, "--tolerance", "1e-4", name="moved.json")
+    entry = next(f for f in record["pairs"][0]["files"] if f["name"].startswith("responses/"))
+    assert code == 2 and entry["answers_same_items"] is False
+
+
+def _distance(path: Path, a_sha: str, b_run: str, b_sha: str, ratio: float) -> Path:
+    row = {
+        "dot": 1.0,
+        "norm_a": 2.0,
+        "norm_b": 2.0,
+        "cosine": 1.0,
+        "distance": 2.0 * ratio,
+        "a": {"kind": "ckpt", "path": "/x/a.pt", "sha256": a_sha},
+        "b": {"kind": "ckpt", "path": "/x/b.pt", "sha256": b_sha, "run": b_run, "step": "25"},
+    }
+    path.write_text(json.dumps({"kind": "study5-pairs", "pairs": [row]}))  # fmt: skip
+    return path
+
+
+def test_endpoint_tensors_that_differ_pass_by_their_distance_to_the_archived_checkpoint(tmp_path):
+    hasher = script_module(REPO_ROOT / "scripts" / "study5_tensor_hash.py", "s5_tensor_hash2")
+    a = fake_run(tmp_path / "a", "run-a")
+    b = fake_run(tmp_path / "b", "run-b")
+    ckpt_a, ckpt_b = tmp_path / "a.pt", tmp_path / "b.pt"
+    sha_a, sha_b = _checkpoint(ckpt_a, 1.0), _checkpoint(ckpt_b, 1.0 + 1e-6)
+    _with_endpoint(a, ckpt_a, sha_a, "/root/ckpt", steps=None)
+    _with_endpoint(b, ckpt_b, sha_b, "/workspace/ckpt", steps=None)
+    from zero_field_refusal.tensor_hash import tensors_sha256
+
+    expected = tensors_sha256(list(torch.load(ckpt_a, weights_only=True).items()))
+    hashed = tmp_path / "hashed.json"
+    assert hasher.main([str(b), "--out", str(hashed)]) == 0
+    base = ["--tolerance", "1e-4", "--endpoint-tensors", f"aaaaaaaaaaaa={expected}",
+            "--rerun-endpoint-tensors", str(hashed)]  # fmt: skip
+    code, record = _run_check(tmp_path, a, b, *base, name="none.json")
+    tensors = record["pairs"][0]["endpoint_tensors"]
+    assert code == 2 and tensors["equal"] is False and tensors["distance"]["available"] is False
+    for ratio, want in ((5e-5, 0), (2e-4, 2)):
+        rec = _distance(tmp_path / f"d{ratio}.json", sha_a, "run-b", sha_b, ratio)
+        code, record = _run_check(tmp_path, a, b, *base, "--endpoint-distance",
+                                  f"aaaaaaaaaaaa={rec}", name=f"r{ratio}.json")  # fmt: skip
+        tensors = record["pairs"][0]["endpoint_tensors"]
+        assert code == want and tensors["distance"]["ratio"] == pytest.approx(ratio)
+        assert record["exact"] is False and record["passed"] is (want == 0)
+    absent = tmp_path / "absent.json"
+    absent.write_text(json.dumps({"available": False, "missing": "x.pt", "reason": "r"}))
+    code, record = _run_check(tmp_path, a, b, *base, "--endpoint-distance",
+                              f"aaaaaaaaaaaa={absent}", name="absent-r.json")  # fmt: skip
+    assert code == 2
+    other = _distance(tmp_path / "other.json", "0" * 64, "run-b", sha_b, 1e-6)
+    code, record = _run_check(tmp_path, a, b, *base, "--endpoint-distance",
+                              f"aaaaaaaaaaaa={other}", name="other-r.json")  # fmt: skip
+    assert code == 1 and record is None  # not the archived run's checkpoint: no answer
+
+
+def test_several_reruns_of_one_config_are_each_compared(tmp_path):
+    a = fake_run(tmp_path / "a", "run-a")
+    _metrics(a, {"step": 0, "loss": 1.5})
+    b1 = fake_run(tmp_path / "b1", "run-b1")
+    _metrics(b1, {"step": 0, "loss": 1.5 * (1 + 1e-6)})
+    b2 = fake_run(tmp_path / "b2", "run-b2")
+    _metrics(b2, {"step": 0, "loss": 1.5})
+    out = tmp_path / "r.json"
+    argv = ["--archived", str(a), "--rerun", str(b1), str(b2), "--out", str(out), "--tolerance",
+            "1e-4"]  # fmt: skip
+    assert check.main(argv) == 0
+    check.TOLERANCE = None
+    record = json.loads(out.read_text())
+    assert [(p["rerun"], p["exact"], p["within_tolerance"]) for p in record["pairs"]] == [
+        ("run-b1", False, True), ("run-b2", True, True)]  # fmt: skip
+    assert record["exact"] is False and record["passed"] is True

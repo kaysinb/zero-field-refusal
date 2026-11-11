@@ -43,9 +43,31 @@ top-level keys that differ (names only, never values). A file under ``responses/
 ``observations/`` is compared in memory and reported by its name and those counts alone: no text
 of it is stored or printed. stdout carries file names, counts and hashes only.
 
-Exits 0 when every pair is equal, 2 when a file differs, a file is on one side only or a run has
-no partner, 1 on an error (a missing run directory or ``meta.json``, an unreadable record, an
-existing --out), which writes no record. An existing record is never overwritten.
+**Numerical equivalence** (``--tolerance REL``; docs/study5-preregistration.md, "Extension 2
+amendment"). The canonicalization above stays; a differing file is then compared by type,
+line by line. The structure, the keys, and every leaf that is not a finite float are exact:
+identities and hashes, steps and counts, booleans, termination states. A finite float x of the
+rerun passes against the archived y when |x − y| ≤ 10⁻⁹ + REL·|y|, wherever it stands (summaries
+and ``observations/`` too); a differing file of another kind is compared byte for byte. The
+greedy answers (``responses/``) are compared answer by answer: the same items in the same order,
+at most two answers different per file; each different answer is recorded by its item id, the
+sha256 of both texts and its first differing token, never by its text. Endpoint tensors that
+differ pass only through ``--endpoint-distance CONFIG_HASH=RECORD``, ``scripts/study5_pairs.py``'s
+record of the archived run's checkpoint (fetched back from its archive, by the sha256 its run
+recorded) against the rerun's endpoint: ‖θ_rerun − θ_archived‖ / ‖θ_archived − θ₀‖ ≤ REL. For a
+differing open line file whose lines record a step, the largest relative drift of each differing
+line is kept (``by_step``). Several reruns of one config (``--rerun``) are each compared, for a
+run without an endpoint checkpoint.
+
+The record states ``exact`` (every file equal after the canonicalization, every endpoint's tensors
+equal) and, under the tolerance, ``within_tolerance`` apart, per file, per pair and in all, with
+the number of different answers; ``passed`` is ``exact`` without a tolerance and ``exact`` or
+``within_tolerance`` with one.
+
+Exits 0 when the check passes, 2 when it does not (a file differs beyond the rule, a file is on
+one side only, a run has no partner), 1 on an error (a missing run directory or ``meta.json``, an
+unreadable record, an endpoint distance record of other checkpoints, an existing --out), which
+writes no record. An existing record is never overwritten.
 """
 
 from __future__ import annotations
@@ -53,6 +75,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 from datetime import UTC, datetime
@@ -178,6 +201,96 @@ def _comparable(run: Path, name: str) -> list[Any]:
     return [hashlib.sha256(data).hexdigest()]
 
 
+TOLERANCE: float | None = None  # --tolerance: extension 2's numerical equivalence (relative)
+ABSOLUTE = 1e-9  # its absolute part: |x − y| ≤ ABSOLUTE + TOLERANCE·|y|, y the archived value
+GREEDY = "responses"  # the greedy answers, compared answer by answer under the tolerance
+ANSWERS_ALLOWED = 2  # differing greedy answers a file may hold under the tolerance
+ANSWER_KEYS = ("condition", "item_id")  # an answer's identity, always exact
+
+
+def _leaves(a: Any, b: Any) -> tuple[bool, float, float]:
+    """``a`` archived, ``b`` rerun: (the structure and every leaf but the finite floats equal,
+    the largest |b − a| / (ABSOLUTE + TOLERANCE·|a|) over the finite float leaves, the largest
+    |b − a| / |a| over those with a ≠ 0). A float is a JSON number written with a fraction or an
+    exponent; integers (steps, counts), booleans, strings (identities, hashes, reasons) and null
+    are exact."""
+    if isinstance(a, float) and isinstance(b, float) and math.isfinite(a) and math.isfinite(b):
+        gap = abs(b - a)
+        ratio = gap / (ABSOLUTE + (TOLERANCE or 0.0) * abs(a))
+        relative = gap / abs(a) if a else 0.0  # at y = 0 only the ratio (the absolute part)
+        return True, ratio, relative
+    if isinstance(a, dict) and isinstance(b, dict):
+        if a.keys() != b.keys():
+            return False, 0.0, 0.0
+        parts = [_leaves(a[k], b[k]) for k in a]
+    elif isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            return False, 0.0, 0.0
+        parts = [_leaves(x, y) for x, y in zip(a, b, strict=True)]
+    else:
+        same = type(a) is type(b) and (a == b or (isinstance(a, float) and a != a and b != b))
+        return same, 0.0, 0.0
+    return (all(p[0] for p in parts), max((p[1] for p in parts), default=0.0),
+            max((p[2] for p in parts), default=0.0))  # fmt: skip
+
+
+def _numerical(left: list[Any], right: list[Any], sealed: bool) -> dict[str, Any]:
+    """A differing file under the tolerance: line by line by ``_leaves``; for an open file also
+    the largest relative drift of each differing line that records a step (scalars only)."""
+    if len(left) != len(right):
+        return {"within_tolerance": False, "max_ratio": None, "max_relative": None}
+    found = [_leaves(a, b) for a, b in zip(left, right, strict=True)]
+    ratio = max((f[1] for f in found), default=0.0)
+    entry: dict[str, Any] = {
+        "within_tolerance": all(f[0] for f in found) and ratio <= 1.0,
+        "non_float_differences": sum(not f[0] for f in found),
+        "max_ratio": ratio,
+        "max_relative": max((f[2] for f in found), default=0.0),
+    }
+    if not sealed:
+        by_step = [
+            [a["step"], f[2]]
+            for a, b, f in zip(left, right, found, strict=True)
+            if a != b and isinstance(a, dict) and isinstance(a.get("step"), int)
+        ]
+        if by_step:
+            entry["by_step"] = by_step
+    return entry
+
+
+def _answer_sha(line: Any) -> str:
+    text = line.get("text") if isinstance(line, dict) else None
+    return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
+
+
+def _first_token(a: Any, b: Any) -> int | None:
+    """The position of the first differing generated token, from ``response_ids``."""
+    x = a.get("response_ids") if isinstance(a, dict) else None
+    y = b.get("response_ids") if isinstance(b, dict) else None
+    if not isinstance(x, list) or not isinstance(y, list):
+        return None
+    for i, (p, q) in enumerate(zip(x, y, strict=False)):
+        if p != q:
+            return i
+    return min(len(x), len(y)) if len(x) != len(y) else None
+
+
+def _answers(left: list[Any], right: list[Any]) -> dict[str, Any]:
+    """A differing greedy-answer file under the tolerance: the same answers in the same order
+    (``ANSWER_KEYS`` exact), at most ``ANSWERS_ALLOWED`` of them different; each different one
+    by its item id, both texts' sha256 and its first differing token (no text is kept)."""
+    keys = [[a.get(k) for k in ANSWER_KEYS] if isinstance(a, dict) else None for a in left]
+    if len(left) != len(right) or keys != [
+        [b.get(k) for k in ANSWER_KEYS] if isinstance(b, dict) else None for b in right
+    ]:
+        return {"within_tolerance": False, "answers_same_items": False}
+    changed = [{"item_id": a.get("item_id"), "archived_sha256": _answer_sha(a),
+                "rerun_sha256": _answer_sha(b), "first_token": _first_token(a, b)}
+               for a, b in zip(left, right, strict=True) if a != b]  # fmt: skip
+    return {"within_tolerance": len(changed) <= ANSWERS_ALLOWED, "answers_same_items": True,
+            "answers_differing": len(changed), "answers": changed}  # fmt: skip
+
+
 def compare_file(archived: Path, rerun: Path, name: str) -> dict[str, Any]:
     left, right = comparable(archived, name), comparable(rerun, name)
     if left == right:
@@ -185,7 +298,15 @@ def compare_file(archived: Path, rerun: Path, name: str) -> dict[str, Any]:
     differing = sum(a != b for a, b in zip(left, right, strict=False)) + abs(len(left) - len(right))
     entry: dict[str, Any] = {"name": name, "equal": False, "lines": [len(left), len(right)],
                              "differing_lines": differing}  # fmt: skip
-    if name.split("/", 1)[0] not in SEALED:
+    folder = name.split("/", 1)[0]
+    if TOLERANCE is not None:
+        if folder == GREEDY:
+            entry |= _answers(left, right)
+        elif name.endswith((".json", ".jsonl")) or name == "config.yaml":
+            entry |= _numerical(left, right, folder in SEALED)
+        else:
+            entry["within_tolerance"] = False  # compared byte for byte: no tolerance
+    if folder not in SEALED:
         keys = set()
         for a, b in zip(left, right, strict=False):
             if a != b and isinstance(a, dict) and isinstance(b, dict):
@@ -225,6 +346,18 @@ def by_hash(runs: list[Path], side: str) -> dict[str, Path]:
     return out
 
 
+def reruns_by_hash(runs: list[Path]) -> dict[str, list[Path]]:
+    """The reruns by config hash: several of one config are each compared with its archived run
+    (extension 2 keeps every rerun of the engineering check in its record)."""
+    out: dict[str, list[Path]] = {}
+    for run in runs:
+        found = run_hash(run)
+        if run in out.get(found, []):
+            raise CheckError(f"--rerun: {run.name} given twice")
+        out.setdefault(found, []).append(run)
+    return out
+
+
 def rerun_git(run: Path) -> dict[str, Any]:
     """The commit and cleanness a rerun's ``meta.json`` records (volatile in the comparison,
     kept in the record so that the check binds to the code its reruns ran)."""
@@ -238,11 +371,38 @@ def _endpoint(run: Path) -> dict[str, Any] | None:
     return found if isinstance(found, dict) else None
 
 
+def endpoint_distance(archived: Path, rerun: Path, record: dict[str, Any] | None) -> dict[str, Any]:
+    """Under the tolerance, for endpoint tensors that differ: ``scripts/study5_pairs.py``'s
+    record of the pair (the archived run's checkpoint, fetched back from its archive, against the
+    rerun's endpoint). Its first item must be the archived checkpoint by the sha256 its run
+    recorded and its second the rerun's recorded endpoint; the pair passes when
+    ‖θ_rerun − θ_archived‖ / ‖θ_archived − θ₀‖ ≤ the tolerance. A record of an absent checkpoint
+    (``available: false``) or none fails."""
+    if record is None or record.get("available") is False:
+        return {"available": False, "within_tolerance": False}
+    rows = record.get("pairs") if record.get("kind") == "study5-pairs" else None
+    if not isinstance(rows, list) or len(rows) != 1:
+        raise CheckError(f"{rerun.name}: the endpoint distance record is not one study5-pairs row")
+    row, left, right = rows[0], _endpoint(archived) or {}, _endpoint(rerun) or {}
+    a, b = row.get("a") or {}, row.get("b") or {}
+    if a.get("kind") != "ckpt" or a.get("sha256") != left.get("sha256"):
+        raise CheckError(f"{archived.name}: the distance record's first item is not its "
+                         "recorded checkpoint")  # fmt: skip
+    if (b.get("kind") != "ckpt" or b.get("run") != rerun.name
+            or b.get("sha256") != right.get("sha256")):  # fmt: skip
+        raise CheckError(f"{rerun.name}: the distance record's second item is not its endpoint")
+    ratio = float(row["distance"]) / float(row["norm_a"])
+    return {"available": True, "distance": row["distance"], "archived_norm": row["norm_a"],
+            "ratio": ratio, "within_tolerance": ratio <= (TOLERANCE or 0.0)}  # fmt: skip
+
+
 def endpoint_tensors(archived: Path, rerun: Path, expected: str | None,
-                     hashed: dict[str, Any] | None) -> dict[str, Any] | None:  # fmt: skip
+                     hashed: dict[str, Any] | None,
+                     distance: dict[str, Any] | None = None) -> dict[str, Any] | None:  # fmt: skip
     """The endpoint state's comparison by tensors (module docstring); None when neither run
     recorded an endpoint checkpoint. ``hashed`` is ``scripts/study5_tensor_hash.py``'s record of
-    the reruns (this script loads no checkpoint)."""
+    the reruns (this script loads no checkpoint); under the tolerance, tensors that differ are
+    compared by their distance (``endpoint_distance``)."""
     left, right = _endpoint(archived), _endpoint(rerun)
     if left is None and right is None:
         return None
@@ -250,53 +410,77 @@ def endpoint_tensors(archived: Path, rerun: Path, expected: str | None,
         raise CheckError(f"{archived.name}: an endpoint checkpoint and no --endpoint-tensors for "
                          "its config hash")  # fmt: skip
     if right is None:
-        return {"expected": expected, "rerun": None, "equal": False, "reason": "no checkpoint"}
+        return {"expected": expected, "rerun": None, "equal": False, "reason": "no checkpoint",
+                "within_tolerance": False}  # fmt: skip
     found = (hashed or {}).get(rerun.name)
     if found is None:
         raise CheckError(f"{rerun.name}: an endpoint checkpoint and no hash of its tensors "
                          "(--rerun-endpoint-tensors)")  # fmt: skip
     if found.get("file_ok") is not True:
         return {"expected": expected, "rerun": None, "equal": False,
-                "reason": found.get("reason", "the file does not match its record")}  # fmt: skip
-    return {
+                "reason": found.get("reason", "the file does not match its record"),
+                "within_tolerance": False}  # fmt: skip
+    out: dict[str, Any] = {
         "expected": expected,
         "rerun": found["tensors_sha256"],
         "equal": found["tensors_sha256"] == expected,
     }
+    if TOLERANCE is not None and not out["equal"]:
+        out["distance"] = endpoint_distance(archived, rerun, distance)
+    out["within_tolerance"] = out["equal"] or bool(out.get("distance", {}).get("within_tolerance"))
+    return out
 
 
 def check(archived: list[Path], rerun: list[Path],
           expected_tensors: dict[str, str] | None = None,
-          hashed: dict[str, Any] | None = None) -> dict[str, Any]:  # fmt: skip
-    left, right = by_hash(archived, "archived"), by_hash(rerun, "rerun")
+          hashed: dict[str, Any] | None = None,
+          distances: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:  # fmt: skip
+    left, right = by_hash(archived, "archived"), reruns_by_hash(rerun)
     pairs = []
-    for found in sorted(left.keys() & right.keys()):
-        files = compare_runs(left[found], right[found])
-        tensors = endpoint_tensors(left[found], right[found], (expected_tensors or {}).get(found),
-                                   hashed)  # fmt: skip
-        equal = all(f["equal"] for f in files) and (tensors is None or tensors["equal"])
-        pairs.append({"config_hash": found, "archived": left[found].name,
-                      "rerun": right[found].name, **rerun_git(right[found]),
-                      "equal": equal, "files": files,
-                      "endpoint_tensors": tensors})  # fmt: skip
+    for found, again in sorted((h, r) for h in left.keys() & right.keys() for r in right[h]):
+        if len(right[found]) > 1 and _endpoint(left[found]) is not None:
+            raise CheckError(f"--rerun: several reruns of {found}, whose run has an endpoint")
+        files = compare_runs(left[found], again)
+        tensors = endpoint_tensors(left[found], again, (expected_tensors or {}).get(found),
+                                   hashed, (distances or {}).get(found))  # fmt: skip
+        exact = all(f["equal"] for f in files) and (tensors is None or tensors["equal"])
+        pair = {"config_hash": found, "archived": left[found].name, "rerun": again.name,
+                **rerun_git(again), "exact": exact}  # fmt: skip
+        if TOLERANCE is not None:
+            pair["within_tolerance"] = all(
+                f["equal"] or f.get("within_tolerance") for f in files
+            ) and (tensors is None or tensors["within_tolerance"])
+            pair["answers_differing"] = sum(f.get("answers_differing", 0) for f in files)
+        pair["passed"] = exact or bool(pair.get("within_tolerance"))
+        pairs.append({**pair, "files": files, "endpoint_tensors": tensors})
     unpaired = {"archived": sorted(left.keys() - right.keys()),
                 "rerun": sorted(right.keys() - left.keys())}  # fmt: skip
+    complete = not unpaired["archived"] and not unpaired["rerun"]
     identity = code_identity.gpu_code_identity()
-    equal = all(p["equal"] for p in pairs) and not unpaired["archived"] and not unpaired["rerun"]
-    return {
+    record: dict[str, Any] = {
         "kind": "study5-engineering-check",
-        "equal": equal,
+        "exact": complete and all(p["exact"] for p in pairs),
+        "passed": complete and all(p["passed"] for p in pairs),
         "pairs": pairs,
         "unpaired": unpaired,
         "rule": "analysis.record_normalize.normalize; meta.json without "
         + ", ".join(PLACEMENT)
-        + "; storage canonicalized (module docstring); the endpoint compared by its tensors",
+        + "; storage canonicalized (module docstring); the endpoint compared by its tensors"
+        + ("" if TOLERANCE is None else "; numerical equivalence (module docstring)"),
         "ignored_keys": sorted(IGNORED),
+        "tolerance": None,
         "skipped_folders": list(SKIPPED),
         "code": {"commit": identity["commit"], "gpu_code_sha256": identity["sha256"]},
         "git": git_state(),
         "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),
     }
+    if TOLERANCE is not None:
+        record["within_tolerance"] = complete and all(p["within_tolerance"] for p in pairs)
+        record["answers_differing"] = sum(p["answers_differing"] for p in pairs)
+        record["tolerance"] = {"relative": TOLERANCE, "absolute": ABSOLUTE,
+                               "answers_allowed": ANSWERS_ALLOWED,
+                               "endpoint_distance": TOLERANCE}  # fmt: skip
+    return record
 
 
 def write_new(path: Path, record: dict[str, Any]) -> None:
@@ -319,14 +503,31 @@ def report(record: dict[str, Any]) -> None:
             where = entry.get("only_in")
             detail = (f"only in {where}" if where else
                       f"lines {entry['lines']} differing {entry['differing_lines']}")  # fmt: skip
+            if "max_ratio" in entry and entry["max_ratio"] is not None:
+                detail += (f" max relative {entry['max_relative']:.3e} ratio "
+                           f"{entry['max_ratio']:.3e}")  # fmt: skip
+            if "answers_differing" in entry:
+                detail += f" answers differing {entry['answers_differing']}"
+            if "within_tolerance" in entry:
+                detail += f" within tolerance {entry['within_tolerance']}"
             print(f"  differs {entry['name']}: {detail}")
         tensors = pair.get("endpoint_tensors")
         if tensors is not None:
             print(f"  endpoint tensors equal {tensors['equal']} rerun {tensors['rerun']}")
+            distance = tensors.get("distance")
+            if distance is not None:
+                ratio = distance.get("ratio")
+                print(f"  endpoint distance available {distance['available']} ratio "
+                      f"{'-' if ratio is None else f'{ratio:.3e}'}")  # fmt: skip
+        if "within_tolerance" in pair:
+            print(f"  exact {pair['exact']} within tolerance {pair['within_tolerance']} "
+                  f"answers differing {pair['answers_differing']}")  # fmt: skip
     for side, hashes in record["unpaired"].items():
         for found in hashes:
             print(f"unpaired {side} {found}")
-    print("equal" if record["equal"] else "different")
+    print(f"exact {record['exact']} passed {record['passed']}"
+          + ("" if record["tolerance"] is None else
+             f" within tolerance {record['within_tolerance']}"))  # fmt: skip
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -340,6 +541,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--endpoint-tensors", action="append", default=[],
                         metavar="CONFIG_HASH=SHA256")  # fmt: skip
     parser.add_argument("--rerun-endpoint-tensors", type=Path)  # study5_tensor_hash.py's record
+    parser.add_argument("--tolerance", type=float)  # extension 2: numerical equivalence
+    parser.add_argument(
+        "--endpoint-distance", action="append", default=[], metavar="CONFIG_HASH=RECORD"
+    )  # study5_pairs.py's record, or its absence
     args = parser.parse_args(argv)
     expected = {}
     for item in args.endpoint_tensors:
@@ -348,21 +553,41 @@ def main(argv: list[str] | None = None) -> int:
             print(f"--endpoint-tensors {item!r}: CONFIG_HASH=SHA256")
             return ERROR
         expected[key] = value
-    global IGNORED
+    distances: dict[str, dict[str, Any]] = {}
+    for item in args.endpoint_distance:
+        key, _, value = item.partition("=")
+        if not key or not value:
+            print(f"--endpoint-distance {item!r}: CONFIG_HASH=RECORD")
+            return ERROR
+        path = Path(value)
+        try:
+            distances[key] = (
+                json.loads(path.read_text(encoding="utf-8"))
+                if path.is_file()
+                else {"available": False}
+            )
+        except ValueError:
+            print(f"--endpoint-distance {item!r}: not JSON")
+            return ERROR
+    global IGNORED, TOLERANCE
     IGNORED = frozenset(args.ignore)
+    if args.tolerance is not None and not 0 < args.tolerance < 1:
+        print(f"--tolerance {args.tolerance}: a relative bound in (0, 1)")
+        return ERROR
+    TOLERANCE = args.tolerance
     if args.out.exists():
         print(f"record exists: {args.out}")
         return ERROR
     try:
         hashed = (json.loads(args.rerun_endpoint_tensors.read_text(encoding="utf-8"))
                   if args.rerun_endpoint_tensors else None)  # fmt: skip
-        record = check(args.archived, args.rerun, expected, hashed)
+        record = check(args.archived, args.rerun, expected, hashed, distances)
     except (CheckError, UnicodeDecodeError) as exc:
         print(f"error: {exc}")
         return ERROR
     write_new(args.out, record)
     report(record)
-    return EQUAL if record["equal"] else DIFFERENT
+    return EQUAL if record["passed"] else DIFFERENT
 
 
 if __name__ == "__main__":
