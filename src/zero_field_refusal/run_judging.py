@@ -102,6 +102,7 @@ from .analysis.stage_a import TrajectoryError, load_trajectory
 from .evaluation import (
     LADDER_RUN_TYPE,
     SCAN_RUN_TYPE,
+    VECTOR_RUN_TYPE,
     ladder_condition,
     line_scan_condition,
     random_condition,
@@ -206,6 +207,31 @@ def line_scan_conditions(run_dir: Path) -> list[str]:
     return conditions
 
 
+def vector_conditions(run_dir: Path) -> list[str]:
+    """The conditions of the points a study-5 vector run evaluated in full
+    (``vector_points.run_vector``), in order, from ``<run dir>/vector_points.jsonl``. The run must
+    be whole: the summary's ``vector`` (written after the last point) names the same conditions
+    and the same evaluated ones as the rows, else the run is refused; so is a run without rows."""
+    path = Path(run_dir) / "vector_points.jsonl"
+    if not path.is_file():
+        raise ValueError(f"{path}: a vector run without its rows; its points did not finish")
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    conditions = [row["condition"] for row in rows if row["evaluated"]]
+    summary_path = Path(run_dir) / "summary.json"
+    summary = json.loads(summary_path.read_text()) if summary_path.is_file() else {}
+    record = summary.get("vector") or {}
+    if (record.get("conditions") != [row["condition"] for row in rows]
+            or record.get("evaluated") != conditions):  # fmt: skip
+        raise ValueError(f"{path}: the vector run is incomplete (its summary does not match its "
+                         "rows)")  # fmt: skip
+    if any(not c.startswith("vector_") for c in conditions) or len(set(conditions)) != len(
+        conditions
+    ):
+        raise ValueError(f"{path}: the evaluated conditions {conditions} are not distinct vector "
+                         "conditions")  # fmt: skip
+    return conditions
+
+
 def ladder_conditions(run_dir: Path) -> list[str]:
     """The condition of a study-5 ladder rung's evaluation run (``ladder.run_rung``): from the
     summary's ``ladder``, ``[ladder_<rung>]`` when the rung was evaluated in full, none when it
@@ -230,11 +256,12 @@ def response_conditions(cfg: DictConfig, run_dir: Path | None = None) -> list[st
     run_type = cfg.get("run_type", "train")
     if run_type == THETA0:
         return [THETA0]
-    if run_type in (LADDER_RUN_TYPE, SCAN_RUN_TYPE):
+    if run_type in (LADDER_RUN_TYPE, SCAN_RUN_TYPE, VECTOR_RUN_TYPE):
         if run_dir is None:
             raise ValueError(f"the conditions of a {run_type} run need its run directory")
-        return (ladder_conditions if run_type == LADDER_RUN_TYPE
-                else line_scan_conditions)(run_dir)  # fmt: skip
+        read = {LADDER_RUN_TYPE: ladder_conditions, SCAN_RUN_TYPE: line_scan_conditions,
+                VECTOR_RUN_TYPE: vector_conditions}[run_type]  # fmt: skip
+        return read(run_dir)
     if is_scheduled(cfg):
         if run_dir is None:
             raise ValueError("the conditions of a scheduled (study 2) run need its run directory")

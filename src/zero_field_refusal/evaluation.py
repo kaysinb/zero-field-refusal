@@ -225,6 +225,24 @@ def ladder_condition(rung: str) -> str:
     return f"ladder_{rung}"
 
 
+# Study 5's points along a vector (extension 2, ``vector_points``): the run type of a vector run,
+# its points under the conditions ``vector_condition``.
+VECTOR_RUN_TYPE = "study5_vector"
+
+
+def vector_condition(label: str, a: float | str) -> str:
+    """The response condition of the point θ₀ + a·v of the vector run ``label``, e.g.
+    ``vector_mean_+1`` or, at the matched K, ``vector_mean_kstar``. A label is lower-case letters,
+    digits and underscores."""
+    if not label or not all(ch.islower() or ch.isdigit() or ch == "_" for ch in label):
+        raise ValueError(f"vector label {label!r}: lower-case letters, digits and underscores")
+    if isinstance(a, str):
+        if a != "kstar":
+            raise ValueError(f"vector point {a!r}: a number or 'kstar'")
+        return f"vector_{label}_kstar"
+    return f"vector_{label}_{a:+g}"
+
+
 def random_condition(kind: str) -> str:
     """The response condition of a random direction of the displacement's norm."""
     return f"random_{kind}"
