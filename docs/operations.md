@@ -3299,6 +3299,60 @@ project-run "$SRC" python scripts/study5_campaigns.py pod3 --out "$RUNS_DIR/camp
 The extension's analysis is a script of its own, written after the labels exist. It computes
 exactly what the extension names and is reviewed before its numbers are reported.
 
+
+### Study 5, extension 2: pod 4
+
+Pod 4 runs [extension 2](study5-preregistration.md#extension-2-2026-11-11-diagnostics-of-the-erosions-mechanism)
+as the `pod4` campaign of `scripts/study5_campaigns.py` (`pod4_plan`). Its new code:
+- `tracking.step_checkpoints` (θ_t saved beside the endpoint checkpoint, `schedule.run_scheduled`);
+- `train.order_edit` (`study5_options`: swapped batches, a swapped first response, shuffled
+  batch ranges; config `experiments/study5_control_edit`);
+- `vectors` (vector files over the trainable set) and `vector_points` with
+  `scripts/study5_vector_points.py` (θ₀ + a·v, run type `study5_vector`, judged by
+  `run_judging.vector_conditions`);
+- `scripts/study5_linear_replay.py` (δ̂ and the finite-difference δ_lin, q, ∇r),
+  `scripts/study5_vectors.py` (the Gram, μ̂, leave-one-out means, mixtures, removals),
+  `scripts/study5_pairs.py` (dots, cosines, distances, r at checkpoints),
+  `scripts/study5_tokens.py` (token readouts) and `scripts/study5_force.py` (the force pilot);
+- `scripts/study5_engineering_check.py --ignore step_checkpoints`.
+
+**GPU code.** Recorded in `docs/study5-extension-2-code-identity.json` with the paths changed
+from extension 1's record. The driver refuses another GPU code, a registration without the
+extension's heading, an archive id outside `pod4-…` and a `RUNS_DIR` that holds anything of
+another archive (`own_root_problems`, as for pod 3, with `study5_vector/` runs as well).
+
+**The Pod.** One L40S with a volume of about 500 GB: the 40 endpoint checkpoints (5.24 GB each)
+and the vector files live on it (`--checkpoints`, an absolute folder on the volume), never on the
+container disk. One window, the cap set for the whole campaign; each block and group is admitted
+only when 1.5 × its estimated minutes and the close's 10 minutes fit before the cap.
+`settle` keeps a vector folder's records and removes its vector files once they are used;
+`drop-checkpoints` removes step and twin checkpoints once the records that read them exist.
+
+**Blocks:**
+1. `engineering`: pod 2's order control of 50000 rerun; any failure stops.
+2. `fetch`: the 40 seeds' streams, pod 2's 40 fresh η_l runs, two panels of 1000 fresh θ₀
+   responses (seeds 59990, 59991).
+3. `replays`: the 40 fresh η_l cells in groups of four, each group checked against pod 2's runs
+   as a gate (`--ignore step_checkpoints` on the first group); the twins and their pairs.
+4. `vectors`: ∇r(θ₀), then the Gram and the vector files.
+5. `force`: the pilot on seed 50000, two panels.
+6. `linear`: δ̂, δ_lin and q of the 40 seeds' own orders, θ₀ + δ_lin's readout (evaluated in full
+   on 50000–50005), the cosines with Δθ; the six registered order controls' orders.
+7. `sealed`: δ̂, δ_lin and q only, for extension 1's twenty new orders. No E2 run is read.
+8. `points`: M3's small amplitudes and tokens, M4's removals, parity, matched K and mixtures.
+9. `swaps`: three adjacent swaps on four seeds, with the predictions of every edited order.
+10. `shuffles`: early and late shuffles on six seeds, with their predictions.
+11. `close`.
+
+```bash
+project-run "$SRC" python scripts/study5_campaigns.py pod4 --out "$RUNS_DIR/campaigns/study5-pod4" \
+  --archive-id pod4-<date> --checkpoints /workspace/ckpt/study5-pod4   # --dry-run first
+```
+
+**After the Pod:** restore its runs and check them against the inventories; label the vector
+runs' full evaluations (`study5_vector/`), the swaps and the shuffles with the registered judge.
+No E2 run is labeled under this extension.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project

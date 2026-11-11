@@ -349,6 +349,14 @@ topics:
   watch:
   - scripts/study5_campaigns.py
   - scripts/study5_engineering_check.py
+  - scripts/study5_linear_replay.py
+  - scripts/study5_vectors.py
+  - scripts/study5_vector_points.py
+  - scripts/study5_pairs.py
+  - scripts/study5_tokens.py
+  - scripts/study5_force.py
+  - src/zero_field_refusal/vectors.py
+  - src/zero_field_refusal/vector_points.py
   - scripts/study5_surrogate_endpoint.py
   - scripts/study5_scan.py
   - src/zero_field_refusal/line_scan.py
@@ -365,6 +373,13 @@ topics:
   - src/zero_field_refusal/analysis/record_normalize.py
   - tests/test_study5_campaigns.py
   - tests/test_study5_engineering_check.py
+  - tests/test_study5_linear_replay.py
+  - tests/test_study5_vectors.py
+  - tests/test_vector_points.py
+  - tests/test_vectors.py
+  - tests/test_study5_pairs.py
+  - tests/test_study5_tokens.py
+  - tests/test_study5_force.py
   - tests/test_study5_code_identity.py
   - tests/test_study5_surrogate_endpoint.py
   - tests/test_study5_fixation.py
