@@ -3115,6 +3115,11 @@ whole, replacing whatever an attempt restored at its path (a partial scan or lad
 archived by an earlier attempt never survives beside its completed rerun), then the stable
 records; each object's size and MD5 checked. The predictions record is committed after its copy
 is verified; the fresh runs need only the copy. No label is made by the campaigns.
+`restore-runs` does not fetch `predictions/`: the analysis and `ready` read the record and its
+receipt at the plan's paths, `$RUNS_DIR/study5_records/<ID>/`, so the three objects of
+`predictions/` are copied there, each object's size and MD5 checked, the record's sha256 that of
+its `.sha256` and its receipt. Pod 2's record is committed as
+`docs/study5-predictions-record.json` with its `.sha256`.
 
 ```bash
 python scripts/study5_campaigns.py restore-runs --archive-id pod2-20261110 --dest "$RUNS_DIR"
