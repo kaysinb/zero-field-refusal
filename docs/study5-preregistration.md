@@ -291,3 +291,126 @@ labeling of every fresh-seed run; the earlier labels are listed as superseded an
   is a rank association on one model, one arm and the fixed 521 prompts; it does not show that the
   score selects harmful data or transfers to other models or optimizers.
 - The crossed controls and the ladder are on six seeds and are descriptive.
+
+## Corrections and extensions
+
+Each entry below was written after the registered analysis
+(`runs/study5-final/analysis.json`, sha256
+`d03f0450108f57310918843d8b2469384b744cb420dc15964e14ffcb3f49798f`) and leaves that record as it
+was written. None changes the confirmatory test or its reading.
+
+### Correction record (2026-11-11): the reference contrast's bounds
+
+- **What the record holds.** For each annotator set, the reference contrast's `contrast.low` is
+  H_low − L_low and `contrast.high` is H_high − L_high (`study5_analysis.reference_contrast`).
+  H and L are the high and low groups' shares. A share's `low` counts a missing reference label as
+  not harmful and its `high` counts it as harmful. The two values are the contrast under two
+  assignments of every missing label: all not harmful, or all harmful. They are not bounds.
+- **The bounds under missingness** are [H_low − L_high, H_high − L_low]. From the record's group
+  shares:
+
+  | Annotator set | Missing | H [low, high] | L [low, high] | Recorded `low`, `high` | Bounds |
+  |---|---:|---|---|---|---|
+  | Consensus | 1 | [0.32, 0.32] | [0.05, 0.06] | 0.27, 0.26 | [0.26, 0.27] |
+  | Grok | 0 | [0.32, 0.32] | [0.06, 0.06] | 0.26, 0.26 | [0.26, 0.26] |
+  | Sonnet | 50 | [0.21, 0.43] | [0.04, 0.32] | 0.17, 0.11 | [−0.11, 0.39] |
+  | Without the majority references | 50 | [0.23, 0.45] | [0.04, 0.32] | 0.19, 0.13 | [−0.09, 0.41] |
+
+- **What is reported.** The report states these bounds. They are bounds under missingness, not
+  sampling intervals. Without the majority references the contrast is not determined in sign.
+
+### Extension 1 (2026-11-11): the ladder's unbracketed rungs and order repeats
+
+**Status:** a descriptive extension, decided after the registered result was known and written
+before any of its runs. Its results are descriptive, are reported apart from the registered ones,
+and change no registered reading.
+
+**What is known when it is written:**
+- the registered analysis;
+- the Llama Guard relabeling and the reference consensus;
+- exploratory checks made after the analysis, all reported as exploratory:
+  - p_s does not rank the change of r itself: ρ(p_s, r(θ₂₅) − r(θ₀)) = −0.03 over 40 seeds;
+  - r(θ₂₅) − r(θ₀) is negative at all 40 seeds;
+  - the `linear` rung's harm at K_benign ≈ 6 is 1.6 % on the 5 seeds with a supported h_s,
+    against 16.5 % at their trained endpoints;
+  - reordering changes harm at η_l by 12.0 pp in mean absolute value on the 6 control seeds,
+    and swapping v₀ by 0.9 pp.
+
+**E1: the ladder's `gaussian_d` and `linear_no_d` rungs.** On pod 2 both rungs ended
+`not_bracketed` on all six seeds 50000–50005: the grid's three extensions did not reach K\*.
+- `gaussian_d` reached K_benign 0.27–1.31 at 16 c₀.
+- `linear_no_d` stayed at K_benign 8.6–25.7 at c₀/16.
+
+The extension repeats both rungs on the same six seeds, each seed's fresh F run at η_l being the
+reference run as before. The directions are the same:
+- `gaussian_d`: the same z, from `derive_seed(seed, "study5", "gaussian_d")`, and the same D;
+- `linear_no_d`: the same g_t at θ₀ and the same momentum weights.
+
+The scale search is the registered one (module `ladder`, "Scale search" and "Matched K") with a
+single change: at most **8** ×2 (÷2) extensions of the grid instead of 3. In detail:
+- the start c₀ = ‖Δθ‖/‖δ‖ and the first grid {c₀/2, c₀, 2c₀} are unchanged;
+- the interpolation of ln K in ln c is unchanged;
+- a rung is matched when its K lies within ±10 % of K\*; otherwise one refinement step follows;
+- the full evaluation runs at the nearer of c₁ and c₂;
+- a rung still outside the tolerance is evaluated at its measured K and flagged;
+- a rung still unbracketed after 8 extensions is reported `not_bracketed` with every value.
+
+The grid points pod 2 measured are measured again. Their K is reported beside pod 2's (the
+largest relative difference per rung), as a check of reproducibility, not a gate.
+`linear_shuffled_d` is not run in this extension.
+
+**E2: order repeats.**
+- **Seeds:** 50006–50015, the ten fresh seeds after the control subset, in order, without
+  selection. All ten are supported in the registered analysis.
+- **Runs:** each seed is trained in two new orders of its own 500 training responses, with its
+  own v₀:
+  - `train.order_seed` = s + 1000 for the first and s + 2000 for the second, which gives
+    permutations from `derive_seed(order_seed, "study5", "order")`, as the registered order
+    control does;
+  - each order is run at both rates, η_l and η_u: arm F, `experiments/study5_control_order`,
+    role `control`, no scan, no checkpoint;
+  - that is 40 runs.
+- **The original order** is each seed's pair of fresh F runs from pod 2. Each seed then has
+  three orders, each with both rates.
+- **No collision:** no order seed of the extension equals a fresh seed or the order seed of a
+  registered control. The registered controls use the seed itself.
+
+**The engineering check first.** Before E1 and E2 the extension's checkout reruns pod 2's order
+control of seed 50000 at η_l (`s5-order-1.3e-05-s50000`). Its records must equal the archived
+run's under `scripts/study5_engineering_check.py`. A difference stops the campaign before E1
+and E2.
+
+**Labels.** WildGuard, pinned as registered (`scripts/label_runs.py`), on the 12 E1 rung runs that
+are evaluated and the 40 E2 runs. Labels are opened only after every extension run has ended.
+Missing labels are handled as registered: not harmful in every share, with the all-harmful value
+beside.
+
+**What is reported (descriptive only):**
+- **E1.** Per seed and rung:
+  - the status, the extensions used, c/c₀, K_benign and K_harmful at the evaluated point;
+  - the three classes on the 521 prompts;
+  - the utility (benchmark and factual accuracy, held-out NLL) and the tolerance flag.
+
+  These sit beside the seed's `linear` rung from pod 2 and its trained endpoint (h_s, 5 seeds;
+  seed 50005 has none). The means are taken over the seeds where a rung is evaluated. The
+  registered shuffled-D trigger is computed from all six paired differences if they exist: the
+  mean over 50000–50005 of `linear` minus `linear_no_d` harm, with its decision. If it decides
+  `runs`, `linear_shuffled_d` is a separate later decision.
+- **E2.** Per seed and order:
+  - h at K\* by the registered support rule and interpolation, each unsupported one reported;
+  - K_benign at both rates and K_harmful at K\*.
+
+  Over the seeds with all three orders supported, a one-way decomposition with seeds as groups:
+  - the within-seed (order) variance σ²_w, the mean of the seeds' sample variances over their
+    three orders;
+  - the between-seed component σ²_b = Var(seed means) − σ²_w/3, reported as computed even if
+    negative;
+  - the order share σ²_w/(σ²_w + max(σ²_b, 0)), with a 95 % interval from 10 000 seed-level
+    bootstrap resamples (RNG seed 20261111);
+  - the within-seed Spearman correlation of deviations from each seed's mean between
+    ln K_harmful at K\* and h.
+
+  The six registered controls' η_l differences are reported beside, not pooled.
+
+**Limits.** Six (E1) and ten (E2) seeds. The same model, protocol, judge and 521 prompts as
+registered. The decomposition is descriptive and carries no test.
