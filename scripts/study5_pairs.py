@@ -4,13 +4,15 @@
     python scripts/study5_pairs.py CONFIG --pair A B [--pair A B …] [--r] --out RECORD.json
         [--surrogate SPEC] [--panel-size N] [key=value ...]
 
-An item is ``vector:PATH`` (a ``vectors`` file: the vector itself) or ``ckpt:PATH:SHA256`` (a
+An item is ``vector:PATH`` (a ``vectors`` file: the vector itself), ``ckpt:PATH:SHA256`` (a
 checkpoint of the trainable parameters, ``schedule.save_endpoint``'s format, its bytes hashing to
-SHA256: the item is its displacement θ − θ₀). CONFIG and the overrides are a study-5 F run's; they
-give the model, θ₀ and the trainable set. For every pair: ⟨a, b⟩, ‖a‖, ‖b‖, the cosine and
-‖a − b‖, in float64 tensor by tensor on the host (the twins' distance ‖θ_t − θ′_t‖ is that of
-their two displacements). With ``--r``, r at every checkpoint item (θ itself) and at θ₀, by
-``surrogate.surrogate_value`` on the harmful panel of the surrogate spec. stdout carries numbers,
+SHA256: the item is its displacement θ − θ₀) or ``run:RUN_DIR:STEP`` (the checkpoint that run
+recorded at STEP, a step checkpoint or its endpoint, with the recorded path and sha256). CONFIG
+and the overrides are a study-5 F run's; they give the model, θ₀ and the trainable set. For every
+pair: ⟨a, b⟩, ‖a‖, ‖b‖, the cosine and ‖a − b‖, in float64 tensor by tensor on the host (the
+twins' distance ‖θ_t − θ′_t‖ is that of their two displacements). With ``--r``, r at every
+checkpoint item (θ itself) and at θ₀, by ``surrogate.surrogate_value`` on the harmful panel of the
+surrogate spec. stdout carries numbers,
 ids and hashes only. An existing record is never overwritten. Exits 0 when written, 1 on a
 refusal.
 """
@@ -44,15 +46,33 @@ def write_new(path: Path, record: dict) -> None:
     os.replace(partial, path)
 
 
+def run_checkpoint(run_dir: Path, step: int) -> dict:
+    """The checkpoint a run recorded at ``step``: one of ``inputs.step_checkpoints`` or its
+    ``inputs.endpoint_checkpoint`` (path and sha256 as recorded)."""
+    inputs = json.loads((Path(run_dir) / "meta.json").read_text())["inputs"]
+    found = [r for r in inputs.get("step_checkpoints") or [] if r.get("step") == step]
+    endpoint = inputs.get("endpoint_checkpoint")
+    if not found and isinstance(endpoint, dict) and endpoint.get("step") == step:
+        found = [endpoint]
+    if len(found) != 1:
+        raise ValueError(f"{Path(run_dir).name}: no single checkpoint recorded at step {step}")
+    return {"kind": "ckpt", "path": Path(found[0]["path"]), "sha256": found[0]["sha256"],
+            "run": Path(run_dir).name, "step": step}  # fmt: skip
+
+
 def parse_item(text: str) -> dict:
     kind, _, rest = text.partition(":")
     if kind == "vector" and rest:
         return {"kind": "vector", "path": Path(rest)}
+    if kind == "run":
+        run_dir, _, step = rest.rpartition(":")
+        if run_dir and step.isdigit():
+            return run_checkpoint(Path(run_dir), int(step))
     if kind == "ckpt":
         path, _, sha = rest.rpartition(":")
         if path and len(sha) == 64:
             return {"kind": "ckpt", "path": Path(path), "sha256": sha}
-    raise ValueError(f"item {text!r}: vector:PATH or ckpt:PATH:SHA256")
+    raise ValueError(f"item {text!r}: vector:PATH, ckpt:PATH:SHA256 or run:RUN_DIR:STEP")
 
 
 def load_item(item: dict, names: list[str], theta0: dict, theta0_sha: str) -> dict:

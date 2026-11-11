@@ -77,6 +77,13 @@ def test_pairs_and_r_at_checkpoints(env, tmp_path, monkeypatch, capsys) -> None:
     for text in texts + list(spec.continuations):
         assert text not in printed
     assert module.main(argv) == 1  # never overwritten
+    run_dir = tmp_path / "runs" / "smoke" / "f"
+    by_run = tmp_path / "pairs-run.json"
+    assert module.main([*config, *OVERRIDES, "--pair", f"run:{run_dir}:3", f"run:{run_dir}:1",
+                        "--out", str(by_run)]) == 0  # fmt: skip
+    assert json.loads(by_run.read_text())["pairs"][0]["dot"] == first["dot"]
+    assert module.main([*config, *OVERRIDES, "--pair", f"run:{run_dir}:2", b, "--out",
+                        str(tmp_path / "none.json")]) == 1  # no checkpoint at step 2  # fmt: skip
     bad = tmp_path / "bad.json"
     assert module.main([*config, *OVERRIDES, "--pair", f"ckpt:{end}:{'0' * 64}", b, "--out",
                         str(bad)]) == 1  # fmt: skip
