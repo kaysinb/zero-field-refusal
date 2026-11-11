@@ -20,6 +20,18 @@ what the run computed. The endpoint state is compared where a run records one: i
 sha256 is in ``summary.json`` and ``meta.json`` (``endpoint_checkpoint``; the path is
 volatile), so an archived checkpoint record must be matched by the rerun's.
 
+Extension 2 (pod 4) reruns runs that save their checkpoints elsewhere and may save step
+checkpoints. Three storage details are canonicalized before the comparison, nothing else:
+``tracking.step_checkpoints`` absent or null is the same; the endpoint directory
+(``tracking.endpoint_checkpoint``) is compared as set or not set; and a checkpoint record's file
+``sha256`` (inside ``endpoint_checkpoint`` and ``step_checkpoints``) is not compared, because
+``torch.save`` writes the file's own name into its archive. The endpoint state is instead compared
+by its tensors: with ``--endpoint-tensors CONFIG_HASH=SHA256`` (the archived run's endpoint
+tensors hash, ``tensor_hash.tensors_sha256``, as its surrogate endpoint record holds it), the
+rerun's checkpoint must hash to its own recorded file sha256 and its tensors to SHA256. A pair
+whose archived run recorded an endpoint checkpoint and has no such value cannot be checked (an
+error).
+
 The record holds the checkout's commit and GPU code identity (``code``) and, per pair, the config
 hash, both run ids, the rerun's recorded commit and cleanness (``rerun_commit``,
 ``rerun_dirty``) and, per file, its name, whether it is
@@ -49,6 +61,7 @@ import yaml
 
 from zero_field_refusal import code_identity
 from zero_field_refusal.analysis.record_normalize import normalize
+from zero_field_refusal.tensor_hash import file_sha256, tensors_sha256
 from zero_field_refusal.tracking import git_state
 
 SKIPPED = ("wandb", "judge", "judge-superseded")  # top-level folders never compared or opened
@@ -96,9 +109,50 @@ def _drop(value: Any) -> Any:
     return value
 
 
+CHECKPOINT_RECORDS = ("endpoint_checkpoint", "step_checkpoints")
+
+
+def _canonical(value: Any) -> Any:
+    """Storage details canonicalized at every depth (module docstring): a null
+    ``step_checkpoints`` dropped, a checkpoint record's file ``sha256`` dropped."""
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if key == "step_checkpoints" and item is None:
+                continue
+            if key in CHECKPOINT_RECORDS:
+                records = item if isinstance(item, list) else [item]
+                cleaned = [{k: v for k, v in r.items() if k != "sha256"} if isinstance(r, dict)
+                           else r for r in records]  # fmt: skip
+                out[key] = cleaned if isinstance(item, list) else cleaned[0]
+                continue
+            out[key] = _canonical(item)
+        return out
+    if isinstance(value, list):
+        return [_canonical(v) for v in value]
+    return value
+
+
+def _canonical_config(value: Any) -> Any:
+    """config.yaml: the endpoint directory compared as set or not set; a null step list dropped."""
+    if isinstance(value, dict) and isinstance(value.get("tracking"), dict):
+        tracking = dict(value["tracking"])
+        if tracking.get("endpoint_checkpoint") is not None:
+            tracking["endpoint_checkpoint"] = "<set>"
+        if "step_checkpoints" in tracking and tracking["step_checkpoints"] is None:
+            del tracking["step_checkpoints"]
+        value = {**value, "tracking": tracking}
+    return value
+
+
 def comparable(run: Path, name: str) -> list[Any]:
     """The file's content as a list of normalized values (one per line of a ``.jsonl``)."""
-    return [_drop(value) for value in _comparable(run, name)]
+    values = _comparable(run, name)
+    if name == "config.yaml":
+        values = [_canonical_config(v) for v in values]
+    elif name.endswith((".json", ".jsonl")):
+        values = [_canonical(v) for v in values]
+    return [_drop(value) for value in values]
 
 
 def _comparable(run: Path, name: str) -> list[Any]:
@@ -177,14 +231,48 @@ def rerun_git(run: Path) -> dict[str, Any]:
     return {"rerun_commit": git.get("commit"), "rerun_dirty": git.get("dirty")}
 
 
-def check(archived: list[Path], rerun: list[Path]) -> dict[str, Any]:
+def _endpoint(run: Path) -> dict[str, Any] | None:
+    inputs = json.loads((run / "meta.json").read_text(encoding="utf-8")).get("inputs") or {}
+    found = inputs.get("endpoint_checkpoint")
+    return found if isinstance(found, dict) else None
+
+
+def endpoint_tensors(archived: Path, rerun: Path, expected: str | None) -> dict[str, Any] | None:
+    """The endpoint state's comparison by tensors (module docstring); None when neither run
+    recorded an endpoint checkpoint."""
+    left, right = _endpoint(archived), _endpoint(rerun)
+    if left is None and right is None:
+        return None
+    if left is not None and expected is None:
+        raise CheckError(f"{archived.name}: an endpoint checkpoint and no --endpoint-tensors for "
+                         "its config hash")  # fmt: skip
+    if right is None:
+        return {"expected": expected, "rerun": None, "equal": False, "reason": "no checkpoint"}
+    path = Path(right["path"])
+    if not path.is_file():
+        raise CheckError(f"{rerun.name}: its endpoint checkpoint {path.name} is missing")
+    if file_sha256(path) != right.get("sha256"):
+        return {"expected": expected, "rerun": None, "equal": False,
+                "reason": "the file does not hash to its record"}  # fmt: skip
+    import torch  # only a check with an endpoint loads a checkpoint
+
+    state = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+    found = tensors_sha256(list(state.items()))
+    return {"expected": expected, "rerun": found, "equal": found == expected}
+
+
+def check(archived: list[Path], rerun: list[Path],
+          expected_tensors: dict[str, str] | None = None) -> dict[str, Any]:  # fmt: skip
     left, right = by_hash(archived, "archived"), by_hash(rerun, "rerun")
     pairs = []
     for found in sorted(left.keys() & right.keys()):
         files = compare_runs(left[found], right[found])
+        tensors = endpoint_tensors(left[found], right[found], (expected_tensors or {}).get(found))
+        equal = all(f["equal"] for f in files) and (tensors is None or tensors["equal"])
         pairs.append({"config_hash": found, "archived": left[found].name,
                       "rerun": right[found].name, **rerun_git(right[found]),
-                      "equal": all(f["equal"] for f in files), "files": files})  # fmt: skip
+                      "equal": equal, "files": files,
+                      "endpoint_tensors": tensors})  # fmt: skip
     unpaired = {"archived": sorted(left.keys() - right.keys()),
                 "rerun": sorted(right.keys() - left.keys())}  # fmt: skip
     identity = code_identity.gpu_code_identity()
@@ -194,7 +282,9 @@ def check(archived: list[Path], rerun: list[Path]) -> dict[str, Any]:
         "equal": equal,
         "pairs": pairs,
         "unpaired": unpaired,
-        "rule": "analysis.record_normalize.normalize; meta.json without " + ", ".join(PLACEMENT),
+        "rule": "analysis.record_normalize.normalize; meta.json without "
+        + ", ".join(PLACEMENT)
+        + "; storage canonicalized (module docstring); the endpoint compared by its tensors",
         "ignored_keys": sorted(IGNORED),
         "skipped_folders": list(SKIPPED),
         "code": {"commit": identity["commit"], "gpu_code_sha256": identity["sha256"]},
@@ -224,6 +314,9 @@ def report(record: dict[str, Any]) -> None:
             detail = (f"only in {where}" if where else
                       f"lines {entry['lines']} differing {entry['differing_lines']}")  # fmt: skip
             print(f"  differs {entry['name']}: {detail}")
+        tensors = pair.get("endpoint_tensors")
+        if tensors is not None:
+            print(f"  endpoint tensors equal {tensors['equal']} rerun {tensors['rerun']}")
     for side, hashes in record["unpaired"].items():
         for found in hashes:
             print(f"unpaired {side} {found}")
@@ -238,14 +331,23 @@ def main(argv: list[str] | None = None) -> int:
     # extension 2: a key a rerun records beside the training (its step checkpoints' list), not
     # compared; the record names it
     parser.add_argument("--ignore", action="append", default=[], choices=("step_checkpoints",))
+    parser.add_argument("--endpoint-tensors", action="append", default=[],
+                        metavar="CONFIG_HASH=SHA256")  # fmt: skip
     args = parser.parse_args(argv)
+    expected = {}
+    for item in args.endpoint_tensors:
+        key, _, value = item.partition("=")
+        if not key or len(value) != 64:
+            print(f"--endpoint-tensors {item!r}: CONFIG_HASH=SHA256")
+            return ERROR
+        expected[key] = value
     global IGNORED
     IGNORED = frozenset(args.ignore)
     if args.out.exists():
         print(f"record exists: {args.out}")
         return ERROR
     try:
-        record = check(args.archived, args.rerun)
+        record = check(args.archived, args.rerun, expected)
     except (CheckError, UnicodeDecodeError) as exc:
         print(f"error: {exc}")
         return ERROR

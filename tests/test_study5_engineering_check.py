@@ -3,6 +3,7 @@ volatile fields are removed (``analysis.record_normalize``, the golden fixture's
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -199,3 +200,61 @@ def test_an_ignored_key_is_dropped_only_when_asked(tmp_path):
         check.main(["--archived", str(a), "--rerun", str(b), "--out", str(tmp_path / "x.json"),
                     "--ignore", "metrics"])  # fmt: skip
     check.IGNORED = frozenset()
+
+
+def _checkpoint(path: Path, value: float) -> str:
+    torch.save({"w": torch.full((3,), value), "b": torch.zeros(2)}, path)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _with_endpoint(run: Path, ckpt: Path, sha: str, directory: str, steps=None) -> None:
+    meta = json.loads((run / "meta.json").read_text())
+    meta["inputs"]["endpoint_checkpoint"] = {"path": str(ckpt), "sha256": sha, "step": 25,
+                                             "names_sha256": "n" * 64}  # fmt: skip
+    if steps is not None:
+        meta["inputs"]["step_checkpoints"] = steps
+    (run / "meta.json").write_text(json.dumps(meta))
+    lines = ["seed: 1", "experiment: study3", "tracking:", f"  endpoint_checkpoint: {directory}"]
+    if steps is None:
+        lines.append("  step_checkpoints: null")
+    (run / "config.yaml").write_text("\n".join(lines) + "\n")
+
+
+def test_storage_is_canonicalized_and_the_endpoint_compared_by_its_tensors(tmp_path):
+    """Extension 2: a rerun that saves its endpoint in another folder under another name (so its
+    file hash differs) and records a null step list is equal when its tensors are the archived
+    ones; other tensors differ; no expected value is an error."""
+    a = fake_run(tmp_path / "a", "run-a")
+    b = fake_run(tmp_path / "b", "run-b")
+    ckpt_a, ckpt_b = tmp_path / "a.pt", tmp_path / "other-name.pt"
+    sha_a = _checkpoint(ckpt_a, 1.0)
+    sha_b = _checkpoint(ckpt_b, 1.0)
+    assert sha_a != sha_b  # torch.save writes the file's name into its archive
+    _with_endpoint(a, ckpt_a, sha_a, "/root/ckpt/study5", steps=None)
+    meta_a = json.loads((a / "meta.json").read_text())
+    meta_a["inputs"].pop("step_checkpoints", None)
+    (a / "meta.json").write_text(json.dumps(meta_a))
+    (a / "config.yaml").write_text("seed: 1\nexperiment: study3\ntracking:\n"
+                                   "  endpoint_checkpoint: /root/ckpt/study5\n")  # fmt: skip
+    _with_endpoint(b, ckpt_b, sha_b, "/workspace/ckpt/pod4", steps=None)
+    state = torch.load(ckpt_a, weights_only=True)
+    from zero_field_refusal.tensor_hash import tensors_sha256
+
+    expected = tensors_sha256(list(state.items()))
+    out = tmp_path / "r.json"
+    argv = ["--archived", str(a), "--rerun", str(b), "--out", str(out)]
+    assert check.main([*argv, "--endpoint-tensors", f"aaaaaaaaaaaa={expected}"]) == 0
+    record = json.loads(out.read_text())
+    assert record["pairs"][0]["endpoint_tensors"]["equal"] is True
+    assert check.main(argv[:-1] + [str(tmp_path / "r2.json")]) == 1  # no expected value: error
+    _checkpoint(ckpt_b, 2.0)  # other tensors under the same name: the file no longer matches
+    out3 = tmp_path / "r3.json"
+    assert check.main([*argv[:-1], str(out3), "--endpoint-tensors",
+                       f"aaaaaaaaaaaa={expected}"]) == 2  # fmt: skip
+    sha_b2 = hashlib.sha256(ckpt_b.read_bytes()).hexdigest()
+    _with_endpoint(b, ckpt_b, sha_b2, "/workspace/ckpt/pod4", steps=None)
+    out4 = tmp_path / "r4.json"
+    assert check.main([*argv[:-1], str(out4), "--endpoint-tensors",
+                       f"aaaaaaaaaaaa={expected}"]) == 2  # fmt: skip
+    tensors = json.loads(out4.read_text())["pairs"][0]["endpoint_tensors"]
+    assert tensors["equal"] is False and tensors["rerun"] != expected

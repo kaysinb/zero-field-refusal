@@ -485,8 +485,9 @@ note before any E2 outcome is read.
 - **The validation criterion of δ_lin**, fixed here for the later note:
   - ρ(q, Δr) > 0 at one-sided p < 0.05 over the seeds where δ_lin did not diverge;
   - the mean q lies between 0.5 and 2 times the mean Δr;
-  - on the six order-control pairs, the q difference has the sign of the harm difference
-    (lower q, more harm) on at least 5.
+  - on the six order-control pairs, the q difference has the opposite sign to the harm
+    difference on at least five of the six pairs (lower q, more harm); ties do not count as
+    agreement.
 - **E2's twenty new orders** (`train.order_seed` = s + 1000 and s + 2000, s = 50006–50015, at
   η_l): δ̂, δ_lin and q only, written to a record. No E2 run is read.
 
