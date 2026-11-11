@@ -2526,3 +2526,31 @@ def test_with_runs_records_an_absent_input_and_keeps_an_incomplete_folder(tmp_pa
     kept = [p for p in (tmp_path / "vec").iterdir() if p.name.startswith("s1.aside-")]
     assert len(kept) == 1 and (kept[0] / "delta_hat.pt").read_bytes() == b"partial"
     assert not folder.exists()
+
+
+def test_json_snapshot_copies_records_only_with_their_paths(tmp_path):
+    src, dest = tmp_path / "vec", tmp_path / "records" / "vec-json" / "a1"
+    (src / "linear" / "s1").mkdir(parents=True)
+    (src / "linear" / "s1" / "record.json").write_text('{"q": 1}')
+    (src / "linear" / "s1" / "delta_hat.pt").write_bytes(b"tensor")
+    (src / "linear" / "s1" / "delta_hat.pt.json").write_text("{}")
+    assert camp.main(["json-snapshot", "--src", str(src), "--dest", str(dest)]) == 0
+    found = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file())
+    assert found == ["linear/s1/delta_hat.pt.json", "linear/s1/record.json"]
+    assert camp.main(["json-snapshot", "--src", str(tmp_path / "none"), "--dest", str(dest)]) == 0
+
+
+def test_pod4_k_readouts_only_where_k_is_declared_and_the_m1_purge_names_force(where):
+    plan = pod4(where)
+    replays_ = [s for s in steps(plan) if "scripts/study5_linear_replay.py" in s.argv
+                and "--grad-r-only" not in s.argv]  # fmt: skip
+    for s in replays_:
+        own_order = s.name.startswith("linear/g")
+        assert ("--no-k" in s.argv) is not own_order, s.name
+    sealed = [s for s in replays_ if s.name.startswith("sealed/")]
+    assert len(sealed) == 20 and all("--no-k" in s.argv for s in sealed)
+    force_archive = next(s for s in steps(plan) if s.name == "force/archive")
+    purge_m1 = next(s for s in steps(plan) if s.name == "points/global/purge-m1")
+    assert force_archive.outputs[0] in purge_m1.argv
+    close = [s.name for s in steps(plan, "close")]
+    assert close.index("close/json-snapshot") < close.index("close/records")

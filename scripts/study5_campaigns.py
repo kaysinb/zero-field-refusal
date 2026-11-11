@@ -690,17 +690,26 @@ class Builder:
         )
 
     def close(
-        self, checkpoints: tuple[tuple[str, str], ...] = (), records: tuple[str, ...] = ()
+        self,
+        checkpoints: tuple[tuple[str, str], ...] = (),
+        records: tuple[str, ...] = (),
+        json_from: Path | None = None,
     ) -> None:
         """The close: with ``checkpoints`` (each fresh η_l run's launcher campaign and label),
         first a deadline window for their export, then the export of every recorded endpoint
         checkpoint not yet verified in the archive (``cmd_export_checkpoints``; its record in
         ``close/``); with ``records`` (folders relative to the runs root, pod 4), those folders
         archived to the attempt's own place, so that a block that never reached its archive keeps
-        its records; then the plan, the campaigns, the receipts and that record to the bucket,
-        and the deadline 15 minutes ahead."""
+        its records; with ``json_from`` (pod 4's vector folders), first a copy of every JSON
+        record there, its relative path kept, into the records folder (``json-snapshot``: a record
+        written before its settle; never a tensor); then the plan, the campaigns, the receipts and
+        that record to the bucket, and the deadline 15 minutes ahead."""
         self.current = []
         include = ["plan.json", "campaigns", "receipts"]
+        if json_from is not None:
+            self.step(f"{CLOSE}/json-snapshot", self.own(
+                "json-snapshot", "--src", json_from, "--dest",
+                self.records / "vec-json" / ATTEMPT), on_fail="record", always=True)  # fmt: skip
         if records:
             include.append(CLOSE)
             inventory = self.out / CLOSE / f"records-{ATTEMPT}.tsv"
@@ -1470,7 +1479,8 @@ POD4_MINUTES = {
     # assumed from a 52M-parameter run scaled up: 40 checkpoints memory-mapped, two passes, 22
     # files of 5.24 GB written
     "vectors": 90.0,
-    "linear": 4.5,  # assumed: v₀, 85 batch gradients, three r readouts
+    "linear": 6.5,  # assumed: v₀, 85 batch gradients, three r readouts, K on both panels twice
+    "linear-q": 4.5,  # the same without the K readouts (--no-k): predictions of q only
     "pairs": 3.0,  # assumed: checkpoints read and hashed, r at each
     "tokens": 6.0,
     "force": 45.0,  # assumed: two steps × three ε × four panel gradients of 25 batches, halves
@@ -1598,13 +1608,15 @@ def pod4_plan(
         return b.rel(record), f"{VECTOR_EXPERIMENT}/{run_id}"
 
     def linear(name: str, config: tuple[str, ...], folder: Path, reference: tuple[str, ...],
-               group: str = "") -> str:  # fmt: skip
-        """δ̂, δ_lin, q and K of one order into ``folder`` (an incomplete one moved aside)."""
+               group: str = "", k: bool = True) -> str:  # fmt: skip
+        """δ̂, δ_lin, q and (with ``k``) K of one order into ``folder`` (an incomplete one moved
+        aside); without ``k`` the predictions of q only (``--no-k``)."""
         record = folder / "record.json"
         step(name, with_runs("--unless", record, "--aside-dir", folder, "--",
                              "scripts/study5_linear_replay.py", *config, "--out-dir", folder,
-                             *reference, "--surrogate", spec[0]),
-             outputs=(str(record),), group=group, minutes_key="linear")  # fmt: skip
+                             *reference, "--surrogate", spec[0], *(() if k else ("--no-k",))),
+             outputs=(str(record),), group=group,
+             minutes_key="linear" if k else "linear-q")  # fmt: skip
         return str(record)
 
     def pairs(name: str, seed: int, items: list[tuple[str, str]], record: Path, *,
@@ -1744,11 +1756,11 @@ def pod4_plan(
              *FORCE_EPSILONS, "--project", *projections, "--split-halves"),
              outputs=(str(record),), minutes_key="force")  # fmt: skip
         force_paths.append(b.rel(record))
-    archived = b.runs_archive("force/archive", paths=force_paths)
+    farchived = b.runs_archive("force/archive", paths=force_paths)
     drop("force/drop-steps", replays[FORCE_SEED][0], [replays[FORCE_SEED][1]],
-         [inventory(archived)], force_paths, endpoint=False)  # fmt: skip
+         [inventory(farchived)], force_paths, endpoint=False)  # fmt: skip
     vectors_record = f"{b.rel(b.record('vectors', 'm1'))}/record.json"
-    purge("force/purge-grad-r", grad, [inventory(varchived), inventory(archived)],
+    purge("force/purge-grad-r", grad, [inventory(varchived), inventory(farchived)],
           [vectors_record, *force_paths])  # fmt: skip
     b.end("force")
 
@@ -1792,7 +1804,7 @@ def pod4_plan(
     for s in M_SEEDS:
         folder = vec / "linear-control" / f"s{s}"
         linear(f"linear/{group}/s{s}", (CONTROL_ORDER, rate(ETA_L), f"seed={s}"), folder,
-               ("--reference-fresh-run", pod2_run(s)), group=group)  # fmt: skip
+               ("--reference-fresh-run", pod2_run(s)), group=group, k=False)  # fmt: skip
         settle(f"linear/{group}/s{s}-settle", folder, b.record("linear-control", f"s{s}"), group)
         paths.append(b.rel(b.record("linear-control", f"s{s}")))
     archived = b.runs_archive(f"linear/{group}/archive", paths=paths, group=group)
@@ -1812,7 +1824,7 @@ def pod4_plan(
             folder = vec / "sealed" / tag
             linear(f"sealed/{group}/order{offset // 1000}", (CONTROL_ORDER, rate(ETA_L),
                    f"seed={s}", f"train.order_seed={s + offset}"), folder,
-                   ("--reference-fresh-run", pod2_run(s)), group=group)  # fmt: skip
+                   ("--reference-fresh-run", pod2_run(s)), group=group, k=False)  # fmt: skip
             target = b.record("sealed", tag)
             settle(f"sealed/{group}/order{offset // 1000}-settle", folder, target, group)
             paths.append(b.rel(target))
@@ -1872,7 +1884,7 @@ def pod4_plan(
         run_dirs.append((run_dir, rec))
     archived = b.runs_archive("points/global/archive", paths=paths, run_dirs=run_dirs,
                               group=group)  # fmt: skip
-    purge("points/global/purge-m1", m1, [*inventories, inventory(archived)],
+    purge("points/global/purge-m1", m1, [*inventories, inventory(archived), inventory(farchived)],
           [*consumers, *paths, *force_paths], group)  # fmt: skip
     b.end("points")
 
@@ -1889,7 +1901,7 @@ def pod4_plan(
             for tag, edit in edits:
                 folder = vec / "edits" / f"s{s}-{tag}"
                 linear(f"{block}/{group}/{tag}-predict", edit_args(s, edit), folder,
-                       ("--reference-fresh-run", pod2_run(s)), group=group)  # fmt: skip
+                       ("--reference-fresh-run", pod2_run(s)), group=group, k=False)  # fmt: skip
                 target = b.record("edits", f"s{s}-{tag}")
                 settle(f"{block}/{group}/{tag}-settle", folder, target, group)
                 paths.append(b.rel(target))
@@ -1908,7 +1920,7 @@ def pod4_plan(
     edited_block("shuffles", M_SEEDS, lambda s: [
         (f"shuffle{a}-{z}-{d}", shuffle_edit(a, z, d)) for a, z in SHUFFLE_RANGES
         for d in SHUFFLE_DRAWS])  # fmt: skip
-    b.close(records=(b.rel(b.records), VECTOR_EXPERIMENT))
+    b.close(records=(b.rel(b.records), VECTOR_EXPERIMENT), json_from=vec)
     return b.plan(commit, gpu_code, None, spec)
 
 
@@ -2887,6 +2899,24 @@ def archived_problems(runs: Path, inventories: list[Path], consumers: list[str])
     return problems
 
 
+def cmd_json_snapshot(args) -> int:
+    """Pod 4's close: every ``*.json`` below ``--src`` copied to ``--dest`` at the same relative
+    path (an existing copy replaced); no other file. The close then archives it."""
+    if not args.src.is_dir():
+        print(f"json-snapshot: {args.src} absent, nothing copied")
+        return 0
+    copied = 0
+    for path in sorted(args.src.rglob("*.json")):
+        target = args.dest / path.relative_to(args.src)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_name(f".{target.name}.partial")
+        partial.write_bytes(path.read_bytes())
+        os.replace(partial, target)
+        copied += 1
+    print(f"json-snapshot: copied {copied}")
+    return 0
+
+
 def cmd_purge(args) -> int:
     """Extension 2: the disposable vector files (``*.pt``) of ``--dir`` removed once every
     ``--consumer`` record is written and archived (``archived_problems``); otherwise nothing is
@@ -3657,6 +3687,9 @@ def parser_of() -> argparse.ArgumentParser:
     p = sub.add_parser("settle")
     p.add_argument("--dir", type=Path, required=True)
     p.add_argument("--records", type=Path, required=True)
+    p = sub.add_parser("json-snapshot")
+    p.add_argument("--src", type=Path, required=True)
+    p.add_argument("--dest", type=Path, required=True)
     p = sub.add_parser("purge")
     p.add_argument("--dir", type=Path, required=True)
     p.add_argument("--runs", type=Path, required=True)
@@ -3752,6 +3785,7 @@ COMMANDS = {
     "deadline": cmd_deadline,
     "settle": cmd_settle,
     "purge": cmd_purge,
+    "json-snapshot": cmd_json_snapshot,
     "drop-checkpoints": cmd_drop_checkpoints,
     "fetch-streams": cmd_fetch_streams,
     "fetch-run": cmd_fetch_run,
