@@ -2,7 +2,7 @@
 (docs/study5-preregistration.md, "Descriptive measurements", "Ladder"), written as one JSON record.
 
     python scripts/study5_ladder.py CONFIG --rung RUNG --f-run RUN_DIR --out RECORD.json
-        [--run-id ID] [key=value ...]
+        [--run-id ID] [--extensions N] [key=value ...]
 
 CONFIG and the overrides are those of the seed's fresh F run (``study5.role=fresh``, its rate
 ``optimizer.lr`` = η and its ``seed``), one seed and one rung per call; RUN_DIR is that run's
@@ -10,7 +10,9 @@ directory, which must hold the config hash of CONFIG and all its ``train.steps``
 one of ``gaussian_d``, ``linear_no_d``, ``linear``, ``linear_shuffled_d``. The seed's streams must
 be in the data cache (nothing is generated). In order (``ladder.run_rung``): δ of the rung at θ₀,
 c₀ = ‖Δθ‖/‖δ‖ with ‖Δθ‖ the F run's recorded step-N displacement norm, K_benign at c₀/2, c₀, 2c₀
-(extended by ×2 or ÷2 at most three times), ln K interpolated in ln c to K* = 6.00 (study 3's), K
+(extended by ×2 or ÷2 at most three times, the registered ``ladder.EXTENSIONS``; at most N times
+with ``--extensions N``, which only study 5's extension 1 sets: docs/study5-preregistration.md,
+"Extension 1"), ln K interpolated in ln c to K* = 6.00 (study 3's), K
 measured at that c₁ and, outside ±10 % of K*, one refinement step c₂ (``ladder.refine``), and the
 full evaluation at the one of c₁, c₂ nearer K* in ln K under the condition ``ladder_<rung>``, in a
 run directory of its own (experiment ``study5_ladder``, id ID when given); a rung still outside
@@ -98,7 +100,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--f-run", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument("--extensions", type=int, default=ladder.EXTENSIONS)
     args = parser.parse_args(argv)
+    if args.extensions < 0:
+        print(f"--extensions {args.extensions}: a non-negative count")
+        return 1
     if args.out.exists():
         print(f"record exists: {args.out}")
         return 1
@@ -112,7 +118,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     numerics = configure_numerics(cfg, cfg.execution.device)  # first: before any CUDA work
     env = environment(cfg, cfg.execution.device)
-    record = ladder.run_rung(cfg, env, args.rung, f_run, run_id=args.run_id)
+    record = ladder.run_rung(
+        cfg, env, args.rung, f_run, run_id=args.run_id, extensions=args.extensions
+    )
     record |= {
         "numerics": numerics,
         "device": device_name(torch.device(env.device)),

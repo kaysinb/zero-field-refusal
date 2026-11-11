@@ -398,11 +398,15 @@ def run_rung(
     f_run: Mapping[str, Any],
     *,
     run_id: str | None = None,
+    extensions: int = EXTENSIONS,
 ) -> dict[str, Any]:
     """One rung of one seed: δ, the scale search, the matched-K step (``refine``) and, when
     bracketed, the full evaluation at the chosen scale, in a
     run directory of its own (module docstring). ``cfg`` is the seed's F run's config and
-    ``f_run`` its ``read_f_run``. Returns the record (no git state or time: the caller's)."""
+    ``f_run`` its ``read_f_run``. ``extensions``: the scale search's most ×2 (÷2) extensions,
+    the registered ``EXTENSIONS`` unless an extension of the study sets another
+    (docs/study5-preregistration.md, "Extension 1"); the record names it. Returns the record (no
+    git state or time: the caller's)."""
     condition = ladder_condition(rung)
     linear_response.require_frozen_adam(cfg)
     require_fresh(cfg)
@@ -463,7 +467,7 @@ def run_rung(
             return k_benign(student, reference, samples, pad_id=env.pad_id,
                             micro_batch_size=micro)  # fmt: skip
 
-        search = scale_search(k_of, c0, K_STAR)
+        search = scale_search(k_of, c0, K_STAR, extensions=extensions)
         status, evaluation, matched, c = search["status"], None, None, None
         if status == "bracketed":
             matched = refine(k_of, search, K_STAR)
@@ -481,6 +485,7 @@ def run_rung(
         run.summarize({"ladder": {"rung": rung, "condition": condition, "status": status,
                                   "evaluated": evaluation is not None, "c": c,
                                   "c0": c0, "delta_norm": delta_norm,
+                                  "extensions_allowed": extensions,
                                   "scales": search["scales"], "matched_k": matched,
                                   "out_of_tolerance": flagged, "evaluation": evaluation,
                                   **peak}})  # fmt: skip
@@ -503,6 +508,7 @@ def run_rung(
         "displacement_source": f_run["displacement_source"],
         "delta_norm": delta_norm,
         "c0": c0,
+        "extensions_allowed": extensions,
         "search": search,
         "matched_k": matched,
         "out_of_tolerance": flagged,

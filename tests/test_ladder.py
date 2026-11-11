@@ -187,6 +187,22 @@ def test_scale_search_interpolates_and_extends() -> None:
     out = ladder.scale_search(k_of, 1.0, 6.0)
     assert calls == [0.5, 1.0, 2.0, 0.25, 0.125, 0.0625] and out["status"] == "not_bracketed"
 
+    # extension 1 (docs/study5-preregistration.md): the same grid, at most 8 extensions; a
+    # quadratic K reaching K* at 70c₀ (as gaussian_d on pod 2) is refused at 3, bracketed at 8
+    k_of, calls = power(70.0, slope=2.0)
+    assert ladder.scale_search(k_of, 1.0, 6.0)["status"] == "not_bracketed"
+    k_of, calls = power(70.0, slope=2.0)
+    out = ladder.scale_search(k_of, 1.0, 6.0, extensions=8)
+    assert calls == [0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0]
+    assert out["status"] == "bracketed" and out["extensions"] == 6
+    assert out["pair"]["c"] == [64.0, 128.0] and out["c"] == pytest.approx(70.0, rel=1e-12)
+    k_of, calls = power(0.03, slope=1.5)  # downward: K* at c₀/33, bracketed by c₀/64
+    out = ladder.scale_search(k_of, 1.0, 6.0, extensions=8)
+    assert calls[-1] == 1 / 64 and out["extensions"] == 5 and out["status"] == "bracketed"
+    k_of, calls = power(1000.0, slope=2.0)  # beyond 2·2⁸c₀: refused after all 8
+    out = ladder.scale_search(k_of, 1.0, 6.0, extensions=8)
+    assert out["status"] == "not_bracketed" and out["extensions"] == 8 and len(calls) == 11
+
     table = {0.5: 5.0, 1.0: 7.0, 2.0: 5.5}  # not monotone: two bracketing pairs
     out = ladder.scale_search(table.__getitem__, 1.0, 6.0)
     assert out["monotone"] is False and out["status"] == "bracketed"
@@ -402,6 +418,22 @@ def test_ladder_script_end_to_end(env, tmp_path, monkeypatch, capsys) -> None:  
     iso = json.loads(out_iso.read_text())
     assert iso["status"] == "not_bracketed" and iso["evaluation"] is None and iso["c"] is None
     assert len(iso["search"]["scales"]) == 6 and iso["search"]["extensions"] == 3
+    assert iso["extensions_allowed"] == ladder.EXTENSIONS == 3
+
+    # --extensions N (extension 1 only): the same rung, its search extended at most N times
+    out_ext = tmp_path / "records" / "ladder-gaussian_d-ext.json"
+    argv_ext = [*config, *overrides, "--rung", "gaussian_d", "--f-run", str(f_dir),
+                "--out", str(out_ext), "--run-id", "ladder-gaussian_d-ext",
+                "--extensions", "5"]  # fmt: skip
+    assert module.main(argv_ext) == 0
+    ext = json.loads(out_ext.read_text())
+    assert ext["extensions_allowed"] == 5 and ext["search"]["extensions"] == 5
+    assert len(ext["search"]["scales"]) == 8 and ext["status"] == "not_bracketed"
+    first = [s["c"] for s in iso["search"]["scales"]]
+    assert [s["c"] for s in ext["search"]["scales"]][:6] == first
+    bad = tmp_path / "records" / "ladder-bad.json"
+    assert module.main([*argv_ext[:-4], "--out", str(bad), "--extensions", "-1"]) == 1
+    assert not bad.exists()
     assert iso["v0_sha256"] == f_inputs["v0_sha256"]
     assert iso["rng"]["gaussian_d"] == derive_seed(0, "study5", "gaussian_d")
     assert iso["streams"]["training"] is None  # no gradient is read
