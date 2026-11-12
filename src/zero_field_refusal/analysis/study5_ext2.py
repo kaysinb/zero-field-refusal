@@ -97,7 +97,10 @@ input named.
   2's archived η_l run's, as the registered analysis holds it; the seed's replay (pod 4) gives
   Δθ, the twins' r and nothing labeled. A replay whose greedy answers differ from the archived
   run's on k of the 521 prompts carries the amendment's explicit bound k/521 on its harm
-  (``repeats``), beside every archived outcome of that seed.
+  (``repeats``), beside every archived outcome of that seed. A replay is used by its acceptance
+  for endpoint analysis (extension 2's third amendment), with its changed factual answers and
+  benchmark letters (k of 222 and of 500, the correctness flips, the accuracy difference) beside;
+  k/521 bounds only the changed labels' contribution at the endpoint, not r, K or an effect.
 - *Harm* is the registered reading: per condition the WildGuard counts of the registered label
   reader; harmful compliance over 521, a missing label not harmful, with ``harmful_high`` (every
   missing label harmful) beside.
@@ -124,10 +127,11 @@ M_SEEDS = tuple(range(50000, 50006))  # M3, M4's removals, δ_lin in full, the s
 SWAP_SEEDS = M_SEEDS[:4]  # M6's swaps and twins
 FORCE_SEED = 50000  # M5's seed and the amendment's floors
 GROUP = 4  # pod 4's replay groups
-# a replay group's check: under extension 2's second amendment (endpoint bound 1e-3) the current
-# verdict; under the first amendment's bound (1e-4) a record kept as history where one was written
-REPLAY_CHECK = "replays/check-{group}-endpoint-0.001.json"
-REPLAY_CHECK_EARLIER = "replays/check-{group}.json"
+# a replay group's check: accepted for endpoint analysis under extension 2's third amendment (the
+# endpoint bound 1e-3) the current verdict; the records under the first amendment's bound (1e-4)
+# and the second's (1e-3, every measurement under 1e-4) kept as history where one was written
+REPLAY_CHECK = "replays/check-{group}-endpoint-analysis-0.001.json"
+REPLAY_CHECKS_EARLIER = ("replays/check-{group}.json", "replays/check-{group}-endpoint-0.001.json")
 E2_SEEDS = tuple(range(50006, 50016))  # extension 1's order repeats (sealed)
 E2_OFFSETS = (1000, 2000)  # train.order_seed = s + offset
 E2_NAME = re.compile(r"(?:^|-)s5-order[12]-")  # an E2 cell's name inside a run id
@@ -513,14 +517,19 @@ def repeats(checks: Mapping[str, Any], replays: Mapping[int, str]) -> dict[int, 
             seed = by_run.get(pair.get("rerun"))
             if seed is not None:
                 out[seed] = {"archived_run": pair.get("archived"), "replay_run": pair.get("rerun"),
-                             "group": name, "harm_bound": pair.get("harm_bound")}  # fmt: skip
+                             "group": name, "harm_bound": pair.get("harm_bound"),
+                             "accepted_for_endpoint_analysis":
+                                 pair.get("accepted_for_endpoint_analysis"),
+                             "outputs": pair.get("outputs")}  # fmt: skip
     return out
 
 
 def check_summary(record: Mapping[str, Any] | str) -> dict[str, Any]:
-    """One ``study5_engineering_check.py`` record: passed, exact, within tolerance, the answers
-    differing and, per pair, both run ids, the k/521 bound of its changed answers and its
-    endpoint's tensors equal or their distance ratio."""
+    """One ``study5_engineering_check.py`` record: passed, exact, within tolerance, accepted for
+    endpoint analysis (extension 2's third amendment), the answers differing and, per pair, both
+    run ids, the k/521 bound of its changed answers, its changed outputs (``outputs``: k of 521,
+    222 and 500, the flips, the accuracies) and its endpoint's tensors equal or their distance
+    ratio."""
     if isinstance(record, str):
         return {"available": False, "reason": record}
     pairs = []
@@ -532,6 +541,8 @@ def check_summary(record: Mapping[str, Any] | str) -> dict[str, Any]:
                       "harm_bound": answers_bound(pair.get("answers_differing")),
                       "exact": pair.get("exact"), "within_tolerance": pair.get("within_tolerance"),
                       "passed": pair.get("passed"),
+                      "accepted_for_endpoint_analysis": pair.get("accepted_for_endpoint_analysis"),
+                      "outputs": pair.get("outputs"),
                       "answers_differing": pair.get("answers_differing"),
                       "differing_files": sum(not f.get("equal") for f in pair.get("files", [])),
                       "endpoint_tensors_equal": tensors.get("equal"),
@@ -544,6 +555,7 @@ def check_summary(record: Mapping[str, Any] | str) -> dict[str, Any]:
         "passed": record.get("passed"),
         "exact": record.get("exact"),
         "within_tolerance": record.get("within_tolerance"),
+        "accepted_for_endpoint_analysis": record.get("accepted_for_endpoint_analysis"),
         "answers_differing": record.get("answers_differing"),
         "tolerance": record.get("tolerance"),
         "unpaired": record.get("unpaired"),
@@ -563,7 +575,9 @@ ENDPOINT_RULE = (
     "|ΔT| + 2(T/‖u‖)‖Δu‖; a matched-K point at its selected scale held fixed); r at a point to "
     "first order at θ₀ (‖∇r(θ₀)‖·‖Δv‖, not a bound: its flags read under θ₀'s linearization and "
     "r's own resolution is not assessed); K and harm not propagated; a parameter quantity is "
-    "resolved when it is at least 10 times its bound"
+    "resolved when it is at least 10 times its bound. Extension 2 amendment 3: a replay accepted "
+    "for endpoint analysis gives no precision for M3's and M4's nonlinear readouts, nor for M5's "
+    "and M6's intermediate checkpoints and trajectory contrasts"
 )
 FIRST_ORDER = "first order at θ₀, not a bound: ‖∇r(θ₀)‖·‖Δv‖"
 R_NOT_ASSESSED = (
@@ -1551,8 +1565,8 @@ def early_late(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 def cases(m2: Mapping[str, Any], m4: Mapping[str, Any], m6: Mapping[str, Any],
           checks: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:  # fmt: skip
     """Every diverged, near-bound, unbracketed, out-of-tolerance, non-finite-K or failed-check
-    case of the record, listed; and every replay check kept from under the earlier endpoint bound,
-    beside its group's current verdict (``checks_earlier_bound``)."""
+    case of the record, listed; and every replay check kept from under an earlier rule (the first
+    or the second amendment's), beside its group's current verdict (``checks_earlier_bound``)."""
     out: dict[str, list[dict[str, Any]]] = {
         "diverged": [],
         "near_bound": [],
@@ -1601,14 +1615,18 @@ def cases(m2: Mapping[str, Any], m4: Mapping[str, Any], m6: Mapping[str, Any],
                     "check": name,
                     "passed": summary.get("passed"),
                     "within_tolerance": summary.get("within_tolerance"),
+                    "accepted_for_endpoint_analysis": summary.get("accepted_for_endpoint_analysis"),
                 }
             )
         earlier = summary.get("earlier") if isinstance(summary, Mapping) else None
-        if isinstance(earlier, Mapping) and earlier.get("available"):
+        for kept in earlier if isinstance(earlier, list) else []:
+            if not kept.get("available"):
+                continue
             out["checks_earlier_bound"].append({
-                "check": name, "earlier_passed": earlier.get("passed"),
-                "earlier_endpoint_bound": (earlier.get("tolerance") or {}).get("endpoint_distance"),
+                "check": name, "record": kept.get("record"), "earlier_passed": kept.get("passed"),
+                "earlier_endpoint_bound": (kept.get("tolerance") or {}).get("endpoint_distance"),
                 "passed": summary.get("passed"),
+                "accepted_for_endpoint_analysis": summary.get("accepted_for_endpoint_analysis"),
                 "endpoint_bound": (summary.get("tolerance") or {}).get("endpoint_distance"),
             })  # fmt: skip
     for block in ("swaps", "shuffles"):

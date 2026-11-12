@@ -941,12 +941,21 @@ class Pod4:
         )
 
     def checks(self) -> None:
-        """The replay checks: one pair per seed of a group (pod 2's archived run, the replay);
-        group g50008's endpoints differ by a distance, seed 50001's replay changed one answer."""
+        """The replay checks: one pair per seed of a group (pod 2's archived run, the replay),
+        accepted for endpoint analysis (the third amendment); group g50008's endpoints differ by a
+        distance, seed 50001's replay changed one answer and one factual answer."""
 
         def pair(archived: str, rerun: str, *, tensors: bool = True, answers: int = 0) -> dict:
+            outputs = [{"measure": "harmful_answers", "condition": "step-25", "items": 521,
+                        "differing": answers}]  # fmt: skip
+            if answers:
+                outputs.append({"measure": "factual_qa", "condition": "step-25", "items": 222,
+                                "differing": 1, "flips": 1, "archived_accuracy": 0.5,
+                                "rerun_accuracy": 0.5 - 1 / 222,
+                                "accuracy_difference": -1 / 222})  # fmt: skip
             return {"archived": archived, "rerun": rerun, "config_hash": "h",
                     "exact": tensors and not answers, "within_tolerance": True, "passed": True,
+                    "accepted_for_endpoint_analysis": True, "outputs": outputs,
                     "answers_differing": answers, "files": [],
                     "endpoint_tensors": {"equal": tensors, "distance": None if tensors else
                                          {"ratio": 3e-5, "available": True}}}  # fmt: skip
@@ -954,6 +963,7 @@ class Pod4:
         def record(pairs) -> dict:
             return {"kind": "study5-engineering-check", "passed": True,
                     "exact": all(p["exact"] for p in pairs), "within_tolerance": True,
+                    "accepted_for_endpoint_analysis": True,
                     "answers_differing": sum(p["answers_differing"] for p in pairs),
                     "pairs": pairs, "tolerance": {"relative": 1e-4}}  # fmt: skip
 
@@ -963,14 +973,18 @@ class Pod4:
         )
         for i in range(0, 40, 4):
             seeds = range(50000 + i, 50004 + i)
-            dump(self.records / "replays" / f"check-g{50000 + i}-endpoint-0.001.json", record([
+            dump(self.records / "replays" / f"check-g{50000 + i}-endpoint-analysis-0.001.json",
+                 record([
                 pair(f"pod2-fresh-s{s}", self.replay[s], tensors=i != 8,
                      answers=1 if s == 50001 else 0) for s in seeds]))  # fmt: skip
-        # two groups checked before the second amendment too: kept as history, one failed
-        for group, passed in (("g50000", True), ("g50004", False)):
-            dump(self.records / "replays" / f"check-{group}.json",
-                 {**record([pair("pod2-x", "rerun-x")]), "passed": passed,
-                  "tolerance": {"relative": 1e-4, "endpoint_distance": 1e-4}})  # fmt: skip
+        # groups checked under the earlier rules too: kept as history, two failed
+        for name, passed, bound in (("check-g50000", True, 1e-4), ("check-g50004", False, 1e-4),
+                                    ("check-g50012-endpoint-0.001", False, 1e-3)):  # fmt: skip
+            earlier = {k: v for k, v in record([pair("pod2-x", "rerun-x")]).items()
+                       if k != "accepted_for_endpoint_analysis"}  # fmt: skip
+            dump(self.records / "replays" / f"{name}.json",
+                 {**earlier, "passed": passed,
+                  "tolerance": {"relative": 1e-4, "endpoint_distance": bound}})  # fmt: skip
 
     def edited_run(self, s: int, tag: str, *, labeled: int | None, config=None) -> Path:
         block = "swaps" if tag.startswith("swap") else "shuffles"
@@ -1109,26 +1123,44 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
     assert groups["g50008"]["exact"] is False and groups["g50008"]["passed"] is True
     assert groups["g50008"]["largest_endpoint_distance_ratio"] == pytest.approx(3e-5)
     assert record["cases"]["checks_not_exact"] == [
-        {"check": "g50000", "passed": True, "within_tolerance": True},
-        {"check": "g50008", "passed": True, "within_tolerance": True},
+        {"check": "g50000", "passed": True, "within_tolerance": True,
+         "accepted_for_endpoint_analysis": True},
+        {"check": "g50008", "passed": True, "within_tolerance": True,
+         "accepted_for_endpoint_analysis": True},
+    ]  # fmt: skip
+    # the third amendment's records are the verdicts; the earlier rules' records are history
+    g50004 = groups["g50004"]
+    assert g50004["accepted_for_endpoint_analysis"] is True
+    assert [(e["record"], e.get("passed")) for e in g50004["earlier"]] == [
+        ("replays/check-g50004.json", False),
+        ("replays/check-g50004-endpoint-0.001.json", None),
     ]
-    # the second amendment's records are the verdicts; an earlier bound's record is history
-    assert groups["g50004"]["passed"] is True and groups["g50004"]["earlier"]["passed"] is False
-    assert groups["g50008"]["earlier"] == {
+    assert groups["g50008"]["earlier"][0] == {
+        "record": "replays/check-g50008.json",
         "available": False,
         "reason": "replays/check-g50008.json: none written",
     }
     assert record["cases"]["checks_earlier_bound"] == [
-        {"check": "g50000", "earlier_passed": True, "earlier_endpoint_bound": 1e-4,
-         "passed": True, "endpoint_bound": None},
-        {"check": "g50004", "earlier_passed": False, "earlier_endpoint_bound": 1e-4,
-         "passed": True, "endpoint_bound": None},
+        {"check": "g50000", "record": "replays/check-g50000.json", "earlier_passed": True,
+         "earlier_endpoint_bound": 1e-4, "passed": True, "accepted_for_endpoint_analysis": True,
+         "endpoint_bound": None},
+        {"check": "g50004", "record": "replays/check-g50004.json", "earlier_passed": False,
+         "earlier_endpoint_bound": 1e-4, "passed": True, "accepted_for_endpoint_analysis": True,
+         "endpoint_bound": None},
+        {"check": "g50012", "record": "replays/check-g50012-endpoint-0.001.json",
+         "earlier_passed": False, "earlier_endpoint_bound": 1e-3, "passed": True,
+         "accepted_for_endpoint_analysis": True, "endpoint_bound": None},
     ]  # fmt: skip
+    per_seed = record["repeats"]["per_seed"]["50001"]
+    assert per_seed["accepted_for_endpoint_analysis"] is True
+    assert [(o["measure"], o["differing"]) for o in per_seed["outputs"]] == [
+        ("harmful_answers", 1), ("factual_qa", 1)]  # fmt: skip
+    assert "not r, K" in record["repeats"]["rule"]
     assert not [m for m in record["missing"] if m["what"].startswith("replays/check-")]
     # amendment 2's bounds: e_i from the checks and the floor repeat; g50008's endpoints differ
     # without a recorded distance, so nothing bounds them and the sums stay unbounded
     bounds = record["endpoint_bounds"]
-    assert record["registration"]["sections"][-1] == "Extension 2 amendment 2 (2026-11-12)"
+    assert record["registration"]["sections"][-1] == "Extension 2 amendment 3 (2026-11-12)"
     assert bounds["per_seed"]["50000"]["e"] == pytest.approx(2.5e-5)  # the floor at step 25
     assert bounds["per_seed"]["50001"]["e"] == 0.0
     assert bounds["per_seed"]["50008"]["e"] is None
@@ -1140,12 +1172,15 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
     # the archived outcomes apart from the replays', with the replay's k/521 bound
     bound = {"answers_differing": 1, "bound": pytest.approx(1 / 521), "of": 521}
     assert m1["per_seed"]["50001"]["h_source"] == "archived"
-    assert m1["per_seed"]["50001"]["repeat"] == {
+    repeat = m1["per_seed"]["50001"]["repeat"]
+    assert {k: v for k, v in repeat.items() if k not in ("accepted_for_endpoint_analysis",
+                                                         "outputs")} == {
         "archived_run": "pod2-fresh-s50001",
         "replay_run": pod4.replay[50001],
         "group": "g50000",
         "harm_bound": bound,
-    }
+    }  # fmt: skip
+    assert repeat["accepted_for_endpoint_analysis"] is True
     assert m1["per_seed"]["50002"]["repeat"]["harm_bound"]["bound"] == 0.0
     assert record["repeats"]["per_seed"]["50001"]["harm_bound"] == bound
     assert record["repeats"]["engineering"][0]["archived"] == "pod2-order-s50000"

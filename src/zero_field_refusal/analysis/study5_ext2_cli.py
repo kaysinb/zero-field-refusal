@@ -25,10 +25,11 @@ record); ``linear-repeat/`` (the amendment's repeat); ``linear-control/s<seed>/`
 controls' orders); ``sealed/s<seed>-order<k>/`` (E2's predictions, numbers only); ``edits/
 s<seed>-<tag>/`` (the edited orders' predictions); ``points/`` (M3's small amplitudes, M4's
 points, θ₀ + δ_lin); ``tokens/``; ``force/`` and ``force-repeat/`` (M5 and its floor);
-``twins/`` (the twins and their floor); ``replays/check-g<seed>-endpoint-0.001.json`` (a
-replay group's check under extension 2's second amendment, its current verdict; the group's
-``replays/check-g<seed>.json`` under the earlier endpoint bound, where one was written, is read as
-history beside it and is not missed when absent) and ``engineering-check-numerical.json`` (the
+``twins/`` (the twins and their floor); ``replays/check-g<seed>-endpoint-analysis-0.001.json``
+(a replay group's check accepted for endpoint analysis under extension 2's third amendment, its
+current verdict; the group's ``replays/check-g<seed>.json`` and
+``replays/check-g<seed>-endpoint-0.001.json`` under the earlier rules, where written, are read as
+history beside it and are not missed when absent) and ``engineering-check-numerical.json`` (the
 replay checks). From a runs root, optionally: ``study5_diag/s<seed>/pairs.json``, diagnostic
 repeats of a replay's config (their step-25 distances enter e_i of ``endpoint_bounds``, extension
 2's second amendment; a seed without one is not missed). An optional record that is absent, does
@@ -667,12 +668,13 @@ def checks_section(inputs: Inputs) -> dict[str, Any]:
         group = f"g{ext2.SEEDS[i]}"
         out[group] = ext2.check_summary(inputs.record(ext2.REPLAY_CHECK.format(group=group),
                                                       "study5-engineering-check"))  # fmt: skip
-        earlier = ext2.REPLAY_CHECK_EARLIER.format(group=group)
-        out[group]["earlier"] = (
-            ext2.check_summary(inputs.record(earlier, "study5-engineering-check"))
-            if (inputs.records / earlier).is_file()
-            else {"available": False, "reason": f"{earlier}: none written"}
-        )
+        out[group]["earlier"] = []
+        for earlier in (name.format(group=group) for name in ext2.REPLAY_CHECKS_EARLIER):
+            out[group]["earlier"].append({"record": earlier} | (
+                ext2.check_summary(inputs.record(earlier, "study5-engineering-check"))
+                if (inputs.records / earlier).is_file()
+                else {"available": False, "reason": f"{earlier}: none written"}
+            ))  # fmt: skip
     return out
 
 
@@ -819,7 +821,8 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         "registration": {"document": "docs/study5-preregistration.md",
                          "sections": ["Extension 2 (2026-11-11)",
                                       "Extension 2 amendment (2026-11-11)",
-                                      "Extension 2 amendment 2 (2026-11-12)"]},
+                                      "Extension 2 amendment 2 (2026-11-12)",
+                                      "Extension 2 amendment 3 (2026-11-12)"]},
         "code": code,
         "archive_id": records.name,
         "registered_analysis": {"sha256": digest, "registered_sha256": REGISTERED_ANALYSIS_SHA256},
@@ -827,7 +830,11 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         "repeats": {
             "rule": "the stream order's outcomes (h, K, harm, utility) are pod 2's archived runs'; "
                     "the replays give Δθ, the twins' r and nothing labeled; a replay whose greedy "
-                    "answers differ on k of 521 prompts carries the bound k/521 on its harm",
+                    "answers differ on k of 521 prompts carries the bound k/521 on its harm; a "
+                    "replay is used by its acceptance for endpoint analysis (extension 2's third "
+                    "amendment), its changed factual answers and benchmark letters (k of 222 and "
+                    "500, flips, accuracy difference) beside; k/521 bounds only the changed "
+                    "labels' contribution at the endpoint, not r, K or an intervention's effect",
             "per_seed": repeated,
             "engineering": list((checks.get("engineering") or {}).get("pairs") or []),
         },
