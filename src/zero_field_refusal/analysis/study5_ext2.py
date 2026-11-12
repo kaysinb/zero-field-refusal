@@ -124,6 +124,10 @@ M_SEEDS = tuple(range(50000, 50006))  # M3, M4's removals, δ_lin in full, the s
 SWAP_SEEDS = M_SEEDS[:4]  # M6's swaps and twins
 FORCE_SEED = 50000  # M5's seed and the amendment's floors
 GROUP = 4  # pod 4's replay groups
+# a replay group's check: under extension 2's second amendment (endpoint bound 1e-3) the current
+# verdict; under the first amendment's bound (1e-4) a record kept as history where one was written
+REPLAY_CHECK = "replays/check-{group}-endpoint-0.001.json"
+REPLAY_CHECK_EARLIER = "replays/check-{group}.json"
 E2_SEEDS = tuple(range(50006, 50016))  # extension 1's order repeats (sealed)
 E2_OFFSETS = (1000, 2000)  # train.order_seed = s + offset
 E2_NAME = re.compile(r"(?:^|-)s5-order[12]-")  # an E2 cell's name inside a run id
@@ -1217,7 +1221,8 @@ def early_late(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 def cases(m2: Mapping[str, Any], m4: Mapping[str, Any], m6: Mapping[str, Any],
           checks: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:  # fmt: skip
     """Every diverged, near-bound, unbracketed, out-of-tolerance, non-finite-K or failed-check
-    case of the record, listed."""
+    case of the record, listed; and every replay check kept from under the earlier endpoint bound,
+    beside its group's current verdict (``checks_earlier_bound``)."""
     out: dict[str, list[dict[str, Any]]] = {
         "diverged": [],
         "near_bound": [],
@@ -1225,6 +1230,7 @@ def cases(m2: Mapping[str, Any], m4: Mapping[str, Any], m6: Mapping[str, Any],
         "out_of_tolerance": [],
         "nonfinite_k": [],
         "checks_not_exact": [],
+        "checks_earlier_bound": [],
         "runs_not_ended_steps": [],
     }
     for where, rows in (("own", m2.get("per_seed", {})), ("control", m2.get("controls", {})),
@@ -1267,6 +1273,14 @@ def cases(m2: Mapping[str, Any], m4: Mapping[str, Any], m6: Mapping[str, Any],
                     "within_tolerance": summary.get("within_tolerance"),
                 }
             )
+        earlier = summary.get("earlier") if isinstance(summary, Mapping) else None
+        if isinstance(earlier, Mapping) and earlier.get("available"):
+            out["checks_earlier_bound"].append({
+                "check": name, "earlier_passed": earlier.get("passed"),
+                "earlier_endpoint_bound": (earlier.get("tolerance") or {}).get("endpoint_distance"),
+                "passed": summary.get("passed"),
+                "endpoint_bound": (summary.get("tolerance") or {}).get("endpoint_distance"),
+            })  # fmt: skip
     for block in ("swaps", "shuffles"):
         for row in (m6.get(block) or {}).get("rows", []):
             outcome = row.get("outcome") or {}

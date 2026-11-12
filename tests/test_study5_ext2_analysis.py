@@ -839,9 +839,14 @@ class Pod4:
         )
         for i in range(0, 40, 4):
             seeds = range(50000 + i, 50004 + i)
-            dump(self.records / "replays" / f"check-g{50000 + i}.json", record([
+            dump(self.records / "replays" / f"check-g{50000 + i}-endpoint-0.001.json", record([
                 pair(f"pod2-fresh-s{s}", self.replay[s], tensors=i != 8,
                      answers=1 if s == 50001 else 0) for s in seeds]))  # fmt: skip
+        # two groups checked before the second amendment too: kept as history, one failed
+        for group, passed in (("g50000", True), ("g50004", False)):
+            dump(self.records / "replays" / f"check-{group}.json",
+                 {**record([pair("pod2-x", "rerun-x")]), "passed": passed,
+                  "tolerance": {"relative": 1e-4, "endpoint_distance": 1e-4}})  # fmt: skip
 
     def edited_run(self, s: int, tag: str, *, labeled: int | None, config=None) -> Path:
         block = "swaps" if tag.startswith("swap") else "shuffles"
@@ -983,6 +988,17 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
         {"check": "g50000", "passed": True, "within_tolerance": True},
         {"check": "g50008", "passed": True, "within_tolerance": True},
     ]
+    # the second amendment's records are the verdicts; an earlier bound's record is history
+    assert groups["g50004"]["passed"] is True and groups["g50004"]["earlier"]["passed"] is False
+    assert groups["g50008"]["earlier"] == {
+        "available": False, "reason": "replays/check-g50008.json: none written"}
+    assert record["cases"]["checks_earlier_bound"] == [
+        {"check": "g50000", "earlier_passed": True, "earlier_endpoint_bound": 1e-4,
+         "passed": True, "endpoint_bound": None},
+        {"check": "g50004", "earlier_passed": False, "earlier_endpoint_bound": 1e-4,
+         "passed": True, "endpoint_bound": None},
+    ]  # fmt: skip
+    assert not [m for m in record["missing"] if m["what"].startswith("replays/check-")]
     # the archived outcomes apart from the replays', with the replay's k/521 bound
     bound = {"answers_differing": 1, "bound": pytest.approx(1 / 521), "of": 521}
     assert m1["per_seed"]["50001"]["h_source"] == "archived"

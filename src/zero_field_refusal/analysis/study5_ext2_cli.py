@@ -25,8 +25,11 @@ record); ``linear-repeat/`` (the amendment's repeat); ``linear-control/s<seed>/`
 controls' orders); ``sealed/s<seed>-order<k>/`` (E2's predictions, numbers only); ``edits/
 s<seed>-<tag>/`` (the edited orders' predictions); ``points/`` (M3's small amplitudes, M4's
 points, θ₀ + δ_lin); ``tokens/``; ``force/`` and ``force-repeat/`` (M5 and its floor);
-``twins/`` (the twins and their floor); ``replays/check-g<seed>.json`` and
-``engineering-check-numerical.json`` (the replay checks). An optional record that is absent, does
+``twins/`` (the twins and their floor); ``replays/check-g<seed>-endpoint-0.001.json`` (a
+replay group's check under extension 2's second amendment, its current verdict; the group's
+``replays/check-g<seed>.json`` under the earlier endpoint bound, where one was written, is read as
+history beside it and is not missed when absent) and ``engineering-check-numerical.json`` (the
+replay checks). An optional record that is absent, does
 not read, is not of its kind or seed, or records its own absence (``available: false``) is null
 in its place with the reason, listed under ``missing`` too.
 
@@ -625,8 +628,14 @@ def checks_section(inputs: Inputs) -> dict[str, Any]:
         "engineering-check-numerical.json", "study5-engineering-check"))}  # fmt: skip
     for i in range(0, len(ext2.SEEDS), ext2.GROUP):
         group = f"g{ext2.SEEDS[i]}"
-        out[group] = ext2.check_summary(inputs.record(f"replays/check-{group}.json",
+        out[group] = ext2.check_summary(inputs.record(ext2.REPLAY_CHECK.format(group=group),
                                                       "study5-engineering-check"))  # fmt: skip
+        earlier = ext2.REPLAY_CHECK_EARLIER.format(group=group)
+        out[group]["earlier"] = (
+            ext2.check_summary(inputs.record(earlier, "study5-engineering-check"))
+            if (inputs.records / earlier).is_file()
+            else {"available": False, "reason": f"{earlier}: none written"}
+        )
     return out
 
 
