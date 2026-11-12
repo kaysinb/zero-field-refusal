@@ -902,6 +902,47 @@ def test_pod4_amendment_numerical_equivalence(where):
     )
 
 
+def test_pod4_amendment_2_endpoint_bound(where):
+    """Extension 2's second amendment: the endpoint bound 1e-3 of its own beside the measurements'
+    1e-4, passed to every rerun check; each replay group checked into a record named by the
+    bound, never the earlier ``check-<group>.json``; a check recorded under a stricter endpoint
+    bound stands, a looser one or another measurement rule does not."""
+    assert camp.EXT2_TOLERANCE == {"relative": 1e-4, "absolute": 1e-9, "answers_allowed": 2,
+                                   "endpoint_distance": 1e-3}  # fmt: skip
+    plan = pod4(where)
+    (eng,) = [s for s in steps(plan, "engineering") if s.gate == "engineering"]
+    assert eng.argv[eng.argv.index("--endpoint-tolerance") + 1] == "0.001"
+    checks = [s for s in steps(plan, "replays") if s.gate == "engineering"]
+    assert len(checks) == 10
+    for c in checks:
+        assert c.argv[c.argv.index("--tolerance") + 1] == "0.0001"
+        assert c.argv[c.argv.index("--endpoint-tolerance") + 1] == "0.001"
+        assert c.outputs[0].endswith(f"/replays/check-{c.group}-endpoint-0.001.json")
+        assert c.argv[c.argv.index("--out") + 1] == c.outputs[0]
+    stands = camp.tolerance_stands
+    assert stands(dict(camp.EXT2_TOLERANCE))
+    assert stands({**camp.EXT2_TOLERANCE, "endpoint_distance": 1e-4})  # the first amendment's
+    for bad in ({**camp.EXT2_TOLERANCE, "endpoint_distance": 1e-2},
+                {**camp.EXT2_TOLERANCE, "endpoint_distance": 0.0},
+                {**camp.EXT2_TOLERANCE, "endpoint_distance": True},
+                {**camp.EXT2_TOLERANCE, "endpoint_distance": None},
+                {**camp.EXT2_TOLERANCE, "relative": 1e-3},
+                {**camp.EXT2_TOLERANCE, "answers_allowed": 3},
+                {k: v for k, v in camp.EXT2_TOLERANCE.items() if k != "absolute"},
+                {**camp.EXT2_TOLERANCE, "extra": 1},
+                None, [1e-4]):  # fmt: skip
+        assert not stands(bad), bad
+    good = {"kind": "study5-engineering-check", "exact": False, "passed": True,
+            "within_tolerance": True, "pairs": []}  # fmt: skip
+    stricter = {**good, "tolerance": {**camp.EXT2_TOLERANCE, "endpoint_distance": 1e-4}}
+    assert camp.gate_problem("engineering", _write(where, "s.json", stricter), plan) == (
+        "the engineering check holds no pair")  # past the tolerance  # fmt: skip
+    looser = {**good, "tolerance": {**camp.EXT2_TOLERANCE, "endpoint_distance": 1e-2}}
+    assert "another tolerance" in camp.gate_problem(
+        "engineering", _write(where, "l.json", looser), plan
+    )
+
+
 def test_pod4_floor_repeat_runs_anew_beside_the_completed_replay(where, tmp_path):
     """The launcher reuses a completed run of the same experiment and config hash: the floor
     repeat has the replay's config hash, in an experiment folder of its own, so with the replay

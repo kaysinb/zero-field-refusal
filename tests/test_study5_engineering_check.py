@@ -282,7 +282,7 @@ def _run_check(tmp_path: Path, a: Path, b: Path, *extra: str, name: str = "r.jso
     out = tmp_path / name
     code = check.main(["--archived", str(a), "--rerun", str(b), "--out", str(out), *extra])
     record = json.loads(out.read_text()) if out.exists() else None
-    check.TOLERANCE = None
+    check.TOLERANCE = check.ENDPOINT_TOLERANCE = None
     return code, record
 
 
@@ -414,6 +414,58 @@ def test_endpoint_tensors_that_differ_pass_by_their_distance_to_the_archived_che
     assert code == 1 and record is None  # not the archived run's checkpoint: no answer
 
 
+def test_the_endpoint_bound_is_a_parameter_of_its_own(tmp_path):
+    """Extension 2's second amendment: --endpoint-tolerance bounds the endpoint distance alone
+    (the measurements keep --tolerance), the record names both; without it the bound is
+    --tolerance; it needs --tolerance and lies in (0, 1)."""
+    hasher = script_module(REPO_ROOT / "scripts" / "study5_tensor_hash.py", "s5_tensor_hash3")
+    a = fake_run(tmp_path / "a", "run-a")
+    b = fake_run(tmp_path / "b", "run-b")
+    _metrics(a, {"step": 0, "loss": 1.5})
+    _metrics(b, {"step": 0, "loss": 1.5 * (1 + 5e-4)})  # beyond 1e-4 relative: a measurement
+    ckpt_a, ckpt_b = tmp_path / "a.pt", tmp_path / "b.pt"
+    sha_a, sha_b = _checkpoint(ckpt_a, 1.0), _checkpoint(ckpt_b, 1.0 + 1e-6)
+    _with_endpoint(a, ckpt_a, sha_a, "/root/ckpt", steps=None)
+    _with_endpoint(b, ckpt_b, sha_b, "/workspace/ckpt", steps=None)
+    from zero_field_refusal.tensor_hash import tensors_sha256
+
+    expected = tensors_sha256(list(torch.load(ckpt_a, weights_only=True).items()))
+    hashed = tmp_path / "hashed.json"
+    assert hasher.main([str(b), "--out", str(hashed)]) == 0
+    rec = _distance(tmp_path / "d.json", sha_a, "run-b", sha_b, 2.21e-4)
+    base = ["--endpoint-tensors", f"aaaaaaaaaaaa={expected}", "--rerun-endpoint-tensors",
+            str(hashed), "--endpoint-distance", f"aaaaaaaaaaaa={rec}"]  # fmt: skip
+
+    def endpoint_and_file(record):
+        pair = record["pairs"][0]
+        entry = next(f for f in pair["files"] if f["name"] == "metrics.jsonl")
+        return pair["endpoint_tensors"]["distance"]["within_tolerance"], entry["within_tolerance"]
+
+    # the endpoint passes under 1e-3; the measurement still fails under 1e-4
+    code, record = _run_check(tmp_path, a, b, *base, "--tolerance", "1e-4",
+                              "--endpoint-tolerance", "1e-3", name="amended.json")  # fmt: skip
+    assert code == 2 and endpoint_and_file(record) == (True, False)
+    assert record["tolerance"] == {"relative": 1e-4, "absolute": 1e-9, "answers_allowed": 2,
+                                   "endpoint_distance": 1e-3}  # fmt: skip
+    # without --endpoint-tolerance the endpoint is bounded by --tolerance, as before
+    code, record = _run_check(tmp_path, a, b, *base, "--tolerance", "1e-4", name="old.json")
+    assert code == 2 and endpoint_and_file(record) == (False, False)
+    assert record["tolerance"]["endpoint_distance"] == 1e-4
+    # a looser measurement tolerance does not loosen the endpoint
+    code, record = _run_check(tmp_path, a, b, *base, "--tolerance", "1e-3",
+                              "--endpoint-tolerance", "1e-4", name="split.json")  # fmt: skip
+    assert code == 2 and endpoint_and_file(record) == (False, True)
+    # both within their bounds: the check passes
+    code, record = _run_check(tmp_path, a, b, *base, "--tolerance", "1e-3",
+                              "--endpoint-tolerance", "1e-3", name="both.json")  # fmt: skip
+    assert code == 0 and record["passed"] is True and record["exact"] is False
+    for extra, name in ((("--endpoint-tolerance", "1e-3"), "alone.json"),
+                        (("--tolerance", "1e-4", "--endpoint-tolerance", "0"), "zero.json"),
+                        (("--tolerance", "1e-4", "--endpoint-tolerance", "1"), "one.json")):  # fmt: skip
+        code, record = _run_check(tmp_path, a, b, *base, *extra, name=name)
+        assert code == 1 and record is None, name
+
+
 def test_several_reruns_of_one_config_are_each_compared(tmp_path):
     a = fake_run(tmp_path / "a", "run-a")
     _metrics(a, {"step": 0, "loss": 1.5})
@@ -425,7 +477,7 @@ def test_several_reruns_of_one_config_are_each_compared(tmp_path):
     argv = ["--archived", str(a), "--rerun", str(b1), str(b2), "--out", str(out), "--tolerance",
             "1e-4"]  # fmt: skip
     assert check.main(argv) == 0
-    check.TOLERANCE = None
+    check.TOLERANCE = check.ENDPOINT_TOLERANCE = None
     record = json.loads(out.read_text())
     assert [(p["rerun"], p["exact"], p["within_tolerance"]) for p in record["pairs"]] == [
         ("run-b1", False, True), ("run-b2", True, True)]  # fmt: skip

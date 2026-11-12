@@ -59,14 +59,17 @@ answer is recorded by its item id, the sha256 of both texts and its first differ
 by its text. Endpoint tensors that differ pass only through ``--endpoint-distance
 CONFIG_HASH=RECORD``, ``scripts/study5_pairs.py``'s record of the archived run's checkpoint
 (fetched back from its archive, by the sha256 its run recorded) against the rerun's endpoint:
-‖θ_rerun − θ_archived‖ / ‖θ_archived − θ₀‖ ≤ REL. For a differing open line file whose lines
+‖θ_rerun − θ_archived‖ / ‖θ_archived − θ₀‖ ≤ END, the endpoint bound: ``--endpoint-tolerance
+END`` (extension 2's second amendment: a bound of its own, beside the measurements' REL), REL
+when it is not given. For a differing open line file whose lines
 record a step, the largest relative drift of each differing line is kept (``by_step``). Several
 reruns of one config (``--rerun``) are each compared, for a run without an endpoint checkpoint.
 
 The record states ``exact`` (every file equal after the canonicalization, every endpoint's tensors
 equal) and, under the tolerance, ``within_tolerance`` apart, per file, per pair and in all, with
 the number of different answers; ``passed`` is ``exact`` without a tolerance and ``exact`` or
-``within_tolerance`` with one.
+``within_tolerance`` with one. Its ``tolerance`` names REL (``relative``), the absolute part, the
+answers allowed and END (``endpoint_distance``).
 
 Exits 0 when the check passes, 2 when it does not (a file differs beyond the rule, a file is on
 one side only, a run has no partner), 1 on an error (a missing run directory or ``meta.json``, an
@@ -206,6 +209,9 @@ def _comparable(run: Path, name: str) -> list[Any]:
 
 
 TOLERANCE: float | None = None  # --tolerance: extension 2's numerical equivalence (relative)
+# --endpoint-tolerance: the endpoint distance's bound under the tolerance (extension 2's second
+# amendment), TOLERANCE when not given
+ENDPOINT_TOLERANCE: float | None = None
 ABSOLUTE = 1e-9  # its absolute part: |x − y| ≤ ABSOLUTE + TOLERANCE·|y|, y the archived value
 GREEDY = "responses"  # the greedy answers, compared answer by answer under the tolerance
 ANSWERS_ALLOWED = 2  # differing greedy answers a file may hold under the tolerance
@@ -423,8 +429,8 @@ def endpoint_distance(archived: Path, rerun: Path, record: dict[str, Any] | None
     record of the pair (the archived run's checkpoint, fetched back from its archive, against the
     rerun's endpoint). Its first item must be the archived checkpoint by the sha256 its run
     recorded and its second the rerun's recorded endpoint; the pair passes when
-    ‖θ_rerun − θ_archived‖ / ‖θ_archived − θ₀‖ ≤ the tolerance. A record of an absent checkpoint
-    (``available: false``) or none fails."""
+    ‖θ_rerun − θ_archived‖ / ‖θ_archived − θ₀‖ ≤ the endpoint bound (``ENDPOINT_TOLERANCE``).
+    A record of an absent checkpoint (``available: false``) or none fails."""
     if record is None or record.get("available") is False:
         return {"available": False, "within_tolerance": False}
     rows = record.get("pairs") if record.get("kind") == "study5-pairs" else None
@@ -440,7 +446,7 @@ def endpoint_distance(archived: Path, rerun: Path, record: dict[str, Any] | None
         raise CheckError(f"{rerun.name}: the distance record's second item is not its endpoint")
     ratio = float(row["distance"]) / float(row["norm_a"])
     return {"available": True, "distance": row["distance"], "archived_norm": row["norm_a"],
-            "ratio": ratio, "within_tolerance": ratio <= (TOLERANCE or 0.0)}  # fmt: skip
+            "ratio": ratio, "within_tolerance": ratio <= (ENDPOINT_TOLERANCE or 0.0)}  # fmt: skip
 
 
 def endpoint_tensors(archived: Path, rerun: Path, expected: str | None,
@@ -526,7 +532,7 @@ def check(archived: list[Path], rerun: list[Path],
         record["answers_differing"] = sum(p["answers_differing"] for p in pairs)
         record["tolerance"] = {"relative": TOLERANCE, "absolute": ABSOLUTE,
                                "answers_allowed": ANSWERS_ALLOWED,
-                               "endpoint_distance": TOLERANCE}  # fmt: skip
+                               "endpoint_distance": ENDPOINT_TOLERANCE}  # fmt: skip
     return record
 
 
@@ -589,6 +595,8 @@ def main(argv: list[str] | None = None) -> int:
                         metavar="CONFIG_HASH=SHA256")  # fmt: skip
     parser.add_argument("--rerun-endpoint-tensors", type=Path)  # study5_tensor_hash.py's record
     parser.add_argument("--tolerance", type=float)  # extension 2: numerical equivalence
+    # extension 2's second amendment: the endpoint distance's bound, with --tolerance only
+    parser.add_argument("--endpoint-tolerance", type=float)
     parser.add_argument(
         "--endpoint-distance", action="append", default=[], metavar="CONFIG_HASH=RECORD"
     )  # study5_pairs.py's record, or its absence
@@ -616,12 +624,21 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             print(f"--endpoint-distance {item!r}: not JSON")
             return ERROR
-    global IGNORED, TOLERANCE
+    global IGNORED, TOLERANCE, ENDPOINT_TOLERANCE
     IGNORED = frozenset(args.ignore)
     if args.tolerance is not None and not 0 < args.tolerance < 1:
         print(f"--tolerance {args.tolerance}: a relative bound in (0, 1)")
         return ERROR
+    if args.endpoint_tolerance is not None:
+        if args.tolerance is None:
+            print("--endpoint-tolerance needs --tolerance")
+            return ERROR
+        if not 0 < args.endpoint_tolerance < 1:
+            print(f"--endpoint-tolerance {args.endpoint_tolerance}: a relative bound in (0, 1)")
+            return ERROR
     TOLERANCE = args.tolerance
+    ENDPOINT_TOLERANCE = (args.tolerance if args.endpoint_tolerance is None
+                          else args.endpoint_tolerance)  # fmt: skip
     if args.out.exists():
         print(f"record exists: {args.out}")
         return ERROR
