@@ -3339,10 +3339,26 @@ h₁ − h₂ against the sign at K\*, one-sided exact binomial p, with S and th
 The predictor is the δ_lin criterion's `primary_predictor` (`q` from pod 4's sealed
 predictions, or ln K_harmful at K\*). It is read from the extension-2 analysis record
 (`study5_ext2_cli`'s `analysis.json`, `EXT2_ANALYSIS.json` below), under `criterion`
-(`--criterion-key`). The test refuses before reading any E2 file in these cases:
-- the opening record is missing or invalid;
+(`--criterion-key`).
+
+The opening record also binds the inputs: `criterion_sha256` (the --criterion file), the
+`predictions` manifest ({`<seed>-<order seed>` or the record's path: sha256}, exactly the
+prediction files given), the tested `seeds`, and `pair_floors` (10, equal to the criterion's
+`part3_pairs.unresolved_floors`). The test refuses before reading any E2 file in these cases:
+- the opening record or the note it names does not stand;
+- one of these bindings differs;
 - the criterion is withheld, or its `passed` and `primary_predictor` disagree;
 - a prediction it needs is missing or invalid.
+
+A preflight then reads only each order run's config.yaml and meta.json. It checks the run's cell,
+its prompt set and, with `q`, the prediction bound to the run. Only after that are outcomes and
+labels read. A seed is excluded and listed only for a registered scientific cause:
+- an order unsupported at K\*;
+- δ_lin declared diverged;
+- a measured K_harmful that is not positive.
+
+A missing journal, run, end or label is a technical gap. While a tested seed has one, the verdict
+is withheld (no p and no reading), and the numbers over the resolved seeds are descriptive only.
 
 ```bash
 python -m zero_field_refusal.analysis.study5_e2_test --open-e2 OPENING.json \

@@ -27,16 +27,31 @@ out and counted. With n the seeds with A_s ≠ 0 and T those with A_s = +1, the 
 P(Bin(n, ½) ≥ T), exact; for n ≤ 20 the 2ⁿ sign patterns are also enumerated and must give the
 same count. Significant when p < 0.05. Beside it, descriptive: S = Σ_s sign(predicted)·(h₁ − h₂)
 with its one-sided sign-flip p (the 2ⁿ patterns for n ≤ 20; above, 1 000 000 random patterns from
-``numpy.random.default_rng(20261114)``, as the record states), and the per-seed table. A seed with
-an order without h (unsupported, a run missing or unlabeled), or without its predictor's value
-(δ_lin diverged; ln K_harmful not available), is left out and listed with the reason.
+``numpy.random.default_rng(20261114)``, as the record states), and the per-seed table.
+
+**Exclusions and gaps.** A seed is *excluded* and listed, with the reason, only for a scientific
+cause established by the registered rules:
+- an order not supported at K* by the registered support rule (a failed endpoint, gross collapse,
+  no bracket, too wide, tied);
+- δ_lin declared diverged in its prediction (``q`` only);
+- ln K_harmful at K* recorded but not positive and finite (``ln_K_harmful_at_K*`` only).
+
+A zero difference is a tie, counted. Any other missing input leaves the seed *technically
+unresolved*: a launcher journal, a run or its end, a label file or its receipt, or an unreadable
+record. While any tested seed is unresolved, the verdict is withheld: ``status`` ``withheld``,
+p, T and significance null, and each unresolved seed named with its reason. The numbers over the
+resolved seeds are shown under ``descriptive_partial`` alone, with no p-value. An excluded cause
+in either order outweighs a gap in the other: the seed is excluded whatever the missing input
+holds. A missing prediction is refused (below), not withheld.
 
 **The secondary outcome** is the harm share of each order's η_l run (its step-25 labels, a missing
 label not harmful, the all-harmful value beside; no interpolation), with the same statistic. It
-is reported beside and decides nothing. Its cohort, fixed here before the opening, is paired: the
-seeds whose two new orders' η_l runs both have an η_l share (the run read and its step-25 labels)
-and a predicted sign. A seed with an η_l run or its labels missing is left out and listed with the
-reason; the support at K* plays no part. The natural secondary outcome, Δr at the endpoint, cannot
+is reported beside and decides nothing. Its cohort is fixed here, before the opening. It is
+paired: the seeds whose two new orders' η_l runs both have an η_l share (the run read and its
+step-25 labels) and a predicted sign. The support at K* plays no part. A seed is excluded when its
+predictor is (as above) or when an η_l run stopped by an instability (no step-25 responses). An η_l
+run or its labels missing is a technical gap and withholds the secondary verdict in the same way.
+The natural secondary outcome, Δr at the endpoint, cannot
 be computed for the E2 runs: they are control runs (``experiments/study5_control_order``), which
 save no checkpoint by the registration, so their endpoint is not there to score.
 
@@ -49,8 +64,15 @@ cancels.
 
 **Inputs.**
 - --open-e2: the opening record, required, checked before anything of E2 is read
-  (``study5_ext1.opening_record``: the dated note at its commit, an ancestor of this checkout's
-  HEAD, with the sha256 the record names, and unchanged at HEAD).
+  (``study5_ext1.read_opening``: the dated note at its commit, an ancestor of this checkout's
+  HEAD, with the sha256 the record names, and unchanged at HEAD). It also binds the test's inputs
+  (``opening_inputs``), and any difference is refused before any E2 read:
+  - ``criterion_sha256``: the sha256 of the file given as --criterion;
+  - ``pair_floors``: 10, equal to the criterion's ``part3_pairs.unresolved_floors``;
+  - ``seeds``: exactly the tested seeds (the ten, with any top-up);
+  - ``predictions``: a manifest {``<seed>-<order seed>`` or the record's path as given
+    (``<folder>/record.json``): sha256}. The predictions given must be exactly these files, each
+    with its sha256, with none extra and none missing.
 - --criterion: the extension-2 analysis record, its δ_lin criterion under --criterion-key (a
   dotted path, default ``criterion``; empty for the top level). Only ``status``, ``passed`` and
   ``primary_predictor`` are read: ``status`` ``decided``, ``passed`` a boolean and
@@ -63,14 +85,22 @@ cancels.
   ``scripts/study5_linear_replay.py``'s record). Each is one order: kind
   ``study5-linear-replay``, its seed, η_l, ``order.order_seed`` and ``divergence.status``
   (``complete``, with a finite ``q_lin``, or ``diverged``). Two records of one order are refused.
-  With ``q``, a tested order without a record, or complete without a finite q, is refused. The
-  prediction must be of the order's runs: its order record, v₀, θ₀ and training stream those each
-  run recorded, refused otherwise.
+  With ``q``, a tested order without a record, or complete without a finite q, is refused.
 - --pod3-runs: the runs root holding the order runs and their launcher journals; a seed's
   campaign is its one journal ``launch/study5-<ID>-orders-s<seed>.jsonl``.
 - --registered: the registered analysis's record, its sha256 named by the registration at this
   commit (``study5_ext1.registered_record``). θ₀'s accuracies (the gross-collapse check of the
   support rule) are its line scans' point a = 0, θ₀'s evaluation; the prompt sets must be its own.
+
+**Preflight.** Before any outcome or label of an order run is read (``preflight``), each run the
+launcher journals name is checked by its config.yaml and meta.json alone:
+- its run id, seed, rate, frozen Adam, order seed and role ``control``;
+- its prompt set: the registered identity and the prompts the run recorded;
+- with ``q``, the prediction bound to it: its order record, v₀, θ₀ and training stream are the
+  run's.
+
+A difference is refused. A run not found or not readable is left to the outcome reading, where it
+is technically unresolved.
 
 **Rulings** where the test leaves a detail open:
 - *A sign* is that of the exact difference; an exact zero is a tie.
@@ -90,16 +120,21 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import yaml
+from omegaconf import OmegaConf
+from omegaconf.errors import OmegaConfBaseException
 
 from . import study5_analysis as sa
 from . import study5_ext1 as ext
 from .study3_estimates import DENOMINATOR
+from .study3_records import INSTABILITY
 
 PROG = "study5_e2_test"
 KIND, VERSION = "study5-e2-test", 1
@@ -116,6 +151,11 @@ PATTERNS, PATTERN_SEED, CHUNK = 1_000_000, 20261114, 100_000
 TIE = sa.TIE  # 1e-12
 REPLAY_KIND = "study5-linear-replay"  # scripts/study5_linear_replay.py's record
 STATUSES = ("complete", "diverged")
+OPTIMIZER = "adam_frozen"  # arm F, as every order run's config names it
+PAIR_FLOORS = 10  # the δ_lin criterion's part-3 multiplier the opening fixes
+SHA256 = re.compile(r"[0-9a-f]{64}")
+MANIFEST_KEY = re.compile(r"(?P<seed>[0-9]+)-(?P<order_seed>[0-9]+)")
+OK, EXCLUDED, UNRESOLVED = "ok", "excluded", "unresolved"
 PREDICTION_KEYS = ("file", "sha256", "status", "q")  # a prediction, in the per-seed table
 READINGS = {
     Q: "a prediction from theta0 and the order: lower q_lin predicts more harm",
@@ -129,8 +169,10 @@ SECONDARY = (
 )
 SECONDARY_COHORT = (
     "paired, fixed before the opening: the seeds whose two new orders' eta_l runs both have an "
-    "eta_l share (the run read and its step-25 labels) and a predicted sign; a seed with an eta_l "
-    "run or its labels missing is left out and listed with the reason; support at K* plays no part"
+    "eta_l share (the run read and its step-25 labels) and a predicted sign; support at K* plays "
+    "no part. Excluded and listed: a seed whose predictor is excluded or whose eta_l run stopped "
+    "by an instability. An eta_l run or its labels missing is a technical gap: while any tested "
+    "seed has one, the secondary verdict is withheld"
 )
 TOP_UP_NOTE = (
     "seeds 50000-50005 were seen in the exploratory checks of extension 1 and in the delta_lin "
@@ -250,9 +292,14 @@ def criterion_of(path: Path, key: str | None = CRITERION_KEY) -> dict[str, Any]:
     if predictor != PRIMARY[passed]:
         refuse(f"the criterion's passed ({passed}) and primary_predictor ({predictor!r}) "
                f"disagree: passed selects {PRIMARY[passed]!r}")  # fmt: skip
+    part3 = found.get("part3_pairs")
+    floors = part3.get("unresolved_floors") if isinstance(part3, Mapping) else None
+    if not sa._is_number(floors):
+        refuse("the criterion's part3_pairs.unresolved_floors is not a number")
     kind = record.get("kind") if isinstance(record, Mapping) else None
     return {"record": Path(path).name, "sha256": sha256(data), "kind": kind, "key": key,
-            "status": status, "passed": passed, "primary_predictor": predictor}  # fmt: skip
+            "status": status, "passed": passed, "primary_predictor": predictor,
+            "unresolved_floors": floors}  # fmt: skip
 
 
 def prediction_of(path: Path, data: bytes) -> dict[str, Any]:
@@ -313,10 +360,9 @@ def checked_predictions(predictions: Mapping[tuple[int, int], Mapping[str, Any]]
                 refuse(f"seed {seed} {order}: its prediction is complete without a finite q")
 
 
-def binding_problem(prediction: Mapping[str, Any], run: Mapping[str, Any]) -> str | None:
-    """Why a prediction is not of an order's run: its order record, v₀, θ₀ and training stream
-    must be those the run recorded (None: they are)."""
-    inputs = run.get("inputs") or {}
+def binding_problem(prediction: Mapping[str, Any], inputs: Mapping[str, Any]) -> str | None:
+    """Why a prediction is not of an order's run (``inputs``: what its meta.json records): its
+    order record, v₀, θ₀ and training stream must be the run's (None: they are)."""
     if inputs.get("training_order") != prediction["order"]:
         return "its order is not the run's"
     for key, what in (("v0_sha256", "v0"), ("theta0_trainable_sha256", "theta0")):
@@ -353,32 +399,197 @@ def campaign_of(runs: Path, seed: int) -> str | None:
     return found[0].stem if len(found) == 1 else None
 
 
+def cell_of(campaign: str, seed: int, order: str, eta: float) -> tuple[str, str]:
+    return campaign, f"s5-{order}-{eta!r}-s{seed}/s{seed}"
+
+
+# ------------------------------------------------------------------ the bindings
+
+
+def opening_inputs(found: Mapping[str, Any]) -> dict[str, Any]:
+    """The inputs the opening record binds (module docstring, "Inputs"): ``criterion_sha256``,
+    the ``predictions`` manifest, the tested ``seeds`` and ``pair_floors`` (10); refused when one
+    is absent or of another form."""
+    criterion, manifest = found.get("criterion_sha256"), found.get("predictions")
+    seeds, floors = found.get("seeds"), found.get("pair_floors")
+    if not isinstance(criterion, str) or not SHA256.fullmatch(criterion):
+        refuse("--open-e2: the opening record holds no criterion_sha256")
+    if not isinstance(manifest, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in manifest.items()):  # fmt: skip
+        refuse("--open-e2: the opening record holds no predictions manifest {name: sha256}")
+    if (
+        not isinstance(seeds, list)
+        or not all(isinstance(s, int) and not isinstance(s, bool) for s in seeds)
+        or len(set(seeds)) != len(seeds)
+    ):
+        refuse("--open-e2: the opening record holds no list of distinct tested seeds")
+    if not sa._is_number(floors) or floors != PAIR_FLOORS:
+        refuse(f"--open-e2: the opening's pair_floors is {floors!r}, not {PAIR_FLOORS}")
+    return {"criterion_sha256": criterion, "predictions": dict(manifest),
+            "seeds": sorted(seeds), "pair_floors": floors}  # fmt: skip
+
+
+def checked_manifest(predictions: Mapping[tuple[int, int], Mapping[str, Any]],
+                     manifest: Mapping[str, str]) -> None:  # fmt: skip
+    """The predictions given are exactly the opening's manifest, each with its sha256: a key is
+    ``<seed>-<order seed>`` or a record's path as given (``<folder>/record.json``); refused
+    otherwise."""
+    by_file = {found["file"]: key for key, found in predictions.items()}
+    named: dict[tuple[int, int], str] = {}
+    for name, digest in sorted(manifest.items()):
+        match = MANIFEST_KEY.fullmatch(name)
+        key = (int(match["seed"]), int(match["order_seed"])) if match else by_file.get(name)
+        if key is None or key not in predictions:
+            refuse(f"--open-e2: the manifest names the prediction {name}, which is not given")
+        if key in named:
+            refuse(f"--open-e2: the manifest names seed {key[0]}, order seed {key[1]} twice")
+        named[key] = digest
+    extra = sorted(set(predictions) - set(named))
+    if extra:
+        refuse(f"--open-e2: the prediction of seed {extra[0][0]}, order seed {extra[0][1]} is "
+               "given but not in the opening's manifest")  # fmt: skip
+    for key, digest in sorted(named.items()):
+        if predictions[key]["sha256"] != digest:
+            refuse(f"--open-e2: the prediction of seed {key[0]}, order seed {key[1]} does not "
+                   "have the sha256 the opening's manifest names")  # fmt: skip
+
+
+def preflight(reader, runs: Path, prompts_of, registered_sets: Mapping[str, str],
+              seeds: Sequence[int], predictor: str,
+              predictions: Mapping[tuple[int, int], Mapping[str, Any]]) -> int:  # fmt: skip
+    """Before any outcome or label of an order run is read: each run the launcher journals name
+    (``study5_analysis_cli.completed``) is checked by its config.yaml and meta.json alone (its
+    run id, seed, rate, frozen Adam, order seed and role ``control``), its prompt set by the
+    registered identity (its sha256 and the prompts the run recorded), and with ``q`` the
+    prediction bound to it (``binding_problem``). Each a refusal; a run not found or not
+    readable is left to the outcome reading, where it is technically unresolved. The runs
+    checked."""
+    cli = ext._cli()
+    checked = 0
+    for seed in seeds:
+        campaign = campaign_of(runs, seed)
+        if campaign is None:
+            continue
+        for order, offset in ORDERS:
+            for name, eta in ext.RATES:
+                run_dir = cli.completed(reader, runs, cell_of(campaign, seed, order, eta), name)
+                if isinstance(run_dir, str):
+                    continue
+                what = f"seed {seed} {order} {name} ({run_dir.name})"
+                try:
+                    meta_data = reader.bytes(run_dir / "meta.json")
+                    meta = json.loads(meta_data)
+                    cfg = OmegaConf.create(reader.bytes(run_dir / "config.yaml").decode())
+                    found = (meta.get("run_id"), cfg.get("seed"),
+                             OmegaConf.select(cfg, "optimizer.lr"),
+                             OmegaConf.select(cfg, "optimizer.name"),
+                             OmegaConf.select(cfg, "train.order_seed"),
+                             OmegaConf.select(cfg, "study5.role"))  # fmt: skip
+                except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError,
+                        OmegaConfBaseException):  # fmt: skip
+                    continue  # the outcome reading names it: technically unresolved
+                lr = found[2]
+                if (found[0] != run_dir.name or found[1] != seed or found[3] != OPTIMIZER
+                        or not (sa._is_number(lr) and math.isclose(lr, eta, rel_tol=1e-9))
+                        or found[4] != seed + offset or found[5] != "control"):  # fmt: skip
+                    refuse(
+                        f"{what}: its config or meta.json is not of the cell (run id, seed, "
+                        f"rate, {OPTIMIZER}, order seed {seed + offset}, role control)"
+                    )
+                prediction = predictions.get((seed, seed + offset))
+                if predictor == Q and prediction is not None:
+                    why = binding_problem(prediction, meta.get("inputs") or {})
+                    if why:
+                        refuse(f"{what}: the prediction is not of the run ({why})")
+                try:
+                    prompts = prompts_of(cfg)
+                    set_name = str(cfg.eval.harmful.prompt_set)
+                    ids = cli.prompt_ids(cfg, prompts)
+                except (OSError, ValueError, KeyError, TypeError, AttributeError,
+                        OmegaConfBaseException):  # fmt: skip
+                    continue  # the label reading names it: technically unresolved
+                if registered_sets.get(set_name) != reader.prompt_sets.get(set_name):
+                    refuse(f"{what}: its prompt set {set_name} is not the one the registered "
+                           "analysis read")  # fmt: skip
+                try:
+                    cli.study2_labels._check_recorded_prompts(run_dir, cfg, ids, meta_data)
+                except ValueError:
+                    refuse(f"{what}: the prompts it recorded are not the registered set")
+                checked += 1
+    return checked
+
+
 # ------------------------------------------------------------------ per seed
 
 
-def eta_l_share(found: Mapping[str, Any], counts: Mapping[str, Any]) -> sa.Value | dict:
-    """The η_l run's harm share at its endpoint (``harmful``, a missing label not harmful, and
-    ``harmful_high``), or why it has none."""
+def outcome_state(entry: Mapping[str, Any]) -> tuple[str, str | None]:
+    """An order's h at K*: ``ok``; ``excluded``, established non-support at K* by the registered
+    rule (support ``unsupported``); or ``unresolved``, a technical gap (a run, its end or its
+    labels missing, a record unreadable: support ``open``, ``unresolved`` or none, or supported
+    without labels)."""
+    if sa._is_number(entry.get("h")):
+        return OK, None
+    why = f"{entry['order']}: {entry['reason']}"
+    state = (entry.get("support") or {}).get("state")
+    return (EXCLUDED, why) if state == "unsupported" else (UNRESOLVED, why)
+
+
+def ln_k_state(entry: Mapping[str, Any], found: Mapping[str, Any]) -> tuple[str, Any]:
+    """An order's ln K_harmful at K*: its value; ``excluded`` when its order is not supported at
+    K* or an endpoint's K_harmful is recorded but not positive and finite; ``unresolved`` when
+    the support is a technical gap or a K_harmful is not recorded."""
+    value = entry["ln_K_harmful_at_kstar"]
+    if sa._is_number(value):
+        return OK, value
+    why = f"{entry['order']}: ln K_harmful at K*: {value['missing']}"
+    support = entry.get("support") or {}
+    if support.get("state") == "unsupported":
+        return EXCLUDED, why
+    if support.get("state") != "supported":
+        return UNRESOLVED, why
+    rows = {run["run_id"]: run["row"] or {} for run in found.values() if isinstance(run, Mapping)}
+    ks = [rows.get(support.get(end), {}).get("K_harmful") for end in ("lo", "hi")]
+    recorded = all(isinstance(k, int | float) and not isinstance(k, bool) for k in ks)
+    return (EXCLUDED, why) if recorded else (UNRESOLVED, why)
+
+
+def share_state(found: Mapping[str, Any], counts: Mapping[str, Any]) -> tuple[str, Any]:
+    """An order's η_l harm share (``harmful``, ``harmful_high``, missing labels): ``excluded``
+    when its η_l run stopped by an instability (the registered failed endpoint: no step-25
+    responses); ``unresolved`` when the run or its labels are missing or unreadable."""
     run = found.get("eta_l")
     if not isinstance(run, Mapping):
-        return str(run)
+        return UNRESOLVED, str(run) if run else "no eta_l run"
+    if run.get("stop") in INSTABILITY:
+        return EXCLUDED, f"its eta_l run stopped ({run['stop']})"
     got = counts.get(run["run_id"], "no labels")
     if not isinstance(got, Mapping):
-        return str(got)
+        return UNRESOLVED, str(got)
     if got["n"] != DENOMINATOR:
-        return f"n = {got['n']}, not {DENOMINATOR}"
-    return {"harmful": got["harmful"] / DENOMINATOR,
-            "harmful_high": (got["harmful"] + got["missing"]) / DENOMINATOR,
-            "missing_labels": got["missing"]}  # fmt: skip
+        return UNRESOLVED, f"n = {got['n']}, not {DENOMINATOR}"
+    return OK, {"harmful": got["harmful"] / DENOMINATOR,
+                "harmful_high": (got["harmful"] + got["missing"]) / DENOMINATOR,
+                "missing_labels": got["missing"]}  # fmt: skip
+
+
+def joined(states: Sequence[tuple[str, Any]]) -> tuple[str, list[str]]:
+    """A seed's state over its parts: ``excluded`` when any part is (established whatever the
+    rest), else ``unresolved`` when any part is, else ``ok``; the reasons."""
+    for kind in (EXCLUDED, UNRESOLVED):
+        why = [str(found) for state, found in states if state == kind]
+        if why:
+            return kind, why
+    return OK, []
 
 
 def seed_part(reader, runs: Path, labels, theta0: Mapping[str, float], seed: int,
               predictor: str, predictions: Mapping[tuple[int, int], Mapping[str, Any]]
               ) -> dict[str, Any]:  # fmt: skip
     """One seed: its two new orders (``study5_ext1.order_parts``), the predicted sign, the
-    primary difference h₁ − h₂ and the secondary one, or why each is missing."""
+    primary difference h₁ − h₂ and the secondary one, each ``ok``, ``excluded`` or
+    ``unresolved`` with its reasons."""
     campaign = campaign_of(runs, seed)
-    orders: dict[str, Any] = {}
+    orders, states = {}, {}
     for order, offset in ORDERS:
         if campaign is None:
             why = "not one launcher journal of the seed's orders"
@@ -390,56 +601,76 @@ def seed_part(reader, runs: Path, labels, theta0: Mapping[str, float], seed: int
             entry, found, counts = ext.order_parts(reader, runs, campaign, labels, theta0, seed,
                                                    order, offset, "the order runs")  # fmt: skip
         prediction = predictions.get((seed, seed + offset))
-        if prediction is not None and predictor == Q:
-            for run in found.values():
-                if isinstance(run, Mapping) and (why := binding_problem(prediction, run)):
-                    refuse(f"seed {seed} {order}: the prediction is not of run {run['run_id']} "
-                           f"({why})")  # fmt: skip
-        share = eta_l_share(found, counts)
+        if predictor == Q:
+            guess = ((EXCLUDED, f"{order}: delta_lin diverged")
+                     if prediction["status"] == "diverged" else (OK, prediction["q"]))  # fmt: skip
+        else:
+            guess = ln_k_state(entry, found)
+        share = share_state(found, counts)
+        if share[0] != OK:
+            share = (share[0], f"{order}: {share[1]}")
+        states[order] = {"outcome": outcome_state(entry), "predictor": guess, "share": share}
         kept = None if prediction is None else {k: prediction[k] for k in PREDICTION_KEYS}
         orders[order] = {**entry, "prediction": kept,
-                         "eta_l_share": share if isinstance(share, Mapping)
-                         else sa._json_value(share)}  # fmt: skip
-    one, two = (orders[name] for name, _ in ORDERS)
+                         "outcome_state": states[order]["outcome"][0],
+                         "eta_l_share": share[1] if share[0] == OK else {"missing": share[1]},
+                         "eta_l_share_state": share[0]}  # fmt: skip
+    one, two = (states[name] for name, _ in ORDERS)
     out: dict[str, Any] = {"seed": seed, "campaign": campaign, "orders": orders}
-    # the predicted sign of h₁ − h₂
-    if predictor == Q:
-        values = [(o["prediction"] or {}).get("q") for o in (one, two)]
-        why = [f"{o['order']}: delta_lin diverged" for o in (one, two)
-               if (o["prediction"] or {}).get("status") == "diverged"]  # fmt: skip
-        predicted = None if why else sign(values[1] - values[0])
+    state, why = joined([one["predictor"], two["predictor"]])
+    if state == OK:
+        values = [one["predictor"][1], two["predictor"][1]]
+        predicted = sign(values[1] - values[0]) if predictor == Q else sign(values[0] - values[1])
+        out["predicted"] = {"state": OK, "values": values, "sign": predicted}
     else:
-        values = [o["ln_K_harmful_at_kstar"] for o in (one, two)]
-        why = [f"{o['order']}: ln K_harmful at K*: {v['missing']}" for o, v in zip(
-            (one, two), values, strict=True) if not sa._is_number(v)]  # fmt: skip
-        predicted = None if why else sign(values[0] - values[1])
-    out["predicted"] = ({"values": values, "sign": predicted} if predicted is not None
-                        else {"missing": "; ".join(why)})  # fmt: skip
-    # the outcomes: h at K* (primary), the η_l harm share (secondary)
-    absent = [f"{o['order']}: {o['reason']}" for o in (one, two) if not sa._is_number(o["h"])]
-    out["primary"] = ({"difference": one["h"] - two["h"]} if not absent
-                      else {"missing": "; ".join(absent)})  # fmt: skip
-    shares = [o["eta_l_share"] for o in (one, two)]
-    lacking = [f"{o['order']}: {s['missing']}" for o, s in zip((one, two), shares, strict=True)
-               if "missing" in s]  # fmt: skip
-    out["secondary"] = ({"difference": shares[0]["harmful"] - shares[1]["harmful"],
-                         "difference_high": shares[0]["harmful_high"] - shares[1]["harmful_high"]}
-                        if not lacking else {"missing": "; ".join(lacking)})  # fmt: skip
+        out["predicted"] = {"state": state, "reasons": why}
+    state, why = joined([one["outcome"], two["outcome"]])
+    h = [orders[name]["h"] for name, _ in ORDERS]
+    out["primary"] = ({"state": OK, "difference": h[0] - h[1]} if state == OK
+                      else {"state": state, "reasons": why})  # fmt: skip
+    state, why = joined([one["share"], two["share"]])
+    if state == OK:
+        a, b = one["share"][1], two["share"][1]
+        out["secondary"] = {"state": OK, "difference": a["harmful"] - b["harmful"],
+                            "difference_high": a["harmful_high"] - b["harmful_high"]}  # fmt: skip
+    else:
+        out["secondary"] = {"state": state, "reasons": why}
     return out
 
 
 def outcome_test(rows: Sequence[Mapping[str, Any]], part: str) -> dict[str, Any]:
-    """The statistic on one outcome (``primary`` or ``secondary``) over the seeds that have it
-    and a predicted sign; every other seed listed."""
-    predicted, difference, left_out = {}, {}, []
+    """The statistic on one outcome (``primary`` or ``secondary``). A seed is excluded and listed
+    when its predictor or its outcome is (module docstring, "Exclusions and gaps"); while any
+    tested seed is technically unresolved the verdict is withheld: no p, T or significance,
+    the reasons named, the numbers over the resolved seeds under ``descriptive_partial``
+    alone."""
+    predicted, difference, excluded, unresolved = {}, {}, [], []
     for row in rows:
-        why = [x["missing"] for x in (row["predicted"], row[part]) if "missing" in x]
-        if why:
-            left_out.append({"seed": row["seed"], "reason": "; ".join(why)})
-            continue
-        predicted[row["seed"]] = row["predicted"]["sign"]
-        difference[row["seed"]] = row[part]["difference"]
-    return {**sign_test(predicted, difference), "left_out": left_out}
+        state, why = joined(
+            [
+                (row["predicted"]["state"], "; ".join(row["predicted"].get("reasons", []))),
+                (row[part]["state"], "; ".join(row[part].get("reasons", []))),
+            ]
+        )
+        if state == EXCLUDED:
+            excluded.append({"seed": row["seed"], "reason": "; ".join(why)})
+        elif state == UNRESOLVED:
+            unresolved.append({"seed": row["seed"], "reason": "; ".join(why)})
+        else:
+            predicted[row["seed"]] = row["predicted"]["sign"]
+            difference[row["seed"]] = row[part]["difference"]
+    found = sign_test(predicted, difference)
+    if not unresolved:
+        return {"status": "tested", **found, "excluded": excluded, "withheld": []}
+    partial = {"label": "descriptive only: no p-value and no reading while a tested seed is "
+                        "technically unresolved",
+               "seeds": found["seeds"], "n": found["n"], "T": found["T"],
+               "ties": found["ties"], "S": found["S"]["value"]}  # fmt: skip
+    return {"status": "withheld", "withheld": unresolved, "excluded": excluded,
+            "seeds": None, "n": None, "T": None, "ties": found["ties"], "A": found["A"],
+            "p_value": None, "binomial_count": None, "enumerated_count": None,
+            "alpha": ALPHA, "significant": None, "S": None,
+            "descriptive_partial": partial}  # fmt: skip
 
 
 # ------------------------------------------------------------------ the record
@@ -452,8 +683,15 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     registered, registered_file = ext.registered_record(args.registered, text)
     if args.open_e2 is None:
         refuse("the test reads E2's outcomes: --open-e2 OPENING_RECORD is required")
-    opening = ext.opening_record(args.open_e2)
+    opening, found = ext.read_opening(args.open_e2)
+    bound = opening_inputs(found)
     criterion = criterion_of(args.criterion, args.criterion_key)
+    if criterion["sha256"] != bound["criterion_sha256"]:
+        refuse("--open-e2: the criterion record given is not the one the opening names "
+               "(criterion_sha256)")  # fmt: skip
+    if criterion["unresolved_floors"] != bound["pair_floors"]:
+        refuse(f"the criterion's part 3 counts {criterion['unresolved_floors']!r} floors, not the "
+               f"opening's {bound['pair_floors']}")  # fmt: skip
     predictor = criterion["primary_predictor"]
     top_up = list(args.seeds or [])
     other = sorted({s for s in top_up if s not in TOP_UP} | {s for s in top_up
@@ -461,13 +699,19 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     if other:
         refuse(f"--seeds {other}: top-up seeds are 50000-50005 and 50016-50039, each once")
     seeds = sorted({*SEEDS, *top_up})
+    if seeds != bound["seeds"]:
+        refuse(f"--open-e2: the tested seeds ({len(seeds)}) are not the opening's "
+               f"({len(bound['seeds'])}): {sorted(set(seeds) ^ set(bound['seeds']))}")  # fmt: skip
     predictions = predictions_of(args.predictions or [])
+    checked_manifest(predictions, bound["predictions"])
     if predictor == Q:
         checked_predictions(predictions, seeds)
     theta0 = theta0_of(registered)
     runs = Path(args.pod3_runs)
     reader = cli.Reader({"pod3": runs})
     prompts_of = cli.prompt_sets(reader)
+    checked = preflight(reader, runs, prompts_of, registered.get("prompt_sets") or {}, seeds,
+                        predictor, predictions)  # fmt: skip
     labels = cli.Labels(reader, prompts_of)
     rows = [seed_part(reader, runs, labels, theta0, s, predictor, predictions) for s in seeds]
     sets = registered.get("prompt_sets") or {}
@@ -479,7 +723,9 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     return sa.finite_tree({
         "kind": KIND, "version": VERSION,
         "registration": {"path": ext.REGISTRATION, "sha256": sha256(text.encode("utf-8"))},
-        "code": code, "registered_analysis": registered_file, "opening": opening,
+        "code": code, "registered_analysis": registered_file,
+        "opening": {**opening, **{k: v for k, v in bound.items() if k != "predictions"},
+                    "predictions": len(bound["predictions"])},
         "criterion": criterion,
         "predictor": {"name": predictor, "reading": READINGS[predictor],
                       "predicted_sign": "sign(q2 - q1)" if predictor == Q
@@ -488,6 +734,8 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         "seeds": {"registered": list(SEEDS), "top_up": sorted(top_up), "tested": seeds,
                   "top_up_note": TOP_UP_NOTE if top_up else None},
         "theta0": {**theta0, "source": "the registered analysis's line scans, point a = 0"},
+        "preflight": {"runs_checked": checked,
+                      "read": "config.yaml and meta.json of each run, before any outcome"},
         "predictions": {"given": len(predictions), "used": len(used),
                         "unused": len(predictions) - len(used),
                         "files": {f"{k[0]}-{k[1]}": {"file": v["file"], "sha256": v["sha256"]}
@@ -503,15 +751,21 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     })  # fmt: skip
 
 
+def _number(value: Any) -> str:
+    return "none" if value is None else f"{value:.6g}" if isinstance(value, float) else str(value)
+
+
 def report(result: Mapping[str, Any], digest: str) -> None:
     """Numbers, ids and the record's sha256 only."""
     print(f"predictor {result['predictor']['name']} seeds {len(result['seeds']['tested'])}")
     for part in ("primary", "secondary"):
         found = result[part]
-        print(f"{part} n {found['n']} T {found['T']} ties {len(found['ties'])} left_out "
-              f"{len(found['left_out'])} p {found['p_value']:.6g} significant "
-              f"{int(found['significant'])} S {found['S']['value']:.6g} S_p "
-              f"{found['S']['p_value']:.6g}")  # fmt: skip
+        s = found["S"] or {}
+        print(f"{part} {found['status']} n {_number(found['n'])} T {_number(found['T'])} ties "
+              f"{len(found['ties'])} excluded {len(found['excluded'])} withheld "
+              f"{len(found['withheld'])} p {_number(found['p_value'])} significant "
+              f"{_number(found['significant'])} S {_number(s.get('value'))} S_p "
+              f"{_number(s.get('p_value'))}")  # fmt: skip
     print(f"record sha256 {digest}")
 
 

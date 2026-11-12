@@ -1,9 +1,10 @@
 """Study 5's prospective test on E2's order repeats (``analysis.study5_e2_test``), on synthetic
 runs, predictions and records only: the binomial p against the enumerated sign patterns, the
 sign-flip p of S exact and sampled, the criterion and prediction records' checks; the CLI end to
-end with either predictor, its refusals before any E2 read (a spy on every open, stat and
-listing), the binding of a prediction to its runs, top-up seeds; numbers only on stdout, no text
-stored, never overwritten."""
+end with either predictor; scientific exclusions apart from technical gaps, which withhold the
+verdict (7 of 8 with two labels pending, 7 of 10 once they arrive); the opening's bindings and the
+refusals before any E2 read, the preflight's before any outcome or label (a spy on every open,
+stat and listing); top-up seeds; numbers only on stdout, no text stored, never overwritten."""
 
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 from fractions import Fraction
@@ -115,10 +117,13 @@ def inputs(seed: int, order_seed: int) -> dict:
 
 class World:
     """Pod 3's root of the order runs (the four of each seed in one launcher campaign, labeled),
-    pod 4's sealed predictions, the criterion, the opening and the registered record."""
+    pod 4's sealed predictions, the criterion, the registered record, and the opening written as
+    each call needs it (``argv``)."""
 
-    def __init__(self, tmp: Path, seeds=tuple(range(50006, 50016))) -> None:
+    def __init__(self, tmp: Path, seeds=tuple(range(50006, 50016)), plan=None,
+                 quirks: bool = True) -> None:  # fmt: skip
         self.tmp, self.pod3 = tmp, tmp / "pod3"
+        self.plan, self.quirks = plan or PLAN, quirks  # quirks: PLAN's tie and unsupported order
         self.sealed = tmp / "pod4" / "study5_records" / "pod4-x" / "sealed"
         self.identity = judge_identity(load_config("judge/wildguard"))
         self.e2_dirs: list[Path] = []
@@ -140,20 +145,17 @@ class World:
         dump(self.criterion, ext2_record(True))
         self.note = note_repo(tmp)
         self.opening = tmp / "opening.json"
-        note = self.note
-        dump(self.opening, {"kind": "study5-e2-opening", "commit": note["commit"],
-                            "note": note["path"], "note_sha256": note["sha256"]})  # fmt: skip
 
     def seed(self, seed: int) -> None:
-        c1, c2, q1, q2, kh1, kh2 = PLAN[seed]
+        c1, c2, q1, q2, kh1, kh2 = self.plan[seed]
         events = []
         for (order, offset), c, q, kh in zip(
             et.ORDERS, (c1, c2), (q1, q2), (kh1, kh2), strict=True
         ):
             k = K[order]
-            if seed == 50013:
+            if self.quirks and seed == 50013:
                 k = K["order1"]
-            if (seed, order) == (50015, "order2"):
+            if self.quirks and (seed, order) == (50015, "order2"):
                 k = (6.5, 7.0)
             for (name, lr), k_benign in zip(ETA.items(), k, strict=True):
                 run_id = f"r-{order}-{name}-s{seed}"
@@ -224,28 +226,54 @@ class World:
             "labels_sha256": sha((run_dir / "judge" / "wildguard.jsonl").read_bytes()),
             "completed_at": "2026-11-13T12:00:00+00:00"})  # fmt: skip
 
-    def argv(self, out: Path, *extra, opening: bool = True, predictions: bool = True) -> list:
+    def write_opening(self, top_up=(), given=(), edit=None) -> None:
+        """The opening as the dated note fixes it: the note, the criterion's sha256, the
+        manifest of the predictions ``given``, the tested seeds, 10 floors; ``edit`` applied."""
+        manifest = {}
+        for path in given:
+            for found in sorted(path.glob("*/record.json")) if path.is_dir() else [path]:
+                record = json.loads(found.read_text())
+                manifest[f"{record['seed']}-{record['order']['order_seed']}"] = sha(
+                    found.read_bytes())  # fmt: skip
+        value = {"kind": "study5-e2-opening", "commit": self.note["commit"],
+                 "note": self.note["path"], "note_sha256": self.note["sha256"],
+                 "criterion_sha256": sha(self.criterion.read_bytes()), "predictions": manifest,
+                 "seeds": sorted({*range(50006, 50016), *top_up}), "pair_floors": 10}  # fmt: skip
+        dump(self.opening, edit(value) if edit else value)
+
+    def argv(self, out: Path, *, opening: bool = True, write: bool = True,
+             predictions: bool = True, more=(), top_up=(), edit=None) -> list:  # fmt: skip
+        given = [*([self.sealed] if predictions else []), *more]
         argv = ["--criterion", self.criterion, "--pod3-runs", self.pod3, "--registered",
                 self.registered_path, "--out", out]  # fmt: skip
         if opening:
+            if write:
+                self.write_opening(top_up, given, edit)
             argv += ["--open-e2", self.opening]
-        if predictions:
-            argv += ["--predictions", self.sealed]
-        return [str(a) for a in (*argv, *extra)]
+        for path in given:
+            argv += ["--predictions", path]
+        if top_up:
+            argv += ["--seeds", *top_up]
+        return [str(a) for a in argv]
 
 
-@pytest.fixture
-def world(tmp_path, monkeypatch) -> World:
+def make_world(tmp_path: Path, monkeypatch, **kw) -> World:
     monkeypatch.setattr(cli, "harmful_prompts", lambda cfg: PROMPTS)
     monkeypatch.setattr(et, "own_code", lambda: dict(CODE))
-    found = World(tmp_path)
+    found = World(tmp_path, **kw)
     monkeypatch.setattr(ext, "CHECKOUT", found.note["repo"])  # its history holds the dated note
     monkeypatch.setattr(et, "registration_text",
                         lambda: f"{sha(found.registered_path.read_bytes())}\n")  # fmt: skip
     return found
 
 
-def ext2_record(passed: bool | None, predictor: str | None = "", status: str | None = None) -> dict:
+@pytest.fixture
+def world(tmp_path, monkeypatch) -> World:
+    return make_world(tmp_path, monkeypatch)
+
+
+def ext2_record(passed: bool | None, predictor: str | None = "", status: str | None = None,
+                floors: float | None = 10) -> dict:  # fmt: skip
     """The extension-2 analysis record as study5_ext2_cli writes it, its criterion as
     study5_ext2.criterion returns it (the fields read here, the parts' summaries beside)."""
     if predictor == "":
@@ -258,7 +286,7 @@ def ext2_record(passed: bool | None, predictor: str | None = "", status: str | N
         "criterion": {
             "q": "q_lin", "seeds": [50000, 50001], "diverged": [],
             "part1_rank": {"passed": passed}, "part2_scale": {"passed": passed},
-            "part3_pairs": {"passed": passed},
+            "part3_pairs": {"passed": passed, "unresolved_floors": floors, "needed": 5},
             "status": status, "withheld": [] if status == "decided" else ["s50003: no row"],
             "passed": passed, "primary_predictor": predictor,
         },
@@ -292,8 +320,16 @@ def spy(monkeypatch) -> list[str]:
 
 
 def e2_touched(world: World, touched: list[str]) -> list[str]:
+    """Anything of the order runs or their journals touched."""
     roots = {str(world.pod3 / "study5"), str(world.pod3 / "launch")}
     return sorted({p for p in touched if any(p == r or p.startswith(r + os.sep) for r in roots)})
+
+
+def outcome_touched(world: World, touched: list[str]) -> list[str]:
+    """The files of the order runs touched other than their config.yaml and meta.json."""
+    dirs = {str(d) for d in world.e2_dirs}
+    return sorted({p for p in touched if any(p.startswith(d + os.sep) for d in dirs)
+                   and Path(p).name not in ("config.yaml", "meta.json")})  # fmt: skip
 
 
 def p_binomial(n: int, t: int) -> float:
@@ -361,7 +397,7 @@ def test_the_criterion_is_read_from_the_extension_2_record(tmp_path) -> None:
         assert found == {"record": "ext2.json", "sha256": sha(path.read_bytes()),
                          "kind": "study5-extension-2-analysis", "key": "criterion",
                          "status": "decided", "passed": passed,
-                         "primary_predictor": predictor}  # fmt: skip
+                         "primary_predictor": predictor, "unresolved_floors": 10}  # fmt: skip
     dump(path, ext2_record(True)["criterion"])  # the criterion alone, read at the top level
     assert et.criterion_of(path, "")["primary_predictor"] == "q"
     refused = [
@@ -375,6 +411,7 @@ def test_the_criterion_is_read_from_the_extension_2_record(tmp_path) -> None:
         ({**ext2_record(True), "criterion": {**ext2_record(True)["criterion"], "passed": 1}},
          "passed is not a boolean"),
         ({"kind": "study5-extension-2-analysis"}, "no object at criterion"),
+        (ext2_record(True, floors=None), "unresolved_floors is not a number"),
     ]  # fmt: skip
     for value, why in refused:
         dump(path, value)
@@ -409,18 +446,18 @@ def test_the_test_with_q_end_to_end(world, capsys) -> None:
     assert SENTINEL not in printed and sha(data) in printed
     assert result["predictor"]["name"] == "q" and result["criterion"]["passed"] is True
     assert result["opening"] == {
-        **result["opening"],
-        "commit": world.note["commit"],
-        "note": world.note["path"],
-        "note_sha256": world.note["sha256"],
-    }
+        **result["opening"], "commit": world.note["commit"], "note": world.note["path"],
+        "note_sha256": world.note["sha256"], "criterion_sha256": sha(world.criterion.read_bytes()),
+        "seeds": list(range(50006, 50016)), "pair_floors": 10, "predictions": 20,
+    }  # fmt: skip
+    assert result["preflight"]["runs_checked"] == 40
     assert result["seeds"]["tested"] == list(range(50006, 50016))
     assert result["seeds"]["top_up_note"] is None
     assert result["predictions"] == {**result["predictions"], "given": 20, "used": 20}
     rows = {r["seed"]: r for r in result["per_seed"]}
     row = rows[50006]
     assert row["campaign"] == "study5-pod3-x-orders-s50006"
-    assert row["predicted"] == {"values": [0.1, 0.3], "sign": 1}
+    assert row["predicted"] == {"state": "ok", "values": [0.1, 0.3], "sign": 1}
     assert row["primary"]["difference"] == pytest.approx(20 / 521, abs=1e-15)
     order = row["orders"]["order1"]
     assert order["order_seed"] == 51006 and order["support"]["state"] == "supported"
@@ -430,13 +467,15 @@ def test_the_test_with_q_end_to_end(world, capsys) -> None:
     assert order["h"] == pytest.approx((1 - w) * 60 / 521 + w * 60 / 521, abs=1e-15)
     assert order["prediction"]["q"] == 0.1 and order["prediction"]["status"] == "complete"
     primary = result["primary"]
+    assert primary["status"] == "tested" and primary["withheld"] == []
     assert primary["seeds"] == list(range(50006, 50013)) and primary["ties"] == [50013]
     assert (primary["n"], primary["T"]) == (7, 5)
     assert primary["p_value"] == 29 / 128 and primary["significant"] is False
-    left = {e["seed"]: e["reason"] for e in primary["left_out"]}
-    assert set(left) == {50014, 50015}
-    assert left[50014] == "order2: delta_lin diverged"
-    assert left[50015].startswith("order2: unsupported: no bracket")
+    # excluded and listed: a declared divergence of δ_lin, an order not supported at K*
+    excluded = {e["seed"]: e["reason"] for e in primary["excluded"]}
+    assert set(excluded) == {50014, 50015}
+    assert excluded[50014] == "order2: delta_lin diverged"
+    assert excluded[50015].startswith("order2: unsupported: no bracket")
     d = [(PLAN[s][0] - PLAN[s][1]) / 521 for s in range(50006, 50013)]
     signs = [rows[s]["predicted"]["sign"] for s in range(50006, 50013)]
     s_value = sum(p * x for p, x in zip(signs, d, strict=True))
@@ -446,9 +485,10 @@ def test_the_test_with_q_end_to_end(world, capsys) -> None:
     secondary = result["secondary"]
     assert secondary["decides"] is False and "save no checkpoint" in secondary["outcome"]
     assert secondary["cohort"].startswith("paired, fixed before the opening")
+    assert secondary["status"] == "tested"
     assert (secondary["n"], secondary["T"]) == (8, 6) and secondary["p_value"] == 37 / 256
-    assert [e["seed"] for e in secondary["left_out"]] == [50014]
-    assert "predictor q seeds 10" in printed and "primary n 7 T 5" in printed
+    assert [e["seed"] for e in secondary["excluded"]] == [50014]
+    assert "predictor q seeds 10" in printed and "primary tested n 7 T 5" in printed
     # never overwritten
     code, why = call(world.argv(out))
     assert code == 1 and "never overwritten" in why and out.read_bytes() == data
@@ -461,15 +501,15 @@ def test_the_test_with_ln_k_harmful_needs_no_predictions(world, monkeypatch) -> 
     code, why = call(world.argv(out, predictions=False))
     monkeypatch.undo()
     assert code == 0, why
-    # the spy of the refusals is not blind: a run that proceeds reads the order runs
-    assert any(p.endswith("/judge/wildguard.jsonl") for p in e2_touched(world, touched))
+    # the spies of the refusals are not blind: a run that proceeds reads the order runs
+    assert any(p.endswith("/judge/wildguard.jsonl") for p in outcome_touched(world, touched))
     result = json.loads(out.read_text())
     assert result["predictor"]["name"] == "ln_K_harmful_at_K*"
     assert result["predictor"]["reading"].startswith("an association, not a prediction")
     primary = result["primary"]
     assert (primary["n"], primary["T"], primary["ties"]) == (8, 5, [50013])
-    assert primary["p_value"] == 93 / 256
-    assert [e["seed"] for e in primary["left_out"]] == [50015]
+    assert primary["p_value"] == 93 / 256 and primary["status"] == "tested"
+    assert [e["seed"] for e in primary["excluded"]] == [50015]
     row = {r["seed"]: r for r in result["per_seed"]}[50010]
     assert row["predicted"]["values"] == pytest.approx([math.log(9.0), math.log(10.0)])
     assert row["predicted"]["sign"] == -1 and row["orders"]["order1"]["prediction"] is None
@@ -478,16 +518,131 @@ def test_the_test_with_ln_k_harmful_needs_no_predictions(world, monkeypatch) -> 
 def test_a_top_up_seed_is_tested_beside_the_ten(world) -> None:
     world.seed(50000)
     out = world.tmp / "out.json"
-    code, why = call(world.argv(out, "--seeds", "50000"))
+    code, why = call(world.argv(out, top_up=(50000,)))
     assert code == 0, why
     result = json.loads(out.read_text())
     assert result["seeds"]["tested"] == [50000, *range(50006, 50016)]
     assert result["seeds"]["top_up"] == [50000] and "never observed" in result["seeds"][
         "top_up_note"]  # fmt: skip
     assert result["primary"]["n"] == 8 and 50000 in result["primary"]["seeds"]
-    for seeds, why in ((["50006"], "top-up seeds are"), (["50016", "50016"], "each once")):
-        code, found = call(world.argv(world.tmp / "other.json", "--seeds", *seeds))
+    for seeds, why in (((50006,), "top-up seeds are"), ((50016, 50016), "each once")):
+        code, found = call(world.argv(world.tmp / "other.json", top_up=seeds))
         assert code == 1 and why in found
+
+
+# ------------------------------------------------------------------ exclusions and gaps
+
+# seven agreements, one disagreement and two disagreements whose labels are pending
+PLAN_78 = {
+    **{s: (60, 40, 0.1, 0.3, 12.0, 10.0) for s in range(50006, 50013)},
+    **{s: (40, 60, 0.1, 0.3, 12.0, 10.0) for s in range(50013, 50016)},
+}
+PENDING = ("r-order1-eta_u-s50014", "r-order2-eta_l-s50015")
+
+
+def test_pending_labels_withhold_the_verdict_and_resolved_they_count(tmp_path, monkeypatch) -> None:
+    world = make_world(tmp_path, monkeypatch, plan=PLAN_78, quirks=False)
+    receipts = {run: world.pod3 / "study5" / run / "judge" / "wildguard.receipt.json"
+                for run in PENDING}  # fmt: skip
+    kept = {run: path.read_bytes() for run, path in receipts.items()}
+    for path in receipts.values():
+        path.unlink()
+    out = world.tmp / "pending.json"
+    code, why = call(world.argv(out))
+    assert code == 0, why
+    primary = json.loads(out.read_text())["primary"]
+    # 7 of 8 would read p = 9/256 < 0.05: withheld instead
+    assert primary["status"] == "withheld"
+    assert (primary["p_value"], primary["T"], primary["n"], primary["significant"]) == (
+        None, None, None, None)  # fmt: skip
+    withheld = {e["seed"]: e["reason"] for e in primary["withheld"]}
+    assert set(withheld) == {50014, 50015} and primary["excluded"] == []
+    assert "wildguard.receipt.json is missing" in withheld[50014]
+    partial = primary["descriptive_partial"]
+    assert (partial["n"], partial["T"]) == (8, 7) and "p_value" not in partial
+    assert partial["label"].startswith("descriptive only")
+    secondary = json.loads(out.read_text())["secondary"]
+    assert secondary["status"] == "withheld" and [e["seed"] for e in secondary["withheld"]] == [
+        50015]  # fmt: skip
+    # the labels arrive, both disagreements: 7 of 10, p = 176/1024
+    for run, path in receipts.items():
+        path.write_bytes(kept[run])
+    out = world.tmp / "resolved.json"
+    code, why = call(world.argv(out))
+    assert code == 0, why
+    primary = json.loads(out.read_text())["primary"]
+    assert primary["status"] == "tested" and (primary["n"], primary["T"]) == (10, 7)
+    assert primary["p_value"] == p_binomial(10, 7) == 176 / 1024 and not primary["significant"]
+
+
+@pytest.mark.parametrize(
+    "gap, why",
+    [
+        ("journal", "not one launcher journal of the seed's orders"),
+        ("end", "no completed run in study5-pod3-x-orders-s50012 (no end)"),
+        ("run", "the run directory r-order2-eta_u-s50012 is missing"),
+    ],
+)
+def test_a_missing_journal_run_or_end_is_a_gap_not_an_exclusion(world, gap, why) -> None:
+    journal = world.pod3 / "launch" / "study5-pod3-x-orders-s50012.jsonl"
+    if gap == "journal":
+        journal.unlink()
+    elif gap == "end":
+        events = [json.loads(x) for x in journal.read_text().splitlines()]
+        lines(
+            journal,
+            [
+                e
+                for e in events
+                if not (e["event"] == "end" and e["run_id"] == "r-order1-eta_l-s50012")
+            ],
+        )
+    else:
+        shutil.rmtree(world.pod3 / "study5" / "r-order2-eta_u-s50012")
+    out = world.tmp / "out.json"
+    code, found = call(world.argv(out))
+    assert code == 0, found
+    result = json.loads(out.read_text())
+    primary = result["primary"]
+    assert primary["status"] == "withheld" and primary["p_value"] is None
+    withheld = {e["seed"]: e["reason"] for e in primary["withheld"]}
+    assert set(withheld) == {50012} and why in withheld[50012]
+    assert {e["seed"] for e in primary["excluded"]} == {50014, 50015}
+
+
+def test_an_instability_stop_is_an_exclusion_in_both_outcomes(world) -> None:
+    run = world.pod3 / "study5" / "r-order1-eta_l-s50007"
+    dump(run / "terminal.json", {"steps": 25, "stop": {"reason": "nonfinite_loss"},
+                                 "evaluations": [25]})  # fmt: skip
+    out = world.tmp / "out.json"
+    code, why = call(world.argv(out))
+    assert code == 0, why
+    result = json.loads(out.read_text())
+    for part in ("primary", "secondary"):
+        assert result[part]["status"] == "tested"
+        excluded = {e["seed"]: e["reason"] for e in result[part]["excluded"]}
+        assert 50007 in excluded
+    assert "failed endpoint" in {e["seed"]: e["reason"] for e in result["primary"]["excluded"]}[
+        50007]  # fmt: skip
+    assert "eta_l run stopped (nonfinite_loss)" in {
+        e["seed"]: e["reason"] for e in result["secondary"]["excluded"]}[50007]  # fmt: skip
+
+
+# ------------------------------------------------------------------ refusals before any E2 read
+
+
+def manifest_edit(change: str):
+    def edit(value: dict) -> dict:
+        manifest = dict(value["predictions"])
+        if change == "sha":
+            manifest["50007-51007"] = "0" * 64
+        elif change == "names-other":
+            manifest["50006-59999"] = "0" * 64
+        elif change == "lacks":
+            del manifest["50006-51006"]
+        return {**value, "predictions": manifest}
+
+    return edit
 
 
 @pytest.mark.parametrize(
@@ -499,6 +654,14 @@ def test_a_top_up_seed_is_tested_beside_the_ten(world) -> None:
         ("note-commit", "is not in this checkout's history"),
         ("bad-criterion", "is neither 'q' nor"),
         ("withheld", "the δ_lin criterion is withheld"),
+        ("criterion-sha", "is not the one the opening names (criterion_sha256)"),
+        ("no-criterion-sha", "holds no criterion_sha256"),
+        ("pair-floors", "the opening's pair_floors is 5, not 10"),
+        ("criterion-floors", "the criterion's part 3 counts 5 floors, not the opening's 10"),
+        ("seeds", "the tested seeds (10) are not the opening's (9): [50015]"),
+        ("manifest-sha", "seed 50007, order seed 51007 does not have the sha256"),
+        ("manifest-names-other", "names the prediction 50006-59999, which is not given"),
+        ("manifest-lacks", "seed 50006, order seed 51006 is given but not in the opening's"),
         ("no-prediction", "seed 50011 order2: no prediction"),
         ("no-q", "seed 50007 order1: its prediction is complete without a finite q"),
         ("twice", "two predictions of seed 50006, order seed 51006"),
@@ -507,68 +670,89 @@ def test_a_top_up_seed_is_tested_beside_the_ten(world) -> None:
     ],
 )
 def test_a_refusal_comes_before_any_e2_read(world, monkeypatch, change, why) -> None:
-    extra, opening, predictions = [], True, True
+    kw: dict = {}
     if change == "no-opening":
-        opening = False
+        kw = {"opening": False}
     elif change == "bad-opening":
         dump(world.opening, {"kind": "other", "note_sha256": "x"})
-    elif change in ("note-sha", "note-commit"):
-        key, value = ("note_sha256", "0" * 64) if change == "note-sha" else ("commit", "e" * 40)
-        dump(world.opening, {**json.loads(world.opening.read_text()), key: value})
+        kw = {"write": False}
+    elif change in ("note-sha", "note-commit", "criterion-sha", "no-criterion-sha",
+                    "pair-floors", "seeds"):  # fmt: skip
+        key, value = {"note-sha": ("note_sha256", "0" * 64), "note-commit": ("commit", "e" * 40),
+                      "criterion-sha": ("criterion_sha256", "1" * 64),
+                      "no-criterion-sha": ("criterion_sha256", None), "pair-floors": (
+                          "pair_floors", 5), "seeds": ("seeds", list(range(50006, 50015)))}[
+            change]  # fmt: skip
+        kw = {"edit": lambda found, key=key, value=value: {**found, key: value}}
     elif change == "bad-criterion":
         dump(world.criterion, ext2_record(True, "p_s"))
     elif change == "withheld":
         dump(world.criterion, ext2_record(None))
+    elif change == "criterion-floors":
+        dump(world.criterion, ext2_record(True, floors=5))
+    elif change.startswith("manifest-"):
+        kw = {"edit": manifest_edit(change.removeprefix("manifest-"))}
     elif change == "no-prediction":
         (world.sealed / "s50011-order2" / "record.json").unlink()
     elif change == "no-q":
         path = world.sealed / "s50007-order1" / "record.json"
         dump(path, {**json.loads(path.read_text()), "q_lin": None})
     elif change == "twice":
-        extra = ["--predictions", world.sealed / "s50006-order1" / "record.json"]
+        kw = {"more": [world.sealed / "s50006-order1" / "record.json"]}
     elif change == "other-kind":
         path = world.sealed / "s50008-order2" / "record.json"
         dump(path, {**json.loads(path.read_text()), "kind": "study5-grad-r"})
     else:
-        predictions = False
+        kw = {"predictions": False}
     out = world.tmp / "out.json"
+    argv = world.argv(out, **kw)
     touched = spy(monkeypatch)
-    code, found = call(world.argv(out, *extra, opening=opening, predictions=predictions))
+    code, found = call(argv)
     monkeypatch.undo()
     assert code == 1 and why in found and found.startswith("study5_e2_test: ")
     assert not out.exists() and e2_touched(world, touched) == []
 
 
-def test_a_prediction_not_of_its_runs_is_refused(world) -> None:
-    path = world.sealed / "s50009-order2" / "record.json"
-    record = json.loads(path.read_text())
-    dump(path, {**record, "order": {**record["order"], "permutation_sha256": "other"}})
-    out = world.tmp / "out.json"
-    code, why = call(world.argv(out))
-    assert code == 1 and not out.exists()
-    assert "seed 50009 order2: the prediction is not of run r-order2-eta_l-s50009" in why
-    assert "its order is not the run's" in why
+def test_the_manifest_may_name_a_prediction_by_its_path(world) -> None:
+    def by_path(value: dict) -> dict:
+        manifest = dict(value["predictions"])
+        manifest["s50006-order1/record.json"] = manifest.pop("50006-51006")
+        return {**value, "predictions": manifest}
 
-
-def test_an_unlabeled_run_leaves_its_seed_out_of_the_primary_only_where_needed(world) -> None:
-    (world.pod3 / "study5" / "r-order1-eta_u-s50008" / "judge" / "wildguard.receipt.json").unlink()
     out = world.tmp / "out.json"
-    code, why = call(world.argv(out))
+    code, why = call(world.argv(out, edit=by_path))
     assert code == 0, why
-    result = json.loads(out.read_text())
-    left = {e["seed"]: e["reason"] for e in result["primary"]["left_out"]}
-    assert "wildguard.receipt.json is missing" in left[50008]
-    # its η_l run is labeled: the secondary keeps the seed
-    assert 50008 in result["secondary"]["seeds"]
 
 
-def test_a_seed_without_its_journal_has_both_orders_missing_by_name(world) -> None:
-    (world.pod3 / "launch" / "study5-pod3-x-orders-s50012.jsonl").unlink()
+@pytest.mark.parametrize(
+    "change, why",
+    [
+        ("binding", "seed 50009 order2 eta_l (r-order2-eta_l-s50009): the prediction is not of "
+                    "the run (its order is not the run's)"),
+        ("identity", "seed 50010 order2 eta_u (r-order2-eta_u-s50010): its config or meta.json "
+                     "is not of the cell"),
+        ("prompt-set", "its prompt set harmful_evaluation is not the one the registered analysis "
+                       "read"),
+    ],
+)  # fmt: skip
+def test_the_preflight_refuses_before_any_outcome_or_label_is_read(world, monkeypatch, change,
+                                                                   why) -> None:  # fmt: skip
+    if change == "binding":
+        path = world.sealed / "s50009-order2" / "record.json"
+        record = json.loads(path.read_text())
+        dump(path, {**record, "order": {**record["order"], "permutation_sha256": "other"}})
+    elif change == "identity":
+        path = world.pod3 / "study5" / "r-order2-eta_u-s50010" / "config.yaml"
+        cfg = json.loads(path.read_text())
+        path.write_text(json.dumps({**cfg, "train": {"order_seed": 50010}}))
+    else:
+        record = json.loads(world.registered_path.read_text())
+        dump(world.registered_path, {**record, "prompt_sets": {SET: "0" * 64}})
     out = world.tmp / "out.json"
-    code, why = call(world.argv(out))
-    assert code == 0, why
-    result = json.loads(out.read_text())
-    left = {e["seed"]: e["reason"] for e in result["primary"]["left_out"]}
-    assert "not one launcher journal of the seed's orders" in left[50012]
-    row = {r["seed"]: r for r in result["per_seed"]}[50012]
-    assert row["campaign"] is None and row["orders"]["order2"]["h"] is None
+    argv = world.argv(out)
+    touched = spy(monkeypatch)
+    code, found = call(argv)
+    monkeypatch.undo()
+    assert code == 1 and why in found and not out.exists()
+    assert outcome_touched(world, touched) == []  # only configs and meta.json were read
+    assert any(p.endswith("/meta.json") for p in e2_touched(world, touched))

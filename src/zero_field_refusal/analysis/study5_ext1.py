@@ -326,7 +326,12 @@ def opening_record(path: Path) -> dict[str, Any]:
     """The decision that opens E2: a JSON object of kind ``OPENING_KIND`` naming the dated note
     (``note``, its path in the repository), the commit that holds it (``commit``, a full sha) and
     its sha256 (``note_sha256``), the note checked in this checkout's history (``note_problem``);
-    refused otherwise."""
+    refused otherwise. What the record keeps of it."""
+    return read_opening(path)[0]
+
+
+def read_opening(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``opening_record`` and the opening record itself, for the fields a test of E2 binds."""
     path = Path(path)
     if not path.is_file():
         refuse("--open-e2: the opening record does not exist")
@@ -343,7 +348,7 @@ def opening_record(path: Path) -> dict[str, Any]:
     if why is not None:
         refuse(f"--open-e2: {why}")
     return {"record": path.name, "sha256": sha256(data), "commit": found["commit"],
-            "note": found["note"], "note_sha256": found["note_sha256"]}  # fmt: skip
+            "note": found["note"], "note_sha256": found["note_sha256"]}, found  # fmt: skip
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
