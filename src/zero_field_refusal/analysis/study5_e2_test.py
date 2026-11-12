@@ -64,9 +64,13 @@ cancels.
 
 **Inputs.**
 - --open-e2: the opening record, required, checked before anything of E2 is read
-  (``study5_ext1.read_opening``: the dated note at its commit, an ancestor of this checkout's
-  HEAD, with the sha256 the record names, and unchanged at HEAD). It also binds the test's inputs
-  (``opening_inputs``), and any difference is refused before any E2 read:
+  (``study5_ext1.read_opening``). It is ``{"kind": "study5-e2-opening", "commit", "note",
+  "note_sha256", "inputs", "inputs_sha256"}``: the dated note and the test's inputs file, both
+  paths in the repository. Each is checked at that commit, which must be an ancestor of this
+  checkout's HEAD or HEAD itself: its text there has the sha256 the opening names, and HEAD holds
+  the same bytes. The inputs are read from that committed file alone (``opening_inputs``); an
+  opening that names no inputs file, or carries the inputs inline, is refused. Any difference
+  from them is refused before any E2 read:
   - ``criterion_sha256``: the sha256 of the file given as --criterion;
   - ``pair_floors``: 10, equal to the criterion's ``part3_pairs.unresolved_floors``;
   - ``seeds``: exactly the tested seeds (the ten, with any top-up);
@@ -406,32 +410,34 @@ def cell_of(campaign: str, seed: int, order: str, eta: float) -> tuple[str, str]
 # ------------------------------------------------------------------ the bindings
 
 
-def opening_inputs(found: Mapping[str, Any]) -> dict[str, Any]:
-    """The inputs the opening record binds (module docstring, "Inputs"): ``criterion_sha256``,
-    the ``predictions`` manifest, the tested ``seeds`` and ``pair_floors`` (10); refused when one
-    is absent or of another form."""
+def opening_inputs(found: Any) -> dict[str, Any]:
+    """The inputs of the committed inputs file the opening names (module docstring, "Inputs"):
+    ``criterion_sha256``, the ``predictions`` manifest, the tested ``seeds`` and ``pair_floors``
+    (10); refused when one is absent or of another form."""
+    if not isinstance(found, Mapping):
+        refuse("--open-e2: the inputs file is not a JSON object")
     criterion, manifest = found.get("criterion_sha256"), found.get("predictions")
     seeds, floors = found.get("seeds"), found.get("pair_floors")
     if not isinstance(criterion, str) or not SHA256.fullmatch(criterion):
-        refuse("--open-e2: the opening record holds no criterion_sha256")
+        refuse("--open-e2: the inputs file holds no criterion_sha256")
     if not isinstance(manifest, dict) or not all(
             isinstance(k, str) and isinstance(v, str) for k, v in manifest.items()):  # fmt: skip
-        refuse("--open-e2: the opening record holds no predictions manifest {name: sha256}")
+        refuse("--open-e2: the inputs file holds no predictions manifest {name: sha256}")
     if (
         not isinstance(seeds, list)
         or not all(isinstance(s, int) and not isinstance(s, bool) for s in seeds)
         or len(set(seeds)) != len(seeds)
     ):
-        refuse("--open-e2: the opening record holds no list of distinct tested seeds")
+        refuse("--open-e2: the inputs file holds no list of distinct tested seeds")
     if not sa._is_number(floors) or floors != PAIR_FLOORS:
-        refuse(f"--open-e2: the opening's pair_floors is {floors!r}, not {PAIR_FLOORS}")
+        refuse(f"--open-e2: the inputs file's pair_floors is {floors!r}, not {PAIR_FLOORS}")
     return {"criterion_sha256": criterion, "predictions": dict(manifest),
             "seeds": sorted(seeds), "pair_floors": floors}  # fmt: skip
 
 
 def checked_manifest(predictions: Mapping[tuple[int, int], Mapping[str, Any]],
                      manifest: Mapping[str, str]) -> None:  # fmt: skip
-    """The predictions given are exactly the opening's manifest, each with its sha256: a key is
+    """The predictions given are exactly the inputs file's manifest, each with its sha256: a key is
     ``<seed>-<order seed>`` or a record's path as given (``<folder>/record.json``); refused
     otherwise."""
     by_file = {found["file"]: key for key, found in predictions.items()}
@@ -447,11 +453,11 @@ def checked_manifest(predictions: Mapping[tuple[int, int], Mapping[str, Any]],
     extra = sorted(set(predictions) - set(named))
     if extra:
         refuse(f"--open-e2: the prediction of seed {extra[0][0]}, order seed {extra[0][1]} is "
-               "given but not in the opening's manifest")  # fmt: skip
+               "given but not in the inputs file's manifest")  # fmt: skip
     for key, digest in sorted(named.items()):
         if predictions[key]["sha256"] != digest:
             refuse(f"--open-e2: the prediction of seed {key[0]}, order seed {key[1]} does not "
-                   "have the sha256 the opening's manifest names")  # fmt: skip
+                   "have the sha256 the inputs file's manifest names")  # fmt: skip
 
 
 def preflight(reader, runs: Path, prompts_of, registered_sets: Mapping[str, str],
@@ -683,15 +689,18 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     registered, registered_file = ext.registered_record(args.registered, text)
     if args.open_e2 is None:
         refuse("the test reads E2's outcomes: --open-e2 OPENING_RECORD is required")
-    opening, found = ext.read_opening(args.open_e2)
-    bound = opening_inputs(found)
+    opening, inputs = ext.read_opening(args.open_e2)
+    if inputs is None:
+        refuse("--open-e2: the opening record names no committed inputs file (inputs, "
+               "inputs_sha256)")  # fmt: skip
+    bound = opening_inputs(inputs)
     criterion = criterion_of(args.criterion, args.criterion_key)
     if criterion["sha256"] != bound["criterion_sha256"]:
-        refuse("--open-e2: the criterion record given is not the one the opening names "
+        refuse("--open-e2: the criterion record given is not the one the inputs file names "
                "(criterion_sha256)")  # fmt: skip
     if criterion["unresolved_floors"] != bound["pair_floors"]:
         refuse(f"the criterion's part 3 counts {criterion['unresolved_floors']!r} floors, not the "
-               f"opening's {bound['pair_floors']}")  # fmt: skip
+               f"inputs file's {bound['pair_floors']}")  # fmt: skip
     predictor = criterion["primary_predictor"]
     top_up = list(args.seeds or [])
     other = sorted({s for s in top_up if s not in TOP_UP} | {s for s in top_up
@@ -700,7 +709,7 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         refuse(f"--seeds {other}: top-up seeds are 50000-50005 and 50016-50039, each once")
     seeds = sorted({*SEEDS, *top_up})
     if seeds != bound["seeds"]:
-        refuse(f"--open-e2: the tested seeds ({len(seeds)}) are not the opening's "
+        refuse(f"--open-e2: the tested seeds ({len(seeds)}) are not the inputs file's "
                f"({len(bound['seeds'])}): {sorted(set(seeds) ^ set(bound['seeds']))}")  # fmt: skip
     predictions = predictions_of(args.predictions or [])
     checked_manifest(predictions, bound["predictions"])

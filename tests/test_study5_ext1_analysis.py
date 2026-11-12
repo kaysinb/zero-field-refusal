@@ -1120,6 +1120,34 @@ def test_an_invalid_opening_record_is_refused_before_any_e2_read(
     assert not out.exists() and e2_touched(world, touched) == []
 
 
+def test_an_opening_naming_the_inputs_file_has_it_verified_as_the_note(world) -> None:
+    """This analysis needs the note alone; an inputs file the opening names is verified in the
+    same way at the same commit and recorded, and inputs inline in the opening are refused."""
+    repo, path = world.note["repo"], "docs/study5-e2-inputs.json"
+    (repo / path).write_text(json.dumps({"seeds": list(range(50006, 50016))}) + "\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "inputs")
+    good = opening_of(world.note, commit=git(repo, "rev-parse", "HEAD"), inputs=path,
+                      inputs_sha256=sha((repo / path).read_bytes()))  # fmt: skip
+    out = world.tmp / "good.json"
+    code, why = call(world.argv(out, "--open-e2", world.opening(good)))
+    assert code == 0, why
+    opening = json.loads(out.read_text())["e2"]["opening"]
+    assert (opening["inputs"], opening["inputs_sha256"]) == (path, good["inputs_sha256"])
+    for changes, why in (
+        ({"inputs_sha256": "0" * 64}, "does not have the sha256 inputs_sha256 names"),
+        ({"inputs": "docs/none.json"}, "its inputs file docs/none.json is not in its commit"),
+        ({"inputs_sha256": None}, "holds no inputs_sha256 string"),
+        ({"pair_floors": 10}, "carries inputs inline (pair_floors)"),
+    ):
+        out = world.tmp / "refused.json"
+        with pytest.MonkeyPatch.context() as patch:
+            touched = spy(patch)
+            code, found = call(world.argv(out, "--open-e2", world.opening({**good, **changes})))
+        assert code == 1 and why in found and not out.exists()
+        assert e2_touched(world, touched) == []
+
+
 # ------------------------------------------------------------------ bindings and refusals
 
 

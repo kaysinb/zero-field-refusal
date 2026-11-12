@@ -3315,13 +3315,17 @@ E2 stays sealed (`"e2": {"sealed": true}`) unless `--open-e2` names an opening r
 
 ```json
 {"kind": "study5-e2-opening", "commit": "<full sha>", "note": "<path of the dated note>",
- "note_sha256": "…"}
+ "note_sha256": "…", "inputs": "docs/study5-e2-inputs.json", "inputs_sha256": "…"}
 ```
 
 It is checked before anything of E2 is read:
 - the commit is an ancestor of the checkout's HEAD, or HEAD itself;
 - the note's text at that commit has that sha256;
 - HEAD holds the same text.
+
+This analysis needs only the note. If the opening also names the E2 test's inputs file
+(`inputs`, `inputs_sha256`), that file is checked the same way at the same commit. Inputs written
+directly in the opening record are refused.
 
 Without it, no order run and no launcher journal of pod 3 is read. The analysis writes one record,
 never over an existing file, and prints numbers only.
@@ -3341,12 +3345,18 @@ predictions, or ln K_harmful at K\*). It is read from the extension-2 analysis r
 (`study5_ext2_cli`'s `analysis.json`, `EXT2_ANALYSIS.json` below), under `criterion`
 (`--criterion-key`).
 
-The opening record also binds the inputs: `criterion_sha256` (the --criterion file), the
-`predictions` manifest ({`<seed>-<order seed>` or the record's path: sha256}, exactly the
-prediction files given), the tested `seeds`, and `pair_floors` (10, equal to the criterion's
-`part3_pairs.unresolved_floors`). The test refuses before reading any E2 file in these cases:
-- the opening record or the note it names does not stand;
-- one of these bindings differs;
+The test's inputs are a committed JSON file, committed with or after the dated note. The opening
+names it (`inputs`, `inputs_sha256`) and checks it as it checks the note. The file holds:
+- `criterion_sha256`: the --criterion file;
+- `predictions`: a manifest {`<seed>-<order seed>` or the record's path: sha256}, exactly the
+  prediction files given;
+- `seeds`: the tested seeds;
+- `pair_floors`: 10, equal to the criterion's `part3_pairs.unresolved_floors`.
+
+Every input check is made against this committed content, never against the opening record, which
+may not carry the inputs inline. The test refuses before reading any E2 file in these cases:
+- the opening record does not stand, or the note or the inputs file it names does not;
+- one of the inputs differs;
 - the criterion is withheld, or its `passed` and `primary_predictor` disagree;
 - a prediction it needs is missing or invalid.
 

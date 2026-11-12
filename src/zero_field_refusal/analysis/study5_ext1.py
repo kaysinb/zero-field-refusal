@@ -48,18 +48,21 @@ it, the opening record is checked before anything of E2 is read (``opening_recor
 object of kind ``study5-e2-opening`` naming the dated note that fixes the test (``note``, its path
 in the repository), the commit that holds it (``commit``, a full sha, an ancestor of this
 checkout's HEAD or HEAD itself) and the note's sha256 (``note_sha256``, that of its text at the
-commit, which HEAD holds unchanged). The record names it by sha256, with the commit, the note and
-its sha256. Per seed and order: the
-original order is the registered analysis's outcome of the seed's two fresh F runs (its K values
-read from those runs); each new order is the launcher's last ``done`` or ``diverged`` end of its
-cell (campaign ``study5-<ID>-orders-s<seed>``, cell ``s5-order<1|2>-<η>-s<seed>``), its config
-the seed, the rate, frozen Adam, ``train.order_seed`` = s + 1000 or s + 2000 and role ``control``,
-through the registered outcome (``study5_analysis.seed_outcome``: study 3's support rule against
-θ₀'s accuracies from the registered analysis's θ₀ run, its interpolation in ln K). Reported:
-K_benign and K_harmful at both rates, h at K* (``harmful_high`` beside), and K_harmful at K*;
-every order without h listed with its reason. Over the seeds with h in all three orders: σ²_w,
-σ²_b, the order share with its seed-level bootstrap interval, and the within-seed Spearman ρ of
-the deviations; the registered order controls' differences at η_l beside, not pooled.
+commit, which HEAD holds unchanged). This analysis needs the note alone. When the opening also
+names the E2 test's committed inputs file (``inputs``, ``inputs_sha256``), that file is verified in
+the same way at the same commit, and recorded. Inputs written inline in the opening record are
+refused. The record names the opening by sha256, with the commit, the note and its sha256.
+Per seed and order: the original order is the registered analysis's outcome of the seed's two
+fresh F runs (its K values read from those runs). Each new order is the launcher's last ``done``
+or ``diverged`` end of its cell (campaign ``study5-<ID>-orders-s<seed>``, cell
+``s5-order<1|2>-<η>-s<seed>``), its config the seed, the rate, frozen Adam, ``train.order_seed``
+= s + 1000 or s + 2000 and role ``control``, through the registered outcome
+(``study5_analysis.seed_outcome``: study 3's support rule against θ₀'s accuracies from the
+registered analysis's θ₀ run, its interpolation in ln K). Reported: K_benign and K_harmful at both
+rates, h at K* (``harmful_high`` beside), and K_harmful at K*; every order without h listed with
+its reason. Over the seeds with h in all three orders: σ²_w, σ²_b, the order share with its
+seed-level bootstrap interval, and the within-seed Spearman ρ of the deviations; the registered
+order controls' differences at η_l beside, not pooled.
 
 **Rulings** where the registration leaves a detail open:
 - *K_harmful at K\\** is study 3's interpolation in ln K_harmful (its matched-K_harmful
@@ -131,6 +134,8 @@ ORDERS = ("original", *(name for name, _ in NEW_ORDERS))
 OPENING_KIND = "study5-e2-opening"
 CHECKOUT = REPO_ROOT  # the checkout whose history must hold the dated note the opening names
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
+# a test of E2's inputs: read from the committed inputs file the opening names, never inline
+INLINE_INPUTS = ("criterion_sha256", "predictions", "seeds", "pair_floors")
 # Extension 1's order repeats (E2), refused wherever a run is read that is not one of them, as the
 # extension-2 analysis refuses them (study5_ext2.e2_repeat): an E2 cell in the run's name, an E2
 # seed with train.order_seed = s + 1000 or s + 2000, or any of these 20 order seeds
@@ -323,15 +328,19 @@ def registered_record(path: Path, text: str) -> tuple[dict[str, Any], dict[str, 
 
 
 def opening_record(path: Path) -> dict[str, Any]:
-    """The decision that opens E2: a JSON object of kind ``OPENING_KIND`` naming the dated note
-    (``note``, its path in the repository), the commit that holds it (``commit``, a full sha) and
-    its sha256 (``note_sha256``), the note checked in this checkout's history (``note_problem``);
-    refused otherwise. What the record keeps of it."""
+    """The decision that opens E2 (``read_opening``): what the record keeps of it."""
     return read_opening(path)[0]
 
 
-def read_opening(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    """``opening_record`` and the opening record itself, for the fields a test of E2 binds."""
+def read_opening(path: Path) -> tuple[dict[str, Any], Any]:
+    """The opening record: a JSON object of kind ``OPENING_KIND`` naming the dated note
+    (``note``, its path in the repository), the commit that holds it (``commit``, a full sha) and
+    its sha256 (``note_sha256``), checked in this checkout's history (``committed_problem``). It
+    may also name the committed inputs file of a test of E2 (``inputs``, its path, and
+    ``inputs_sha256``), checked in the same way at the same commit; its content is the one the
+    test reads, never a field of the opening record, which may not carry the inputs inline
+    (``INLINE_INPUTS``). Refused otherwise. Returns what the record keeps of it and the inputs
+    file's content at the commit (None when it names none)."""
     path = Path(path)
     if not path.is_file():
         refuse("--open-e2: the opening record does not exist")
@@ -342,40 +351,59 @@ def read_opening(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         refuse(f"--open-e2: the opening record does not read ({type(exc).__name__})")
     if not isinstance(found, dict) or found.get("kind") != OPENING_KIND:
         refuse(f"--open-e2: the opening record is not of kind {OPENING_KIND}")
+    inline = sorted(key for key in INLINE_INPUTS if key in found)
+    if inline:
+        refuse(f"--open-e2: the opening record carries inputs inline ({', '.join(inline)}): "
+               "they are read from the committed inputs file alone")  # fmt: skip
     if not isinstance(found.get("note_sha256"), str):
         refuse("--open-e2: the opening record holds no note_sha256 string")
-    why = note_problem(found.get("commit"), found.get("note"), found["note_sha256"])
+    why = committed_problem(found.get("commit"), found.get("note"), found["note_sha256"])
     if why is not None:
         refuse(f"--open-e2: {why}")
-    return {"record": path.name, "sha256": sha256(data), "commit": found["commit"],
-            "note": found["note"], "note_sha256": found["note_sha256"]}, found  # fmt: skip
+    kept = {"record": path.name, "sha256": sha256(data), "commit": found["commit"],
+            "note": found["note"], "note_sha256": found["note_sha256"]}  # fmt: skip
+    if "inputs" not in found and "inputs_sha256" not in found:
+        return kept, None
+    if not isinstance(found.get("inputs_sha256"), str):
+        refuse("--open-e2: the opening record holds no inputs_sha256 string")
+    why = committed_problem(found["commit"], found.get("inputs"), found["inputs_sha256"],
+                            "inputs file", "inputs_sha256")  # fmt: skip
+    if why is not None:
+        refuse(f"--open-e2: {why}")
+    try:
+        inputs = json.loads(_git("show", f"{found['commit']}:{found['inputs']}").stdout)
+    except ValueError:
+        refuse(f"--open-e2: the inputs file {found['inputs']} does not read as JSON")
+    return kept | {"inputs": found["inputs"], "inputs_sha256": found["inputs_sha256"]}, inputs
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=CHECKOUT, capture_output=True, check=False)
 
 
-def note_problem(commit: Any, note: Any, digest: str) -> str | None:
-    """Why the dated note does not stand (None: it does): ``commit`` a full sha in this
-    checkout's history, an ancestor of HEAD or HEAD itself; ``note`` a path in the repository,
-    whose content at that commit has the sha256 ``digest``, and the same content at HEAD."""
+def committed_problem(commit: Any, path: Any, digest: str, what: str = "note",
+                      key: str = "note_sha256") -> str | None:  # fmt: skip
+    """Why a committed file the opening names does not stand (None: it does): ``commit`` a full
+    sha in this checkout's history, an ancestor of HEAD or HEAD itself; ``path`` a path in the
+    repository, whose content at that commit has the sha256 ``digest`` (the opening's ``key``),
+    and the same bytes at HEAD."""
     if not isinstance(commit, str) or not FULL_SHA.fullmatch(commit):
         return "its commit is not a full git sha"
-    parts = PurePosixPath(note).parts if isinstance(note, str) else ()
-    if not parts or note.startswith("/") or ".." in parts or "\\" in note:
-        return "its note is not a path in the repository"
+    parts = PurePosixPath(path).parts if isinstance(path, str) else ()
+    if not parts or path.startswith("/") or ".." in parts or "\\" in path:
+        return f"its {what} is not a path in the repository"
     if _git("cat-file", "-e", f"{commit}^{{commit}}").returncode != 0:
         return f"its commit {commit[:12]} is not in this checkout's history"
     if _git("merge-base", "--is-ancestor", commit, "HEAD").returncode != 0:
         return f"its commit {commit[:12]} is not an ancestor of this checkout's HEAD"
-    then = _git("show", f"{commit}:{note}")
+    then = _git("show", f"{commit}:{path}")
     if then.returncode != 0:
-        return f"its note {note} is not in its commit {commit[:12]}"
+        return f"its {what} {path} is not in its commit {commit[:12]}"
     if sha256(then.stdout) != digest:
-        return f"its note {note} at {commit[:12]} does not have the sha256 note_sha256 names"
-    now = _git("show", f"HEAD:{note}")
+        return f"its {what} {path} at {commit[:12]} does not have the sha256 {key} names"
+    now = _git("show", f"HEAD:{path}")
     if now.returncode != 0 or now.stdout != then.stdout:
-        return f"its note {note} at HEAD is not the note at {commit[:12]}"
+        return f"its {what} {path} at HEAD is not the {what} at {commit[:12]}"
     return None
 
 

@@ -35,6 +35,7 @@ from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.run_judging import LABEL_ROUNDS
 
 SENTINEL = "TEXT-NEVER-STORED"
+INPUTS = "docs/study5-e2-inputs.json"  # the test's inputs file, committed after the note
 IDS = [f"judged:{i}" for i in range(521)]
 PROMPTS = {pid: f"Prompt {SENTINEL} {i}" for i, pid in enumerate(IDS)}
 SET = "harmful_evaluation"
@@ -226,29 +227,37 @@ class World:
             "labels_sha256": sha((run_dir / "judge" / "wildguard.jsonl").read_bytes()),
             "completed_at": "2026-11-13T12:00:00+00:00"})  # fmt: skip
 
-    def write_opening(self, top_up=(), given=(), edit=None) -> None:
-        """The opening as the dated note fixes it: the note, the criterion's sha256, the
-        manifest of the predictions ``given``, the tested seeds, 10 floors; ``edit`` applied."""
+    def write_opening(self, top_up=(), given=(), edit=None, edit_opening=None) -> None:
+        """The inputs file as the dated note fixes it (the criterion's sha256, the manifest of
+        the predictions ``given``, the tested seeds, 10 floors; ``edit`` applied), committed in
+        the note's checkout, and the opening naming the note and it at that commit
+        (``edit_opening`` applied)."""
         manifest = {}
         for path in given:
             for found in sorted(path.glob("*/record.json")) if path.is_dir() else [path]:
                 record = json.loads(found.read_text())
                 manifest[f"{record['seed']}-{record['order']['order_seed']}"] = sha(
                     found.read_bytes())  # fmt: skip
-        value = {"kind": "study5-e2-opening", "commit": self.note["commit"],
-                 "note": self.note["path"], "note_sha256": self.note["sha256"],
-                 "criterion_sha256": sha(self.criterion.read_bytes()), "predictions": manifest,
+        value = {"criterion_sha256": sha(self.criterion.read_bytes()), "predictions": manifest,
                  "seeds": sorted({*range(50006, 50016), *top_up}), "pair_floors": 10}  # fmt: skip
-        dump(self.opening, edit(value) if edit else value)
+        repo = self.note["repo"]
+        data = dump(repo / INPUTS, edit(value) if edit else value)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "--allow-empty", "-m", "inputs")
+        opening = {"kind": "study5-e2-opening", "commit": git(repo, "rev-parse", "HEAD"),
+                   "note": self.note["path"], "note_sha256": self.note["sha256"],
+                   "inputs": INPUTS, "inputs_sha256": sha(data)}  # fmt: skip
+        dump(self.opening, edit_opening(opening) if edit_opening else opening)
 
     def argv(self, out: Path, *, opening: bool = True, write: bool = True,
-             predictions: bool = True, more=(), top_up=(), edit=None) -> list:  # fmt: skip
+             predictions: bool = True, more=(), top_up=(), edit=None,
+             edit_opening=None) -> list:  # fmt: skip
         given = [*([self.sealed] if predictions else []), *more]
         argv = ["--criterion", self.criterion, "--pod3-runs", self.pod3, "--registered",
                 self.registered_path, "--out", out]  # fmt: skip
         if opening:
             if write:
-                self.write_opening(top_up, given, edit)
+                self.write_opening(top_up, given, edit, edit_opening)
             argv += ["--open-e2", self.opening]
         for path in given:
             argv += ["--predictions", path]
@@ -445,11 +454,16 @@ def test_the_test_with_q_end_to_end(world, capsys) -> None:
     assert SENTINEL not in data.decode() and str(world.tmp) not in data.decode()
     assert SENTINEL not in printed and sha(data) in printed
     assert result["predictor"]["name"] == "q" and result["criterion"]["passed"] is True
+    repo = world.note["repo"]
     assert result["opening"] == {
-        **result["opening"], "commit": world.note["commit"], "note": world.note["path"],
-        "note_sha256": world.note["sha256"], "criterion_sha256": sha(world.criterion.read_bytes()),
+        **result["opening"], "commit": git(repo, "rev-parse", "HEAD"), "note": world.note["path"],
+        "note_sha256": world.note["sha256"], "inputs": INPUTS,
+        "inputs_sha256": sha((repo / INPUTS).read_bytes()),
+        "criterion_sha256": sha(world.criterion.read_bytes()),
         "seeds": list(range(50006, 50016)), "pair_floors": 10, "predictions": 20,
     }  # fmt: skip
+    # the note's commit is an ancestor of the inputs file's, which the opening names
+    assert git(repo, "merge-base", "--is-ancestor", world.note["commit"], "HEAD") == ""
     assert result["preflight"]["runs_checked"] == 40
     assert result["seeds"]["tested"] == list(range(50006, 50016))
     assert result["seeds"]["top_up_note"] is None
@@ -645,67 +659,101 @@ def manifest_edit(change: str):
     return edit
 
 
-@pytest.mark.parametrize(
-    "change, why",
-    [
-        ("no-opening", "--open-e2 OPENING_RECORD is required"),
-        ("bad-opening", "is not of kind study5-e2-opening"),
-        ("note-sha", "does not have the sha256 note_sha256 names"),
-        ("note-commit", "is not in this checkout's history"),
-        ("bad-criterion", "is neither 'q' nor"),
-        ("withheld", "the δ_lin criterion is withheld"),
-        ("criterion-sha", "is not the one the opening names (criterion_sha256)"),
-        ("no-criterion-sha", "holds no criterion_sha256"),
-        ("pair-floors", "the opening's pair_floors is 5, not 10"),
-        ("criterion-floors", "the criterion's part 3 counts 5 floors, not the opening's 10"),
-        ("seeds", "the tested seeds (10) are not the opening's (9): [50015]"),
-        ("manifest-sha", "seed 50007, order seed 51007 does not have the sha256"),
-        ("manifest-names-other", "names the prediction 50006-59999, which is not given"),
-        ("manifest-lacks", "seed 50006, order seed 51006 is given but not in the opening's"),
-        ("no-prediction", "seed 50011 order2: no prediction"),
-        ("no-q", "seed 50007 order1: its prediction is complete without a finite q"),
-        ("twice", "two predictions of seed 50006, order seed 51006"),
-        ("other-kind", "is not a study5-linear-replay record"),
-        ("no-predictions", "seed 50006 order1: no prediction"),
-    ],
-)
-def test_a_refusal_comes_before_any_e2_read(world, monkeypatch, change, why) -> None:
-    kw: dict = {}
-    if change == "no-opening":
-        kw = {"opening": False}
-    elif change == "bad-opening":
+def recommitted(world: World, text: str) -> None:
+    """The inputs file rewritten and committed after the opening was written."""
+    repo = world.note["repo"]
+    (repo / INPUTS).write_text(text)
+    git(repo, "commit", "-q", "-am", "inputs again")
+
+
+def rebound(world: World) -> None:
+    """The opening rewritten to name HEAD's inputs file (a JSON that does not read)."""
+    repo = world.note["repo"]
+    value = json.loads(world.opening.read_text())
+    dump(world.opening, {**value, "commit": git(repo, "rev-parse", "HEAD"),
+                         "inputs_sha256": sha((repo / INPUTS).read_bytes())})  # fmt: skip
+
+
+def set_key(key: str, value):
+    return lambda found: {**found, key: value}
+
+
+def drop_keys(*keys: str):
+    return lambda found: {k: v for k, v in found.items() if k not in keys}
+
+
+REFUSALS = {
+    "no-opening": ({"opening": False}, None, "--open-e2 OPENING_RECORD is required"),
+    "bad-opening": ({"write": False}, None, "is not of kind study5-e2-opening"),
+    "note-sha": ({"edit_opening": set_key("note_sha256", "0" * 64)}, None,
+                 "does not have the sha256 note_sha256 names"),
+    "note-commit": ({"edit_opening": set_key("commit", "e" * 40)}, None,
+                    "is not in this checkout's history"),
+    "no-inputs": ({"edit_opening": drop_keys("inputs", "inputs_sha256")}, None,
+                  "names no committed inputs file"),
+    "inline-inputs": ({"edit_opening": set_key("seeds", list(range(50006, 50016)))}, None,
+                      "carries inputs inline (seeds)"),
+    "inputs-sha": ({"edit_opening": set_key("inputs_sha256", "0" * 64)}, None,
+                   "does not have the sha256 inputs_sha256 names"),
+    "inputs-not-at-commit": ({"edit_opening": set_key("inputs", "docs/other-inputs.json")}, None,
+                             "its inputs file docs/other-inputs.json is not in its commit"),
+    "inputs-changed-at-head": ({}, lambda w: recommitted(w, "{}\n"),
+                               "at HEAD is not the inputs file at"),
+    "inputs-not-json": ({}, lambda w: (recommitted(w, "not json\n"), rebound(w)),
+                        "the inputs file docs/study5-e2-inputs.json does not read as JSON"),
+    "bad-criterion": ({}, lambda w: dump(w.criterion, ext2_record(True, "p_s")),
+                      "is neither 'q' nor"),
+    "withheld": ({}, lambda w: dump(w.criterion, ext2_record(None)),
+                 "the δ_lin criterion is withheld"),
+    "criterion-sha": ({"edit": set_key("criterion_sha256", "1" * 64)}, None,
+                      "is not the one the inputs file names (criterion_sha256)"),
+    "no-criterion-sha": ({"edit": set_key("criterion_sha256", None)}, None,
+                         "the inputs file holds no criterion_sha256"),
+    "pair-floors": ({"edit": set_key("pair_floors", 5)}, None,
+                    "the inputs file's pair_floors is 5, not 10"),
+    "criterion-floors": ({}, lambda w: dump(w.criterion, ext2_record(True, floors=5)),
+                         "the criterion's part 3 counts 5 floors, not the inputs file's 10"),
+    "seeds": ({"edit": set_key("seeds", list(range(50006, 50015)))}, None,
+              "the tested seeds (10) are not the inputs file's (9): [50015]"),
+    "manifest-sha": ({"edit": manifest_edit("sha")}, None,
+                     "seed 50007, order seed 51007 does not have the sha256"),
+    "manifest-names-other": ({"edit": manifest_edit("names-other")}, None,
+                             "names the prediction 50006-59999, which is not given"),
+    "manifest-lacks": ({"edit": manifest_edit("lacks")}, None,
+                       "seed 50006, order seed 51006 is given but not in the inputs file's"),
+    "no-prediction": ({}, None, "seed 50011 order2: no prediction"),
+    "no-q": ({}, None, "seed 50007 order1: its prediction is complete without a finite q"),
+    "twice": ({}, None, "two predictions of seed 50006, order seed 51006"),
+    "other-kind": ({}, None, "is not a study5-linear-replay record"),
+    "no-predictions": ({"predictions": False}, None, "seed 50006 order1: no prediction"),
+}  # fmt: skip
+
+
+BEFORE = {"bad-criterion", "withheld", "criterion-floors"}  # changed before the inputs file
+
+
+@pytest.mark.parametrize("change", sorted(REFUSALS))
+def test_a_refusal_comes_before_any_e2_read(world, monkeypatch, change) -> None:
+    kw, after, why = REFUSALS[change]
+    kw = dict(kw)
+    if change == "bad-opening":
         dump(world.opening, {"kind": "other", "note_sha256": "x"})
-        kw = {"write": False}
-    elif change in ("note-sha", "note-commit", "criterion-sha", "no-criterion-sha",
-                    "pair-floors", "seeds"):  # fmt: skip
-        key, value = {"note-sha": ("note_sha256", "0" * 64), "note-commit": ("commit", "e" * 40),
-                      "criterion-sha": ("criterion_sha256", "1" * 64),
-                      "no-criterion-sha": ("criterion_sha256", None), "pair-floors": (
-                          "pair_floors", 5), "seeds": ("seeds", list(range(50006, 50015)))}[
-            change]  # fmt: skip
-        kw = {"edit": lambda found, key=key, value=value: {**found, key: value}}
-    elif change == "bad-criterion":
-        dump(world.criterion, ext2_record(True, "p_s"))
-    elif change == "withheld":
-        dump(world.criterion, ext2_record(None))
-    elif change == "criterion-floors":
-        dump(world.criterion, ext2_record(True, floors=5))
-    elif change.startswith("manifest-"):
-        kw = {"edit": manifest_edit(change.removeprefix("manifest-"))}
     elif change == "no-prediction":
         (world.sealed / "s50011-order2" / "record.json").unlink()
     elif change == "no-q":
         path = world.sealed / "s50007-order1" / "record.json"
         dump(path, {**json.loads(path.read_text()), "q_lin": None})
     elif change == "twice":
-        kw = {"more": [world.sealed / "s50006-order1" / "record.json"]}
+        kw["more"] = [world.sealed / "s50006-order1" / "record.json"]
     elif change == "other-kind":
         path = world.sealed / "s50008-order2" / "record.json"
         dump(path, {**json.loads(path.read_text()), "kind": "study5-grad-r"})
-    else:
-        kw = {"predictions": False}
     out = world.tmp / "out.json"
-    argv = world.argv(out, **kw)
+    if after is not None and change in BEFORE:  # the criterion record the inputs file names
+        after(world)
+    argv = world.argv(out, **kw)  # the inputs file committed, the opening written
+    if after is not None and change not in BEFORE:
+        after(world)
     touched = spy(monkeypatch)
     code, found = call(argv)
     monkeypatch.undo()
