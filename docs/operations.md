@@ -3318,6 +3318,21 @@ python -m zero_field_refusal.analysis.study5_ext1 --pod3-runs "$POD3_RUNS" \
   --out "$POD3_RUNS/study5-ext1/analysis.json"   # --open-e2 OPENING.json: E2, once decided
 ```
 
+**The prospective test on E2** (`python -m zero_field_refusal.analysis.study5_e2_test`; its
+docstring holds the test and every rule) runs once the dated note fixing it is committed and E2 is
+opened; `--open-e2` is required. It compares each seed's two new orders: the predicted sign of
+h₁ − h₂ against the sign at K\*, one-sided exact binomial p, with S and the η_l harm share beside.
+The predictor is the δ_lin criterion record's `primary_predictor` (`q` from pod 4's sealed
+predictions, or ln K_harmful at K\*). The test refuses before reading any E2 file when the
+opening record, the criterion record or a needed prediction is missing or invalid.
+
+```bash
+python -m zero_field_refusal.analysis.study5_e2_test --open-e2 OPENING.json \
+  --criterion CRITERION.json --predictions "$POD4_RUNS/study5_records/<ID>/sealed" \
+  --pod3-runs "$POD3_RUNS" --registered "$RUNS_DIR/study5-final/analysis.json" \
+  --out "$POD3_RUNS/study5-e2-test/test.json"   # [--seeds S ...]: top-up seeds
+```
+
 
 ### Study 5, extension 2: pod 4
 

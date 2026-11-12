@@ -270,15 +270,16 @@ def reproducibility(pod2: Mapping[int, Mapping[str, Any]],
 # ------------------------------------------------------------------ the inputs
 
 
-def own_code() -> dict[str, Any]:
-    """This checkout's code: a clean checkout of a known commit."""
+def own_code(prog: str = PROG) -> dict[str, Any]:
+    """This checkout's code (``prog``: the analysis module): a clean checkout of a known
+    commit."""
     state = git_state(REPO_ROOT)
     if not state.get("commit") or state.get("dirty") is not False:
         refuse("the analysis runs from a clean checkout of a known commit")
     return {
         "commit": state["commit"],
         "dirty": False,
-        "module": f"zero_field_refusal.analysis.{PROG}",
+        "module": f"zero_field_refusal.analysis.{prog}",
     }
 
 
@@ -646,8 +647,20 @@ def new_order(reader: cli.Reader, runs: Path, archive: str, labels: cli.Labels,
               theta0: Mapping[str, float], seed: int, order: str,
               offset: int) -> dict[str, Any]:  # fmt: skip
     """A new order of the seed: its two runs (the launcher's journal), their outcome at K*."""
-    cli = _cli()
     campaign = f"study5-{archive}-orders-s{seed}"
+    return order_parts(reader, runs, campaign, labels, theta0, seed, order, offset)[0]
+
+
+Parts = tuple[dict[str, Any], dict[str, Any], dict[str, Any]]
+
+
+def order_parts(reader: cli.Reader, runs: Path, campaign: str, labels: cli.Labels,
+                theta0: Mapping[str, float], seed: int, order: str, offset: int,
+                source: str = "pod 3") -> Parts:  # fmt: skip
+    """A new order of the seed in the launcher campaign ``campaign``: its entry (``entry_of``:
+    the registered outcome at K* of its two runs), the runs (rate → ``order_run``'s records or
+    why they are missing) and their label counts at the endpoint (run id → counts or why)."""
+    cli = _cli()
     found: dict[str, Any] = {}
     for name, eta in RATES:
         cell = (campaign, f"s5-{order}-{eta!r}-s{seed}/s{seed}")
@@ -663,7 +676,7 @@ def new_order(reader: cli.Reader, runs: Path, archive: str, labels: cli.Labels,
                                         steps=run["steps"]))  # fmt: skip
         counts[run["run_id"]] = labels.at(run["run_dir"], ENDPOINT)
     outcome = sa.seed_outcome(seed, endpoints, missing, counts)
-    return entry_of(seed, order, seed + offset, "pod 3", found, outcome)
+    return entry_of(seed, order, seed + offset, source, found, outcome), found, counts
 
 
 def e2_part(reader: cli.Reader, runs: Path, archive: str, pod2: Pod2, labels: cli.Labels,
