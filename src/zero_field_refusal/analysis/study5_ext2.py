@@ -535,6 +535,7 @@ def check_summary(record: Mapping[str, Any] | str) -> dict[str, Any]:
                       "answers_differing": pair.get("answers_differing"),
                       "differing_files": sum(not f.get("equal") for f in pair.get("files", [])),
                       "endpoint_tensors_equal": tensors.get("equal"),
+                      "endpoint_distance": number(distance.get("distance")),
                       "endpoint_distance_ratio": number(distance.get("ratio"))})  # fmt: skip
     ratios = [p["endpoint_distance_ratio"] for p in pairs
               if p["endpoint_distance_ratio"] is not None]  # fmt: skip
@@ -549,6 +550,277 @@ def check_summary(record: Mapping[str, Any] | str) -> dict[str, Any]:
         "pairs": pairs,
         "largest_endpoint_distance_ratio": max(ratios) if ratios else None,
     }
+
+
+# ------------------------------------------------------------------ endpoint bounds
+
+
+ENDPOINT_RULE = (
+    "Extension 2 amendment 2: e_i, the largest observed ‖θ_a − θ_b‖ at step 25 between seed i's "
+    "replay, its archived run and any repeat (the replay check, the floor repeat, diagnostic "
+    "repeats), an observed envelope and not a confidence bound; propagated exactly in the "
+    "parameters (triangle inequality; a vector scaled to a norm taken to first order in its "
+    "scale); r at a point to first order at θ₀ (‖∇r(θ₀)‖·‖Δv‖, not a bound); K and harm not "
+    "propagated; a quantity is resolved when it is at least 10 times its uncertainty"
+)
+FIRST_ORDER = "first order at θ₀, not a bound: ‖∇r(θ₀)‖·‖Δv‖"
+NOT_PROPAGATED = (
+    "not propagated: K and harm are nonlinear in θ and the records hold no "
+    "derivative of them; the displacement's relative size is given beside"
+)
+
+
+def endpoint_envelope(checks: Mapping[str, Any], replays: Mapping[int, Any],
+                      floors: Mapping[int, Mapping[str, Any]] | None = None,
+                      diagnostics: Mapping[int, Mapping[str, Any] | str] | None = None,
+                      ) -> dict[int, dict[str, Any]]:  # fmt: skip
+    """Per seed, e_i (``ENDPOINT_RULE``) and its sources: the seed's replay check pair (tensors
+    equal: 0; else its recorded distance), the floor repeat's step 25 (``twins_steps`` of the
+    floor record, by seed) and diagnostic repeats (a ``study5-pairs`` record, its step-25 rows).
+    A replay check missing for the seed, or endpoints that differ without a distance, leave e_i
+    None with the reason: nothing then bounds it."""
+    by_run = {run: seed for seed, run in replays.items() if run is not None}
+    found: dict[int, dict[str, Any]] = {}
+    for name, summary in checks.items():
+        if name == "engineering" or not isinstance(summary, Mapping):
+            continue
+        for pair in summary.get("pairs") or []:
+            seed = by_run.get(pair.get("rerun"))
+            if seed is not None:
+                found[seed] = {**pair, "group": name}
+    out = {}
+    for s in sorted(replays):
+        sources, unknown = [], []
+        pair = found.get(s)
+        if pair is None:
+            unknown.append("no replay check pair")
+        elif pair.get("endpoint_tensors_equal") is True:
+            sources.append({"source": f"replay check {pair['group']}", "distance": 0.0})
+        elif number(pair.get("endpoint_distance")) is not None:
+            sources.append({"source": f"replay check {pair['group']}",
+                            "distance": number(pair["endpoint_distance"])})  # fmt: skip
+        else:
+            unknown.append(f"replay check {pair['group']}: endpoints differ without a distance")
+        floor = (floors or {}).get(s)
+        if isinstance(floor, Mapping) and floor.get("available"):
+            at = (floor.get("steps") or {}).get(sa.STEPS) or {}
+            if number(at.get("distance")) is not None:
+                sources.append({"source": "floor repeat", "distance": number(at["distance"])})
+        diag = (diagnostics or {}).get(s)
+        if isinstance(diag, Mapping):
+            rows = [number(row.get("distance")) for row in diag.get("pairs", [])
+                    if str((row.get("a") or {}).get("step")) == str(sa.STEPS)
+                    and str((row.get("b") or {}).get("step")) == str(sa.STEPS)]  # fmt: skip
+            if rows and all(d is not None for d in rows):
+                sources.append({"source": "diagnostic repeats", "distance": max(rows)})
+            elif rows:
+                unknown.append("diagnostic repeats: a step-25 pair without a distance")
+        e = None if unknown or not sources else max(x["distance"] for x in sources)
+        out[s] = {"e": e, "sources": sources, "reason": "; ".join(unknown) or None}
+    return out
+
+
+def _total(envelope: Mapping[int, Mapping[str, Any]], seeds: Iterable[int]) -> float | None:
+    values = [number((envelope.get(s) or {}).get("e")) for s in seeds]
+    return None if not values or any(v is None for v in values) else sum(values)
+
+
+def _times(*factors: Any) -> float | None:
+    values = [number(f) for f in factors]
+    return None if any(v is None for v in values) else math.prod(values)
+
+
+def first_order_r(effect: Any, displacement: Any, grad_norm: Any) -> dict[str, Any]:
+    """r's uncertainty at a point moved by at most ``displacement``: ‖∇r(θ₀)‖·‖Δv‖, first order
+    at θ₀ and not a bound, with ``resolution`` of the effect against it."""
+    u = _times(grad_norm, displacement)
+    return {"uncertainty": u, "kind": FIRST_ORDER, **resolution(effect, u)}
+
+
+def not_propagated(displacement: Any, norm: Any) -> dict[str, Any]:
+    return {"propagated": False, "reason": NOT_PROPAGATED,
+            "relative_displacement": ratio(displacement, norm)}  # fmt: skip
+
+
+def seed_bounds(vectors: Mapping[str, Any], envelope: Mapping[int, Mapping[str, Any]]
+                ) -> dict[str, Any]:  # fmt: skip
+    """Per seed e_i, e_i/‖Δθ_i‖ and the bound 2e_i/‖Δθ_i‖ of a cosine with Δθ_i (M2's cosines:
+    ‖a/‖a‖ − b/‖b‖‖ ≤ 2‖a − b‖/‖a‖)."""
+    norms = dict(zip((int(s) for s in vectors["seeds"]), vectors["norms"], strict=True))
+    out = {}
+    for s, row in envelope.items():
+        e, norm = row.get("e"), number(norms.get(s))
+        out[str(s)] = {**row, "delta_theta_norm": norm, "relative": ratio(e, norm),
+                       "cosine_with_delta_theta": ratio(_times(2.0, e), norm)}  # fmt: skip
+    return out
+
+
+def m1_bounds(vectors: Mapping[str, Any], envelope: Mapping[int, Mapping[str, Any]]
+              ) -> dict[str, Any]:  # fmt: skip
+    """M1 under e_i, exact: |Δ⟨Δθ_i, ∇r⟩| ≤ e_i‖∇r‖; ‖Δμ̂‖ ≤ Σe/n, the mean's dot by ‖∇r‖ times
+    that; ‖Δμ̂_{−i}‖ ≤ Σ_{j≠i} e_j/(n − 1); |Δp_i| ≤ e_i + ‖Δθ_i‖·2‖Δμ̂_{−i}‖/‖μ̂_{−i}‖. Each
+    with its ``resolution``."""
+    seeds = [int(s) for s in vectors["seeds"]]
+    n = len(seeds)
+    total = _total(envelope, seeds)
+    grad = vectors.get("grad_r") or {}
+    g = number(grad.get("norm"))
+    dots = dict(zip(seeds, grad.get("per_run") or [None] * n, strict=True))
+    loo = vectors.get("leave_one_out") or {}
+    p = dict(zip((int(s) for s in loo.get("seeds", [])), loo.get("p", []), strict=True))
+    loo_norm = dict(zip((int(s) for s in loo.get("seeds", [])), loo.get("norm", []), strict=True))
+    norms = dict(zip(seeds, vectors["norms"], strict=True))
+    mu = _times(total, 1.0 / n) if n else None
+    mu_norm = number((vectors.get("mean") or {}).get("norm"))
+    per_seed = {}
+    for s in seeds:
+        e = number((envelope.get(s) or {}).get("e"))
+        minus = None if total is None or e is None or n < 2 else (total - e) / (n - 1)
+        unit = _times(norms.get(s), 2.0, ratio(minus, loo_norm.get(s)))  # ‖Δθ_i‖·‖Δu‖
+        p_bound = None if e is None or unit is None else e + unit
+        dot_bound = _times(e, g)
+        per_seed[str(s)] = {"e": e, "dot_grad_r": {"bound": dot_bound,
+                                                   **resolution(dots.get(s), dot_bound)},
+                            "mu_hat_minus_i": {"bound": minus,
+                                               **resolution(loo_norm.get(s), minus)},
+                            "p": {"bound": p_bound, **resolution(p.get(s), p_bound)}}  # fmt: skip
+    mean_dot = _times(g, mu)
+    return {"sum_e": total, "grad_r_norm": g,
+            "mu_hat": {"bound": mu, **resolution(mu_norm, mu)},
+            "mean_dot_grad_r": {"bound": mean_dot,
+                                **resolution(grad.get("mean_vector"), mean_dot)},
+            "per_seed": per_seed}  # fmt: skip
+
+
+def m3_bounds(m3_per_seed: Mapping[Any, Mapping[str, Any]], vectors: Mapping[str, Any],
+              envelope: Mapping[int, Mapping[str, Any]]) -> dict[str, Any]:  # fmt: skip
+    """M3's points θ₀ + aΔθ_i move by at most |a|e_i; r's odd and even parts at a by at most
+    ‖∇r‖·a·e_i to first order (``first_order_r``); K and the openings not propagated."""
+    norms = dict(zip((int(s) for s in vectors["seeds"]), vectors["norms"], strict=True))
+    g = number((vectors.get("grad_r") or {}).get("norm"))
+    out = {}
+    for s, row in m3_per_seed.items():
+        s = int(s)
+        e = number((envelope.get(s) or {}).get("e"))
+        amplitudes = {}
+        for a in (*SMALL_AMPLITUDES, *(t for t in TOKEN_AMPLITUDES if t not in SMALL_AMPLITUDES)):
+            dv = _times(a, e)
+            parts = (row.get("parts") or {}).get(f"{a:g}") or {}
+            amplitudes[f"{a:g}"] = {
+                "displacement": dv, "relative_displacement": ratio(e, norms.get(s)),
+                "odd_r": first_order_r(parts.get("odd"), dv, g) if parts else None,
+                "even_r": first_order_r(parts.get("even"), dv, g) if parts else None,
+                "K_and_openings": not_propagated(dv, _times(a, norms.get(s)))}  # fmt: skip
+        out[str(s)] = {"e": e, "amplitudes": amplitudes}
+    return out
+
+
+def _quadratic(G: np.ndarray, w: np.ndarray) -> float:
+    return float(w @ G @ w)
+
+
+def m4_bounds(m4: Mapping[str, Any], vectors: Mapping[str, Any],
+              envelope: Mapping[int, Mapping[str, Any]]) -> dict[str, Any]:  # fmt: skip
+    """M4's vectors under e_i (``ENDPOINT_RULE``): μ̂ by Σe/n; a mixture scaled to ‖μ̂‖ with scale
+    c by (1 + 2c)·Σe/n (first order in its scale); Δθ_i − μ̂_{−i} by e_i + Σ_{j≠i}e_j/(n − 1);
+    Δθ_i − c·m_{−i} by e_i + Σ_{j≠i}e_j/(n − 1) + 2c·Σ_{used}e_j/(n − 2); a matched-K point by
+    its scale times its vector's (the scale search itself not propagated). Per point ‖Δv‖ and
+    ‖Δv‖/‖v‖; per contrast the parameters' resolution ‖v₁ − v₂‖ against ‖Δv₁‖ + ‖Δv₂‖, r to
+    first order, K and harm not propagated."""
+    seeds = [int(s) for s in vectors["seeds"]]
+    n = len(seeds)
+    at = {s: j for j, s in enumerate(seeds)}
+    total = _total(envelope, seeds)
+    g = number((vectors.get("grad_r") or {}).get("norm"))
+    mu_norm = number((vectors.get("mean") or {}).get("norm"))
+    mu = _times(total, 1.0 / n) if n else None
+    G = np.asarray(vectors["gram"], dtype=float) if vectors.get("gram") is not None else None
+
+    def contrast(effect: Mapping[str, Any] | None, dv1: Any, dv2: Any, distance: Any,
+                 norm: Any) -> dict[str, Any]:  # fmt: skip
+        both = None if number(dv1) is None or number(dv2) is None else dv1 + dv2
+        effect = effect or {}
+        return {"displacement": both,
+                "parameters": {"distance": number(distance), **resolution(distance, both)},
+                "r": first_order_r(effect.get("r"), both, g),
+                "K_and_harm": not_propagated(both, norm)}  # fmt: skip
+
+    parity = {}
+    for scale in (1, 2):
+        dv = _times(scale, mu)
+        found = (m4.get("parity") or {}).get(f"{scale}x") or {}
+        parity[f"{scale}x"] = {
+            "displacement_each": dv,
+            "relative_displacement": ratio(mu, mu_norm),
+            "contrast_plus_minus": contrast(
+                found.get("contrast_plus_minus"),
+                dv,
+                dv,
+                _times(2.0, scale, mu_norm),
+                _times(scale, mu_norm),
+            ),
+        }
+    matched = {}
+    for side, row in (m4.get("matched_k") or {}).items():
+        c = number(((row or {}).get("matched") or {}).get("c"))
+        matched[side] = {"scale": c, "displacement": _times(c, mu),
+                         "relative_displacement": ratio(mu, mu_norm),
+                         "note": "the scale search is not propagated"}  # fmt: skip
+    mixtures = {}
+    for row in vectors.get("mixtures") or []:
+        c = number(row.get("scale"))
+        dv = None if c is None or mu is None else (1 + 2 * c) * mu
+        found = ((m4.get("mixtures") or {}).get(str(row.get("k"))) or {}).get("matched") or {}
+        k_scale = number(found.get("c"))
+        mixtures[str(row.get("k"))] = {
+            "scale": c, "displacement_natural": dv, "relative_displacement": ratio(dv, mu_norm),
+            "displacement_matched_k": _times(k_scale, dv)}  # fmt: skip
+    removals = {}
+    for row in vectors.get("removals") or []:
+        s = int(row["seed"])
+        e = number((envelope.get(s) or {}).get("e"))
+        minus = None if total is None or e is None or n < 2 else (total - e) / (n - 1)
+        dv_mean = None if e is None or minus is None else e + minus
+        mixture = row.get("mixture") if isinstance(row.get("mixture"), Mapping) else {}
+        used = [int(x) for x in mixture.get("seeds") or []]
+        c = number(mixture.get("scale"))
+        used_total = _total(envelope, used) if used else None
+        dv_mix = (None if dv_mean is None or c is None or used_total is None or n < 3 else
+                  dv_mean + 2 * c * used_total / (n - 2))  # fmt: skip
+        distance = None
+        signs = mixture.get("signs") or []
+        if G is not None and used and c is not None and len(signs) == len(used):
+            w = np.zeros(n)  # (Δθ_i − μ̂_{−i}) − (Δθ_i − c·m_{−i}) = c·m_{−i} − μ̂_{−i}
+            for j in range(n):
+                if j != at[s]:
+                    w[j] -= 1.0 / (n - 1)
+            for x, sign in zip(used, signs, strict=True):
+                w[at[x]] += c * sign / (n - 2)
+            distance = math.sqrt(max(_quadratic(G, w), 0.0))
+        found = ((m4.get("removals") or {}).get(s) or (m4.get("removals") or {}).get(str(s))
+                 or {})  # fmt: skip
+        removals[str(s)] = {
+            "e": e, "displacement_mean_removed": dv_mean, "displacement_mixture_removed": dv_mix,
+            "contrast_mean_minus_mixture": contrast(
+                found.get("contrast_mean_minus_mixture"), dv_mean, dv_mix, distance,
+                number(row.get("delta_norm")))}  # fmt: skip
+    return {"sum_e": total, "mu_hat_displacement": mu, "grad_r_norm": g, "parity": parity,
+            "matched_k": matched, "mixtures": mixtures, "removals": removals}  # fmt: skip
+
+
+def bound_cases(bounds: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every quantity the endpoint bounds leave numerically unresolved, by its path."""
+    out: list[dict[str, Any]] = []
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, Mapping):
+            if node.get("flag") == "numerically_unresolved":
+                out.append({"at": path, "ratio": node.get("ratio")})
+            for key, value in node.items():
+                walk(value, f"{path}/{key}")
+
+    walk(bounds, "")
+    return out
 
 
 # ------------------------------------------------------------------ M2

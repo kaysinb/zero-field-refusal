@@ -29,7 +29,9 @@ points, θ₀ + δ_lin); ``tokens/``; ``force/`` and ``force-repeat/`` (M5 and i
 replay group's check under extension 2's second amendment, its current verdict; the group's
 ``replays/check-g<seed>.json`` under the earlier endpoint bound, where one was written, is read as
 history beside it and is not missed when absent) and ``engineering-check-numerical.json`` (the
-replay checks). An optional record that is absent, does
+replay checks). From a runs root, optionally: ``study5_diag/s<seed>/pairs.json``, diagnostic
+repeats of a replay's config (their step-25 distances enter e_i of ``endpoint_bounds``, extension
+2's second amendment; a seed without one is not missed). An optional record that is absent, does
 not read, is not of its kind or seed, or records its own absence (``available: false``) is null
 in its place with the reason, listed under ``missing`` too.
 
@@ -264,6 +266,25 @@ def endpoint_r(inputs: Inputs, analysis: Mapping[str, Any]) -> dict[int, float |
         value = ext2.number(found.get("r")) if found.get("kind") == (
             "study5-surrogate-endpoint") and found.get("seed") == seed else None  # fmt: skip
         out[seed] = value if value is not None else inputs.why(rel, f"{rel}: no r of seed {seed}")
+    return out
+
+
+def diagnostic_repeats(inputs: Inputs) -> dict[int, dict[str, Any] | str]:
+    """Diagnostic repeats of a replay's config (``study5_diag/s<seed>/pairs.json`` under a runs
+    root, a ``study5-pairs`` record), by seed; a seed without one is left out, not missed."""
+    out: dict[int, dict[str, Any] | str] = {}
+    for s in ext2.SEEDS:
+        rel = f"study5_diag/s{s}/pairs.json"
+        paths = [root / rel for root in inputs.roots if (root / rel).is_file()]
+        if not paths:
+            continue
+        try:
+            found = json.loads(inputs.reader.bytes(paths[0]))
+        except ValueError as exc:
+            out[s] = inputs.why(rel, f"{rel}: does not read ({type(exc).__name__})")
+            continue
+        out[s] = (found if isinstance(found, dict) and found.get("kind") == "study5-pairs"
+                  else inputs.why(rel, f"{rel}: not a study5-pairs record"))  # fmt: skip
     return out
 
 
@@ -764,12 +785,21 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     m5, force_floor = m5_section(inputs)
     m6, twins_floor = m6_section(inputs, records.name, rows, analysis_record, floors, edited,
                                  repeated)  # fmt: skip
+    envelope = ext2.endpoint_envelope(checks, replays, {ext2.FORCE_SEED: twins_floor},
+                                      diagnostic_repeats(inputs))  # fmt: skip
+    bounds = {"rule": ext2.ENDPOINT_RULE, "per_seed": ext2.seed_bounds(vectors, envelope),
+              "m1": ext2.m1_bounds(vectors, envelope),
+              "m3": ext2.m3_bounds(m3["per_seed"], vectors, envelope),
+              "m4": ext2.m4_bounds(m4, vectors, envelope)}  # fmt: skip
+    cases = ext2.cases(m2, m4, m6, checks)
+    cases["endpoint_unresolved"] = ext2.bound_cases(bounds)
     return {
         "kind": ext2.KIND,
         "version": ext2.VERSION,
         "registration": {"document": "docs/study5-preregistration.md",
                          "sections": ["Extension 2 (2026-11-11)",
-                                      "Extension 2 amendment (2026-11-11)"]},
+                                      "Extension 2 amendment (2026-11-11)",
+                                      "Extension 2 amendment 2 (2026-11-12)"]},
         "code": code,
         "archive_id": records.name,
         "registered_analysis": {"sha256": digest, "registered_sha256": REGISTERED_ANALYSIS_SHA256},
@@ -790,7 +820,8 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         "m6": m6,
         "floors": {"linear_repeat": linear_floor, "force_repeat": force_floor,
                    "twins": twins_floor},
-        "cases": ext2.cases(m2, m4, m6, checks),
+        "endpoint_bounds": bounds,
+        "cases": cases,
         "missing": inputs.missing,
         "superseded_labels": sorted(inputs.labels.superseded),
         "inputs": dict(sorted(inputs.reader.hashes.items())),

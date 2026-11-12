@@ -349,6 +349,94 @@ def test_a_contrast_floor_takes_both_sides_repeat_errors() -> None:
     assert flags == {"ratio": pytest.approx(5.0), "flag": "numerically_unresolved"}
 
 
+def test_e_i_is_the_largest_observed_endpoint_discrepancy_or_unbounded() -> None:
+    """Amendment 2: e_i over the replay check, the floor repeat and diagnostic repeats (their
+    step-25 rows only); endpoints that differ without a distance, or no check pair, leave e_i
+    None with the reason."""
+    checks = {
+        "engineering": {"pairs": [{"rerun": "run-a", "endpoint_tensors_equal": False}]},
+        "g1": {"pairs": [
+            {"rerun": "run-a", "endpoint_tensors_equal": True, "endpoint_distance": None},
+            {"rerun": "run-b", "endpoint_tensors_equal": False, "endpoint_distance": 2e-4},
+            {"rerun": "run-c", "endpoint_tensors_equal": False, "endpoint_distance": None}]},
+    }  # fmt: skip
+    floors = {1: {"available": True, "steps": {25: {"distance": 3e-6}, 2: {"distance": 9.0}}}}
+    diag = {2: {"kind": "study5-pairs", "pairs": [
+        {"a": {"step": "2"}, "b": {"step": "2"}, "distance": 5.0},
+        {"a": {"step": "25"}, "b": {"step": "25"}, "distance": 8e-4}]}}  # fmt: skip
+    found = ext2.endpoint_envelope(checks, {1: "run-a", 2: "run-b", 3: "run-c", 4: "run-d"},
+                                   floors, diag)  # fmt: skip
+    assert found[1]["e"] == pytest.approx(3e-6) and found[1]["reason"] is None
+    assert [x["source"] for x in found[1]["sources"]] == ["replay check g1", "floor repeat"]
+    assert found[2]["e"] == pytest.approx(8e-4)  # the diagnostic repeats' step 25, not step 2
+    assert found[3]["e"] is None and "without a distance" in found[3]["reason"]
+    assert found[4]["e"] is None and found[4]["reason"] == "no replay check pair"
+
+
+def test_m1_bounds_take_e_i_through_the_triangle_inequality() -> None:
+    vectors = {"seeds": [1, 2], "norms": [2.0, 4.0], "mean": {"norm": 1.0},
+               "grad_r": {"norm": 3.0, "per_run": [0.5, -0.1], "mean_vector": 0.2},
+               "leave_one_out": {"seeds": [1, 2], "p": [1.0, 0.009],
+                                 "norm": [4.0, 2.0]}}  # fmt: skip
+    envelope = {1: {"e": 0.0}, 2: {"e": 1e-3}}
+    b = ext2.m1_bounds(vectors, envelope)
+    assert b["sum_e"] == pytest.approx(1e-3)
+    assert b["mu_hat"]["bound"] == pytest.approx(5e-4) and b["mu_hat"]["flag"] == "resolved"
+    assert b["mean_dot_grad_r"]["bound"] == pytest.approx(1.5e-3)
+    one, two = b["per_seed"]["1"], b["per_seed"]["2"]
+    assert one["dot_grad_r"]["bound"] == 0.0 and one["dot_grad_r"]["floor_zero"] is True
+    assert one["mu_hat_minus_i"]["bound"] == pytest.approx(1e-3)  # e_2 / (n − 1)
+    assert one["p"]["bound"] == pytest.approx(2.0 * 2 * 1e-3 / 4.0)  # e_1 + ‖Δθ‖·2‖Δμ‖/‖μ‖
+    assert two["dot_grad_r"]["bound"] == pytest.approx(3e-3)
+    assert two["p"]["bound"] == pytest.approx(1e-3)
+    assert two["p"]["flag"] == "numerically_unresolved"  # 0.009 < 10 × 1e-3
+    unknown = ext2.m1_bounds(vectors, {1: {"e": None}, 2: {"e": 1e-3}})
+    assert unknown["sum_e"] is None and unknown["mu_hat"]["flag"] is None
+    assert unknown["per_seed"]["2"]["dot_grad_r"]["bound"] == pytest.approx(3e-3)
+
+
+def test_m3_and_m4_bounds_r_to_first_order_and_k_harm_not_propagated() -> None:
+    vectors = {"seeds": [1, 2, 3], "norms": [2.0, 1.0, 1.0], "mean": {"norm": 0.5},
+               "grad_r": {"norm": 3.0}, "gram": np.eye(3).tolist(),
+               "mixtures": [{"k": 1, "scale": 2.0}],
+               "removals": [{"seed": 1, "delta_norm": 2.0,
+                             "mixture": {"seeds": [2], "signs": [1], "scale": 3.0}}]}  # fmt: skip
+    envelope = {1: {"e": 1e-3}, 2: {"e": 2e-3}, 3: {"e": 0.0}}
+    m3 = ext2.m3_bounds({1: {"parts": {"0.1": {"odd": 1e-3, "even": 2e-5}}}}, vectors, envelope)
+    at = m3["1"]["amplitudes"]["0.1"]
+    assert at["displacement"] == pytest.approx(1e-4)
+    assert at["odd_r"]["uncertainty"] == pytest.approx(3e-4)  # ‖∇r‖·a·e_i
+    assert at["odd_r"]["kind"] == ext2.FIRST_ORDER
+    assert at["odd_r"]["flag"] == at["even_r"]["flag"] == "numerically_unresolved"
+    assert at["K_and_openings"]["propagated"] is False
+    assert at["K_and_openings"]["relative_displacement"] == pytest.approx(5e-4)
+    assert m3["1"]["amplitudes"]["1"]["odd_r"] is None  # no parts recorded at a = 1
+    m4 = {"parity": {"1x": {"contrast_plus_minus": {"r": 0.5}}},
+          "matched_k": {"plus": {"matched": {"c": 2.0}}},
+          "removals": {1: {"contrast_mean_minus_mixture": {"r": 1e-4}}}}  # fmt: skip
+    b = ext2.m4_bounds(m4, vectors, envelope)
+    assert b["mu_hat_displacement"] == pytest.approx(1e-3)  # Σe / n
+    parity = b["parity"]["1x"]["contrast_plus_minus"]
+    assert parity["displacement"] == pytest.approx(2e-3)
+    assert parity["parameters"]["distance"] == pytest.approx(1.0)  # 2‖μ̂‖
+    assert parity["parameters"]["flag"] == "resolved"
+    assert parity["r"]["uncertainty"] == pytest.approx(6e-3) and parity["r"]["flag"] == "resolved"
+    assert parity["K_and_harm"]["propagated"] is False
+    assert b["parity"]["2x"]["contrast_plus_minus"]["displacement"] == pytest.approx(4e-3)
+    assert b["matched_k"]["plus"]["displacement"] == pytest.approx(2e-3)
+    assert b["mixtures"]["1"]["displacement_natural"] == pytest.approx(5e-3)  # (1 + 2c)·Σe/n
+    removal = b["removals"]["1"]
+    assert removal["displacement_mean_removed"] == pytest.approx(2e-3)  # e_1 + Σ_{j≠1}e_j/2
+    assert removal["displacement_mixture_removed"] == pytest.approx(2e-3 + 2 * 3.0 * 2e-3)
+    distance = removal["contrast_mean_minus_mixture"]["parameters"]["distance"]
+    assert distance == pytest.approx(math.sqrt(2.5**2 + 0.5**2))  # ‖c·m − μ̂_{−1}‖ with G = I
+    r = removal["contrast_mean_minus_mixture"]["r"]
+    assert r["flag"] == "numerically_unresolved"  # 1e-4 against 3·0.016
+    found = ext2.bound_cases({"m4": b, "m3": m3})
+    assert {"at": "/m4/removals/1/contrast_mean_minus_mixture/r", "ratio": r["ratio"]} in found
+    assert all(x["at"] != "/m4/parity/1x/contrast_plus_minus/r" for x in found)
+
+
 def test_the_e2_guard_names_the_sealed_order_repeats() -> None:
     assert ext2.e2_repeat({"seed": 50006, "train": {"order_seed": 51006}}, "r1")
     assert ext2.e2_repeat({"seed": 50015, "train": {"order_seed": 52015}}, "r2")
@@ -991,7 +1079,9 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
     # the second amendment's records are the verdicts; an earlier bound's record is history
     assert groups["g50004"]["passed"] is True and groups["g50004"]["earlier"]["passed"] is False
     assert groups["g50008"]["earlier"] == {
-        "available": False, "reason": "replays/check-g50008.json: none written"}
+        "available": False,
+        "reason": "replays/check-g50008.json: none written",
+    }
     assert record["cases"]["checks_earlier_bound"] == [
         {"check": "g50000", "earlier_passed": True, "earlier_endpoint_bound": 1e-4,
          "passed": True, "endpoint_bound": None},
@@ -999,6 +1089,18 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
          "passed": True, "endpoint_bound": None},
     ]  # fmt: skip
     assert not [m for m in record["missing"] if m["what"].startswith("replays/check-")]
+    # amendment 2's bounds: e_i from the checks and the floor repeat; g50008's endpoints differ
+    # without a recorded distance, so nothing bounds them and the sums stay unbounded
+    bounds = record["endpoint_bounds"]
+    assert record["registration"]["sections"][-1] == "Extension 2 amendment 2 (2026-11-12)"
+    assert bounds["per_seed"]["50000"]["e"] == pytest.approx(2.5e-5)  # the floor at step 25
+    assert bounds["per_seed"]["50001"]["e"] == 0.0
+    assert bounds["per_seed"]["50008"]["e"] is None
+    assert "without a distance" in bounds["per_seed"]["50008"]["reason"]
+    assert bounds["m1"]["sum_e"] is None and bounds["m1"]["mu_hat"]["flag"] is None
+    assert bounds["m1"]["per_seed"]["50001"]["dot_grad_r"]["floor_zero"] is True
+    assert set(bounds["m3"]) == {str(s) for s in ext2.M_SEEDS}
+    assert isinstance(record["cases"]["endpoint_unresolved"], list)
     # the archived outcomes apart from the replays', with the replay's k/521 bound
     bound = {"answers_differing": 1, "bound": pytest.approx(1 / 521), "of": 521}
     assert m1["per_seed"]["50001"]["h_source"] == "archived"
@@ -1189,6 +1291,23 @@ def test_missing_optional_inputs_give_null_with_a_reason(pod4, tmp_path) -> None
     assert {"what": "tokens/s50003.json",
             "reason": "tokens/s50003.json: absent"} in record["missing"]  # fmt: skip
     assert record["criterion"]["status"] == "decided"
+
+
+def test_diagnostic_repeats_under_a_runs_root_enter_e_i(pod4, tmp_path) -> None:
+    """study5_diag/s<seed>/pairs.json under a runs root: its step-25 distances enter e_i; a seed
+    without one is not missed."""
+    row = {"a": {"kind": "ckpt", "step": "25"}, "b": {"kind": "ckpt", "step": "25"},
+           "distance": 7e-4, "norm_a": 2.0, "norm_b": 2.0, "cosine": 1.0, "dot": 4.0}  # fmt: skip
+    dump(pod4.runs / "study5_diag" / "s50001" / "pairs.json",
+         {"kind": "study5-pairs", "pairs": [row]})  # fmt: skip
+    out = tmp_path / "ext2.json"
+    assert call(pod4.argv(out)) == (0, "")
+    record = json.loads(out.read_text())
+    seed = record["endpoint_bounds"]["per_seed"]["50001"]
+    assert seed["e"] == pytest.approx(7e-4)
+    assert seed["sources"][-1] == {"source": "diagnostic repeats", "distance": 7e-4}
+    assert not [m for m in record["missing"] if "study5_diag" in m["what"]]
+    assert any("study5_diag/s50001/pairs.json" in key for key in record["inputs"])
 
 
 def test_a_seed_without_its_linear_record_withholds_the_criterion(pod4, tmp_path) -> None:
