@@ -25,13 +25,20 @@ the seeds where δ_lin did not diverge:
    −sign(h_control − h_stream), both differences nonzero (lower q, more harm); a tie or a pair
    whose δ_lin diverged (either order) does not agree. It passes with at least 5 of 6. h is the
    registered per-run harm share at η_l (the registered analysis's
-   ``descriptive.controls.order.per_seed.harmful``, control minus own η_l run).
+   ``descriptive.controls.order.per_seed.harmful``, control minus own η_l run). A pair whose
+   |q_control − q_stream| is below k times its floor (the linear repeat's |q_lin − q′_lin| on
+   seed 50000, the amendment's floor of q) counts as a tie: it does not agree, reason
+   "numerically unresolved (|Δq| < k floors)". k (``PAIR_FLOORS``, default 10, the amendment's
+   one order of magnitude; ``--pair-floors`` of the CLI) is recorded as
+   ``part3_pairs.unresolved_floors``. A zero floor resolves any nonzero Δq; a missing floor
+   withholds the verdict (below).
 
 ``passed`` is all three, ``primary_predictor`` ``q`` when it passed and ``ln_K_harmful_at_K*``
 otherwise. q is the δ_lin's (``q_lin``). An input the criterion needs that is missing (a seed's
-linear record or Δr, a control's linear record, a pair's registered harm difference) withholds
-the verdict: ``status`` ``withheld``, every part's numbers over what exists, ``passed`` and
-``primary_predictor`` None, each missing input named.
+linear record or Δr, a control's linear record, a pair's registered harm difference, the floor
+of Δq for a pair whose δ_lin did not diverge) withholds the verdict: ``status`` ``withheld``,
+every part's numbers over what exists, ``passed`` and ``primary_predictor`` None, each missing
+input named.
 
 **Reading rules** where the registration leaves a detail open:
 
@@ -53,8 +60,8 @@ the verdict: ``status`` ``withheld``, every part's numbers over what exists, ``p
   and the relative difference ‖δ_lin − δ̂‖/‖δ̂‖ (by the repeat's ‖δ_lin − δ′_lin‖/‖δ_lin‖);
   the force repeat (panel 59990, step 5, ε = 10⁻²) floors every projection and ‖D f̂_t‖ at every
   step, ε and panel, and the panels' differences; the twins' floor (seed 50000) floors the
-  distance and the r difference of every seed's twins at the same step. The criterion's verdict
-  does not read the flags: they stand beside it.
+  distance and the r difference of every seed's twins at the same step. Of the criterion, only
+  part 3 reads a floor (its k-floor rule above); the other flags stand beside it.
 - *M3 locality* (the analysis's reading rule): the odd part [r(a) − r(−a)]/2 is local where
   odd(a)/odd(a/2) lies in [1.5, 2.5] (it halves with a), the even part [r(a) + r(−a)]/2 − r(θ₀)
   where even(a)/even(a/2) lies in [3, 5] (it quarters); a ratio with a zero denominator is None,
@@ -115,6 +122,7 @@ UTILITY = ("benchmark_accuracy", "factual_accuracy", "heldout_nll_per_token")
 MEASURES = ("K_benign", "K_harmful", *UTILITY)
 CRITERION = {"permutations": 100_000, "rng_seed": 20261112, "alpha": 0.05,
              "ratio_bounds": (0.5, 2.0), "pairs": len(M_SEEDS), "agreements_needed": 5}  # fmt: skip
+PAIR_FLOORS = 10.0  # criterion part 3: |Δq| below this many floors counts as a tie
 PRIMARY = {True: "q", False: "ln_K_harmful_at_K*"}
 P_FORMULA = "(1 + #{rho_perm >= rho_obs}) / (1 + 100000)"
 
@@ -233,12 +241,18 @@ def permutation_greater(q: Sequence[float], dr: Sequence[float], *, permutations
 def criterion(own: Mapping[int, Mapping[str, Any]], pairs: Mapping[int, Mapping[str, Any]], *,
               seeds: Sequence[int] = SEEDS, pair_seeds: Sequence[int] = M_SEEDS,
               permutations: int = CRITERION["permutations"],
-              rng_seed: int = CRITERION["rng_seed"]) -> dict[str, Any]:  # fmt: skip
+              rng_seed: int = CRITERION["rng_seed"],
+              pair_floors: float = PAIR_FLOORS) -> dict[str, Any]:  # fmt: skip
     """The δ_lin validation criterion (module docstring).
 
     ``own[seed]``: ``q_lin``, ``diverged`` (bool), ``delta_r`` and ``missing`` (a reason that
     withholds the verdict, or None). ``pairs[seed]``: ``q_control``, ``q_stream``,
-    ``diverged`` (either order's δ_lin), ``h_difference`` (control − stream) and ``missing``."""
+    ``diverged`` (either order's δ_lin), ``h_difference`` (control − stream), ``missing``,
+    ``q_floor`` (the floor of Δq, None when missing) and ``q_floor_reason`` (why it is missing).
+    ``pair_floors`` is k of part 3's rule; ``ValueError`` unless finite and positive."""
+    k = number(pair_floors)
+    if k is None or k <= 0:
+        raise ValueError(f"pair floors {pair_floors!r}: a finite positive number is needed")
     withheld = []
     for s in seeds:
         found = own.get(s)
@@ -287,21 +301,30 @@ def criterion(own: Mapping[int, Mapping[str, Any]], pairs: Mapping[int, Mapping[
             continue
         dq = difference(found.get("q_control"), found.get("q_stream"))
         dh = number(found.get("h_difference"))
+        floor = number(found.get("q_floor"))
         row = {"seed": s, "q_control": found.get("q_control"), "q_stream": found.get("q_stream"),
-               "q_difference": dq, "h_difference": dh, "agrees": False,
-               "reason": None}  # fmt: skip
+               "q_difference": dq, "h_difference": dh, "q_floor": floor,
+               "floor_ratio": None if dq is None or not floor else abs(dq) / abs(floor),
+               "agrees": False, "reason": None}  # fmt: skip
         if found.get("diverged"):
             row["reason"] = "δ_lin diverged"
+        elif floor is None:
+            why = found.get("q_floor_reason") or "no floor"
+            withheld.append(f"pair s{s}: no floor of Δq ({why})")
+            row["reason"] = f"missing: no floor of Δq ({why})"
         elif dq is None or dh is None:
             row["reason"] = "a difference is not finite"
         elif dq == 0 or dh == 0:
             row["reason"] = "a tie"
+        elif floor != 0 and abs(dq) < k * abs(floor):
+            row["reason"] = "numerically unresolved (|Δq| < k floors)"
         else:
             row["agrees"] = sign(dq) == -sign(dh)
             agreements += row["agrees"]
         rows.append(row)
     third = {"pairs": rows, "agreements": agreements,
              "needed": CRITERION["agreements_needed"], "of": len(pair_seeds),
+             "unresolved_floors": k,
              "passed": agreements >= CRITERION["agreements_needed"]}  # fmt: skip
 
     out: dict[str, Any] = {

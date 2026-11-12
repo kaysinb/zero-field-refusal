@@ -5,7 +5,7 @@ validation criterion among them. The computations and the reading rules are
 ``analysis.study5_ext2``'s.
 
     python -m zero_field_refusal.analysis.study5_ext2_cli --records DIR --runs-root DIR
-        [--runs-root DIR ...] --analysis FILE --out FILE
+        [--runs-root DIR ...] --analysis FILE --out FILE [--pair-floors K]
 
 **Inputs.** --records is pod 4's records folder, ``<runs>/study5_records/pod4-<date>/`` as
 ``scripts/study5_campaigns.py`` (``pod4_plan``) lays it out; its name is pod 4's archive id. Each
@@ -45,7 +45,12 @@ prompt texts from ``DATA_DIR``), imported only here: its module imports the GPU 
 torch among them, though nothing is computed with them, and ``analysis.study5_ext2`` stays
 torch-free. A run without labels (before the judge) gives its harm as null with the reason.
 
-**Refusals** (exit 1, nothing written): --out exists; the records folder, ``vectors/m1/
+**The criterion's part 3** counts a pair whose |Δq| is below k floors of Δq (the linear
+repeat's) as a tie; k is ``--pair-floors`` (default ``study5_ext2.PAIR_FLOORS``, 10), recorded as
+``criterion.part3_pairs.unresolved_floors``.
+
+**Refusals** (exit 1, nothing written): a checkout that is not clean or of no known commit; --out
+exists; --pair-floors not a finite positive number; the records folder, ``vectors/m1/
 record.json`` or the linear block missing; the analysis record not the registered one; an E2 run
 directory. **The record** (--out, never overwritten): every quantity with its reasons, every
 input's sha256 (``inputs``), the checkout's git state. Strict JSON; numbers, ids, states and
@@ -623,7 +628,24 @@ def r_theta0_section(
 # ------------------------------------------------------------------ the analysis
 
 
+def own_code() -> dict[str, Any]:
+    """This checkout's git state: a clean checkout of a known commit, as the registered
+    analysis's."""
+    state = git_state()
+    if not state.get("commit") or state.get("dirty") is not False:
+        refuse("the analysis runs from a clean checkout of a known commit")
+    return {
+        "commit": state["commit"],
+        "dirty": False,
+        "module": "zero_field_refusal.analysis.study5_ext2",
+    }
+
+
 def analysis(args: argparse.Namespace) -> dict[str, Any]:
+    code = own_code()
+    number = ext2.number(args.pair_floors)
+    if number is None or number <= 0:
+        refuse(f"--pair-floors {args.pair_floors!r}: a finite positive number is needed")
     records = Path(args.records)
     if not records.is_dir():
         refuse(f"{records}: no records folder")
@@ -673,6 +695,9 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
                   "diverged": bool(row.get("diverged")), "missing": missing}  # fmt: skip
     pairs = {}
     controls_per_seed = analysis_record["descriptive"]["controls"]["order"]["per_seed"]
+    floor_reason = None
+    if floors.get("q_lin") is None:  # the linear repeat's floor of q: part 3 needs it
+        floor_reason = f"the linear repeat: {linear_floor.get('reason') or 'no q_lin floor'}"
     for s in ext2.M_SEEDS:
         control, stream = controls.get(s) or {}, rows.get(s) or {}
         dh = per_seed_measure(controls_per_seed, "harmful", s)
@@ -686,9 +711,10 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         pairs[s] = {"q_control": (control.get("delta_lin") or {}).get("q"),
                     "q_stream": (stream.get("delta_lin") or {}).get("q"),
                     "diverged": bool(control.get("diverged") or stream.get("diverged")),
-                    "h_difference": dh, "missing": missing}  # fmt: skip
-    criterion = ext2.criterion(own, pairs)
-    for row in criterion["part3_pairs"]["pairs"]:  # beside the verdict, which does not read them
+                    "h_difference": dh, "missing": missing, "q_floor": floors.get("q_lin"),
+                    "q_floor_reason": floor_reason}  # fmt: skip
+    criterion = ext2.criterion(own, pairs, pair_floors=args.pair_floors)
+    for row in criterion["part3_pairs"]["pairs"]:  # the flag beside the k-floor rule
         row["q_difference_floor"] = ext2.resolution(row.get("q_difference"), floors.get("q_lin"))
 
     m3 = m3_section(inputs, rows)
@@ -701,7 +727,7 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         "registration": {"document": "docs/study5-preregistration.md",
                          "sections": ["Extension 2 (2026-11-11)",
                                       "Extension 2 amendment (2026-11-11)"]},
-        "code": {**git_state(), "module": "zero_field_refusal.analysis.study5_ext2"},
+        "code": code,
         "archive_id": records.name,
         "registered_analysis": {"sha256": digest, "registered_sha256": REGISTERED_ANALYSIS_SHA256},
         "r_theta0": r_theta0_section(rows, m3, m6, twins_floor),
@@ -770,6 +796,8 @@ def parser_of() -> argparse.ArgumentParser:
     parser.add_argument("--runs-root", type=Path, action="append", required=True)
     parser.add_argument("--analysis", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    # criterion part 3: a pair's |Δq| below this many floors of Δq counts as a tie
+    parser.add_argument("--pair-floors", type=float, default=ext2.PAIR_FLOORS)
     return parser
 
 

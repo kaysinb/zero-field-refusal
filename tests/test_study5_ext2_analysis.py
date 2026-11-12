@@ -100,9 +100,10 @@ def own_rows(n: int = 12, *, slope: float = 0.9, diverged=(), noise: float = 0.0
 
 
 def pair_rows(dq=(-0.01, 0.02, -0.03, 0.01, -0.02, 0.01), dh=(0.1, -0.1, 0.2, -0.1, 0.3, 0.1),
-              diverged=()) -> dict:  # fmt: skip
-    return {s: {"q_control": 0.5 + a, "q_stream": 0.5, "h_difference": b,
-                "diverged": s in diverged, "missing": None}
+              diverged=(), floor: float | None = 1e-6) -> dict:  # fmt: skip
+    return {s: {"q_control": a, "q_stream": 0.0, "h_difference": b, "diverged": s in diverged,
+                "missing": None, "q_floor": floor,
+                "q_floor_reason": None if floor is not None else "the linear repeat: absent"}
             for s, a, b in zip(ext2.M_SEEDS, dq, dh, strict=True)}  # fmt: skip
 
 
@@ -141,6 +142,46 @@ def test_each_part_can_fail_and_then_the_predictor_is_ln_k_harmful() -> None:
     flipped = {s: {**r, "q_lin": -r["q_lin"]} for s, r in own.items()}
     found = ext2.criterion(flipped, pair_rows(), seeds=list(own), permutations=2000)
     assert not found["part1_rank"]["passed"] and found["primary_predictor"] == "ln_K_harmful_at_K*"
+
+
+def test_a_pair_below_k_floors_of_dq_is_a_tie_and_k_is_recorded() -> None:
+    """|Δq| just below 10 floors: numerically unresolved, no agreement (4 of 6, part 3 fails);
+    just above: it agrees. With k = 5 the first resolves too. A zero floor resolves any nonzero
+    Δq."""
+    own = own_rows()
+    floor = 1e-3
+    below = pair_rows(dq=(-0.01, 0.02, -0.03, 0.00999, -0.02, 0.01), floor=floor)
+    found = ext2.criterion(own, below, seeds=list(own), permutations=2000)
+    third = found["part3_pairs"]
+    assert third["unresolved_floors"] == 10.0 and third["agreements"] == 4
+    row = third["pairs"][3]
+    assert row["agrees"] is False and row["reason"] == "numerically unresolved (|Δq| < k floors)"
+    assert row["floor_ratio"] == pytest.approx(9.99) and row["q_floor"] == floor
+    assert found["status"] == "decided" and found["passed"] is False
+    assert found["primary_predictor"] == "ln_K_harmful_at_K*"
+    above = pair_rows(dq=(-0.01, 0.02, -0.03, 0.01001, -0.02, 0.01), floor=floor)
+    found = ext2.criterion(own, above, seeds=list(own), permutations=2000)
+    assert found["part3_pairs"]["pairs"][3]["agrees"] is True and found["passed"] is True
+    found = ext2.criterion(own, below, seeds=list(own), permutations=2000, pair_floors=5)
+    assert found["part3_pairs"]["unresolved_floors"] == 5.0
+    assert found["part3_pairs"]["pairs"][3]["agrees"] is True and found["passed"] is True
+    zero = pair_rows(dq=(-0.01, 0.02, -0.03, 1e-12, -0.02, 0.01), floor=0.0)
+    assert ext2.criterion(own, zero, seeds=list(own), permutations=200)["part3_pairs"][
+        "pairs"][3]["agrees"] is True  # fmt: skip
+    with pytest.raises(ValueError, match="positive"):
+        ext2.criterion(own, below, seeds=list(own), permutations=10, pair_floors=0)
+
+
+def test_a_missing_floor_of_dq_withholds_the_verdict() -> None:
+    own = own_rows()
+    found = ext2.criterion(own, pair_rows(floor=None), seeds=list(own), permutations=200)
+    assert found["status"] == "withheld" and found["passed"] is None
+    assert found["primary_predictor"] is None
+    assert found["withheld"][0] == "pair s50000: no floor of Δq (the linear repeat: absent)"
+    # a diverged pair needs no floor
+    diverged = pair_rows(floor=None, diverged=ext2.M_SEEDS)
+    found = ext2.criterion(own, diverged, seeds=list(own), permutations=200)
+    assert found["status"] == "decided" and found["part3_pairs"]["agreements"] == 0
 
 
 def test_a_zero_mean_delta_r_fails_the_scale_part() -> None:
@@ -802,6 +843,7 @@ class Pod4:
 @pytest.fixture
 def pod4(tmp_path, monkeypatch) -> Pod4:
     monkeypatch.setattr(cli, "harmful_prompts", lambda cfg: PROMPTS)
+    monkeypatch.setattr(ecli, "git_state", lambda: {"commit": "a" * 40, "dirty": False})
     found = Pod4(tmp_path)
     monkeypatch.setattr(ecli, "REGISTERED_ANALYSIS_SHA256", found.analysis_sha)
     return found
@@ -868,7 +910,7 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
         stats.spearmanr(q, dr, alternative="greater").pvalue
     )
     assert c["part2_scale"]["ratio"] == pytest.approx(np.mean(q) / np.mean(dr))
-    assert c["part3_pairs"]["agreements"] == 5
+    assert c["part3_pairs"]["agreements"] == 5 and c["part3_pairs"]["unresolved_floors"] == 10
     assert [p["agrees"] for p in c["part3_pairs"]["pairs"]] == [True] * 5 + [False]
     assert c["passed"] is True and c["primary_predictor"] == "q"
     assert c["part3_pairs"]["pairs"][0]["q_difference_floor"]["flag"] == "resolved"
@@ -1032,6 +1074,45 @@ def test_a_missing_required_record_refuses(pod4, tmp_path, remove, why) -> None:
     out = tmp_path / "ext2.json"
     code, message = call(pod4.argv(out))
     assert code == 1 and why in message and not out.exists()
+
+
+def test_a_dirty_checkout_refuses(pod4, tmp_path, monkeypatch) -> None:
+    out = tmp_path / "ext2.json"
+    for state in ({"commit": "a" * 40, "dirty": True}, {"commit": None, "dirty": None}):
+        monkeypatch.setattr(ecli, "git_state", lambda state=state: state)
+        code, message = call(pod4.argv(out))
+        assert code == 1 and "clean checkout" in message and not out.exists()
+
+
+def test_the_pair_floors_from_the_command_line(pod4, tmp_path) -> None:
+    """--pair-floors 6000: the pairs with |Δq| = 0.01 (5000 floors of the repeat's 2e-6: seeds
+    50000, 50003 and 50005) count as ties, so part 3 fails with 3 of 6; the record states the k
+    used. A k that is not a finite positive number refuses."""
+    out = tmp_path / "ext2.json"
+    assert call([*pod4.argv(out), "--pair-floors", "6000"]) == (0, "")
+    c = json.loads(out.read_text())["criterion"]
+    third = c["part3_pairs"]
+    assert third["unresolved_floors"] == 6000.0 and third["agreements"] == 3
+    reasons = {p["seed"]: p["reason"] for p in third["pairs"]}
+    unresolved = "numerically unresolved (|Δq| < k floors)"
+    assert reasons[50000] == reasons[50003] == reasons[50005] == unresolved
+    assert {reasons[s] for s in (50001, 50002, 50004)} == {None}
+    assert c["passed"] is False and c["primary_predictor"] == "ln_K_harmful_at_K*"
+    for bad in ("0", "-1", "nan"):
+        other = tmp_path / f"bad{bad}.json"
+        code, message = call([*pod4.argv(other), "--pair-floors", bad])
+        assert code == 1 and "--pair-floors" in message and not other.exists()
+
+
+def test_without_the_linear_repeat_the_criterion_is_withheld(pod4, tmp_path) -> None:
+    import shutil
+
+    shutil.rmtree(pod4.records / "linear-repeat")
+    out = tmp_path / "ext2.json"
+    assert call(pod4.argv(out)) == (0, "")
+    c = json.loads(out.read_text())["criterion"]
+    assert c["status"] == "withheld" and c["primary_predictor"] is None
+    assert c["withheld"][0].startswith("pair s50000: no floor of Δq (the linear repeat: ")
 
 
 def test_another_analysis_record_than_the_registered_one_refuses(pod4, tmp_path,
