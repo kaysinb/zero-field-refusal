@@ -141,6 +141,8 @@ OTHER = (
     # study 5's analysis CLI: it reads study 3's labels only through study3_final.cohort_harm
     ANALYSIS / "study5_analysis_cli.py",
     ANALYSIS / "study5_reference.py",  # study 5's reference consensus: pure, it reads no file
+    ANALYSIS / "study5_ext1.py",  # study 5's extension 1 record (E1 and E2)
+    ANALYSIS / "study5_e2_test.py",  # study 5's E2 test, through study5_ext1's extraction
     ANALYSIS / "runs.py",
     ANALYSIS / "simulate.py",
     ANALYSIS / "stage_a.py",
