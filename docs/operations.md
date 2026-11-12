@@ -3403,10 +3403,13 @@ pod 2's endpoint records (each by the sha256 the registered analysis read it wit
 and the labels through the registered label reader. It writes one record, never over an existing
 file: every quantity of M1–M6 per seed and point, means with seed-level standard errors, every
 diverged, near-bound, unbracketed or out-of-tolerance case, the amendment's floors with each
-quantity's |effect|/floor flag (`resolved` from 10), and the δ_lin criterion (`passed`,
+quantity's |effect|/floor flag (`resolved` from 10; a contrast of two separately computed
+quantities against both sides' repeat errors; each floor one repeat on one seed, applied to
+all), and the δ_lin criterion (`passed`,
 `primary_predictor`), withheld while one of its inputs is missing. In the criterion's
 order-control pairs, a pair whose |Δq| is below k floors of Δq (the linear repeat's) counts as a
-tie, k = 10 unless `--pair-floors` gives another (recorded as `part3_pairs.unresolved_floors`);
+tie, k = 10 unless `--pair-floors` gives another (recorded as `part3_pairs.unresolved_floors`;
+the floor is fixed, the one q repeat difference);
 without that floor, or without a finite q on both sides of a pair whose δ_lin did not diverge,
 the criterion is withheld; each side is known by its record's order (the stream order, the
 control's order seed). The stream order's outcomes are pod 2's archived runs', kept apart from

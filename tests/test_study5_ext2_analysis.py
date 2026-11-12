@@ -321,6 +321,34 @@ def test_a_linear_row_reads_k_absence_and_the_bound() -> None:
     assert ext2.linear_row(far)["near_bound"]["numerically_ambiguous"] is None  # no floor
 
 
+def test_a_contrast_floor_takes_both_sides_repeat_errors() -> None:
+    """One floor given stands for both sides (2 ×); two are summed; a missing one gives none. The
+    δ_lin − δ̂ contrast takes both vectors' repeat differences: a δ_lin repeated bit for bit no
+    longer resolves every nonzero contrast while δ̂ varies."""
+    assert ext2.contrast_floor(3e-6) == pytest.approx(6e-6)
+    assert ext2.contrast_floor(1e-6, -2e-6) == pytest.approx(3e-6)
+    assert ext2.contrast_floor(None) is None and ext2.contrast_floor(1e-6, None) is None
+
+    def row(sha: str, q: float) -> dict:
+        return {"available": True, "vector_sha256": {"delta_hat": f"h{sha}",
+                                                     "delta_lin": f"l{sha}"},
+                "delta_hat": {"q": q}, "delta_lin": {"q": q}}  # fmt: skip
+
+    def pairs(kind: str, distance: float, norm: float) -> dict:
+        return {"kind": "study5-pairs", "pairs": [{
+            "a": {"sha256": f"{kind}a"}, "b": {"sha256": f"{kind}b"}, "dot": 1.0,
+            "norm_a": norm, "norm_b": norm, "cosine": 1.0, "distance": distance}]}  # fmt: skip
+
+    floor = ext2.linear_floor(row("a", 0.1), row("b", 0.1), pairs("h", 2e-4, 0.5),
+                              pairs("l", 0.0, 2.0))  # fmt: skip
+    found = floor["floors"]
+    assert found["vector_lin_relative"] == 0.0
+    assert found["contrast_lin_hat_relative"] == pytest.approx(2e-4 / 2.0)
+    small = {"lin_against_hat": {"difference_over_lin_norm": 5e-4}}
+    flags = ext2.m2_floors(small, found)["lin_against_hat_over_lin_norm"]
+    assert flags == {"ratio": pytest.approx(5.0), "flag": "numerically_unresolved"}
+
+
 def test_the_e2_guard_names_the_sealed_order_repeats() -> None:
     assert ext2.e2_repeat({"seed": 50006, "train": {"order_seed": 51006}}, "r1")
     assert ext2.e2_repeat({"seed": 50015, "train": {"order_seed": 52015}}, "r2")
@@ -984,6 +1012,8 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
     assert [p["agrees"] for p in c["part3_pairs"]["pairs"]] == [True] * 5 + [False]
     assert c["passed"] is True and c["primary_predictor"] == "q"
     assert c["part3_pairs"]["pairs"][0]["q_difference_floor"]["flag"] == "resolved"
+    # part 3 keeps its fixed floor: the one q repeat difference, not the contrast's 2 ×
+    assert [p["q_floor"] for p in c["part3_pairs"]["pairs"]] == [pytest.approx(2e-6)] * 6
 
     # M2: δ̂ and δ_lin per seed, their cosines with Δθ from the pairs records
     m2 = record["m2"]
@@ -996,6 +1026,9 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
     assert m2["rho_q_delta_r"]["delta_lin"]["n"] == 39
     pair = m2["control_pairs"]["50000"]
     assert pair["q_lin"]["difference"] == pytest.approx(pod4.dq[50000])
+    # a descriptive contrast of two q's: both repeat errors, 2 × the one measured floor
+    assert pair["q_lin"]["contrast_floor"] == pytest.approx(4e-6)
+    assert pair["q_lin"]["floor"]["ratio"] == pytest.approx(0.01 / 4e-6)
     assert pair["signs"]["q_lin"]["q_opposite_harm"] is True
     assert sorted(m2["e2_predictions"]) == sorted(
         f"s{s}-order{k}" for s in ext2.E2_SEEDS for k in (1, 2)
@@ -1015,7 +1048,10 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
     assert row["floors"]["delta_lin"]["q"]["flag"] == "resolved"
     # one normalization: ‖δ_lin − δ̂‖/‖δ_lin‖ against the repeat's ‖δ_lin − δ′_lin‖/‖δ_lin‖
     assert row["lin_against_hat"]["difference_over_lin_norm"] == pytest.approx(1.2 / 1.5)
-    assert row["floors"]["lin_against_hat_over_lin_norm"]["ratio"] == pytest.approx(0.8 / 1e-5)
+    # both vectors' repeat errors: (‖δ_lin − δ′_lin‖ + ‖δ̂ − δ̂′‖)/‖δ_lin‖ = (1.5e-5 + 5e-6)/1.5
+    both = (1.5e-5 + 0.5e-5) / 1.5
+    assert floors["contrast_lin_hat_relative"] == pytest.approx(both)
+    assert row["floors"]["lin_against_hat_over_lin_norm"]["ratio"] == pytest.approx(0.8 / both)
     assert row["floors"]["delta_hat"]["K_harmful"] == {
         "ratio": None,
         "floor_zero": True,
@@ -1056,6 +1092,8 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
     base = 0.3 * 5 * (1 + 0.1 * 0.01)
     assert agree["difference"] == pytest.approx(base - 1.2 * base)
     assert agree["relative"] == pytest.approx(0.2 * base / (1.1 * base))
+    # the panels' difference against both panels' repeat errors: 2 × the projection's floor
+    assert agree["floor"]["ratio"] == pytest.approx(0.2 * base / (2 * base * 1e-4))
     conv = m5["panels"]["59990"]["steps"]["10"]["convergence"]["0.05"]
     assert conv["Dforce_norm"] == pytest.approx(abs((1.005 - 1.001) / 1.001))
     force = record["floors"]["force_repeat"]

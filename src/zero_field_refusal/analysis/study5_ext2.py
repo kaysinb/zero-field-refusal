@@ -28,8 +28,9 @@ the seeds where δ_lin did not diverge:
    ``descriptive.controls.order.per_seed.harmful``, control minus own η_l run). Each side is
    known by its record's ``order``, not its folder: ``"stream"`` for the seed's own, an
    ``order_seed`` equal to the seed and no edit for the control's. A pair whose
-   |q_control − q_stream| is below k times its floor (the linear repeat's |q_lin − q′_lin| on
-   seed 50000, the amendment's floor of q) counts as a tie: it does not agree, reason
+   |q_control − q_stream| is below k times its floor (fixed: the linear repeat's one
+   |q_lin − q′_lin| on seed 50000, the amendment's floor of q, not the two-sided floor of the
+   descriptive Δq flags) counts as a tie: it does not agree, reason
    "numerically unresolved (|Δq| < k floors)". k (``PAIR_FLOORS``, default 10, the amendment's
    one order of magnitude; ``--pair-floors`` of the CLI) is recorded as
    ``part3_pairs.unresolved_floors``. A zero floor resolves any nonzero Δq; a missing floor
@@ -54,21 +55,29 @@ input named.
   against ε), and the largest over the check steps.
 - *The vector floor's normalization:* the linear repeat's vector floor is
   ‖δ_lin − δ′_lin‖/‖δ_lin‖ (seed 50000), and every quantity compared with it is divided by the
-  same norm, that of the δ_lin it measures: ‖δ_lin − δ̂‖/‖δ_lin‖, and |max_t ‖δ_lin,t‖ − bound| /
-  max_t ‖δ_lin,t‖ (one denominator on both sides, the δ_lin's own norm).
+  same norm, that of the δ_lin it measures: |max_t ‖δ_lin,t‖ − bound| / max_t ‖δ_lin,t‖ (one
+  denominator on both sides, the δ_lin's own norm). The contrast ‖δ_lin − δ̂‖/‖δ_lin‖ of two
+  separately computed vectors takes both repeat errors, conservatively:
+  (‖δ_lin − δ′_lin‖ + ‖δ̂ − δ̂′‖)/‖δ_lin‖ (``contrast_lin_hat_relative``).
 - *Near the divergence bound* (the amendment's "numerically ambiguous"): ``bound_ratio`` is the
   largest finite ‖δ_lin,t‖ over the bound 10‖Δθ_i‖; a case is ambiguous when |max_t ‖δ_lin,t‖ −
   bound| / max_t ‖δ_lin,t‖ ≤ 10 × the vector floor (above), the amendment's one order of
   magnitude; no floor, no flag. It is reported, never resolved.
 - *Floors* (the amendment): beside a quantity with a floor, ratio = |effect| / floor and the flag
   ``resolved`` when the ratio is at least 10, else ``numerically_unresolved``; a zero floor
-  resolves any nonzero effect (ratio None, ``floor_zero``). The linear repeat (seed 50000) floors
-  q, K and the cosines with Δθ of every seed and order, and the pair and edit differences of q;
-  and ‖δ_lin − δ̂‖/‖δ_lin‖ (by the vector floor, one normalization: above);
-  the force repeat (panel 59990, step 5, ε = 10⁻²) floors every projection and ‖D f̂_t‖ at every
-  step, ε and panel, and the panels' differences; the twins' floor (seed 50000) floors the
-  distance and the r difference of every seed's twins at the same step. Of the criterion, only
-  part 3 reads a floor (its k-floor rule above); the other flags stand beside it.
+  resolves any nonzero effect (ratio None, ``floor_zero``). Each floor is a proxy: one repeat on
+  one seed (the linear repeat on 50000; the force repeat on panel 59990, step 5, ε = 10⁻²; the
+  twins' floor on 50000), applied to every seed, step, ε and panel. A quantity computed once is
+  compared with its own repeat difference: the linear repeat floors q, K and the cosines with Δθ
+  of every seed and order; the force repeat every projection and ‖D f̂_t‖. A descriptive contrast
+  of two separately computed quantities takes both sides' repeat errors (``contrast_floor``):
+  the order-control pairs' and the edited orders' Δq (q of one order minus the stream order's)
+  by floor(q) + floor(q) = 2 × the one measured q floor; the panels' projection differences by
+  2 × the projection's floor; ‖δ_lin − δ̂‖/‖δ_lin‖ by the sum of the two vectors' repeat
+  differences (above). The twins' floor is already the distance and r difference of two runs
+  of one order, the contrast's own floor, and is applied as measured. The criterion's part 3
+  keeps its fixed floor, the one q repeat difference |q_lin − q′_lin| (its k-floor rule above);
+  the other flags stand beside it and decide nothing.
 - *M3 locality* (the analysis's reading rule): the odd part [r(a) − r(−a)]/2 is local where
   odd(a)/odd(a/2) lies in [1.5, 2.5] (it halves with a), the even part [r(a) + r(−a)]/2 − r(θ₀)
   where even(a)/even(a/2) lies in [3, 5] (it quarters); a ratio with a zero denominator is None,
@@ -622,13 +631,13 @@ def linear_row(
 
 
 def m2_floors(row: Mapping[str, Any], floors: Mapping[str, Any]) -> dict[str, Any]:
-    """The linear repeat's floors beside one row's q, K and cosines, and beside
-    ‖δ_lin − δ̂‖/‖δ_lin‖ the vector floor ‖δ_lin − δ′_lin‖/‖δ_lin‖ (one normalization, module
-    docstring)."""
+    """The linear repeat's floors beside one row's q, K and cosines, and beside the contrast
+    ‖δ_lin − δ̂‖/‖δ_lin‖ both vectors' repeat errors, (‖δ_lin − δ′_lin‖ + ‖δ̂ − δ̂′‖)/‖δ_lin‖
+    (module docstring)."""
     out: dict[str, Any] = {
         "lin_against_hat_over_lin_norm": resolution(
             (row.get("lin_against_hat") or {}).get("difference_over_lin_norm"),
-            floors.get("vector_lin_relative"),
+            floors.get("contrast_lin_hat_relative"),
         )
     }
     for kind, tag in (("delta_hat", "hat"), ("delta_lin", "lin")):
@@ -661,12 +670,26 @@ def prediction(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def q_contrast(edited: Mapping[str, Any], stream: Mapping[str, Any],
                floors: Mapping[str, Any]) -> dict[str, Any]:  # fmt: skip
-    """q of an order minus q of the stream order, for δ̂ and δ_lin, with the linear floor."""
+    """q of an order minus q of the stream order, for δ̂ and δ_lin, with the floor of the
+    contrast: both q's repeat errors, 2 × the linear repeat's q floor (``contrast_floor``)."""
     out = {}
     for kind, tag in (("delta_hat", "hat"), ("delta_lin", "lin")):
         dq = difference((edited.get(kind) or {}).get("q"), (stream.get(kind) or {}).get("q"))
-        out[f"q_{tag}"] = {"difference": dq, "floor": resolution(dq, floors.get(f"q_{tag}"))}
+        floor = contrast_floor(floors.get(f"q_{tag}"))
+        out[f"q_{tag}"] = {"difference": dq, "contrast_floor": floor,
+                           "floor": resolution(dq, floor)}  # fmt: skip
     return out
+
+
+def contrast_floor(*floors: Any) -> float | None:
+    """The floor of a contrast of two separately computed quantities: the sum of both sides'
+    repeat errors; one floor given stands for both sides (2 ×, the one measured). None when one
+    is missing."""
+    values = [number(f) for f in floors]
+    if not values or any(v is None for v in values):
+        return None
+    values = [abs(v) for v in values]
+    return 2 * values[0] if len(values) == 1 else math.fsum(values)
 
 
 def control_pair(
@@ -914,7 +937,8 @@ def relative_to(value: Any, base: Any) -> float | None:
 def panels_agreement(a: Mapping[int, Mapping[str, Any]], b: Mapping[int, Mapping[str, Any]],
                      floors: Mapping[str, Any]) -> dict[str, Any]:  # fmt: skip
     """The two panels' agreement per step and ε: each projection's and ‖D f̂_t‖'s two values,
-    difference, relative gap and the difference's floor ratio."""
+    difference, relative gap and the difference's floor ratio (both panels' repeat errors: 2 ×
+    the projection's floor, ``contrast_floor``)."""
     out = {}
     for step in sorted(set(a) & set(b)):
         per_eps = {}
@@ -933,7 +957,9 @@ def panels_agreement(a: Mapping[int, Mapping[str, Any]], b: Mapping[int, Mapping
                     "same_sign": None
                     if number(pa.get(k)) is None or number(pb.get(k)) is None
                     else sign(pa[k]) == sign(pb[k]),
-                    "floor": resolution(gap, (floors.get("projections") or {}).get(k)),
+                    "floor": resolution(
+                        gap, contrast_floor((floors.get("projections") or {}).get(k))
+                    ),
                 }
             gap = difference(fa.get("Dforce_norm"), fb.get("Dforce_norm"))
             row["Dforce_norm"] = {"first": fa.get("Dforce_norm"), "second": fb.get("Dforce_norm"),
@@ -1017,6 +1043,11 @@ def linear_floor(first: Mapping[str, Any], again: Mapping[str, Any],
                             "reason": row.get("reason")}  # fmt: skip
         floors[f"vector_{tag}_relative"] = found["vectors"]["relative"]
         out["quantities"][kind] = found
+    lin = out["quantities"]["delta_lin"]["vectors"]
+    both = contrast_floor(
+        lin["difference_norm"], out["quantities"]["delta_hat"]["vectors"]["difference_norm"]
+    )
+    floors["contrast_lin_hat_relative"] = ratio(both, lin["norm"])  # (‖Δδ_lin‖ + ‖Δδ̂‖)/‖δ_lin‖
     out["floors"] = floors
     return out
 
