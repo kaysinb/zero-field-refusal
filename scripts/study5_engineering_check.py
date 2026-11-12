@@ -71,6 +71,26 @@ the number of different answers; ``passed`` is ``exact`` without a tolerance and
 ``within_tolerance`` with one. Its ``tolerance`` names REL (``relative``), the absolute part, the
 answers allowed and END (``endpoint_distance``).
 
+**Acceptance for endpoint analysis** (``--endpoint-analysis``, with ``--tolerance`` and
+``--endpoint-tolerance``; docs/study5-preregistration.md, "Extension 2 amendment 3"), for the
+replays, whose endpoint distance is checked. Everything above is computed and recorded as before
+(``exact``, ``within_tolerance``, ``passed``, the drift by file and by step); beside it, per pair
+and in all, ``accepted_for_endpoint_analysis``. A pair is accepted when it has an endpoint
+checkpoint whose tensors are equal or within the endpoint bound by their distance (the rerun's
+file matching its record, the distance record present); no file is on one side only;
+``config.yaml``, ``meta.json`` and every file that is not JSON are equal; in every other differing
+file the line count, the structure, the keys and every leaf that is not a finite float are exact,
+a finite float of the archived run finite in the rerun, whatever its drift; the greedy answers
+complete (equal or not) with the same items in the same order, however many differ; the pair
+holds the greedy answers, the factual answers and the benchmark letters (``REQUIRED_OUTPUTS``).
+Generated outputs may differ: the greedy answers (``ANSWER_PAYLOAD``), and in ``observations/``
+alone the factual answers' text and the benchmark's predicted letter with their correctness flag
+``value`` (``OUTPUTS``), each of its type on both sides (equal or not); the rows' identities
+(condition, measure, item id) stay exact.
+Per file and per pair, ``outputs`` records for each measure and condition the number of items, how
+many outputs differ, the correctness flips and both accuracies (counts and means only, never a
+text). The exit code then follows ``accepted_for_endpoint_analysis``.
+
 Exits 0 when the check passes, 2 when it does not (a file differs beyond the rule, a file is on
 one side only, a run has no partner), 1 on an error (a missing run directory or ``meta.json``, an
 unreadable record, an endpoint distance record of other checkpoints, an existing --out), which
@@ -216,6 +236,15 @@ ABSOLUTE = 1e-9  # its absolute part: |x − y| ≤ ABSOLUTE + TOLERANCE·|y|, y
 GREEDY = "responses"  # the greedy answers, compared answer by answer under the tolerance
 ANSWERS_ALLOWED = 2  # differing greedy answers a file may hold under the tolerance
 ANSWER_KEYS = ("condition", "item_id")  # an answer's identity, always exact
+# --endpoint-analysis: extension 2's third amendment, the replays accepted for endpoint analysis
+ENDPOINT_ANALYSIS = False
+# observations/: the generated outputs and their correctness flag, by measure, which may differ
+# under --endpoint-analysis (each of its type on both sides); a row's other keys stay exact
+OUTPUTS = {"factual_qa": {"value": float, "text": str},
+           "benchmark": {"value": float, "predicted": int}}  # fmt: skip
+HARMFUL = "harmful_answers"  # the greedy answers' measure in ``outputs``
+OBSERVED = "observations"  # the folder whose rows may carry ``OUTPUTS``
+REQUIRED_OUTPUTS = (HARMFUL, *OUTPUTS)  # the answers a replay accepted for analysis must hold
 
 
 def _leaves(a: Any, b: Any) -> tuple[bool, float, float]:
@@ -343,8 +372,99 @@ def _answers(left: list[Any], right: list[Any]) -> dict[str, Any]:
 EXACT_FILES = ("config.yaml", "meta.json")  # the config and the run's identity: never a tolerance
 
 
+def _without_outputs(line: Any) -> Any:
+    """An ``observations/`` row without its generated output and correctness (``OUTPUTS``)."""
+    fields = OUTPUTS.get(line.get("measure")) if isinstance(line, dict) else None
+    return line if fields is None else {k: v for k, v in line.items() if k not in fields}
+
+
+def _outputs_shaped(a: Any, b: Any) -> bool:
+    """Both rows' outputs present, each of its type, a correctness flag finite on both sides."""
+    fields = OUTPUTS.get(a.get("measure")) if isinstance(a, dict) else None
+    if fields is None:
+        return True
+    return isinstance(b, dict) and all(
+        k in a and k in b and _of_type(a[k], t) and _of_type(b[k], t)
+        and (t is not float or (math.isfinite(a[k]) and math.isfinite(b[k])))
+        for k, t in fields.items()
+    )  # fmt: skip
+
+
+def outputs(left: list[Any], right: list[Any], greedy: bool) -> list[dict[str, Any]]:
+    """Per measure and condition: the items, the outputs that differ, and for ``OUTPUTS`` the
+    correctness flips and both accuracies (the mean of ``value``). Counts and means only."""
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+    for a, b in zip(left, right, strict=True):
+        if not (isinstance(a, dict) and isinstance(b, dict)):
+            continue
+        measure = HARMFUL if greedy else a.get("measure")
+        if measure != HARMFUL and measure not in OUTPUTS:
+            continue
+        entry = found.setdefault((measure, str(a.get("condition"))), {"items": 0, "differing": 0})
+        entry["items"] += 1
+        if greedy:
+            entry["differing"] += not same(a, b)
+            continue
+        flag = "value"
+        entry["differing"] += any(not same(a.get(k), b.get(k)) for k in OUTPUTS[measure]
+                                  if k != flag)  # fmt: skip
+        entry["flips"] = entry.get("flips", 0) + (not same(a.get(flag), b.get(flag)))
+        for side, row in (("archived_sum", a), ("rerun_sum", b)):
+            value = row.get(flag)
+            entry[side] = entry.get(side, 0.0) + (value if _of_type(value, float) else 0.0)
+    out = []
+    for (measure, condition), entry in sorted(found.items()):
+        row = {"measure": measure, "condition": condition, "items": entry["items"],
+               "differing": entry["differing"]}  # fmt: skip
+        if "flips" in entry:
+            archived = entry["archived_sum"] / entry["items"]
+            rerun = entry["rerun_sum"] / entry["items"]
+            row |= {"flips": entry["flips"], "archived_accuracy": archived,
+                    "rerun_accuracy": rerun, "accuracy_difference": rerun - archived}  # fmt: skip
+        out.append(row)
+    return out
+
+
+def accepted_file(entry: dict[str, Any], left: list[Any], right: list[Any]) -> bool:
+    """Extension 2's third amendment, one file (module docstring): every greedy answer complete
+    and every output row of ``observations/`` of its shape, equal or not; then equal; or, for
+    the greedy answers, the same items; or, for any other JSON file but ``EXACT_FILES``, the
+    same lines, structure, keys and every leaf but the finite floats exact, the outputs of
+    ``observations/`` aside."""
+    folder = entry["name"].split("/", 1)[0]
+    if folder == GREEDY and not all(_answer_shape(x) for x in (*left, *right)):
+        return False
+    if folder == OBSERVED and not all(
+        _outputs_shaped(a, b) for a, b in zip(left, right, strict=False)
+    ):
+        return False
+    if entry["equal"]:
+        return True
+    if folder == GREEDY:
+        return entry.get("answers_complete") is True and entry.get("answers_same_items") is True
+    if entry["name"] in EXACT_FILES or not entry["name"].endswith((".json", ".jsonl")):
+        return False
+    strip = _without_outputs if folder == OBSERVED else (lambda line: line)
+    return len(left) == len(right) and all(
+        _leaves(strip(a), strip(b))[0] for a, b in zip(left, right, strict=True)
+    )  # fmt: skip
+
+
 def compare_file(archived: Path, rerun: Path, name: str) -> dict[str, Any]:
     left, right = comparable(archived, name), comparable(rerun, name)
+    if ENDPOINT_ANALYSIS:
+        entry = _compare_file(left, right, name)
+        entry["accepted"] = accepted_file(entry, left, right)
+        folder = name.split("/", 1)[0]
+        if len(left) == len(right) and folder in (GREEDY, OBSERVED):
+            found = outputs(left, right, folder == GREEDY)
+            if found:
+                entry["outputs"] = found
+        return entry
+    return _compare_file(left, right, name)
+
+
+def _compare_file(left: list[Any], right: list[Any], name: str) -> dict[str, Any]:
     if same(left, right):
         return {"name": name, "equal": True}
     differing = sum(not same(a, b) for a, b in zip(left, right, strict=False))
@@ -373,6 +493,9 @@ def compare_runs(archived: Path, rerun: Path) -> list[dict[str, Any]]:
     files = [compare_file(archived, rerun, name) for name in sorted(left & right)]
     files += [{"name": n, "equal": False, "only_in": "archived"} for n in sorted(left - right)]
     files += [{"name": n, "equal": False, "only_in": "rerun"} for n in sorted(right - left)]
+    if ENDPOINT_ANALYSIS:
+        for entry in files:
+            entry.setdefault("accepted", False)  # a file on one side only
     return files
 
 
@@ -505,6 +628,13 @@ def check(archived: list[Path], rerun: list[Path],
             ) and (tensors is None or tensors["within_tolerance"])
             pair["answers_differing"] = sum(f.get("answers_differing", 0) for f in files)
         pair["passed"] = exact or bool(pair.get("within_tolerance"))
+        if ENDPOINT_ANALYSIS:
+            pair["outputs"] = [row for f in files for row in f.get("outputs", [])]
+            held = {row["measure"] for row in pair["outputs"] if row["items"]}
+            pair["accepted_for_endpoint_analysis"] = (
+                tensors is not None and tensors["within_tolerance"]
+                and all(f["accepted"] for f in files) and held >= set(REQUIRED_OUTPUTS)
+            )  # fmt: skip
         pairs.append({**pair, "files": files, "endpoint_tensors": tensors})
     unpaired = {"archived": sorted(left.keys() - right.keys()),
                 "rerun": sorted(right.keys() - left.keys())}  # fmt: skip
@@ -533,7 +663,19 @@ def check(archived: list[Path], rerun: list[Path],
         record["tolerance"] = {"relative": TOLERANCE, "absolute": ABSOLUTE,
                                "answers_allowed": ANSWERS_ALLOWED,
                                "endpoint_distance": ENDPOINT_TOLERANCE}  # fmt: skip
+    if ENDPOINT_ANALYSIS:
+        record["accepted_for_endpoint_analysis"] = (
+            complete and bool(pairs) and all(p["accepted_for_endpoint_analysis"] for p in pairs)
+        )  # fmt: skip
+        record["endpoint_analysis"] = ENDPOINT_ANALYSIS_RULE
     return record
+
+
+ENDPOINT_ANALYSIS_RULE = (
+    "docs/study5-preregistration.md, Extension 2 amendment 3: a replay is accepted for endpoint "
+    "analysis by its identities, completeness, finiteness, evidence and endpoint distance; the "
+    "measurements' drift and the generated outputs that differ are recorded, not gated"
+)
 
 
 def write_new(path: Path, record: dict[str, Any]) -> None:
@@ -575,12 +717,20 @@ def report(record: dict[str, Any]) -> None:
         if "within_tolerance" in pair:
             print(f"  exact {pair['exact']} within tolerance {pair['within_tolerance']} "
                   f"answers differing {pair['answers_differing']}")  # fmt: skip
+        if "accepted_for_endpoint_analysis" in pair:
+            for row in pair["outputs"]:
+                print(f"  outputs {row['measure']} {row['condition']}: differing "
+                      f"{row['differing']} of {row['items']}"
+                      + (f" flips {row['flips']}" if "flips" in row else ""))  # fmt: skip
+            print(f"  accepted for endpoint analysis {pair['accepted_for_endpoint_analysis']}")
     for side, hashes in record["unpaired"].items():
         for found in hashes:
             print(f"unpaired {side} {found}")
     print(f"exact {record['exact']} passed {record['passed']}"
           + ("" if record["tolerance"] is None else
-             f" within tolerance {record['within_tolerance']}"))  # fmt: skip
+             f" within tolerance {record['within_tolerance']}")
+          + ("" if "accepted_for_endpoint_analysis" not in record else " accepted for endpoint "
+             f"analysis {record['accepted_for_endpoint_analysis']}"))  # fmt: skip
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -600,6 +750,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--endpoint-distance", action="append", default=[], metavar="CONFIG_HASH=RECORD"
     )  # study5_pairs.py's record, or its absence
+    # extension 2's third amendment: the replays accepted for endpoint analysis
+    parser.add_argument("--endpoint-analysis", action="store_true")
     args = parser.parse_args(argv)
     expected = {}
     for item in args.endpoint_tensors:
@@ -624,7 +776,10 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             print(f"--endpoint-distance {item!r}: not JSON")
             return ERROR
-    global IGNORED, TOLERANCE, ENDPOINT_TOLERANCE
+    global IGNORED, TOLERANCE, ENDPOINT_TOLERANCE, ENDPOINT_ANALYSIS
+    if args.endpoint_analysis and args.endpoint_tolerance is None:
+        print("--endpoint-analysis needs --tolerance and --endpoint-tolerance")
+        return ERROR
     IGNORED = frozenset(args.ignore)
     if args.tolerance is not None and not 0 < args.tolerance < 1:
         print(f"--tolerance {args.tolerance}: a relative bound in (0, 1)")
@@ -639,6 +794,7 @@ def main(argv: list[str] | None = None) -> int:
     TOLERANCE = args.tolerance
     ENDPOINT_TOLERANCE = (args.tolerance if args.endpoint_tolerance is None
                           else args.endpoint_tolerance)  # fmt: skip
+    ENDPOINT_ANALYSIS = args.endpoint_analysis
     if args.out.exists():
         print(f"record exists: {args.out}")
         return ERROR
@@ -651,7 +807,8 @@ def main(argv: list[str] | None = None) -> int:
         return ERROR
     write_new(args.out, record)
     report(record)
-    return EQUAL if record["passed"] else DIFFERENT
+    verdict = "accepted_for_endpoint_analysis" if ENDPOINT_ANALYSIS else "passed"
+    return EQUAL if record[verdict] else DIFFERENT
 
 
 if __name__ == "__main__":
