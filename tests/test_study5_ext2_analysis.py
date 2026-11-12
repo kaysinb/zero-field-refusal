@@ -309,6 +309,7 @@ def gram_numbers(G: np.ndarray, seeds: list[int]) -> dict:
     }
 
 
+TWIN = {"kind": "swap_first", "step": 2}
 EDITS = {f"swap{t}": {"kind": "swap_batches", "step": t} for t in (2, 12, 23)} | {
     f"shuffle{a}-{z}-{d}": {"kind": "shuffle", "first": a, "last": z, "draw": d}
     for a, z in ((1, 5), (21, 25)) for d in (0, 1)}  # fmt: skip
@@ -522,7 +523,7 @@ class Pod4:
             if s in ext2.SWAP_SEEDS:
                 tags += ["swap2", "swap12", "swap23", "twin"]
             for tag in tags:
-                edit = EDITS.get(tag, {"kind": "swap_first", "step": 2})
+                edit = EDITS.get(tag, TWIN)
                 shift = 0.05 if tag.startswith("shuffle1-") else 0.005
                 dump(R / "edits" / f"s{s}-{tag}" / "record.json", self.linear_record(
                     s, q_hat=self.q_hat[s] + shift, q_lin=self.q_lin[s] + shift, k=False,
@@ -719,6 +720,8 @@ class Pod4:
     def edited_run(self, s: int, tag: str, *, labeled: int | None, config=None) -> Path:
         block = "swaps" if tag.startswith("swap") else "shuffles"
         campaign = f"study5-{ARCHIVE}-{block}-s{s}"
+        if tag == "twin":  # launched with its group's replays
+            campaign = f"study5-{ARCHIVE}-replays-g50000"
         label = f"s5-edit-{tag}-{RATE}-s{s}/s{s}"
         run_id = f"20261112T000000Z-s5-edit-{tag}-{RATE}-s{s}-s{s}-ab-a1"
         journal = self.runs / "launch" / f"{campaign}.jsonl"
@@ -736,7 +739,7 @@ class Pod4:
             "seed": s,
             "eval": {"harmful": {"prompt_set": SET}},
             "optimizer": {"name": "adam_frozen", "lr": 1.3e-05},
-            "train": {"order_edit": EDITS[tag]},
+            "train": {"order_edit": EDITS.get(tag, TWIN)},
             "schedule": {"steps": 25},
         }
         (run_dir / "config.yaml").write_text(json.dumps(cfg))
@@ -758,6 +761,7 @@ class Pod4:
             for tag in tags:
                 self.edited_run(s, tag, labeled=(60 if tag.startswith("shuffle1-") else 52)
                                 if s == 50000 else None)  # fmt: skip
+        self.edited_run(50000, "twin", labeled=None)  # the other seeds' twins: no journal entry
 
     # -------------------------------------------------------------- the registered analysis
 
@@ -962,6 +966,9 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
     )
     assert step["r_floor"]["flag"] == "resolved"
     assert twin["endpoint"]["delta_r_twin"] == pytest.approx(-0.02 * 25 - 1e-3 * 25)
+    assert twin["outcome"]["K_harmful"] == 3.3 and twin["outcome"]["harm"]["available"] is False
+    assert twin["outcome_difference"]["K_harmful"] == pytest.approx(0.3)
+    assert record["m6"]["twins"]["50001"]["outcome"]["available"] is False
     assert twin["endpoint"]["excess_twin_lin"] == pytest.approx(
         -0.5 - 0.025 - (pod4.q_lin[50000] + 0.005)
     )

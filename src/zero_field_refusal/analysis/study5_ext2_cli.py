@@ -32,12 +32,13 @@ in its place with the reason, listed under ``missing`` too.
 
 **Run directories** are read only through the records that name them: a vector run
 (``<experiment>/<run id>`` of its record) and an edited run (the launcher journal of pod 4's
-campaign ``study5-<ID>-swaps-s<seed>`` or ``…-shuffles-…`` and its cell's label, the run its last
-end ``done`` or ``diverged`` names; its config the seed's at η_l, F, with the edit its record
-names). **Extension 1's order repeats (E2) are sealed**: before anything else of a run directory
-is read, its ``config.yaml`` is; a run of an E2 cell (its name, or an E2 seed with
-``train.order_seed`` = seed + 1000 or + 2000, ``study5_ext2.e2_repeat``) refuses the analysis.
-The only E2 input is the sealed block's predictions from θ₀.
+campaign ``study5-<ID>-swaps-s<seed>`` or ``…-shuffles-…``, for a twin ``…-replays-g<seed>`` of
+its group, and its cell's label, the run its last end ``done`` or ``diverged`` names; its config
+the seed's at η_l, F, with the edit its record names). **Extension 1's order repeats (E2) are
+sealed**: before anything else of a run directory is read, its ``config.yaml`` is; a run of an E2
+cell (its name, or an E2 seed with ``train.order_seed`` = seed + 1000 or + 2000,
+``study5_ext2.e2_repeat``) refuses the analysis. The only E2 input is the sealed block's
+predictions from θ₀.
 
 **Labels** are read by the registered reader (``study5_analysis_cli.Labels``: WildGuard, the
 prompt texts from ``DATA_DIR``), imported only here: its module imports the GPU code's modules,
@@ -537,14 +538,16 @@ def m6_section(inputs: Inputs, archive_id: str, own: Mapping[int, dict],
     twins with their floor; and the twins' floor."""
     scans = analysis["descriptive"]["line_scans"]["per_seed"]
     blocks: dict[str, Any] = {"swaps": {"rows": []}, "shuffles": {"rows": []}}
+    rows: dict[tuple[int, str], dict[str, Any]] = {}
     for s in ext2.M_SEEDS:
         stream = ext2.stream_values((scans.get(str(s)) or {}).get("+1"))
         for tag in edit_tags(s):
-            if tag == "twin":
-                continue
-            block = "swaps" if tag.startswith("swap") else "shuffles"
-            campaign = f"study5-{archive_id}-{block}-s{s}"
-            run_dir, config = inputs.edited_run(campaign, f"s5-edit-{tag}-{RATE}-s{s}/s{s}")
+            # the twin is launched with the replays of its seed's group, the others by block
+            block = "twins" if tag == "twin" else "swaps" if tag.startswith("swap") else "shuffles"
+            group = ext2.SEEDS[(ext2.SEEDS.index(s) // ext2.GROUP) * ext2.GROUP]
+            name = f"replays-g{group}" if tag == "twin" else f"{block}-s{s}"
+            run_dir, config = inputs.edited_run(f"study5-{archive_id}-{name}",
+                                                f"s5-edit-{tag}-{RATE}-s{s}/s{s}")  # fmt: skip
             if isinstance(run_dir, Path):
                 edit = ((config or {}).get("train") or {}).get("order_edit")
                 if edit != EDITS[tag]:
@@ -555,9 +558,11 @@ def m6_section(inputs: Inputs, archive_id: str, own: Mapping[int, dict],
                 run = inputs.why(f"{block} s{s} {tag}", run_dir)
             counts = inputs.counts(run_dir, ENDPOINT) if not isinstance(run, str) else run
             outcome = ext2.outcome_of(run, counts)
-            blocks[block]["rows"].append(ext2.edited_row(
+            rows[(s, tag)] = ext2.edited_row(
                 s, tag, EDITS[tag], predicted.get((s, tag), {"available": False}), outcome,
-                stream, own.get(s) or {}, floors))  # fmt: skip
+                stream, own.get(s) or {}, floors)  # fmt: skip
+            if block != "twins":
+                blocks[block]["rows"].append(rows[(s, tag)])
     for block, found in blocks.items():
         found["spread"] = {
             tag_kind: ext2.spreads({f"s{r['seed']}-{r['tag']}": r["outcome_difference"]
@@ -571,6 +576,9 @@ def m6_section(inputs: Inputs, archive_id: str, own: Mapping[int, dict],
     for s in ext2.SWAP_SEEDS:
         found = ext2.twins_steps(inputs.record(f"twins/s{s}.json", "study5-pairs"))
         twins[s] = ext2.twins_row(found, floor, predicted.get((s, "twin"), {}), own.get(s) or {})
+        edited = rows.get((s, "twin")) or {}
+        twins[s] |= {k: edited.get(k) for k in ("outcome", "outcome_difference",
+                                                "predicted_difference")}  # fmt: skip
     blocks["twins"] = twins
     return blocks, floor
 
