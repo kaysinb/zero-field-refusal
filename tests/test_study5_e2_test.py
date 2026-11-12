@@ -25,6 +25,7 @@ import pytest
 
 from zero_field_refusal.analysis import study5_analysis_cli as cli
 from zero_field_refusal.analysis import study5_e2_test as et
+from zero_field_refusal.analysis import study5_ext1 as ext
 from zero_field_refusal.analysis.study3_blocks import weight
 from zero_field_refusal.config import load_config
 from zero_field_refusal.judge import _content_hash, judge_identity
@@ -55,8 +56,35 @@ PLAN = {
 }
 
 
+GIT = ("git", "-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c",
+       "commit.gpgsign=false")  # fmt: skip
+
+
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def git(repo: Path, *args: str) -> str:
+    return subprocess.run([*GIT, *args], cwd=repo, check=True, capture_output=True,
+                          text=True).stdout.strip()  # fmt: skip
+
+
+def note_repo(tmp: Path) -> dict:
+    """A checkout of its own whose history holds the dated note, a later commit on top."""
+    repo = tmp / "checkout"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    path = "docs/study5-e2-note.md"
+    (repo / path).parent.mkdir(parents=True)
+    (repo / path).write_text("A dated note: the test on E2, fixed before its outcomes.\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "note")
+    commit = git(repo, "rev-parse", "HEAD")
+    (repo / "later.txt").write_text("later\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "later")
+    return {"repo": repo, "commit": commit, "path": path,
+            "sha256": sha((repo / path).read_bytes())}  # fmt: skip
 
 
 def dump(path: Path, value) -> bytes:
@@ -110,8 +138,11 @@ class World:
         )
         self.criterion = tmp / "criterion.json"
         dump(self.criterion, ext2_record(True))
+        self.note = note_repo(tmp)
         self.opening = tmp / "opening.json"
-        dump(self.opening, {"kind": "study5-e2-opening", "note_sha256": "9" * 64})
+        note = self.note
+        dump(self.opening, {"kind": "study5-e2-opening", "commit": note["commit"],
+                            "note": note["path"], "note_sha256": note["sha256"]})  # fmt: skip
 
     def seed(self, seed: int) -> None:
         c1, c2, q1, q2, kh1, kh2 = PLAN[seed]
@@ -208,6 +239,7 @@ def world(tmp_path, monkeypatch) -> World:
     monkeypatch.setattr(cli, "harmful_prompts", lambda cfg: PROMPTS)
     monkeypatch.setattr(et, "own_code", lambda: dict(CODE))
     found = World(tmp_path)
+    monkeypatch.setattr(ext, "CHECKOUT", found.note["repo"])  # its history holds the dated note
     monkeypatch.setattr(et, "registration_text",
                         lambda: f"{sha(found.registered_path.read_bytes())}\n")  # fmt: skip
     return found
@@ -376,7 +408,12 @@ def test_the_test_with_q_end_to_end(world, capsys) -> None:
     assert SENTINEL not in data.decode() and str(world.tmp) not in data.decode()
     assert SENTINEL not in printed and sha(data) in printed
     assert result["predictor"]["name"] == "q" and result["criterion"]["passed"] is True
-    assert result["opening"]["note_sha256"] == "9" * 64
+    assert result["opening"] == {
+        **result["opening"],
+        "commit": world.note["commit"],
+        "note": world.note["path"],
+        "note_sha256": world.note["sha256"],
+    }
     assert result["seeds"]["tested"] == list(range(50006, 50016))
     assert result["seeds"]["top_up_note"] is None
     assert result["predictions"] == {**result["predictions"], "given": 20, "used": 20}
@@ -408,6 +445,7 @@ def test_the_test_with_q_end_to_end(world, capsys) -> None:
     # the secondary: the η_l harm shares, 50015's order 2 included; it decides nothing
     secondary = result["secondary"]
     assert secondary["decides"] is False and "save no checkpoint" in secondary["outcome"]
+    assert secondary["cohort"].startswith("paired, fixed before the opening")
     assert (secondary["n"], secondary["T"]) == (8, 6) and secondary["p_value"] == 37 / 256
     assert [e["seed"] for e in secondary["left_out"]] == [50014]
     assert "predictor q seeds 10" in printed and "primary n 7 T 5" in printed
@@ -457,6 +495,8 @@ def test_a_top_up_seed_is_tested_beside_the_ten(world) -> None:
     [
         ("no-opening", "--open-e2 OPENING_RECORD is required"),
         ("bad-opening", "is not of kind study5-e2-opening"),
+        ("note-sha", "does not have the sha256 note_sha256 names"),
+        ("note-commit", "is not in this checkout's history"),
         ("bad-criterion", "is neither 'q' nor"),
         ("withheld", "the δ_lin criterion is withheld"),
         ("no-prediction", "seed 50011 order2: no prediction"),
@@ -472,6 +512,9 @@ def test_a_refusal_comes_before_any_e2_read(world, monkeypatch, change, why) -> 
         opening = False
     elif change == "bad-opening":
         dump(world.opening, {"kind": "other", "note_sha256": "x"})
+    elif change in ("note-sha", "note-commit"):
+        key, value = ("note_sha256", "0" * 64) if change == "note-sha" else ("commit", "e" * 40)
+        dump(world.opening, {**json.loads(world.opening.read_text()), key: value})
     elif change == "bad-criterion":
         dump(world.criterion, ext2_record(True, "p_s"))
     elif change == "withheld":

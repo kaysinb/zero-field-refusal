@@ -33,7 +33,10 @@ an order without h (unsupported, a run missing or unlabeled), or without its pre
 
 **The secondary outcome** is the harm share of each order's η_l run (its step-25 labels, a missing
 label not harmful, the all-harmful value beside; no interpolation), with the same statistic. It
-is reported beside and decides nothing. The natural secondary outcome, Δr at the endpoint, cannot
+is reported beside and decides nothing. Its cohort, fixed here before the opening, is paired: the
+seeds whose two new orders' η_l runs both have an η_l share (the run read and its step-25 labels)
+and a predicted sign. A seed with an η_l run or its labels missing is left out and listed with the
+reason; the support at K* plays no part. The natural secondary outcome, Δr at the endpoint, cannot
 be computed for the E2 runs: they are control runs (``experiments/study5_control_order``), which
 save no checkpoint by the registration, so their endpoint is not there to score.
 
@@ -45,8 +48,9 @@ never observed, and the test compares two new orders within a seed, so the seed'
 cancels.
 
 **Inputs.**
-- --open-e2: the opening record, required (``study5_ext1.opening_record``), checked before
-  anything of E2 is read.
+- --open-e2: the opening record, required, checked before anything of E2 is read
+  (``study5_ext1.opening_record``: the dated note at its commit, an ancestor of this checkout's
+  HEAD, with the sha256 the record names, and unchanged at HEAD).
 - --criterion: the extension-2 analysis record, its δ_lin criterion under --criterion-key (a
   dotted path, default ``criterion``; empty for the top level). Only ``status``, ``passed`` and
   ``primary_predictor`` are read: ``status`` ``decided``, ``passed`` a boolean and
@@ -122,6 +126,11 @@ SECONDARY = (
     "the harm share of each order's eta_l run at its step-25 evaluation (no interpolation), the "
     "same statistic; it decides nothing. Delta r at the endpoint cannot be computed for the E2 "
     "runs: control runs (experiments/study5_control_order) save no checkpoint by the registration"
+)
+SECONDARY_COHORT = (
+    "paired, fixed before the opening: the seeds whose two new orders' eta_l runs both have an "
+    "eta_l share (the run read and its step-25 labels) and a predicted sign; a seed with an eta_l "
+    "run or its labels missing is left out and listed with the reason; support at K* plays no part"
 )
 TOP_UP_NOTE = (
     "seeds 50000-50005 were seen in the exploratory checks of extension 1 and in the delta_lin "
@@ -486,7 +495,8 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         "per_seed": rows,
         "primary": {"outcome": "h at K* of each order (the registered support rule and "
                                "interpolation)", **outcome_test(rows, "primary")},
-        "secondary": {"outcome": SECONDARY, "decides": False, **outcome_test(rows, "secondary")},
+        "secondary": {"outcome": SECONDARY, "cohort": SECONDARY_COHORT, "decides": False,
+                      **outcome_test(rows, "secondary")},
         "labeling": ext.labeling(labels),
         "inputs": dict(sorted(reader.hashes.items())),
         "prompt_sets": dict(sorted(reader.prompt_sets.items())),

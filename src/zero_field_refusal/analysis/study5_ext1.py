@@ -29,7 +29,11 @@ labels gives no harm, with the reason.
 the one pod 2's rungs of the seed name, ``extensions_allowed`` 8; a reason otherwise) through the
 registered ladder table (``study5_analysis.ladder_table``): status, extensions used, c₀, c, the
 matched-K step and the tolerance flag, K_benign, K_harmful and the utilities at the evaluated
-point, the three classes; beside each row c/c₀, ``harmful_high`` and the missing labels. Beside
+point, the three classes; beside each row c/c₀, ``harmful_high`` and the missing labels. A rung's
+run is read only after its config (``rung_run``): an E2 order repeat (an E2 cell in its name, an E2
+seed with ``train.order_seed`` = s + 1000 or s + 2000, or one of those 20 order seeds, as the
+extension-2 analysis refuses them) refuses the analysis, the name checked before the config is
+read; a run that is not the seed's rung of its η_l run is a reason. Beside
 them (``beside``): the seed's ``linear`` rung from pod 2 (its record and labels, each row checked
 against the registered record's row) and its trained endpoint (h_s and the classes at K* as the
 registered record holds them). ``means``: per rung (and the endpoint) and measure, the t interval
@@ -40,8 +44,12 @@ pods measured, K beside pod 2's, and the largest relative difference per rung.
 
 **E2** is sealed until a separate opening decision. Without --open-e2 nothing of an order run and
 none of pod 3's launcher journals is read, and the record holds ``"e2": {"sealed": true}``. With
-it, the opening record (a JSON object of kind ``study5-e2-opening`` with a ``note_sha256``
-string) is checked before anything of E2 is read and named by sha256. Per seed and order: the
+it, the opening record is checked before anything of E2 is read (``opening_record``): a JSON
+object of kind ``study5-e2-opening`` naming the dated note that fixes the test (``note``, its path
+in the repository), the commit that holds it (``commit``, a full sha, an ancestor of this
+checkout's HEAD or HEAD itself) and the note's sha256 (``note_sha256``, that of its text at the
+commit, which HEAD holds unchanged). The record names it by sha256, with the commit, the note and
+its sha256. Per seed and order: the
 original order is the registered analysis's outcome of the seed's two fresh F runs (its K values
 read from those runs); each new order is the launcher's last ``done`` or ``diverged`` end of its
 cell (campaign ``study5-<ID>-orders-s<seed>``, cell ``s5-order<1|2>-<η>-s<seed>``), its config
@@ -84,12 +92,14 @@ import hashlib
 import json
 import math
 import re
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, NoReturn
 
 import numpy as np
+import yaml
 from omegaconf import DictConfig, OmegaConf
 
 from ..paths import REPO_ROOT
@@ -119,6 +129,14 @@ RATES = (("eta_l", ETA_L), ("eta_u", ETA_U))
 NEW_ORDERS = (("order1", 1000), ("order2", 2000))  # train.order_seed = s + offset
 ORDERS = ("original", *(name for name, _ in NEW_ORDERS))
 OPENING_KIND = "study5-e2-opening"
+CHECKOUT = REPO_ROOT  # the checkout whose history must hold the dated note the opening names
+FULL_SHA = re.compile(r"[0-9a-f]{40}")
+# Extension 1's order repeats (E2), refused wherever a run is read that is not one of them, as the
+# extension-2 analysis refuses them (study5_ext2.e2_repeat): an E2 cell in the run's name, an E2
+# seed with train.order_seed = s + 1000 or s + 2000, or any of these 20 order seeds
+E2_NAME = re.compile(r"(?:^|-)s5-order[12]-")
+E2_ORDER_SEEDS = frozenset(s + offset for s in E2_SEEDS for _, offset in NEW_ORDERS)
+LADDER_RUN_TYPE = "study5_ladder"  # evaluation.LADDER_RUN_TYPE: a rung's evaluation run
 LEVEL = 0.95  # the fixation record's scan_intervals level, the registered ladder's
 RESAMPLES, BOOTSTRAP_SEED = 10_000, 20261111
 GRID_TOLERANCE = 1e-9  # |log2(c/c₀) − k| of a grid point
@@ -305,8 +323,10 @@ def registered_record(path: Path, text: str) -> tuple[dict[str, Any], dict[str, 
 
 
 def opening_record(path: Path) -> dict[str, Any]:
-    """The decision that opens E2: a JSON object of kind ``OPENING_KIND`` with a ``note_sha256``
-    string (the dated prediction note's hash); refused otherwise."""
+    """The decision that opens E2: a JSON object of kind ``OPENING_KIND`` naming the dated note
+    (``note``, its path in the repository), the commit that holds it (``commit``, a full sha) and
+    its sha256 (``note_sha256``), the note checked in this checkout's history (``note_problem``);
+    refused otherwise."""
     path = Path(path)
     if not path.is_file():
         refuse("--open-e2: the opening record does not exist")
@@ -319,7 +339,39 @@ def opening_record(path: Path) -> dict[str, Any]:
         refuse(f"--open-e2: the opening record is not of kind {OPENING_KIND}")
     if not isinstance(found.get("note_sha256"), str):
         refuse("--open-e2: the opening record holds no note_sha256 string")
-    return {"record": path.name, "sha256": sha256(data), "note_sha256": found["note_sha256"]}
+    why = note_problem(found.get("commit"), found.get("note"), found["note_sha256"])
+    if why is not None:
+        refuse(f"--open-e2: {why}")
+    return {"record": path.name, "sha256": sha256(data), "commit": found["commit"],
+            "note": found["note"], "note_sha256": found["note_sha256"]}  # fmt: skip
+
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=CHECKOUT, capture_output=True, check=False)
+
+
+def note_problem(commit: Any, note: Any, digest: str) -> str | None:
+    """Why the dated note does not stand (None: it does): ``commit`` a full sha in this
+    checkout's history, an ancestor of HEAD or HEAD itself; ``note`` a path in the repository,
+    whose content at that commit has the sha256 ``digest``, and the same content at HEAD."""
+    if not isinstance(commit, str) or not FULL_SHA.fullmatch(commit):
+        return "its commit is not a full git sha"
+    parts = PurePosixPath(note).parts if isinstance(note, str) else ()
+    if not parts or note.startswith("/") or ".." in parts or "\\" in note:
+        return "its note is not a path in the repository"
+    if _git("cat-file", "-e", f"{commit}^{{commit}}").returncode != 0:
+        return f"its commit {commit[:12]} is not in this checkout's history"
+    if _git("merge-base", "--is-ancestor", commit, "HEAD").returncode != 0:
+        return f"its commit {commit[:12]} is not an ancestor of this checkout's HEAD"
+    then = _git("show", f"{commit}:{note}")
+    if then.returncode != 0:
+        return f"its note {note} is not in its commit {commit[:12]}"
+    if sha256(then.stdout) != digest:
+        return f"its note {note} at {commit[:12]} does not have the sha256 note_sha256 names"
+    now = _git("show", f"HEAD:{note}")
+    if now.returncode != 0 or now.stdout != then.stdout:
+        return f"its note {note} at HEAD is not the note at {commit[:12]}"
+    return None
 
 
 def pod3_archive(runs: Path) -> str:
@@ -429,13 +481,71 @@ def rung_problem(found: Mapping[str, Any], rung: str, f_run: str | None) -> str 
     return None
 
 
-def rung_labels(labels: cli.Labels, root: Path, record: Mapping[str, Any],
-                rung: str) -> dict[str, int] | str:  # fmt: skip
+def e2_repeat(config: Mapping[str, Any] | None, name: str) -> str | None:
+    """Why a run directory is one of extension 1's order repeats (E2), or None (as
+    ``study5_ext2.e2_repeat``): an E2 cell in its name, or in its config an E2 seed with
+    ``train.order_seed`` = seed + 1000 or + 2000, or one of those order seeds."""
+    if E2_NAME.search(name):
+        return f"{name}: an extension-1 order repeat (E2) by its name"
+    if not isinstance(config, Mapping):
+        return None
+    seed = config.get("seed")
+    train = config.get("train") if isinstance(config.get("train"), Mapping) else {}
+    order = train.get("order_seed")
+    offsets = tuple(offset for _, offset in NEW_ORDERS)
+    if isinstance(order, int) and not isinstance(order, bool) and (
+            order in E2_ORDER_SEEDS or (seed in E2_SEEDS and order - seed in offsets)):  # fmt: skip
+        return f"{name}: an extension-1 order repeat (E2), order seed {order}"
+    return None
+
+
+def rung_run(reader: cli.Reader, root: Path, record: Mapping[str, Any], seed: int, rung: str,
+             f_run: str | None) -> Path | str:  # fmt: skip
+    """The evaluation run a rung record names, guarded before any of its files but its config is
+    read: an E2 order repeat (``e2_repeat``: by the name, then by the config) refuses the
+    analysis; a run that is not the seed's ``rung`` rung of its η_l run ``f_run`` (run type,
+    seed, rung, F run) is a reason."""
+    what = f"ladder {rung}"
+    experiment, run_id = record.get("experiment"), record.get("run_id")
+    if not all(isinstance(x, str) and x and "/" not in x and x not in (".", "..")
+               for x in (experiment, run_id)):  # fmt: skip
+        return f"{what}: the record names no run directory"
+    sealed = e2_repeat(None, run_id)
+    if sealed:
+        refuse(f"{sealed}: sealed, never read")
+    run_dir = Path(root) / experiment / run_id
+    if not run_dir.is_dir():
+        return f"{what}: its run directory is missing"
+    try:
+        config = yaml.safe_load(reader.bytes(run_dir / "config.yaml"))
+    except (OSError, yaml.YAMLError) as exc:
+        return f"{what}: its config does not read ({type(exc).__name__})"
+    sealed = e2_repeat(config if isinstance(config, Mapping) else None, run_id)
+    if sealed:
+        refuse(f"{sealed}: sealed, never read")
+    found = None
+    if isinstance(config, Mapping):
+        ladder = _at(config, "study5", "ladder")
+        found = (config.get("run_type"), config.get("seed"), _at(ladder, "rung"),
+                 _at(ladder, "f_run"))  # fmt: skip
+    if f_run is None or found != (LADDER_RUN_TYPE, seed, rung, f_run):
+        return f"{what}: its run is not the seed's {rung} rung of its eta_l run"
+    return run_dir
+
+
+def _at(value: Any, *keys: str) -> Any:
+    """``value[k1][k2]…``, None where a level is not a mapping or lacks the key."""
+    for key in keys:
+        value = value.get(key) if isinstance(value, Mapping) else None
+    return value
+
+
+def rung_labels(labels: cli.Labels, root: Path, record: Mapping[str, Any], seed: int, rung: str,
+                f_run: str | None) -> dict[str, int] | str:  # fmt: skip
     from ..evaluation import ladder_condition  # torch, as the label readers
 
-    run_dir = Path(root) / str(record.get("experiment")) / str(record.get("run_id"))
-    return labels.at(run_dir if run_dir.is_dir() else f"ladder {rung}: its run directory is "
-                     "missing", ladder_condition(rung))  # fmt: skip
+    return labels.at(rung_run(labels.reader, root, record, seed, rung, f_run),
+                     ladder_condition(rung))  # fmt: skip
 
 
 def row_value(row: Mapping[str, Any], measure: str) -> sa.Value:
@@ -478,7 +588,7 @@ def e1_part(reader: cli.Reader, runs: Path, archive: str, pod2: Pod2, labels3: c
         for rung, found in records[seed].items():
             if isinstance(found, Mapping) and found.get("status") == "evaluated":
                 labels, root = (labels2, pod2.root) if rung == POD2_RUNG else (labels3, runs)
-                counts[(seed, rung)] = rung_labels(labels, root, found, rung)
+                counts[(seed, rung)] = rung_labels(labels, root, found, seed, rung, f_run)
     table = sa.ladder_table(records, counts, h, E1_SEEDS, (*E1_RUNGS, POD2_RUNG), LEVEL)
     for row in table["rows"]:
         record = records[row["seed"]][row["rung"]]

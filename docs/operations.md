@@ -3307,9 +3307,23 @@ GPU code identity, and reuses the registered analysis's readers and functions. I
 E1 gives each rung's row through the registered ladder table, with pod 2's `linear` rung (its
 rows checked against the registered ones) and the trained endpoint beside it. It also gives the
 means over the evaluated seeds, the registered shuffled-D trigger, and pod 2's grid points
-measured again. E2 stays sealed (`"e2": {"sealed": true}`) unless `--open-e2` names an opening
-record (`{"kind": "study5-e2-opening", "note_sha256": "…"}`), which is checked before anything of E2
-is read. Without it, no order run and no launcher journal of pod 3 is read. It writes one record,
+measured again. A rung's run is read only after its config. An E2 order repeat refuses the
+analysis, as in extension 2: an E2 cell in its name (checked before the config), an E2 seed with
+`train.order_seed` = s + 1000 or s + 2000, or one of those order seeds.
+
+E2 stays sealed (`"e2": {"sealed": true}`) unless `--open-e2` names an opening record:
+
+```json
+{"kind": "study5-e2-opening", "commit": "<full sha>", "note": "<path of the dated note>",
+ "note_sha256": "…"}
+```
+
+It is checked before anything of E2 is read:
+- the commit is an ancestor of the checkout's HEAD, or HEAD itself;
+- the note's text at that commit has that sha256;
+- HEAD holds the same text.
+
+Without it, no order run and no launcher journal of pod 3 is read. The analysis writes one record,
 never over an existing file, and prints numbers only.
 
 ```bash

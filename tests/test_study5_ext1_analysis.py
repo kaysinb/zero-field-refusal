@@ -14,6 +14,7 @@ import io
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -40,11 +41,48 @@ LABELED = "2026-11-12T12:00:00+00:00"
 CODE = {"commit": "a" * 40, "dirty": False, "module": "zero_field_refusal.analysis.study5_ext1"}
 E1, E2 = ext.E1_SEEDS, ext.E2_SEEDS
 ETA = {"eta_l": 1.3e-05, "eta_u": 1.83e-05}
-OPENING = {"kind": "study5-e2-opening", "note_sha256": "9" * 64}
+GIT = ("git", "-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c",
+       "commit.gpgsign=false")  # fmt: skip
 
 
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def git(repo: Path, *args: str) -> str:
+    return subprocess.run([*GIT, *args], cwd=repo, check=True, capture_output=True,
+                          text=True).stdout.strip()  # fmt: skip
+
+
+def note_repo(tmp: Path) -> dict:
+    """A checkout of its own for the dated note: the note committed, a later commit on top, and
+    a commit on a side branch (not an ancestor of HEAD)."""
+    repo = tmp / "checkout"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    path = "docs/study5-e2-note.md"
+    (repo / path).parent.mkdir(parents=True)
+    (repo / path).write_text("A dated note: the test on E2, fixed before its outcomes.\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "note")
+    commit, main = git(repo, "rev-parse", "HEAD"), git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    git(repo, "checkout", "-q", "-b", "side")
+    (repo / "side.txt").write_text("side\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "side")
+    side = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", main)
+    (repo / "later.txt").write_text("later\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "later")
+    return {"repo": repo, "commit": commit, "path": path, "side": side,
+            "sha256": sha((repo / path).read_bytes())}  # fmt: skip
+
+
+def opening_of(found: dict, **changes) -> dict:
+    """An opening record naming the dated note, ``changes`` applied."""
+    return {"kind": "study5-e2-opening", "commit": found["commit"], "note": found["path"],
+            "note_sha256": found["sha256"], **changes}  # fmt: skip
 
 
 def dump(path: Path, value) -> bytes:
@@ -554,9 +592,9 @@ class World:
             )
         ]
 
-    def opening(self, value=OPENING) -> Path:
+    def opening(self, value: dict | None = None) -> Path:
         path = self.tmp / "opening" / "e2-opening.json"
-        dump(path, value)
+        dump(path, opening_of(self.note) if value is None else value)
         return path
 
 
@@ -565,6 +603,8 @@ def world(tmp_path, monkeypatch) -> World:
     monkeypatch.setattr(cli, "harmful_prompts", lambda cfg: PROMPTS)
     monkeypatch.setattr(ext, "own_code", lambda: dict(CODE))
     found = World(tmp_path)
+    found.note = note_repo(tmp_path)  # the checkout whose history holds the dated note
+    monkeypatch.setattr(ext, "CHECKOUT", found.note["repo"])
     # the registration at the analysis's commit holds the extension and names the record
     monkeypatch.setattr(
         ext,
@@ -581,46 +621,44 @@ def call(argv) -> tuple[int, str]:
         return 1, str(exc.code)
 
 
+LISTED = "list:"  # a directory listed (os.listdir, os.scandir), apart from a stat or an open
+
+
 def spy(monkeypatch) -> list[str]:
-    """Every path opened, stat'ed or listed from now on (absolute, as given)."""
+    """Every path opened, stat'ed or listed from now on (absolute, as given; a listing marked
+    ``LISTED``)."""
     touched: list[str] = []
 
-    def wrap(fn):
+    def wrap(fn, mark: str = ""):
         def inner(*args, **kwargs):
             path = args[0] if args else kwargs.get("path", kwargs.get("file"))
             if isinstance(path, str | bytes | os.PathLike):
-                touched.append(os.path.abspath(os.fsdecode(path)))
+                touched.append(mark + os.path.abspath(os.fsdecode(path)))
             return fn(*args, **kwargs)
 
         return inner
 
-    for module, name in (
-        (os, "stat"),
-        (os, "lstat"),
-        (os, "listdir"),
-        (os, "scandir"),
-        (io, "open"),
-        (builtins, "open"),
-    ):
+    for module, name in ((os, "stat"), (os, "lstat"), (io, "open"), (builtins, "open")):
         monkeypatch.setattr(module, name, wrap(getattr(module, name)))
+    for name in ("listdir", "scandir"):
+        monkeypatch.setattr(os, name, wrap(getattr(os, name), LISTED))
     return touched
 
 
 def e2_touched(world: World, touched: list[str]) -> list[str]:
-    """The touched paths inside an E2 run directory (its config.yaml apart) or an E2 journal."""
+    """What was touched of E2: an E2 journal, or anything inside an E2 run directory but its
+    config.yaml, or the directory listed (a stat of the directory itself names no file)."""
     dirs = {f for d in world.e2_dirs for f in (str(d), os.path.realpath(d))}
     journals = {f for j in world.e2_journals for f in (str(j), os.path.realpath(j))}
-    return sorted(
-        {
-            p
-            for p in touched
-            if p in journals
-            or (
-                any(p == d or p.startswith(d + os.sep) for d in dirs)
-                and Path(p).name != "config.yaml"
-            )
-        }
-    )
+    found = set()
+    for entry in touched:
+        listed = entry.startswith(LISTED)
+        p = entry.removeprefix(LISTED)
+        inside = any(p.startswith(d + os.sep) for d in dirs)
+        if (p in journals or (inside and (listed or Path(p).name != "config.yaml"))
+                or (listed and p in dirs)):  # fmt: skip
+            found.add(entry)
+    return sorted(found)
 
 
 # ------------------------------------------------------------------ pure computations
@@ -882,6 +920,52 @@ def test_e1_rows_name_what_they_lack(world) -> None:
     )
 
 
+def test_a_rung_record_pointing_at_an_e2_run_refuses_before_its_files_are_read(world) -> None:
+    """An E2 order repeat is refused as the extension-2 analysis refuses it: by its config (an E2
+    order seed), read before anything else of the run, or by its name, before even that."""
+    records = world.pod3 / "study5_records/pod3-x/ladder"
+    out = world.tmp / "out.json"
+
+    def point_at(run_dir: Path) -> tuple[int, str, list[str]]:
+        dump(records / "s50000-gaussian_d.json",
+             dict(world.pod3_records[(50000, "gaussian_d")], experiment="study5",
+                  run_id=run_dir.name))  # fmt: skip
+        with pytest.MonkeyPatch.context() as patch:
+            touched = spy(patch)
+            code, why = call(world.argv(out))
+        return code, why, touched
+
+    target = world.pod3 / "study5" / "r-order1-eta_l-s50006"
+    code, why, touched = point_at(target)
+    assert code == 1 and not out.exists()
+    assert "an extension-1 order repeat (E2), order seed 51006: sealed, never read" in why
+    assert e2_touched(world, touched) == []  # its config.yaml alone was read
+    assert str(target / "config.yaml") in touched
+    # by its name: an E2 cell's run id, nothing of the run read, not even its config
+    named = world.pod3 / "study5" / "20261111T200000Z-s5-order2-1.3e-05-s50007-s50007-0a1b-a1"
+    shutil.copytree(world.pod3 / "study5" / "r-order2-eta_l-s50007", named)
+    world.e2_dirs.append(named)
+    code, why, touched = point_at(named)
+    assert code == 1 and "an extension-1 order repeat (E2) by its name" in why
+    assert not [p for p in touched if str(named) in p]
+
+
+def test_a_rung_record_pointing_at_another_rung_run_is_a_reason(world) -> None:
+    records = world.pod3 / "study5_records/pod3-x/ladder"
+    dump(records / "s50001-linear_no_d.json",
+         dict(world.pod3_records[(50001, "linear_no_d")],
+              run_id="s5-pod3-x-ladder-gaussian_d-s50001"))  # fmt: skip
+    out = world.tmp / "out.json"
+    code, why = call(world.argv(out))
+    assert code == 0, why
+    rows = {(r["seed"], r["rung"]): r for r in json.loads(out.read_text())["e1"]["rows"]}
+    row = rows[(50001, "linear_no_d")]
+    assert row["classes"] is None and row["labels"] == (
+        "ladder linear_no_d: its run is not the seed's linear_no_d rung of its eta_l run"
+    )
+    assert rows[(50001, "gaussian_d")]["classes"] is not None
+
+
 # ------------------------------------------------------------------ the CLI, E2 opened
 
 
@@ -905,7 +989,9 @@ def test_e2_opened_end_to_end(world, capsys) -> None:
     assert e2["sealed"] is False and e2["opening"] == {
         "record": opening.name,
         "sha256": sha(opening.read_bytes()),
-        "note_sha256": "9" * 64,
+        "commit": world.note["commit"],
+        "note": "docs/study5-e2-note.md",
+        "note_sha256": world.note["sha256"],
     }
     assert len(e2["entries"]) == 30 and e2["unsupported"] == []
     by = {(e["seed"], e["order"]): e for e in e2["entries"]}
@@ -1002,12 +1088,26 @@ def test_the_spy_sees_e2_reads_once_opened(world, monkeypatch) -> None:
         ({"kind": "study5-e2-opening"}, "no note_sha256 string"),
         ({"kind": "study5-e2-opening", "note_sha256": 7}, "no note_sha256 string"),
         ("not json", "does not read"),
+        (lambda n: opening_of(n, commit="abc123"), "its commit is not a full git sha"),
+        (lambda n: opening_of(n, commit="f" * 40), "is not in this checkout's history"),
+        (lambda n: opening_of(n, commit=n["side"]), "is not an ancestor of this checkout's HEAD"),
+        (lambda n: opening_of(n, note="../note.md"), "its note is not a path in the repository"),
+        (lambda n: opening_of(n, note="docs/other.md"), "is not in its commit"),
+        (lambda n: opening_of(n, note_sha256="0" * 64), "does not have the sha256"),
+        ("changed", "at HEAD is not the note at"),
     ],
 )
 def test_an_invalid_opening_record_is_refused_before_any_e2_read(
     world, monkeypatch, opening, why
 ) -> None:
     path = world.tmp / "opening.json"
+    if opening == "changed":  # the note edited after its commit: HEAD holds another text
+        note = world.note["repo"] / world.note["path"]
+        note.write_text(note.read_text() + "An edit.\n")
+        git(world.note["repo"], "commit", "-q", "-am", "edit")
+        opening = opening_of(world.note)
+    if callable(opening):
+        opening = opening(world.note)
     if isinstance(opening, dict):
         dump(path, opening)
     elif opening is not None:
