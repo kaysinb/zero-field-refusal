@@ -117,8 +117,11 @@ minutes and ``CLOSE_BUDGET`` end before the cap (``deadline --admit``).
 **The top-up** (``topup_plan``) repeats E2's design on the 30 fresh seeds outside it
 (``TOPUP_SEEDS``) on pod 4's volume after pod 4's campaign, under pod 4's GPU code: its archive
 id starts with ``topup-`` and its runs root may hold pod 4's archive besides its own, nothing
-else. Every new order's prediction from θ₀ is archived before any order run starts. The dry run
-prints each block's planned minutes and the plan's hours, planned and × ``ADMIT_FACTOR``.
+else. Every new order's prediction from θ₀ is archived before any order run starts, and is
+computed once: its preflight (``topup_problems``) also refuses a cap under ``TOPUP_CAP_HOURS``
+away, a settled prediction whose vector folder lost its record, and a missing completed rerun of
+pod 4's that the engineering check names. The dry run prints each block's planned minutes and the
+plan's hours, planned and × ``ADMIT_FACTOR``.
 
 **Failures.** Every run goes through ``scripts/launch.py FILE --max-attempts 1`` (one attempt; a
 rerun is a recovery round of the run's own, zero_field_refusal.launch, "Recovery rounds"). A step
@@ -2146,6 +2149,9 @@ TOPUP_PREFIX = "topup-"  # the top-up's archive namespace
 POD4_ARCHIVE_ID = "pod4-20261111"  # pod 4's archive: the top-up runs on its volume, after it
 # every fresh seed outside E2 (ORDER_SEEDS), in this order
 TOPUP_SEEDS = (*range(50000, 50006), *range(50016, 50040))
+# the least time from the top-up's start to its cap ZFR_DEADLINE_EPOCH: ADMIT_FACTOR × its planned
+# minutes and the close's CLOSE_BUDGET (32.6 h) fit in it (``topup_problems``)
+TOPUP_CAP_HOURS = 33
 
 
 def topup_plan(
@@ -2176,7 +2182,8 @@ def topup_plan(
     ``study5_records/<ID>/sealed/``, archived per seed; a failed replay or settle stops the
     campaign, so the orders never start without every prediction archived. ``orders``: the 120
     runs, per seed one campaign as on pod 3 (``order_repeats``). No checkpoint, no labeling. The
-    vector files go under ``<checkpoints>/vec/<ID>/``, apart from pod 4's."""
+    vector files go under ``<checkpoints>/vec/<ID>/``, apart from pod 4's. Before the start, the
+    preflight's ``topup_problems``."""
     spec = surrogate_spec(surrogate)
     b = Builder("topup", archive_id, out, runs, data, checkpoints)
     b.admit = True  # each block and seed group admitted only when it and the close fit the cap
@@ -3922,14 +3929,58 @@ def own_root_problems(plan: Plan) -> list[str]:
     return problems
 
 
+def topup_problems(plan: Plan, now: float | None = None) -> list[str]:
+    """What forbids the top-up's start, each before anything runs: a cap ``ZFR_DEADLINE_EPOCH``
+    not set or under ``TOPUP_CAP_HOURS`` away (1.5 × the planned minutes and the close fit in
+    it); a prediction settled under ``study5_records/<ID>/sealed/`` whose vector folder's
+    ``record.json`` is gone (a restored root, a lost or another --checkpoints), whose replay would
+    otherwise run again, since a written prediction is never computed twice; a run of another
+    campaign that a step names (``{run:LABEL@CAMPAIGN}``, pod 4's engineering rerun) without its
+    completed run in that campaign's journal."""
+    problems = []
+    cap, now = deadline_cap(), time.time() if now is None else now
+    if cap is None:
+        problems.append(f"ZFR_DEADLINE_EPOCH is not set: the top-up needs its cap at least "
+                        f"{TOPUP_CAP_HOURS} h away")  # fmt: skip
+    elif cap - now < 3600 * TOPUP_CAP_HOURS:
+        problems.append(f"the cap ZFR_DEADLINE_EPOCH {_iso(cap)} is {(cap - now) / 3600:.2f} h "
+                        f"away, under the {TOPUP_CAP_HOURS} h the top-up needs")  # fmt: skip
+    lost = []
+    for step in (s for b in plan.blocks if b.name == "predictions" for s in b.steps):
+        if step.name.endswith("-settle"):
+            folder = Path(step.argv[step.argv.index("--dir") + 1])
+            settled = Path(step.argv[step.argv.index("--records") + 1]) / "record.json"
+            if settled.exists() and not (folder / "record.json").exists():
+                lost.append(settled.parent.name)
+    if lost:
+        problems.append(f"{len(lost)} predictions are settled but their vector folders' "
+                        f"record.json is gone (first: {lost[0]}): a written prediction is never "
+                        "computed again")  # fmt: skip
+    named = {(found.group(2), found.group(1)) for step in steps_of(plan) for arg in step.argv
+             for found in RUN_REF.finditer(arg) if found.group(2)}  # fmt: skip
+    for campaign, run_label in sorted(named):
+        if campaign in plan.campaigns:
+            continue  # the plan's own: run by the plan before the step that names it
+        try:
+            completed_run(plan.runs, campaign, run_label)
+        except StepError as exc:
+            problems.append(f"the run a step names is not there: {exc}")
+    return problems
+
+
+def steps_of(plan: Plan) -> list[Step]:
+    return [s for b in plan.blocks for s in b.steps]
+
+
 def preflight(plan: Plan, args: argparse.Namespace | None = None) -> list[str]:
     """What forbids the start: the checkout, its GPU code (pod 3's: extension 1's record), the
     bucket, the key, the folder; for pod 2 also the registration, the committed seeds and pod 1's
     gates (``registration_problems``, ``seeds_problems``, ``gate_problems``); for pod 3 the
     registration holding extension 1 and a runs root and archive id of its own
     (``own_root_problems``); pod 4 the same with extension 2; the top-up pod 4's GPU code, the
-    registration holding both extensions and pod 4's runs root holding nothing but pod 4's
-    archive and its own."""
+    registration holding both extensions, pod 4's runs root holding nothing but pod 4's
+    archive and its own, its cap, its settled predictions and pod 4's rerun
+    (``topup_problems``)."""
     problems = []
     state = git_state(REPO)
     if state.get("dirty") is not False or state.get("commit") != plan.commit:
@@ -3946,6 +3997,8 @@ def preflight(plan: Plan, args: argparse.Namespace | None = None) -> list[str]:
                  if heading not in text]  # fmt: skip
     if plan.pod in PREFIXES:
         problems += own_root_problems(plan)
+    if plan.pod == "topup":
+        problems += topup_problems(plan)
     if not os.environ.get("ARTIFACT_REMOTE", "").startswith("gs://"):
         problems.append("ARTIFACT_REMOTE is not a gs:// path")
     if not Path(os.environ.get("ARTIFACT_GCS_KEY", "/nonexistent")).is_file():

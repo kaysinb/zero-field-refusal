@@ -3147,3 +3147,60 @@ def test_topup_admits_each_group_by_its_minutes_and_the_dry_run_prints_its_hours
     assert f"planned {total / 60:.2f} h, x1.5 {1.5 * total / 60:.2f} h" in printed
     assert "block predictions: 243 steps, 361.5 min" in printed
     assert not out.exists() and not (tmp_path / "runs").exists()
+
+
+def test_topup_preflight_refuses_a_short_cap_a_lost_prediction_and_a_missing_pod4_rerun(
+    where, tmp_path, monkeypatch
+):
+    """Before anything runs, the top-up refuses: a cap ZFR_DEADLINE_EPOCH not set or under 33 h
+    away (1.5 × the planned minutes and the close fit in 33 h); a prediction settled under
+    sealed/ whose vector folder's record.json is gone, which would be computed again; pod 4's
+    engineering rerun, which the check names, without its completed run in pod 4's journal."""
+    plan = topup({**where, "checkpoints": tmp_path / "ckpt"})
+    runs, now = where["runs"], 1_800_000_000
+    pod4_eng = f"study5-{camp.POD4_ARCHIVE_ID}-engineering"
+    label = "s5-order-1.3e-05-s50000/s50000"
+    start = {"event": "start", "run": label, "run_id": "r-a1", "experiment": "study5"}
+    done = {"event": "end", "run": label, "run_id": "r-a1", "outcome": "done"}
+    (runs / "study5" / "r-a1").mkdir(parents=True)
+    journal_of(runs, pod4_eng, [start, done])
+    monkeypatch.setenv("ZFR_DEADLINE_EPOCH", str(now + 33 * 3600))
+    assert camp.topup_problems(plan, now) == []
+    # the cap
+    need = camp.ADMIT_FACTOR * sum(camp.planned_minutes(plan).values()) + camp.CLOSE_BUDGET
+    assert need <= 60 * camp.TOPUP_CAP_HOURS == 60 * 33
+    monkeypatch.setenv("ZFR_DEADLINE_EPOCH", str(now + 33 * 3600 - 60))
+    (found,) = camp.topup_problems(plan, now)
+    assert "is 32.98 h away, under the 33 h the top-up needs" in found
+    monkeypatch.setenv("ZFR_DEADLINE_EPOCH", str(int(time.time()) + 32 * 3600))
+    assert any("under the 33 h" in p for p in camp.preflight(plan))
+    monkeypatch.delenv("ZFR_DEADLINE_EPOCH")
+    (found,) = camp.topup_problems(plan, now)
+    assert "ZFR_DEADLINE_EPOCH is not set" in found
+    monkeypatch.setenv("ZFR_DEADLINE_EPOCH", str(now + 34 * 3600))
+    # a settled prediction whose vector folder lost its record
+    settle = next(
+        s for s in steps(plan, "predictions") if s.name == "predictions/s50016/order1-settle"
+    )
+    folder = Path(settle.argv[settle.argv.index("--dir") + 1])
+    target = Path(settle.argv[settle.argv.index("--records") + 1])
+    target.mkdir(parents=True)
+    (target / "record.json").write_text("{}")
+    (found,) = camp.topup_problems(plan, now)
+    assert "1 predictions are settled" in found and "s50016-order1" in found
+    folder.mkdir(parents=True)
+    (folder / "record.json").write_text("{}")  # as the replay left it: kept, never recomputed
+    assert camp.topup_problems(plan, now) == []
+    (target / "record.json").unlink()  # written but not settled yet: settle copies it
+    assert camp.topup_problems(plan, now) == []
+    # pod 4's rerun: not ended, not completed, its directory gone, its journal gone
+    for lines, gone in (([start], False), ([start, {**done, "outcome": "technical"}], False),
+                        ([start, done], True)):  # fmt: skip
+        journal_of(runs, pod4_eng, lines)
+        if gone:
+            (runs / "study5" / "r-a1").rmdir()
+        (found,) = camp.topup_problems(plan, now)
+        assert found.startswith("the run a step names is not there") and pod4_eng in found
+    (runs / "launch" / f"{pod4_eng}.jsonl").unlink()
+    (found,) = camp.topup_problems(plan, now)
+    assert "has no completed run (no end)" in found
