@@ -559,25 +559,46 @@ ENDPOINT_RULE = (
     "Extension 2 amendment 2: e_i, the largest observed ‖θ_a − θ_b‖ at step 25 between seed i's "
     "replay, its archived run and any repeat (the replay check, the floor repeat, diagnostic "
     "repeats), an observed envelope and not a confidence bound; propagated exactly in the "
-    "parameters (triangle inequality; a vector scaled to a norm taken to first order in its "
-    "scale); r at a point to first order at θ₀ (‖∇r(θ₀)‖·‖Δv‖, not a bound); K and harm not "
-    "propagated; a quantity is resolved when it is at least 10 times its uncertainty"
+    "parameters (triangle inequality; a vector T·u/‖u‖ scaled to a norm T moves by at most "
+    "|ΔT| + 2(T/‖u‖)‖Δu‖; a matched-K point at its selected scale held fixed); r at a point to "
+    "first order at θ₀ (‖∇r(θ₀)‖·‖Δv‖, not a bound: its flags read under θ₀'s linearization and "
+    "r's own resolution is not assessed); K and harm not propagated; a parameter quantity is "
+    "resolved when it is at least 10 times its bound"
 )
 FIRST_ORDER = "first order at θ₀, not a bound: ‖∇r(θ₀)‖·‖Δv‖"
+R_NOT_ASSESSED = (
+    "not assessed: r's resolution needs a measured or bounded uncertainty; the proxy "
+    "linearizes r at θ₀, not at the displaced point"
+)
+FIXED_SCALE = "at the selected scale held fixed: the scale search is not propagated"
 NOT_PROPAGATED = (
     "not propagated: K and harm are nonlinear in θ and the records hold no "
     "derivative of them; the displacement's relative size is given beside"
 )
 
 
-def endpoint_envelope(checks: Mapping[str, Any], replays: Mapping[int, Any],
-                      floors: Mapping[int, Mapping[str, Any]] | None = None,
-                      diagnostics: Mapping[int, Mapping[str, Any] | str] | None = None,
-                      ) -> dict[int, dict[str, Any]]:  # fmt: skip
+def _step(item: Mapping[str, Any]) -> int | None:
+    try:
+        return int(item.get("step"))
+    except (TypeError, ValueError):
+        return None
+
+
+def endpoint_envelope(
+    checks: Mapping[str, Any],
+    replays: Mapping[int, Any],
+    floors: Mapping[int, Mapping[str, Any] | str] | None = None,
+    diagnostics: Mapping[int, Mapping[str, Any] | str] | None = None,
+) -> dict[int, dict[str, Any]]:
     """Per seed, e_i (``ENDPOINT_RULE``) and its sources: the seed's replay check pair (tensors
     equal: 0; else its recorded distance), the floor repeat's step 25 (``twins_steps`` of the
-    floor record, by seed) and diagnostic repeats (a ``study5-pairs`` record, its step-25 rows).
-    A replay check missing for the seed, or endpoints that differ without a distance, leave e_i
+    floor record, by seed) and diagnostic repeats (a ``study5-pairs`` record, its rows with both
+    items at step 25). ``floors`` and ``diagnostics`` hold, per seed, the evidence present: a
+    record, or the reason (a string) it does not read; a seed without an entry has none. A
+    replay check missing for the seed, endpoints that differ without a distance, and present
+    evidence that cannot be read as an endpoint distance (a string; a floor without its step-25
+    distance; a diagnostic row whose items name no step, as ``ckpt:PATH:SHA`` items do not; an
+    endpoint row without a distance; a diagnostic record without an endpoint row) leave e_i
     None with the reason: nothing then bounds it."""
     by_run = {run: seed for seed, run in replays.items() if run is not None}
     found: dict[int, dict[str, Any]] = {}
@@ -597,24 +618,47 @@ def endpoint_envelope(checks: Mapping[str, Any], replays: Mapping[int, Any],
         elif pair.get("endpoint_tensors_equal") is True:
             sources.append({"source": f"replay check {pair['group']}", "distance": 0.0})
         elif number(pair.get("endpoint_distance")) is not None:
-            sources.append({"source": f"replay check {pair['group']}",
-                            "distance": number(pair["endpoint_distance"])})  # fmt: skip
+            sources.append(
+                {
+                    "source": f"replay check {pair['group']}",
+                    "distance": number(pair["endpoint_distance"]),
+                }
+            )
         else:
             unknown.append(f"replay check {pair['group']}: endpoints differ without a distance")
         floor = (floors or {}).get(s)
-        if isinstance(floor, Mapping) and floor.get("available"):
+        if isinstance(floor, str):
+            unknown.append(f"floor repeat: {floor}")
+        elif isinstance(floor, Mapping):
             at = (floor.get("steps") or {}).get(sa.STEPS) or {}
-            if number(at.get("distance")) is not None:
+            if not floor.get("available"):
+                unknown.append(f"floor repeat: {floor.get('reason') or 'unavailable'}")
+            elif number(at.get("distance")) is None:
+                unknown.append("floor repeat: no endpoint distance")
+            else:
                 sources.append({"source": "floor repeat", "distance": number(at["distance"])})
         diag = (diagnostics or {}).get(s)
-        if isinstance(diag, Mapping):
-            rows = [number(row.get("distance")) for row in diag.get("pairs", [])
-                    if str((row.get("a") or {}).get("step")) == str(sa.STEPS)
-                    and str((row.get("b") or {}).get("step")) == str(sa.STEPS)]  # fmt: skip
-            if rows and all(d is not None for d in rows):
-                sources.append({"source": "diagnostic repeats", "distance": max(rows)})
-            elif rows:
-                unknown.append("diagnostic repeats: a step-25 pair without a distance")
+        if isinstance(diag, str):
+            unknown.append(f"diagnostic repeats: {diag}")
+        elif isinstance(diag, Mapping):
+            rows, unread = [], 0
+            for row in diag.get("pairs") or []:
+                steps = (_step(row.get("a") or {}), _step(row.get("b") or {}))
+                if None in steps:
+                    unread += 1
+                elif steps == (sa.STEPS, sa.STEPS):
+                    rows.append(number(row.get("distance")))
+            if unread:
+                unknown.append(f"diagnostic repeats: {unread} row(s) whose items name no step")
+            elif not rows:
+                unknown.append("diagnostic repeats: no endpoint row")
+            elif any(d is None for d in rows):
+                unknown.append("diagnostic repeats: an endpoint row without a distance")
+            else:
+                source = {"source": "diagnostic repeats", "distance": max(rows)}
+                if diag.get("copies"):
+                    source["copies"] = diag["copies"]
+                sources.append(source)
         e = None if unknown or not sources else max(x["distance"] for x in sources)
         out[s] = {"e": e, "sources": sources, "reason": "; ".join(unknown) or None}
     return out
@@ -631,10 +675,19 @@ def _times(*factors: Any) -> float | None:
 
 
 def first_order_r(effect: Any, displacement: Any, grad_norm: Any) -> dict[str, Any]:
-    """r's uncertainty at a point moved by at most ``displacement``: ‖∇r(θ₀)‖·‖Δv‖, first order
-    at θ₀ and not a bound, with ``resolution`` of the effect against it."""
+    """r's uncertainty at a point moved by at most ``displacement``: the proxy ‖∇r(θ₀)‖·‖Δv‖,
+    first order at θ₀ and not a bound (the gradient that matters is the displaced point's), with
+    the ratio of the effect to it. Its flag is ``resolved_under_theta0_linearization`` or
+    ``unresolved_under_theta0_linearization``; r's own resolution is not assessed
+    (``R_NOT_ASSESSED``)."""
     u = _times(grad_norm, displacement)
-    return {"uncertainty": u, "kind": FIRST_ORDER, **resolution(effect, u)}
+    found = resolution(effect, u)
+    flag = {
+        "resolved": "resolved_under_theta0_linearization",
+        "numerically_unresolved": "unresolved_under_theta0_linearization",
+    }.get(found.get("flag"), found.get("flag"))
+    return {"uncertainty": u, "kind": FIRST_ORDER, **found, "flag": flag,
+            "r_resolution": R_NOT_ASSESSED}  # fmt: skip
 
 
 def not_propagated(displacement: Any, norm: Any) -> dict[str, Any]:
@@ -722,9 +775,9 @@ def _quadratic(G: np.ndarray, w: np.ndarray) -> float:
 def m4_bounds(m4: Mapping[str, Any], vectors: Mapping[str, Any],
               envelope: Mapping[int, Mapping[str, Any]]) -> dict[str, Any]:  # fmt: skip
     """M4's vectors under e_i (``ENDPOINT_RULE``): μ̂ by Σe/n; a mixture scaled to ‖μ̂‖ with scale
-    c by (1 + 2c)·Σe/n (first order in its scale); Δθ_i − μ̂_{−i} by e_i + Σ_{j≠i}e_j/(n − 1);
+    c by (1 + 2c)·Σe/n (exactly: |ΔT| + 2c‖Δu‖); Δθ_i − μ̂_{−i} by e_i + Σ_{j≠i}e_j/(n − 1);
     Δθ_i − c·m_{−i} by e_i + Σ_{j≠i}e_j/(n − 1) + 2c·Σ_{used}e_j/(n − 2); a matched-K point by
-    its scale times its vector's (the scale search itself not propagated). Per point ‖Δv‖ and
+    its scale times its vector's, at the selected scale held fixed. Per point ‖Δv‖ and
     ‖Δv‖/‖v‖; per contrast the parameters' resolution ‖v₁ − v₂‖ against ‖Δv₁‖ + ‖Δv₂‖, r to
     first order, K and harm not propagated."""
     seeds = [int(s) for s in vectors["seeds"]]
@@ -765,7 +818,7 @@ def m4_bounds(m4: Mapping[str, Any], vectors: Mapping[str, Any],
         c = number(((row or {}).get("matched") or {}).get("c"))
         matched[side] = {"scale": c, "displacement": _times(c, mu),
                          "relative_displacement": ratio(mu, mu_norm),
-                         "note": "the scale search is not propagated"}  # fmt: skip
+                         "note": FIXED_SCALE}  # fmt: skip
     mixtures = {}
     for row in vectors.get("mixtures") or []:
         c = number(row.get("scale"))
@@ -774,7 +827,8 @@ def m4_bounds(m4: Mapping[str, Any], vectors: Mapping[str, Any],
         k_scale = number(found.get("c"))
         mixtures[str(row.get("k"))] = {
             "scale": c, "displacement_natural": dv, "relative_displacement": ratio(dv, mu_norm),
-            "displacement_matched_k": _times(k_scale, dv)}  # fmt: skip
+            "displacement_matched_k": _times(k_scale, dv),
+            "matched_k_note": FIXED_SCALE}  # fmt: skip
     removals = {}
     for row in vectors.get("removals") or []:
         s = int(row["seed"])
@@ -808,14 +862,18 @@ def m4_bounds(m4: Mapping[str, Any], vectors: Mapping[str, Any],
             "matched_k": matched, "mixtures": mixtures, "removals": removals}  # fmt: skip
 
 
+UNRESOLVED_FLAGS = ("numerically_unresolved", "unresolved_under_theta0_linearization")
+
+
 def bound_cases(bounds: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Every quantity the endpoint bounds leave numerically unresolved, by its path."""
+    """Every quantity the endpoint bounds leave unresolved (in the parameters, or r under θ₀'s
+    linearization), by its path and flag."""
     out: list[dict[str, Any]] = []
 
     def walk(node: Any, path: str) -> None:
         if isinstance(node, Mapping):
-            if node.get("flag") == "numerically_unresolved":
-                out.append({"at": path, "ratio": node.get("ratio")})
+            if node.get("flag") in UNRESOLVED_FLAGS:
+                out.append({"at": path, "flag": node["flag"], "ratio": node.get("ratio")})
             for key, value in node.items():
                 walk(value, f"{path}/{key}")
 

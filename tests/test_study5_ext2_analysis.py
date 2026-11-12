@@ -351,26 +351,56 @@ def test_a_contrast_floor_takes_both_sides_repeat_errors() -> None:
 
 def test_e_i_is_the_largest_observed_endpoint_discrepancy_or_unbounded() -> None:
     """Amendment 2: e_i over the replay check, the floor repeat and diagnostic repeats (their
-    step-25 rows only); endpoints that differ without a distance, or no check pair, leave e_i
-    None with the reason."""
+    rows with both items at step 25); endpoints that differ without a distance, no check pair,
+    or present evidence that cannot be read as an endpoint distance leave e_i None with the
+    reason; absent optional evidence leaves it to the rest."""
+    runs = {s: f"run-{s}" for s in range(1, 11)}
+    pairs = [{"rerun": runs[s], "endpoint_tensors_equal": True} for s in (1, 5, 6, 7, 8, 9, 10)]
+    pairs += [
+        {"rerun": runs[2], "endpoint_tensors_equal": False, "endpoint_distance": 2e-4},
+        {"rerun": runs[3], "endpoint_tensors_equal": False, "endpoint_distance": None},
+    ]
     checks = {
-        "engineering": {"pairs": [{"rerun": "run-a", "endpoint_tensors_equal": False}]},
-        "g1": {"pairs": [
-            {"rerun": "run-a", "endpoint_tensors_equal": True, "endpoint_distance": None},
-            {"rerun": "run-b", "endpoint_tensors_equal": False, "endpoint_distance": 2e-4},
-            {"rerun": "run-c", "endpoint_tensors_equal": False, "endpoint_distance": None}]},
+        "engineering": {"pairs": [{"rerun": runs[1], "endpoint_tensors_equal": False}]},
+        "g1": {"pairs": pairs},
+    }
+
+    def row(a: object, b: object, distance: float | None) -> dict:
+        return {"a": {"kind": "ckpt", **({} if a is None else {"step": str(a)})},
+                "b": {"kind": "ckpt", **({} if b is None else {"step": str(b)})},
+                "distance": distance}  # fmt: skip
+
+    floors = {
+        1: {"available": True, "steps": {25: {"distance": 3e-6}, 2: {"distance": 9.0}}},
+        5: "twins/floor-s5.json: does not read (JSONDecodeError)",
+        6: {"available": True, "steps": {2: {"distance": 0.0}}},
+    }
+    diag = {
+        2: {"kind": "study5-pairs", "copies": 2,
+            "pairs": [row(2, 2, 5.0), row(25, 25, 8e-4), row(25, 18, 7.0)]},
+        7: "study5_diag/s7/pairs.json: not a study5-pairs record",
+        8: {"kind": "study5-pairs", "pairs": [row(None, 25, 0.0), row(25, 25, 0.0)]},
+        9: {"kind": "study5-pairs", "pairs": [row(2, 2, 0.0)]},
+        10: {"kind": "study5-pairs", "pairs": [row(25, 25, None)]},
     }  # fmt: skip
-    floors = {1: {"available": True, "steps": {25: {"distance": 3e-6}, 2: {"distance": 9.0}}}}
-    diag = {2: {"kind": "study5-pairs", "pairs": [
-        {"a": {"step": "2"}, "b": {"step": "2"}, "distance": 5.0},
-        {"a": {"step": "25"}, "b": {"step": "25"}, "distance": 8e-4}]}}  # fmt: skip
-    found = ext2.endpoint_envelope(checks, {1: "run-a", 2: "run-b", 3: "run-c", 4: "run-d"},
-                                   floors, diag)  # fmt: skip
+    found = ext2.endpoint_envelope(checks, runs, floors, diag)
     assert found[1]["e"] == pytest.approx(3e-6) and found[1]["reason"] is None
     assert [x["source"] for x in found[1]["sources"]] == ["replay check g1", "floor repeat"]
-    assert found[2]["e"] == pytest.approx(8e-4)  # the diagnostic repeats' step 25, not step 2
+    assert found[2]["e"] == pytest.approx(8e-4)  # step 25 on both sides only
+    assert found[2]["sources"][-1] == {"source": "diagnostic repeats", "distance": 8e-4,
+                                       "copies": 2}  # fmt: skip
     assert found[3]["e"] is None and "without a distance" in found[3]["reason"]
     assert found[4]["e"] is None and found[4]["reason"] == "no replay check pair"
+    reasons = {
+        5: "floor repeat: twins/floor-s5.json: does not read",
+        6: "floor repeat: no endpoint distance",
+        7: "diagnostic repeats: study5_diag/s7/pairs.json: not a study5-pairs",
+        8: "diagnostic repeats: 1 row(s) whose items name no step",
+        9: "diagnostic repeats: no endpoint row",
+        10: "diagnostic repeats: an endpoint row without a distance",
+    }
+    for s, why in reasons.items():  # present, uninterpretable: never zero
+        assert found[s]["e"] is None and found[s]["reason"].startswith(why), s
 
 
 def test_m1_bounds_take_e_i_through_the_triangle_inequality() -> None:
@@ -407,7 +437,9 @@ def test_m3_and_m4_bounds_r_to_first_order_and_k_harm_not_propagated() -> None:
     assert at["displacement"] == pytest.approx(1e-4)
     assert at["odd_r"]["uncertainty"] == pytest.approx(3e-4)  # ‖∇r‖·a·e_i
     assert at["odd_r"]["kind"] == ext2.FIRST_ORDER
-    assert at["odd_r"]["flag"] == at["even_r"]["flag"] == "numerically_unresolved"
+    assert at["odd_r"]["flag"] == at["even_r"]["flag"] == "unresolved_under_theta0_linearization"
+    assert at["odd_r"]["ratio"] == pytest.approx(1e-3 / 3e-4)
+    assert at["odd_r"]["r_resolution"] == ext2.R_NOT_ASSESSED
     assert at["K_and_openings"]["propagated"] is False
     assert at["K_and_openings"]["relative_displacement"] == pytest.approx(5e-4)
     assert m3["1"]["amplitudes"]["1"]["odd_r"] is None  # no parts recorded at a = 1
@@ -420,20 +452,24 @@ def test_m3_and_m4_bounds_r_to_first_order_and_k_harm_not_propagated() -> None:
     assert parity["displacement"] == pytest.approx(2e-3)
     assert parity["parameters"]["distance"] == pytest.approx(1.0)  # 2‖μ̂‖
     assert parity["parameters"]["flag"] == "resolved"
-    assert parity["r"]["uncertainty"] == pytest.approx(6e-3) and parity["r"]["flag"] == "resolved"
+    assert parity["r"]["uncertainty"] == pytest.approx(6e-3)
+    assert parity["r"]["flag"] == "resolved_under_theta0_linearization"  # never plain "resolved"
     assert parity["K_and_harm"]["propagated"] is False
     assert b["parity"]["2x"]["contrast_plus_minus"]["displacement"] == pytest.approx(4e-3)
     assert b["matched_k"]["plus"]["displacement"] == pytest.approx(2e-3)
+    assert b["matched_k"]["plus"]["note"] == ext2.FIXED_SCALE
     assert b["mixtures"]["1"]["displacement_natural"] == pytest.approx(5e-3)  # (1 + 2c)·Σe/n
+    assert b["mixtures"]["1"]["matched_k_note"] == ext2.FIXED_SCALE
     removal = b["removals"]["1"]
     assert removal["displacement_mean_removed"] == pytest.approx(2e-3)  # e_1 + Σ_{j≠1}e_j/2
     assert removal["displacement_mixture_removed"] == pytest.approx(2e-3 + 2 * 3.0 * 2e-3)
     distance = removal["contrast_mean_minus_mixture"]["parameters"]["distance"]
     assert distance == pytest.approx(math.sqrt(2.5**2 + 0.5**2))  # ‖c·m − μ̂_{−1}‖ with G = I
     r = removal["contrast_mean_minus_mixture"]["r"]
-    assert r["flag"] == "numerically_unresolved"  # 1e-4 against 3·0.016
+    assert r["flag"] == "unresolved_under_theta0_linearization"  # 1e-4 against 3·0.016
     found = ext2.bound_cases({"m4": b, "m3": m3})
-    assert {"at": "/m4/removals/1/contrast_mean_minus_mixture/r", "ratio": r["ratio"]} in found
+    assert {"at": "/m4/removals/1/contrast_mean_minus_mixture/r", "ratio": r["ratio"],
+            "flag": "unresolved_under_theta0_linearization"} in found  # fmt: skip
     assert all(x["at"] != "/m4/parity/1x/contrast_plus_minus/r" for x in found)
 
 
@@ -1295,19 +1331,39 @@ def test_missing_optional_inputs_give_null_with_a_reason(pod4, tmp_path) -> None
 
 def test_diagnostic_repeats_under_a_runs_root_enter_e_i(pod4, tmp_path) -> None:
     """study5_diag/s<seed>/pairs.json under a runs root: its step-25 distances enter e_i; a seed
-    without one is not missed."""
-    row = {"a": {"kind": "ckpt", "step": "25"}, "b": {"kind": "ckpt", "step": "25"},
-           "distance": 7e-4, "norm_a": 2.0, "norm_b": 2.0, "cosine": 1.0, "dot": 4.0}  # fmt: skip
-    dump(pod4.runs / "study5_diag" / "s50001" / "pairs.json",
-         {"kind": "study5-pairs", "pairs": [row]})  # fmt: skip
-    out = tmp_path / "ext2.json"
-    assert call(pod4.argv(out)) == (0, "")
-    record = json.loads(out.read_text())
+    without one is not missed. A byte-identical copy under another root is the same record;
+    differing copies are combined (the largest distance counts); a copy that does not read
+    leaves e_i None and is missed."""
+
+    def pairs(distance: float) -> dict:
+        row = {"a": {"kind": "ckpt", "step": "25"}, "b": {"kind": "ckpt", "step": "25"},
+               "distance": distance, "norm_a": 2.0, "norm_b": 2.0, "cosine": 1.0,
+               "dot": 4.0}  # fmt: skip
+        return {"kind": "study5-pairs", "pairs": [row]}
+
+    rel = Path("study5_diag") / "s50001" / "pairs.json"
+
+    def run(name: str) -> dict:
+        out = tmp_path / name
+        assert call(pod4.argv(out)) == (0, "")
+        return json.loads(out.read_text())
+
+    dump(pod4.runs / rel, pairs(7e-4))
+    dump(pod4.pod2 / rel, pairs(7e-4))  # byte-identical
+    record = run("one.json")
     seed = record["endpoint_bounds"]["per_seed"]["50001"]
     assert seed["e"] == pytest.approx(7e-4)
     assert seed["sources"][-1] == {"source": "diagnostic repeats", "distance": 7e-4}
     assert not [m for m in record["missing"] if "study5_diag" in m["what"]]
     assert any("study5_diag/s50001/pairs.json" in key for key in record["inputs"])
+    dump(pod4.pod2 / rel, pairs(9e-4))  # a differing copy: combined, the larger counts
+    seed = run("two.json")["endpoint_bounds"]["per_seed"]["50001"]
+    assert seed["e"] == pytest.approx(9e-4) and seed["sources"][-1]["copies"] == 2
+    (pod4.pod2 / rel).write_text("{")  # a copy that does not read: no bound, and missed
+    record = run("three.json")
+    seed = record["endpoint_bounds"]["per_seed"]["50001"]
+    assert seed["e"] is None and "does not read" in seed["reason"]
+    assert any(m["what"] == "study5_diag/s50001/pairs.json" for m in record["missing"])
 
 
 def test_a_seed_without_its_linear_record_withholds_the_criterion(pod4, tmp_path) -> None:

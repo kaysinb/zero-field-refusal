@@ -271,20 +271,36 @@ def endpoint_r(inputs: Inputs, analysis: Mapping[str, Any]) -> dict[int, float |
 
 def diagnostic_repeats(inputs: Inputs) -> dict[int, dict[str, Any] | str]:
     """Diagnostic repeats of a replay's config (``study5_diag/s<seed>/pairs.json`` under a runs
-    root, a ``study5-pairs`` record), by seed; a seed without one is left out, not missed."""
+    root, a ``study5-pairs`` record), by seed; a seed without one is left out, not missed. Copies
+    under several roots: byte-identical ones are one record; differing ones are combined, their
+    rows together (e_i takes the largest), with ``copies`` the number of distinct ones. A copy
+    that does not read, or is not such a record, gives the reason instead."""
     out: dict[int, dict[str, Any] | str] = {}
     for s in ext2.SEEDS:
         rel = f"study5_diag/s{s}/pairs.json"
         paths = [root / rel for root in inputs.roots if (root / rel).is_file()]
         if not paths:
             continue
-        try:
-            found = json.loads(inputs.reader.bytes(paths[0]))
-        except ValueError as exc:
-            out[s] = inputs.why(rel, f"{rel}: does not read ({type(exc).__name__})")
-            continue
-        out[s] = (found if isinstance(found, dict) and found.get("kind") == "study5-pairs"
-                  else inputs.why(rel, f"{rel}: not a study5-pairs record"))  # fmt: skip
+        found: dict[str, Any] = {}
+        why = None
+        for path in paths:
+            try:
+                data = inputs.reader.bytes(path)
+                record = json.loads(data)
+            except (OSError, ValueError) as exc:
+                why = f"{rel}: does not read ({type(exc).__name__})"
+                break
+            if not isinstance(record, dict) or record.get("kind") != "study5-pairs":
+                why = f"{rel}: not a study5-pairs record"
+                break
+            found.setdefault(sha256(data), record)
+        if why is not None:
+            out[s] = inputs.why(rel, why)
+        elif len(found) == 1:
+            out[s] = next(iter(found.values()))
+        else:
+            rows = [row for record in found.values() for row in record.get("pairs") or []]
+            out[s] = {"kind": "study5-pairs", "pairs": rows, "copies": len(found)}
     return out
 
 
@@ -785,7 +801,11 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     m5, force_floor = m5_section(inputs)
     m6, twins_floor = m6_section(inputs, records.name, rows, analysis_record, floors, edited,
                                  repeated)  # fmt: skip
-    envelope = ext2.endpoint_envelope(checks, replays, {ext2.FORCE_SEED: twins_floor},
+    floor_evidence: dict[int, Any] = {}  # the floor repeat, where its record was written
+    if (records / "twins" / f"floor-s{ext2.FORCE_SEED}.json").is_file():
+        floor_evidence[ext2.FORCE_SEED] = (twins_floor if twins_floor.get("available")
+                                           else str(twins_floor.get("reason")))  # fmt: skip
+    envelope = ext2.endpoint_envelope(checks, replays, floor_evidence,
                                       diagnostic_repeats(inputs))  # fmt: skip
     bounds = {"rule": ext2.ENDPOINT_RULE, "per_seed": ext2.seed_bounds(vectors, envelope),
               "m1": ext2.m1_bounds(vectors, envelope),
