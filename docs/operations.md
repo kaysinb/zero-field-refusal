@@ -3393,6 +3393,30 @@ project-run "$SRC" python scripts/study5_campaigns.py pod4 --out "$RUNS_DIR/camp
 runs' full evaluations (`study5_vector/`), the swaps and the shuffles with the registered judge.
 No E2 run is labeled under this extension.
 
+**The analysis** runs on a CPU through `python -m zero_field_refusal.analysis.study5_ext2_cli`
+(its docstring holds every rule; the computations and the reading rules are
+`analysis/study5_ext2.py`'s), after the restore and the labels. It reads pod 4's records folder,
+the runs roots (pod 4's and pod 2's analysis root) and pod 2's registered analysis record, refused
+unless it has the sha256 the registration names; h_i, the order controls' harm differences and
+pod 2's endpoint records (each by the sha256 the registered analysis read it with) come from it,
+and the labels through the registered label reader. It writes one record, never over an existing
+file: every quantity of M1–M6 per seed and point, means with seed-level standard errors, every
+diverged, near-bound, unbracketed or out-of-tolerance case, the amendment's floors with each
+quantity's |effect|/floor flag (`resolved` from 10), and the δ_lin criterion (`passed`,
+`primary_predictor`), withheld while one of its inputs is missing. A missing optional record or
+label is null with its reason; a missing vectors record or linear block refuses. A run directory
+of an E2 order repeat refuses the analysis before anything of it but its config is read; E2 enters
+only through the sealed block's predictions. It sits in the analysis package, outside the GPU code
+identity, and records its checkout's git state and every input's sha256.
+
+```bash
+export DATA_DIR="$DATA"   # the prompt sets, for the registered label reader
+python -m zero_field_refusal.analysis.study5_ext2_cli \
+  --records "$RUNS_DIR/study5_records/pod4-<date>" --runs-root "$RUNS_DIR" \
+  --runs-root "$POD2_ROOT" --analysis "$POD2_ROOT/study5-final/analysis.json" \
+  --out "$RUNS_DIR/study5-ext2/analysis.json"
+```
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project
