@@ -1508,9 +1508,11 @@ POD4_DIAG_RERUN = "study5/20261111T164620Z-s5-order-1.3e-05-s50000-s50000-3173f4
 # a stricter endpoint bound stands (``gate_problem``)
 EXT2_TOLERANCE = {"relative": 1e-4, "absolute": 1e-9, "answers_allowed": 2,
                   "endpoint_distance": 1e-3}  # fmt: skip
-# a replay group's check under the endpoint bound, a record of its own per bound: an earlier
-# bound's record stays as it was written
-EXT2_REPLAY_CHECK = "check-{group}-endpoint-{bound:g}.json"
+# a replay group's check, accepted for endpoint analysis ("Extension 2 amendment 3":
+# study5_engineering_check.py --endpoint-analysis, the gate ``replay``) under the endpoint bound;
+# a record of its own: the earlier records (check-{group}.json, check-{group}-endpoint-0.001.json)
+# stay as they were written
+EXT2_REPLAY_CHECK = "check-{group}-endpoint-analysis-{bound:g}.json"
 EXT2_SEEDS = tuple(range(FRESH_FIRST, FRESH_FIRST + 40))  # the 40 fresh seeds
 EXT2_GROUP = 4  # seeds per replay or linear group: each group admitted on its own
 M_SEEDS = CONTROL_SEEDS  # M3, M4's removals, the δ_lin points evaluated in full, the shuffles
@@ -1809,7 +1811,7 @@ def pod4_plan(
                 *[pod2_run(s) for s in seeds], "--rerun", *[f"{{run:{label(c)}}}" for c in cells],
                 "--out", check, "--rerun-endpoint-tensors", hashed, "--tolerance",
                 EXT2_TOLERANCE["relative"], "--endpoint-tolerance",
-                EXT2_TOLERANCE["endpoint_distance"]]  # fmt: skip
+                EXT2_TOLERANCE["endpoint_distance"], "--endpoint-analysis"]  # fmt: skip
         argv += [x for s in seeds for x in ("--endpoint-tensors",
                                             "=".join(POD2_ENDPOINTS[s]))]  # fmt: skip
         argv += [x for s in seeds for x in ("--endpoint-distance",
@@ -1818,7 +1820,7 @@ def pod4_plan(
             argv += ["--ignore", "step_checkpoints"]
         step(f"replays/{group}/check", with_runs(*argv, campaign=name), on_fail="stop",
              outputs=(str(check),), group=group, minutes_key="engineering-check",
-             gate="engineering")  # fmt: skip
+             gate="replay")  # fmt: skip
         paths = [b.rel(hashed), b.rel(check), *[b.rel(d) for d in distances.values()]]
         for s, twin in twins.items():
             items = [(f"run:{{run:{replays[s][1]}}}:{t}", f"run:{{run:{label(twin)}}}:{t}")
@@ -2405,12 +2407,17 @@ def gate_problem(kind: str, path: Path, plan: Plan) -> str | None:
         return predictions_problem(record, fresh_seeds(plan.n), plan.gpu_code) or (
             published_problem(path, path.parent / RECEIPT_NAME, required=False)
         )
-    if kind == "engineering":
+    if kind in ("engineering", "replay"):
         # the verdict: ``passed`` (exact, or within extension 2's numerical equivalence when the
         # record holds a tolerance; ``exact`` and ``within_tolerance`` apart), or an earlier
-        # record's ``equal``
+        # record's ``equal``; a replay group's: ``accepted_for_endpoint_analysis`` (extension 2's
+        # third amendment)
         verdict = record.get("passed") if "passed" in record else record.get("equal")
+        if kind == "replay":
+            verdict = record.get("accepted_for_endpoint_analysis")
         if verdict is not True:
+            if kind == "replay":
+                return "the replay check did not accept the replays for endpoint analysis"
             return "the engineering check found a difference"
         found = record.get("tolerance")
         if found is not None and not tolerance_stands(found):
