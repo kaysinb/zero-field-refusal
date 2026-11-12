@@ -3296,8 +3296,27 @@ project-run "$SRC" python scripts/study5_campaigns.py pod3 --out "$RUNS_DIR/camp
 - Label with the registered judge: `scripts/label_runs.py --judge wildguard` on the evaluated
   rung runs (`study5_ladder/s5-<ID>-ladder-*`) and the 40 order runs.
 
-The extension's analysis is a script of its own, written after the labels exist. It computes
-exactly what the extension names and is reviewed before its numbers are reported.
+**The analysis** runs on a CPU through `python -m zero_field_refusal.analysis.study5_ext1` (its
+docstring holds every rule), from a clean checkout. It sits in the analysis package, outside the
+GPU code identity, and reuses the registered analysis's readers and functions. It reads:
+- pod 3's restored root (`--pod3-runs`);
+- the runs root the registered analysis read (`--pod2-runs`), each file located through the
+  registered record's `inputs` and refused unless its sha256 is the one listed there;
+- the registered record (`--registered`), refused unless the registration names its sha256.
+
+E1 gives each rung's row through the registered ladder table, with pod 2's `linear` rung (its
+rows checked against the registered ones) and the trained endpoint beside it. It also gives the
+means over the evaluated seeds, the registered shuffled-D trigger, and pod 2's grid points
+measured again. E2 stays sealed (`"e2": {"sealed": true}`) unless `--open-e2` names an opening
+record (`{"kind": "study5-e2-opening", "note_sha256": "…"}`), which is checked before anything of E2
+is read. Without it, no order run and no launcher journal of pod 3 is read. It writes one record,
+never over an existing file, and prints numbers only.
+
+```bash
+python -m zero_field_refusal.analysis.study5_ext1 --pod3-runs "$POD3_RUNS" \
+  --pod2-runs "$RUNS_DIR" --registered "$RUNS_DIR/study5-final/analysis.json" \
+  --out "$POD3_RUNS/study5-ext1/analysis.json"   # --open-e2 OPENING.json: E2, once decided
+```
 
 
 ### Study 5, extension 2: pod 4
