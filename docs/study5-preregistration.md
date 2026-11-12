@@ -636,3 +636,46 @@ relative drift of the scalars. Parameter distances exist only at checkpointed st
 that cannot be told from its floor is not interpreted. A reported contrast of order 10⁻³ needs
 repeat variation well below 10⁻⁴, preferably 10⁻⁵; otherwise it is reported as numerically
 unresolved. Training stays in its registered, non-deterministic execution mode.
+
+### Extension 2 amendment 2 (2026-11-12): the endpoint bound of the replays
+
+**Why.** Pod 4's campaign stopped at the engineering check of replay group g50004. The replay of
+seed 50007 at η_l (config `bdb0949001cd`) has ‖θ_rerun − θ_archived‖ / ‖θ_archived − θ₀‖ =
+2.21·10⁻⁴ against pod 2's archived run, above the bound of 10⁻⁴. Every recorded measurement of
+that pair is within the numerical tolerance (largest ratio to it 0.39), its answers are identical,
+and its other identities are exact. Of the group's other three replays and group g50000's four,
+six are bit-identical with their archived runs; seed 50003's endpoint is at 4.98·10⁻⁶. This
+amendment was written with 2.21·10⁻⁴ known. Two diagnostic repeats of seed 50007's replay
+config had been started on the same card; none of their results had been read. Only those
+results and the later replay groups are prospective for it.
+
+**The amendment.** Following the observed s50007 discrepancy, and before inspecting its
+diagnostic-repeat results, the endpoint-only acceptance bound is changed to 10⁻³ for all replay
+groups. All identity, file-measurement and answer requirements remain unchanged. Original
+replays and verdicts are retained; diagnostic repeats never replace them. A discrepancy beyond the
+amended bound remains a technical pause. Passing this gate does not establish downstream
+numerical resolution: each interpreted contrast must exceed its measured or conservatively
+propagated numerical uncertainty by at least tenfold; otherwise it is reported as unresolved.
+Diagnostic evidence of a fault or larger variability remains grounds for diagnosis.
+
+**Reasons for the bound.** A universal bound of 10⁻⁴ was not calibrated against the variation of
+non-deterministic training: seed 50000's repeat at zero distance does not establish a zero floor
+for other seeds. If two endpoints each meet 10⁻³, a cosine between their displacements changes by
+at most about 2·10⁻³: enough for coarse geometry, not a precision for effects of order 10⁻³.
+
+**How it is applied** (`scripts/study5_engineering_check.py --tolerance 1e-4
+--endpoint-tolerance 1e-3`). The measurement tolerance stays |x − y| ≤ 10⁻⁹ + 10⁻⁴·|y|; the
+endpoint bound is a parameter of its own, and the record states both. Every replay group is
+checked under the amended bound into a record of its own
+(`study5_records/<id>/replays/check-<group>-endpoint-0.001.json`). The earlier records, the failed
+check of g50004 among them, stay as they were written, and so does every original replay. The
+diagnostic repeats are kept in a runs root of their own (`study5_diag/s50007`) with their pairwise
+distances.
+
+**Numerical uncertainty downstream.** Per seed, the absolute endpoint discrepancy e_i =
+‖θ_rerun − θ_archived‖ (the largest observed between a replay, its archived run and any repeat)
+bounds a projection: |Δ⟨δ_i, g⟩| ≤ e_i‖g‖, and the mean displacement over the 40 seeds
+‖Δμ̂‖ ≤ (1/40) Σ_i e_i. M3's and M4's r, K and harm contrasts carry an uncertainty in their own
+units, measured or propagated; an endpoint ratio is not compared with them directly. The observed
+envelope of discrepancies is not a confidence bound. A contrast smaller than ten times its
+uncertainty is reported as unresolved.
