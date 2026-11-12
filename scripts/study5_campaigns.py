@@ -1503,9 +1503,14 @@ POD2_CHECKPOINT_SHA256 = {
 POD4_DIAG = "study5_diag"
 POD4_DIAG_RERUN = "study5/20261111T164620Z-s5-order-1.3e-05-s50000-s50000-3173f4e9-a1"
 # extension 2's numerical equivalence (docs/study5-preregistration.md, "Extension 2
-# amendment"), as study5_engineering_check.py --tolerance records it
+# amendment"), as study5_engineering_check.py --tolerance and --endpoint-tolerance record it;
+# the endpoint bound 1e-3 by "Extension 2 amendment 2" (it was 1e-4). A check that passed under
+# a stricter endpoint bound stands (``gate_problem``)
 EXT2_TOLERANCE = {"relative": 1e-4, "absolute": 1e-9, "answers_allowed": 2,
-                  "endpoint_distance": 1e-4}  # fmt: skip
+                  "endpoint_distance": 1e-3}  # fmt: skip
+# a replay group's check under the endpoint bound, a record of its own per bound: an earlier
+# bound's record stays as it was written
+EXT2_REPLAY_CHECK = "check-{group}-endpoint-{bound:g}.json"
 EXT2_SEEDS = tuple(range(FRESH_FIRST, FRESH_FIRST + 40))  # the 40 fresh seeds
 EXT2_GROUP = 4  # seeds per replay or linear group: each group admitted on its own
 M_SEEDS = CONTROL_SEEDS  # M3, M4's removals, the δ_lin points evaluated in full, the shuffles
@@ -1723,8 +1728,9 @@ def pod4_plan(
     check = b.record("engineering-check-numerical.json")
     step("engineering/check", with_runs("--", "scripts/study5_engineering_check.py", "--archived",
          fetched / POD2_ORDER_RUN, "--rerun", *reruns, "--out", check, "--tolerance",
-         EXT2_TOLERANCE["relative"]), on_fail="stop", outputs=(str(check),),
-         minutes_key="engineering-check", gate="engineering")  # fmt: skip
+         EXT2_TOLERANCE["relative"], "--endpoint-tolerance", EXT2_TOLERANCE["endpoint_distance"]),
+         on_fail="stop", outputs=(str(check),), minutes_key="engineering-check",
+         gate="engineering")  # fmt: skip
     b.runs_archive("engineering/archive", paths=earlier, mutable=(b.rel(check),), campaign=eng)
     b.end("engineering")
 
@@ -1797,11 +1803,13 @@ def pod4_plan(
             step(f"replays/{group}/remove-s{s}", b.own("remove-fetched", "--path", fetched_ckpt,
                  "--sha256", sha, "--record", distances[s]), group=group,
                  minutes_key="settle")  # fmt: skip
-        check = b.record("replays", f"check-{group}.json")
+        check = b.record("replays", EXT2_REPLAY_CHECK.format(
+            group=group, bound=EXT2_TOLERANCE["endpoint_distance"]))  # fmt: skip
         argv = ["--", "scripts/study5_engineering_check.py", "--archived",
                 *[pod2_run(s) for s in seeds], "--rerun", *[f"{{run:{label(c)}}}" for c in cells],
                 "--out", check, "--rerun-endpoint-tensors", hashed, "--tolerance",
-                EXT2_TOLERANCE["relative"]]  # fmt: skip
+                EXT2_TOLERANCE["relative"], "--endpoint-tolerance",
+                EXT2_TOLERANCE["endpoint_distance"]]  # fmt: skip
         argv += [x for s in seeds for x in ("--endpoint-tensors",
                                             "=".join(POD2_ENDPOINTS[s]))]  # fmt: skip
         argv += [x for s in seeds for x in ("--endpoint-distance",
@@ -2368,6 +2376,19 @@ def _blocks(plan: Plan, status: dict[str, str], run: dict[str, Any]) -> bool:
     return stopped
 
 
+def tolerance_stands(found: Any) -> bool:
+    """Whether a check's recorded tolerance stands for the plan's (``EXT2_TOLERANCE``): the same
+    measurement rule (relative and absolute parts, answers allowed) and an endpoint bound no
+    looser than the plan's. A check that passed under a stricter endpoint bound (extension 2's
+    amendment, before its second) passes under the plan's too."""
+    if not isinstance(found, dict) or set(found) != set(EXT2_TOLERANCE):
+        return False
+    if any(found[k] != EXT2_TOLERANCE[k] for k in EXT2_TOLERANCE if k != "endpoint_distance"):
+        return False
+    bound = found["endpoint_distance"]
+    return isinstance(bound, float) and 0 < bound <= EXT2_TOLERANCE["endpoint_distance"]
+
+
 def gate_problem(kind: str, path: Path, plan: Plan) -> str | None:
     """Why a gate's existing record does not stand for the plan, or None. Its verdict (the
     engineering check equal, the surrogate checks passed; the predictions record of exactly the
@@ -2392,7 +2413,7 @@ def gate_problem(kind: str, path: Path, plan: Plan) -> str | None:
         if verdict is not True:
             return "the engineering check found a difference"
         found = record.get("tolerance")
-        if found is not None and found != EXT2_TOLERANCE:
+        if found is not None and not tolerance_stands(found):
             return "the engineering check passed under another tolerance"
         if not record.get("pairs"):
             return "the engineering check holds no pair"
