@@ -305,6 +305,30 @@ def diagnostic_repeats(inputs: Inputs) -> dict[int, dict[str, Any] | str]:
     return out
 
 
+def archived_endpoints(inputs: Inputs) -> dict[int, str]:
+    """Per seed, the sha256 of its archived endpoint checkpoint where the replay's distance record
+    (``replays/distance-s<seed>.json``, one ``study5-pairs`` row whose first item is that
+    checkpoint, verified by the replay check) holds one; a seed without it is left out."""
+    out: dict[int, str] = {}
+    for s in ext2.SEEDS:
+        path = inputs.records / f"replays/distance-s{s}.json"
+        if not path.is_file():
+            continue
+        try:
+            record = json.loads(inputs.reader.bytes(path))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        rows = record.get("pairs")
+        if record.get("kind") == "study5-pairs" and isinstance(rows, list) and len(rows) == 1:
+            first = rows[0].get("a") if isinstance(rows[0], dict) else None
+            if (isinstance(first, dict) and first.get("kind") == "ckpt"
+                    and isinstance(first.get("sha256"), str)):  # fmt: skip
+                out[s] = first["sha256"]
+    return out
+
+
 # ------------------------------------------------------------------ the sections
 
 
@@ -808,7 +832,8 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         floor_evidence[ext2.FORCE_SEED] = (twins_floor if twins_floor.get("available")
                                            else str(twins_floor.get("reason")))  # fmt: skip
     envelope = ext2.endpoint_envelope(checks, replays, floor_evidence,
-                                      diagnostic_repeats(inputs))  # fmt: skip
+                                      diagnostic_repeats(inputs),
+                                      archived_endpoints(inputs))  # fmt: skip
     bounds = {"rule": ext2.ENDPOINT_RULE, "per_seed": ext2.seed_bounds(vectors, envelope),
               "m1": ext2.m1_bounds(vectors, envelope),
               "m3": ext2.m3_bounds(m3["per_seed"], vectors, envelope),

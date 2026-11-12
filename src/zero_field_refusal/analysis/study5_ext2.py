@@ -591,10 +591,15 @@ NOT_PROPAGATED = (
 )
 
 
-def _step(item: Mapping[str, Any]) -> int | None:
+def _step(item: Mapping[str, Any], endpoint: str | None = None) -> int | None:
+    """An item's step; one that names none is step 25 when it is the seed's archived endpoint
+    checkpoint by its sha256 (``endpoint``: a ``ckpt:PATH:SHA`` item, as the replay's distance
+    record holds it, verified by the replay check), else None."""
     try:
         return int(item.get("step"))
     except (TypeError, ValueError):
+        if endpoint is not None and item.get("kind") == "ckpt" and item.get("sha256") == endpoint:
+            return sa.STEPS
         return None
 
 
@@ -603,6 +608,7 @@ def endpoint_envelope(
     replays: Mapping[int, Any],
     floors: Mapping[int, Mapping[str, Any] | str] | None = None,
     diagnostics: Mapping[int, Mapping[str, Any] | str] | None = None,
+    endpoints: Mapping[int, str] | None = None,
 ) -> dict[int, dict[str, Any]]:
     """Per seed, e_i (``ENDPOINT_RULE``) and its sources: the seed's replay check pair (tensors
     equal: 0; else its recorded distance), the floor repeat's step 25 (``twins_steps`` of the
@@ -613,7 +619,10 @@ def endpoint_envelope(
     evidence that cannot be read as an endpoint distance (a string; a floor without its step-25
     distance; a diagnostic row whose items name no step, as ``ckpt:PATH:SHA`` items do not; an
     endpoint row without a distance; a diagnostic record without an endpoint row) leave e_i
-    None with the reason: nothing then bounds it."""
+    None with the reason: nothing then bounds it. A ``ckpt:PATH:SHA`` item is step 25 when its
+    sha256 is the seed's archived endpoint checkpoint's (``endpoints``, by seed: the sha256 of the
+    first item of the replay's distance record, which the replay check verified against the
+    archived run's record)."""
     by_run = {run: seed for seed, run in replays.items() if run is not None}
     found: dict[int, dict[str, Any]] = {}
     for name, summary in checks.items():
@@ -657,7 +666,8 @@ def endpoint_envelope(
         elif isinstance(diag, Mapping):
             rows, unread = [], 0
             for row in diag.get("pairs") or []:
-                steps = (_step(row.get("a") or {}), _step(row.get("b") or {}))
+                known = (endpoints or {}).get(s)
+                steps = (_step(row.get("a") or {}, known), _step(row.get("b") or {}, known))
                 if None in steps:
                     unread += 1
                 elif steps == (sa.STEPS, sa.STEPS):

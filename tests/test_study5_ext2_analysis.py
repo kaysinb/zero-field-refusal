@@ -403,6 +403,29 @@ def test_e_i_is_the_largest_observed_endpoint_discrepancy_or_unbounded() -> None
         assert found[s]["e"] is None and found[s]["reason"].startswith(why), s
 
 
+def test_a_diagnostic_item_without_a_step_is_the_archived_endpoint_only_by_its_sha256() -> None:
+    """A ``ckpt:PATH:SHA`` item (no step) of a diagnostic record is step 25 when its sha256 is the
+    seed's archived endpoint checkpoint's (its replay's distance record); another sha256, or
+    none known, leaves the row unread and e_i None with the reason."""
+    archived = "a" * 64
+    checks = {"g1": {"pairs": [{"rerun": "run-1", "endpoint_tensors_equal": False,
+                                "endpoint_distance": 5.8e-3}]}}  # fmt: skip
+    pod2 = {"kind": "ckpt", "path": "/x/pod2.pt", "sha256": archived}
+    rows = [{"a": {"kind": "ckpt", "run": "r1", "step": "25"},
+             "b": {"kind": "ckpt", "run": "r2", "step": "25"}, "distance": 3.0e-3},
+            {"a": pod2, "b": {"kind": "ckpt", "run": "r2", "step": "25"}, "distance": 3.1e-3},
+            {"a": pod2, "b": {"kind": "ckpt", "run": "r1", "step": "25"},
+             "distance": 5.8e-3}]  # fmt: skip
+    diag = {1: {"kind": "study5-pairs", "pairs": rows}}
+    found = ext2.endpoint_envelope(checks, {1: "run-1"}, None, diag, {1: archived})
+    assert found[1]["e"] == pytest.approx(5.8e-3) and found[1]["reason"] is None
+    assert found[1]["sources"][-1] == {"source": "diagnostic repeats", "distance": 5.8e-3}
+    for endpoints in (None, {1: "b" * 64}):
+        found = ext2.endpoint_envelope(checks, {1: "run-1"}, None, diag, endpoints)
+        assert found[1]["e"] is None
+        assert found[1]["reason"] == "diagnostic repeats: 2 row(s) whose items name no step"
+
+
 def test_m1_bounds_take_e_i_through_the_triangle_inequality() -> None:
     vectors = {"seeds": [1, 2], "norms": [2.0, 4.0], "mean": {"norm": 1.0},
                "grad_r": {"norm": 3.0, "per_run": [0.5, -0.1], "mean_vector": 0.2},
