@@ -267,11 +267,33 @@ def endpoint_r(inputs: Inputs, analysis: Mapping[str, Any]) -> dict[int, float |
 # ------------------------------------------------------------------ the sections
 
 
+def stream_order(inputs: Inputs, rel: str, seed: int) -> dict[str, Any] | str:
+    """A linear-replay record of the seed's own (stream) order: its ``order`` is ``"stream"``, as
+    ``study5_linear_replay.py`` writes it for a run without ``train.order_seed`` or an edit;
+    another order is an unresolved input (named under ``missing``)."""
+    record = inputs.record(rel, "study5-linear-replay", seed)
+    if isinstance(record, dict) and record.get("order") != "stream":
+        return inputs.why(rel, f"{rel}: not of the stream order")
+    return record
+
+
+def control_order(inputs: Inputs, rel: str, seed: int) -> dict[str, Any] | str:
+    """A linear-replay record of the registered order control's order: ``order.order_seed`` the
+    seed itself (``experiments/study5_control_order``) and no edit; otherwise unresolved."""
+    record = inputs.record(rel, "study5-linear-replay", seed)
+    if isinstance(record, dict):
+        order = record.get("order")
+        if not (isinstance(order, dict) and order.get("order_seed") == seed
+                and order.get("order_edit") is None):  # fmt: skip
+            return inputs.why(rel, f"{rel}: not of the registered control's order (seed {seed})")
+    return record
+
+
 def linear_rows(inputs: Inputs, replays: Mapping[int, str]) -> tuple[dict, dict]:
     """M2's own orders with the linear repeat's floor: (rows by seed, the floor)."""
 
     def row(folder: str, s: int, pairs_folder: str, lin_floor=None) -> dict[str, Any]:
-        record = inputs.record(f"{folder}/s{s}/record.json", "study5-linear-replay", s)
+        record = stream_order(inputs, f"{folder}/s{s}/record.json", s)
         return ext2.linear_row(
             record, pairs_hat=inputs.record(f"{pairs_folder}/pairs-hat-s{s}.json", "study5-pairs"),
             pairs_lin=inputs.record(f"{pairs_folder}/pairs-lin-s{s}.json", "study5-pairs"),
@@ -279,7 +301,7 @@ def linear_rows(inputs: Inputs, replays: Mapping[int, str]) -> tuple[dict, dict]
 
     s0 = ext2.FORCE_SEED
     first = row("linear", s0, "linear")
-    again = inputs.record(f"linear-repeat/s{s0}/record.json", "study5-linear-replay", s0)
+    again = stream_order(inputs, f"linear-repeat/s{s0}/record.json", s0)
     hat = inputs.record(f"linear-repeat/pairs-hat-s{s0}.json", "study5-pairs")
     lin = inputs.record(f"linear-repeat/pairs-lin-s{s0}.json", "study5-pairs")
     # the repeat's cosine with Δθ is its pairs records' second row (the repeat's vector, the
@@ -331,7 +353,7 @@ def m2_section(
     controls_per_seed = analysis["descriptive"]["controls"]["order"]["per_seed"]
     controls, pairs = {}, {}
     for s in ext2.M_SEEDS:
-        record = inputs.record(f"linear-control/s{s}/record.json", "study5-linear-replay", s)
+        record = control_order(inputs, f"linear-control/s{s}/record.json", s)
         control = ext2.linear_row(record, lin_floor=floors.get("vector_lin_relative"))
         controls[s] = control
         registered_values = {m: per_seed_measure(controls_per_seed, m, s)
@@ -538,14 +560,18 @@ def m5_section(inputs: Inputs) -> tuple[dict[str, Any], dict[str, Any]]:
 
 def m6_section(inputs: Inputs, archive_id: str, own: Mapping[int, dict],
                analysis: Mapping[str, Any], floors: Mapping[str, Any],
-               predicted: Mapping[tuple[int, str], dict]) -> tuple[dict, dict]:  # fmt: skip
-    """M6: the swaps and shuffles (prediction and outcome beside the stream order's) and the
-    twins with their floor; and the twins' floor."""
+               predicted: Mapping[tuple[int, str], dict],
+               repeated: Mapping[int, Any]) -> tuple[dict, dict]:  # fmt: skip
+    """M6: the swaps and shuffles (prediction and outcome beside the stream order's, which is pod
+    2's archived η_l run, its replay's k/521 bound beside) and the twins with their floor; and
+    the twins' floor."""
     scans = analysis["descriptive"]["line_scans"]["per_seed"]
     blocks: dict[str, Any] = {"swaps": {"rows": []}, "shuffles": {"rows": []}}
     rows: dict[tuple[int, str], dict[str, Any]] = {}
     for s in ext2.M_SEEDS:
-        stream = ext2.stream_values((scans.get(str(s)) or {}).get("+1"))
+        stream = {"source": "archived", "run": "pod 2's η_l run (the registered analysis)",
+                  **ext2.stream_values((scans.get(str(s)) or {}).get("+1")),
+                  "replay": repeated.get(s)}  # fmt: skip
         for tag in edit_tags(s):
             # the twin is launched with the replays of its seed's group, the others by block
             block = "twins" if tag == "twin" else "swaps" if tag.startswith("swap") else "shuffles"
@@ -568,12 +594,17 @@ def m6_section(inputs: Inputs, archive_id: str, own: Mapping[int, dict],
                 stream, own.get(s) or {}, floors)  # fmt: skip
             if block != "twins":
                 blocks[block]["rows"].append(rows[(s, tag)])
+    # over seeds: each seed's runs of a kind (its three swaps, a range's two draws) averaged
+    # first; per tag one run per seed
+    keys = ("harmful", "K_harmful", "K_benign", *ext2.UTILITY)
     for block, found in blocks.items():
+        kinds = {"swaps": ("swap",), "shuffles": ("shuffle1-", "shuffle21-")}[block]
+        tags = sorted({r["tag"] for r in found["rows"]})
         found["spread"] = {
-            tag_kind: ext2.spreads({f"s{r['seed']}-{r['tag']}": r["outcome_difference"]
-                                    for r in found["rows"] if r["tag"].startswith(tag_kind)},
-                                   ("harmful", "K_harmful", "K_benign", *ext2.UTILITY))
-            for tag_kind in ({"swaps": ("swap",), "shuffles": ("shuffle1-", "shuffle21-")}[block])
+            "by_kind": {kind: ext2.edited_spreads(
+                [r for r in found["rows"] if r["tag"].startswith(kind)], keys) for kind in kinds},
+            "by_tag": {tag: ext2.edited_spreads(
+                [r for r in found["rows"] if r["tag"] == tag], keys) for tag in tags},
         }  # fmt: skip
     blocks["shuffles"]["early_late"] = ext2.early_late(blocks["shuffles"]["rows"])
     floor = ext2.twins_steps(inputs.record(f"twins/floor-s{ext2.FORCE_SEED}.json", "study5-pairs"))
@@ -583,7 +614,8 @@ def m6_section(inputs: Inputs, archive_id: str, own: Mapping[int, dict],
         twins[s] = ext2.twins_row(found, floor, predicted.get((s, "twin"), {}), own.get(s) or {})
         edited = rows.get((s, "twin")) or {}
         twins[s] |= {k: edited.get(k) for k in ("outcome", "outcome_difference",
-                                                "predicted_difference")}  # fmt: skip
+                                                "predicted_difference", "stream")}  # fmt: skip
+        twins[s]["r_stream_source"] = "the seed's replay (pod 4)"
     blocks["twins"] = twins
     return blocks, floor
 
@@ -674,7 +706,8 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
             delta_r[s] = r_end - row["r_theta0"]
 
     checks = checks_section(inputs)
-    m1 = ext2.m1(vectors, h, delta_r, checks)
+    repeated = ext2.repeats(checks, replays)
+    m1 = ext2.m1(vectors, h, delta_r, checks, repeated)
     m1["delta_r_missing"] = delta_r_reason
     edited = edited_rows(inputs, floors.get("vector_lin_relative"))
     m2, controls = m2_section(inputs, rows, floors, delta_r, analysis_record, edited)
@@ -720,7 +753,8 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
     m3 = m3_section(inputs, rows)
     m4 = m4_section(inputs)
     m5, force_floor = m5_section(inputs)
-    m6, twins_floor = m6_section(inputs, records.name, rows, analysis_record, floors, edited)
+    m6, twins_floor = m6_section(inputs, records.name, rows, analysis_record, floors, edited,
+                                 repeated)  # fmt: skip
     return {
         "kind": ext2.KIND,
         "version": ext2.VERSION,
@@ -731,6 +765,13 @@ def analysis(args: argparse.Namespace) -> dict[str, Any]:
         "archive_id": records.name,
         "registered_analysis": {"sha256": digest, "registered_sha256": REGISTERED_ANALYSIS_SHA256},
         "r_theta0": r_theta0_section(rows, m3, m6, twins_floor),
+        "repeats": {
+            "rule": "the stream order's outcomes (h, K, harm, utility) are pod 2's archived runs'; "
+                    "the replays give Δθ, the twins' r and nothing labeled; a replay whose greedy "
+                    "answers differ on k of 521 prompts carries the bound k/521 on its harm",
+            "per_seed": repeated,
+            "engineering": list((checks.get("engineering") or {}).get("pairs") or []),
+        },
         "m1": m1,
         "m2": m2,
         "criterion": criterion,

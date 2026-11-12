@@ -3407,7 +3407,11 @@ quantity's |effect|/floor flag (`resolved` from 10), and the δ_lin criterion (`
 `primary_predictor`), withheld while one of its inputs is missing. In the criterion's
 order-control pairs, a pair whose |Δq| is below k floors of Δq (the linear repeat's) counts as a
 tie, k = 10 unless `--pair-floors` gives another (recorded as `part3_pairs.unresolved_floors`);
-without that floor the criterion is withheld. A missing optional record or
+without that floor, or without a finite q on both sides of a pair whose δ_lin did not diverge,
+the criterion is withheld; each side is known by its record's order (the stream order, the
+control's order seed). The stream order's outcomes are pod 2's archived runs', kept apart from
+the replays', each replay with the k/521 bound of its changed greedy answers; M6's standard
+errors are over seeds, each seed's runs averaged first. A missing optional record or
 label is null with its reason; a missing vectors record or linear block refuses. A run directory
 of an E2 order repeat refuses the analysis before anything of it but its config is read; E2 enters
 only through the sealed block's predictions. It sits in the analysis package, outside the GPU code

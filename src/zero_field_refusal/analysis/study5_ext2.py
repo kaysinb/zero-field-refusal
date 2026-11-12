@@ -25,7 +25,9 @@ the seeds where δ_lin did not diverge:
    −sign(h_control − h_stream), both differences nonzero (lower q, more harm); a tie or a pair
    whose δ_lin diverged (either order) does not agree. It passes with at least 5 of 6. h is the
    registered per-run harm share at η_l (the registered analysis's
-   ``descriptive.controls.order.per_seed.harmful``, control minus own η_l run). A pair whose
+   ``descriptive.controls.order.per_seed.harmful``, control minus own η_l run). Each side is
+   known by its record's ``order``, not its folder: ``"stream"`` for the seed's own, an
+   ``order_seed`` equal to the seed and no edit for the control's. A pair whose
    |q_control − q_stream| is below k times its floor (the linear repeat's |q_lin − q′_lin| on
    seed 50000, the amendment's floor of q) counts as a tie: it does not agree, reason
    "numerically unresolved (|Δq| < k floors)". k (``PAIR_FLOORS``, default 10, the amendment's
@@ -35,8 +37,9 @@ the seeds where δ_lin did not diverge:
 
 ``passed`` is all three, ``primary_predictor`` ``q`` when it passed and ``ln_K_harmful_at_K*``
 otherwise. q is the δ_lin's (``q_lin``). An input the criterion needs that is missing (a seed's
-linear record or Δr, a control's linear record, a pair's registered harm difference, the floor
-of Δq for a pair whose δ_lin did not diverge) withholds the verdict: ``status`` ``withheld``,
+linear record or Δr, a control's linear record, a pair's registered harm difference; for a pair
+whose δ_lin did not diverge, a finite q on both sides and the floor of Δq) withholds the
+verdict: ``status`` ``withheld``,
 every part's numbers over what exists, ``passed`` and ``primary_predictor`` None, each missing
 input named.
 
@@ -49,15 +52,19 @@ input named.
   pairs record's own r(θ₀). Every value of r(θ₀) read is reported with their spread.
 - *M2's ε check:* per check step the largest of the two relative differences (ε/2 and 2ε
   against ε), and the largest over the check steps.
+- *The vector floor's normalization:* the linear repeat's vector floor is
+  ‖δ_lin − δ′_lin‖/‖δ_lin‖ (seed 50000), and every quantity compared with it is divided by the
+  same norm, that of the δ_lin it measures: ‖δ_lin − δ̂‖/‖δ_lin‖, and |max_t ‖δ_lin,t‖ − bound| /
+  max_t ‖δ_lin,t‖ (one denominator on both sides, the δ_lin's own norm).
 - *Near the divergence bound* (the amendment's "numerically ambiguous"): ``bound_ratio`` is the
-  largest finite ‖δ_lin,t‖ over the bound 10‖Δθ_i‖; a case is ambiguous when |bound_ratio − 1|
-  ≤ 10 × the linear repeat's relative δ_lin difference (‖δ_lin − δ′_lin‖/‖δ_lin‖ on seed 50000),
-  the amendment's one order of magnitude; no floor, no flag. It is reported, never resolved.
+  largest finite ‖δ_lin,t‖ over the bound 10‖Δθ_i‖; a case is ambiguous when |max_t ‖δ_lin,t‖ −
+  bound| / max_t ‖δ_lin,t‖ ≤ 10 × the vector floor (above), the amendment's one order of
+  magnitude; no floor, no flag. It is reported, never resolved.
 - *Floors* (the amendment): beside a quantity with a floor, ratio = |effect| / floor and the flag
   ``resolved`` when the ratio is at least 10, else ``numerically_unresolved``; a zero floor
   resolves any nonzero effect (ratio None, ``floor_zero``). The linear repeat (seed 50000) floors
   q, K and the cosines with Δθ of every seed and order, and the pair and edit differences of q;
-  and the relative difference ‖δ_lin − δ̂‖/‖δ̂‖ (by the repeat's ‖δ_lin − δ′_lin‖/‖δ_lin‖);
+  and ‖δ_lin − δ̂‖/‖δ_lin‖ (by the vector floor, one normalization: above);
   the force repeat (panel 59990, step 5, ε = 10⁻²) floors every projection and ‖D f̂_t‖ at every
   step, ε and panel, and the panels' differences; the twins' floor (seed 50000) floors the
   distance and the r difference of every seed's twins at the same step. Of the criterion, only
@@ -75,6 +82,13 @@ input named.
   The swaps and shuffles have no endpoint r: their outcomes (K, harm, utility) and their
   differences from the stream order are reported beside the predicted difference of q, with no
   fit.
+- *M6's standard errors* are over seeds: each seed's runs of a kind (its three swaps, a shuffle
+  range's two draws) are averaged first (``seed_spread``); per tag each seed has one run.
+- *Archived outcomes and repeats:* every outcome of the stream order (h, K, harm, utility) is pod
+  2's archived η_l run's, as the registered analysis holds it; the seed's replay (pod 4) gives
+  Δθ, the twins' r and nothing labeled. A replay whose greedy answers differ from the archived
+  run's on k of the 521 prompts carries the amendment's explicit bound k/521 on its harm
+  (``repeats``), beside every archived outcome of that seed.
 - *Harm* is the registered reading: per condition the WildGuard counts of the registered label
   reader; harmful compliance over 521, a missing label not harmful, with ``harmful_high`` (every
   missing label harmful) beside.
@@ -312,8 +326,12 @@ def criterion(own: Mapping[int, Mapping[str, Any]], pairs: Mapping[int, Mapping[
             why = found.get("q_floor_reason") or "no floor"
             withheld.append(f"pair s{s}: no floor of Δq ({why})")
             row["reason"] = f"missing: no floor of Δq ({why})"
-        elif dq is None or dh is None:
-            row["reason"] = "a difference is not finite"
+        elif dq is None or dh is None:  # a prediction or the harm not finite: no verdict
+            why = (
+                "a prediction is not finite" if dq is None else "the harm difference is not finite"
+            )
+            withheld.append(f"pair s{s}: {why}")
+            row["reason"] = f"missing: {why}"
         elif dq == 0 or dh == 0:
             row["reason"] = "a tie"
         elif floor != 0 and abs(dq) < k * abs(floor):
@@ -396,11 +414,14 @@ def item_name(item: Mapping[str, Any]) -> str:
 
 
 def m1(vectors: Mapping[str, Any], h: Mapping[int, Any], delta_r: Mapping[int, Any],
-       checks: Mapping[str, Any]) -> dict[str, Any]:  # fmt: skip
+       checks: Mapping[str, Any],
+       repeated: Mapping[int, Any] | None = None) -> dict[str, Any]:  # fmt: skip
     """M1 from the vectors record (``study5_vectors.py``): the Gram's summary, ‖μ‖² free of the
     noise, ‖μ̂‖, the halves' cosine, p_i with its coefficient of variation, ρ(p_i, h_i) over the
     supported seeds (``h``: the registered analysis's), ⟨Δθ_i, ∇r(θ₀)⟩ against Δr_i, and the
-    replay checks (``checks``: the groups' summaries, ``replay_checks``)."""
+    replay checks (``checks``: the groups' summaries, ``replay_checks``). h_i is pod 2's
+    archived outcome; ``repeat`` (``repeats``) names the replay that gave Δθ_i and the k/521
+    bound of its changed answers."""
     seeds = [int(s) for s in vectors["seeds"]]
     loo = vectors["leave_one_out"]
     p = {s: number(v) for s, v in zip(loo["seeds"], loo["p"], strict=True)}
@@ -416,7 +437,8 @@ def m1(vectors: Mapping[str, Any], h: Mapping[int, Any], delta_r: Mapping[int, A
             "displacement_norm_recorded": number(run.get("displacement_norm_recorded")),
             "p": p.get(s), "cos_with_loo_mean": number(loo["cos"][j]),
             "loo_mean_norm": number(loo["norm"][j]),
-            "h": number(h.get(s)),
+            "h": number(h.get(s)), "h_source": "archived",
+            "repeat": (repeated or {}).get(s),
             "dot_grad_r": number(dots.get(s)), "delta_r": number(delta_r.get(s)),
             "delta_r_minus_dot": difference(delta_r.get(s), dots.get(s)),
         }  # fmt: skip
@@ -455,16 +477,46 @@ def m1(vectors: Mapping[str, Any], h: Mapping[int, Any], delta_r: Mapping[int, A
     }  # fmt: skip
 
 
+def answers_bound(k: Any) -> dict[str, Any] | None:
+    """The amendment's explicit bound for a repeat whose greedy answers differ from the archived
+    run's on k of the 521 prompts: its harmful share may differ by at most k/521 (the archived
+    labels are never reused for the changed answers)."""
+    if isinstance(k, bool) or not isinstance(k, int):
+        return None
+    return {"answers_differing": k, "bound": k / sa.DENOMINATOR, "of": sa.DENOMINATOR}
+
+
+def repeats(checks: Mapping[str, Any], replays: Mapping[int, str]) -> dict[int, dict[str, Any]]:
+    """Per seed, its replay against pod 2's archived run, from the replay checks: both run ids and
+    the k/521 bound of the replay's changed answers (``answers_bound``). The outcomes the
+    record reports for the stream order are the archived run's; the replay contributes only its
+    endpoint (Δθ, the twins' r), and this bound."""
+    by_run = {run: seed for seed, run in replays.items()}
+    out = {}
+    for name, summary in checks.items():
+        if name == "engineering" or not isinstance(summary, Mapping):
+            continue
+        for pair in summary.get("pairs") or []:
+            seed = by_run.get(pair.get("rerun"))
+            if seed is not None:
+                out[seed] = {"archived_run": pair.get("archived"), "replay_run": pair.get("rerun"),
+                             "group": name, "harm_bound": pair.get("harm_bound")}  # fmt: skip
+    return out
+
+
 def check_summary(record: Mapping[str, Any] | str) -> dict[str, Any]:
     """One ``study5_engineering_check.py`` record: passed, exact, within tolerance, the answers
-    differing and, per pair, its endpoint's tensors equal or their distance ratio."""
+    differing and, per pair, both run ids, the k/521 bound of its changed answers and its
+    endpoint's tensors equal or their distance ratio."""
     if isinstance(record, str):
         return {"available": False, "reason": record}
     pairs = []
     for pair in record.get("pairs", []):
         tensors = pair.get("endpoint_tensors") or {}
         distance = tensors.get("distance") or {}
-        pairs.append({"rerun": pair.get("rerun"), "config_hash": pair.get("config_hash"),
+        pairs.append({"archived": pair.get("archived"), "rerun": pair.get("rerun"),
+                      "config_hash": pair.get("config_hash"),
+                      "harm_bound": answers_bound(pair.get("answers_differing")),
                       "exact": pair.get("exact"), "within_tolerance": pair.get("within_tolerance"),
                       "passed": pair.get("passed"),
                       "answers_differing": pair.get("answers_differing"),
@@ -535,6 +587,8 @@ def linear_row(
         out[kind] = found
     norms = record.get("norms") or {}
     out["lin_against_hat"] = {"relative_difference": number(norms.get("relative_difference")),
+                              "difference_over_lin_norm": ratio(norms.get("difference"),
+                                                                norms.get("delta_lin")),
                               "cosine": number(norms.get("cosine"))}  # fmt: skip
     checks = []
     for check in record.get("checks") or []:
@@ -553,22 +607,27 @@ def linear_row(
     bound = number(reference.get("bound"))
     lin_norms = [number(r.get("delta_lin_norm")) for r in record.get("per_step") or []]
     lin_norms = [v for v in lin_norms if v is not None]
-    bound_ratio = max(lin_norms) / bound if bound and lin_norms else None
-    near: dict[str, Any] = {"bound": bound, "bound_ratio": bound_ratio, "floor": lin_floor,
+    largest_norm = max(lin_norms) if lin_norms else None
+    bound_ratio = largest_norm / bound if bound and largest_norm is not None else None
+    gap = (abs(largest_norm - bound) / largest_norm
+           if bound and largest_norm else None)  # fmt: skip
+    near: dict[str, Any] = {"bound": bound, "bound_ratio": bound_ratio,
+                            "gap_over_lin_norm": gap, "floor": lin_floor,
                             "numerically_ambiguous": None}  # fmt: skip
-    if bound_ratio is not None and number(lin_floor) is not None and divergence.get("reason") in (
+    if gap is not None and number(lin_floor) is not None and divergence.get("reason") in (
             None, "bound"):  # fmt: skip
-        near["numerically_ambiguous"] = abs(bound_ratio - 1) <= RESOLVED_RATIO * abs(lin_floor)
+        near["numerically_ambiguous"] = gap <= RESOLVED_RATIO * abs(lin_floor)
     out["near_bound"] = near
     return out
 
 
 def m2_floors(row: Mapping[str, Any], floors: Mapping[str, Any]) -> dict[str, Any]:
-    """The linear repeat's floors beside one row's q, K and cosines, and beside ‖δ_lin − δ̂‖/‖δ̂‖
-    the repeat's relative δ_lin difference (module docstring)."""
+    """The linear repeat's floors beside one row's q, K and cosines, and beside
+    ‖δ_lin − δ̂‖/‖δ_lin‖ the vector floor ‖δ_lin − δ′_lin‖/‖δ_lin‖ (one normalization, module
+    docstring)."""
     out: dict[str, Any] = {
-        "lin_against_hat_relative_difference": resolution(
-            (row.get("lin_against_hat") or {}).get("relative_difference"),
+        "lin_against_hat_over_lin_norm": resolution(
+            (row.get("lin_against_hat") or {}).get("difference_over_lin_norm"),
             floors.get("vector_lin_relative"),
         )
     }
@@ -974,6 +1033,19 @@ def twins_steps(record: Mapping[str, Any] | str) -> dict[str, Any]:
     if record.get("kind") != "study5-pairs":
         return {"available": False, "reason": "not a study5-pairs record"}
     r = record.get("r") or {}
+    # the writer computes r once per checkpoint hash and keys it by the first file's name: a
+    # later file of the same sha256 takes that r through its hash
+    by_hash: dict[str, float] = {}
+    for row in record.get("pairs", []):
+        for item in (row.get("a") or {}, row.get("b") or {}):
+            value = number(r.get(item_name(item)))
+            if value is not None and item.get("sha256"):
+                by_hash.setdefault(str(item["sha256"]), value)
+
+    def r_of(item: Mapping[str, Any]) -> float | None:
+        found = number(r.get(item_name(item)))
+        return found if found is not None else by_hash.get(str(item.get("sha256")))
+
     steps = {}
     for row in record.get("pairs", []):
         a, b = row.get("a") or {}, row.get("b") or {}
@@ -981,7 +1053,7 @@ def twins_steps(record: Mapping[str, Any] | str) -> dict[str, Any]:
             step = int(a.get("step"))
         except (TypeError, ValueError):
             continue
-        ra, rb = number(r.get(item_name(a))), number(r.get(item_name(b)))
+        ra, rb = r_of(a), r_of(b)
         steps[step] = {"distance": number(row.get("distance")),
                        "norm_stream": number(row.get("norm_a")),
                        "norm_other": number(row.get("norm_b")), "r_stream": ra, "r_other": rb,
@@ -1063,23 +1135,46 @@ def edited_row(
             "outcome_difference": differences if outcome.get("available") else None}  # fmt: skip
 
 
+def seed_spread(rows: Sequence[Mapping[str, Any]], get) -> dict[str, Any]:
+    """``spread`` over seeds of a per-run value: each seed's runs averaged first (the runs with a
+    value), so that the SE is over seeds; ``runs`` counts each seed's runs used."""
+    by_seed: dict[int, list[float]] = {}
+    for row in rows:
+        value = number(get(row))
+        by_seed.setdefault(int(row["seed"]), [])
+        if value is not None:
+            by_seed[int(row["seed"])].append(value)
+    means = {s: statistics.fmean(v) if v else None for s, v in by_seed.items()}
+    return spread(means) | {"runs": {s: len(v) for s, v in by_seed.items()}}
+
+
+def _q_difference(kind: str):
+    return lambda r: ((r.get("predicted_difference") or {}).get(kind) or {}).get("difference")
+
+
+def _outcome_difference(key: str):
+    return lambda r: (r.get("outcome_difference") or {}).get(key)
+
+
+def edited_spreads(rows: Sequence[Mapping[str, Any]], keys: Sequence[str]) -> dict[str, Any]:
+    """Over seeds (``seed_spread``) of the rows given: each outcome difference from the stream
+    order and the predicted Δq_hat and Δq_lin."""
+    out = {k: seed_spread(rows, _outcome_difference(k)) for k in keys}
+    out |= {k: seed_spread(rows, _q_difference(k)) for k in ("q_hat", "q_lin")}
+    return out
+
+
 def early_late(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The shuffles' early (1–5) against late (21–25) ranges: the means of |Δq| and of the
-    outcomes' |differences| from the stream order, over the seeds and draws."""
+    """The shuffles' early (1–5) against late (21–25) ranges: the means over seeds of |Δq| and of
+    the outcomes' |differences| from the stream order, each seed's two draws averaged first."""
     out = {}
     for first, last in SHUFFLES:
         mine = [r for r in rows
                 if (r["edit"].get("first"), r["edit"].get("last")) == (first, last)]  # fmt: skip
-
-        def values(get, mine=mine) -> dict[str, Any]:
-            return {f"s{r['seed']}-{r['edit'].get('draw')}": _abs(get(r)) for r in mine}
-
         out[f"{first}-{last}"] = {
-            "q_hat": spread(values(lambda r: ((r["predicted_difference"] or {}).get("q_hat")
-                                              or {}).get("difference"))),
-            "q_lin": spread(values(lambda r: ((r["predicted_difference"] or {}).get("q_lin")
-                                              or {}).get("difference"))),
-            **{k: spread(values(lambda r, k=k: (r["outcome_difference"] or {}).get(k)))
+            "q_hat": seed_spread(mine, lambda r: _abs(_q_difference("q_hat")(r))),
+            "q_lin": seed_spread(mine, lambda r: _abs(_q_difference("q_lin")(r))),
+            **{k: seed_spread(mine, lambda r, k=k: _abs(_outcome_difference(k)(r)))
                for k in ("harmful", "K_harmful", "K_benign")},
         }  # fmt: skip
     return out

@@ -184,6 +184,49 @@ def test_a_missing_floor_of_dq_withholds_the_verdict() -> None:
     assert found["status"] == "decided" and found["part3_pairs"]["agreements"] == 0
 
 
+def test_a_pair_without_finite_predictions_withholds_the_verdict() -> None:
+    """A pair whose δ_lin did not diverge needs a finite q on both sides (and a finite harm
+    difference): otherwise the criterion is withheld, not decided on the other pairs."""
+    own = own_rows()
+    pairs = pair_rows()
+    pairs[50002]["q_control"] = None
+    found = ext2.criterion(own, pairs, seeds=list(own), permutations=200)
+    assert found["status"] == "withheld" and found["primary_predictor"] is None
+    assert found["withheld"] == ["pair s50002: a prediction is not finite"]
+    pairs = pair_rows()
+    pairs[50004]["h_difference"] = "labels: pending"
+    found = ext2.criterion(own, pairs, seeds=list(own), permutations=200)
+    assert found["withheld"] == ["pair s50004: the harm difference is not finite"]
+    pairs = pair_rows(diverged=(50002,))
+    pairs[50002]["q_control"] = None  # a diverged pair needs no q
+    assert ext2.criterion(own, pairs, seeds=list(own), permutations=200)["status"] == "decided"
+
+
+def test_m6_spreads_are_over_seeds_with_each_seeds_runs_averaged_first() -> None:
+    rows = [{"seed": 50000, "x": 1.0}, {"seed": 50000, "x": 3.0}, {"seed": 50001, "x": 6.0},
+            {"seed": 50001, "x": None}, {"seed": 50002, "x": None}]  # fmt: skip
+    found = ext2.seed_spread(rows, lambda r: r["x"])
+    assert found["n"] == 2 and found["used"] == [50000, 50001] and found["without"] == [50002]
+    assert found["mean"] == pytest.approx(4.0)  # the seeds' means 2 and 6
+    assert found["se"] == pytest.approx(np.std([2.0, 6.0], ddof=1) / math.sqrt(2))
+    assert found["runs"] == {50000: 2, 50001: 1, 50002: 0}
+
+
+def test_twins_take_r_through_the_checkpoints_hash() -> None:
+    """The pairs writer computes r once per checkpoint hash and keys it by the first file's name:
+    a later file with the same bytes gets it through its hash, so identical twins give r
+    difference 0."""
+    same = "7" * 64
+    record = {"kind": "study5-pairs", "r": {"theta0": R0, "a-step-2.pt": R0 - 0.1},
+              "pairs": [{"a": {"kind": "ckpt", "path": "/c/a-step-2.pt", "sha256": same,
+                               "step": "2"},
+                         "b": {"kind": "ckpt", "path": "/c/b-step-2.pt", "sha256": same,
+                               "step": "2"},
+                         "distance": 0.0, "norm_a": 1.0, "norm_b": 1.0}]}  # fmt: skip
+    found = ext2.twins_steps(record)
+    assert found["steps"][2]["r_other"] == R0 - 0.1 and found["steps"][2]["r_difference"] == 0.0
+
+
 def test_a_zero_mean_delta_r_fails_the_scale_part() -> None:
     own = {50000 + i: {"q_lin": float(i), "delta_r": d, "diverged": False, "missing": None}
            for i, d in enumerate([-1.0, 1.0, -2.0, 2.0])}  # fmt: skip
@@ -479,6 +522,7 @@ class Pod4:
                                      "delta_lin_unavailable": "diverged: no delta_lin"
                                      if diverged else None},
             "norms": {"delta_hat": 0.5, "delta_lin": None if diverged else 1.5,
+                      "difference": None if diverged else 1.2,
                       "relative_difference": None if diverged else 2.0,
                       "cosine": None if diverged else 0.7},
             "per_step": [{"step": t, "delta_lin_norm": v, "delta_hat_norm": 0.02 * t}
@@ -745,18 +789,31 @@ class Pod4:
         )
 
     def checks(self) -> None:
-        def record(exact: bool) -> dict:
-            pair = {"rerun": "x", "config_hash": "h", "exact": exact, "within_tolerance": True,
-                    "passed": True, "answers_differing": 0 if exact else 1, "files": [],
-                    "endpoint_tensors": {"equal": exact, "distance": None if exact else
-                                         {"ratio": 3e-5, "available": True}}}  # fmt: skip
-            return {"kind": "study5-engineering-check", "passed": True, "exact": exact,
-                    "within_tolerance": True, "answers_differing": pair["answers_differing"],
-                    "pairs": [pair], "tolerance": {"relative": 1e-4}}  # fmt: skip
+        """The replay checks: one pair per seed of a group (pod 2's archived run, the replay);
+        group g50008's endpoints differ by a distance, seed 50001's replay changed one answer."""
 
-        dump(self.records / "engineering-check-numerical.json", record(True))
+        def pair(archived: str, rerun: str, *, tensors: bool = True, answers: int = 0) -> dict:
+            return {"archived": archived, "rerun": rerun, "config_hash": "h",
+                    "exact": tensors and not answers, "within_tolerance": True, "passed": True,
+                    "answers_differing": answers, "files": [],
+                    "endpoint_tensors": {"equal": tensors, "distance": None if tensors else
+                                         {"ratio": 3e-5, "available": True}}}  # fmt: skip
+
+        def record(pairs) -> dict:
+            return {"kind": "study5-engineering-check", "passed": True,
+                    "exact": all(p["exact"] for p in pairs), "within_tolerance": True,
+                    "answers_differing": sum(p["answers_differing"] for p in pairs),
+                    "pairs": pairs, "tolerance": {"relative": 1e-4}}  # fmt: skip
+
+        dump(
+            self.records / "engineering-check-numerical.json",
+            record([pair("pod2-order-s50000", "rerun-order-s50000")]),
+        )
         for i in range(0, 40, 4):
-            dump(self.records / "replays" / f"check-g{50000 + i}.json", record(i != 8))
+            seeds = range(50000 + i, 50004 + i)
+            dump(self.records / "replays" / f"check-g{50000 + i}.json", record([
+                pair(f"pod2-fresh-s{s}", self.replay[s], tensors=i != 8,
+                     answers=1 if s == 50001 else 0) for s in seeds]))  # fmt: skip
 
     def edited_run(self, s: int, tag: str, *, labeled: int | None, config=None) -> Path:
         block = "swaps" if tag.startswith("swap") else "shuffles"
@@ -895,8 +952,21 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
     assert groups["g50008"]["exact"] is False and groups["g50008"]["passed"] is True
     assert groups["g50008"]["largest_endpoint_distance_ratio"] == pytest.approx(3e-5)
     assert record["cases"]["checks_not_exact"] == [
-        {"check": "g50008", "passed": True, "within_tolerance": True}
+        {"check": "g50000", "passed": True, "within_tolerance": True},
+        {"check": "g50008", "passed": True, "within_tolerance": True},
     ]
+    # the archived outcomes apart from the replays', with the replay's k/521 bound
+    bound = {"answers_differing": 1, "bound": pytest.approx(1 / 521), "of": 521}
+    assert m1["per_seed"]["50001"]["h_source"] == "archived"
+    assert m1["per_seed"]["50001"]["repeat"] == {
+        "archived_run": "pod2-fresh-s50001",
+        "replay_run": pod4.replay[50001],
+        "group": "g50000",
+        "harm_bound": bound,
+    }
+    assert m1["per_seed"]["50002"]["repeat"]["harm_bound"]["bound"] == 0.0
+    assert record["repeats"]["per_seed"]["50001"]["harm_bound"] == bound
+    assert record["repeats"]["engineering"][0]["archived"] == "pod2-order-s50000"
 
     # the criterion: by hand over the 39 seeds whose δ_lin did not diverge
     c = record["criterion"]
@@ -943,7 +1013,9 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
     assert floors["q_hat"] == pytest.approx(1e-6) and floors["q_lin"] == pytest.approx(2e-6)
     assert floors["vector_lin_relative"] == pytest.approx(1e-5)
     assert row["floors"]["delta_lin"]["q"]["flag"] == "resolved"
-    assert row["floors"]["lin_against_hat_relative_difference"]["ratio"] == pytest.approx(2e5)
+    # one normalization: ‖δ_lin − δ̂‖/‖δ_lin‖ against the repeat's ‖δ_lin − δ′_lin‖/‖δ_lin‖
+    assert row["lin_against_hat"]["difference_over_lin_norm"] == pytest.approx(1.2 / 1.5)
+    assert row["floors"]["lin_against_hat_over_lin_norm"]["ratio"] == pytest.approx(0.8 / 1e-5)
     assert row["floors"]["delta_hat"]["K_harmful"] == {
         "ratio": None,
         "floor_zero": True,
@@ -998,6 +1070,20 @@ def test_the_record_holds_every_section_once_with_numbers_only(pod4, tmp_path, c
     assert row["outcome_difference"]["K_harmful"] == pytest.approx(0.3)
     assert row["predicted_difference"]["q_lin"]["difference"] == pytest.approx(0.005)
     assert swaps[(50001, "swap2")]["outcome"]["harm"]["available"] is False
+    stream = swaps[(50001, "swap2")]["stream"]
+    assert stream["source"] == "archived" and stream["harmful"] == 0.1
+    assert stream["replay"]["harm_bound"]["bound"] == pytest.approx(1 / 521)
+    # SEs over seeds: each seed's three swaps averaged first
+    by_kind = record["m6"]["swaps"]["spread"]["by_kind"]["swap"]
+    assert by_kind["K_harmful"]["n"] == 4 and by_kind["K_harmful"]["runs"] == {
+        "50000": 3,
+        "50001": 3,
+        "50002": 3,
+        "50003": 3,
+    }
+    assert by_kind["q_lin"]["mean"] == pytest.approx(0.005)
+    assert record["m6"]["swaps"]["spread"]["by_tag"]["swap12"]["harmful"]["n"] == 1
+    assert record["m6"]["shuffles"]["early_late"]["1-5"]["q_lin"]["n"] == 6
     early = record["m6"]["shuffles"]["early_late"]
     assert early["1-5"]["q_lin"]["mean"] == pytest.approx(0.05)
     assert early["21-25"]["q_lin"]["mean"] == pytest.approx(0.005)
@@ -1113,6 +1199,40 @@ def test_without_the_linear_repeat_the_criterion_is_withheld(pod4, tmp_path) -> 
     c = json.loads(out.read_text())["criterion"]
     assert c["status"] == "withheld" and c["primary_predictor"] is None
     assert c["withheld"][0].startswith("pair s50000: no floor of Δq (the linear repeat: ")
+
+
+@pytest.mark.parametrize("folder, seed, order, why", [
+    ("linear-control", 50002, {"order_seed": 50003, "responses": 500},
+     "not of the registered control's order"),
+    ("linear-control", 50002, {"order_seed": 50002, "order_edit": {"kind": "swap_batches",
+                                                                   "step": 2}},
+     "not of the registered control's order"),
+    ("linear", 50004, {"order_seed": 50004, "responses": 500}, "not of the stream order"),
+])  # fmt: skip
+def test_a_pair_side_of_another_order_withholds_the_criterion(pod4, tmp_path, folder, seed,
+                                                               order, why) -> None:  # fmt: skip
+    """The side of a pair is its record's order, not its folder: the seed's own row must be of the
+    stream order, a control's of order seed = seed with no edit; otherwise unresolved."""
+    path = pod4.records / folder / f"s{seed}" / "record.json"
+    dump(path, {**json.loads(path.read_text()), "order": order})
+    out = tmp_path / "ext2.json"
+    assert call(pod4.argv(out)) == (0, "")
+    record = json.loads(out.read_text())
+    c = record["criterion"]
+    assert c["status"] == "withheld" and c["primary_predictor"] is None
+    assert any(why in w and f"s{seed}" in w for w in c["withheld"])
+    assert any(why in m["reason"] for m in record["missing"])
+
+
+def test_a_control_with_a_non_numeric_q_withholds_the_criterion(pod4, tmp_path) -> None:
+    path = pod4.records / "linear-control" / "s50003" / "record.json"
+    found = json.loads(path.read_text())
+    dump(path, {**found, "q_lin": None, "r": {**found["r"], "delta_lin": None}})
+    out = tmp_path / "ext2.json"
+    assert call(pod4.argv(out)) == (0, "")
+    c = json.loads(out.read_text())["criterion"]
+    assert c["status"] == "withheld" and c["passed"] is None
+    assert c["withheld"] == ["pair s50003: a prediction is not finite"]
 
 
 def test_another_analysis_record_than_the_registered_one_refuses(pod4, tmp_path,
