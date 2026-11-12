@@ -14,6 +14,7 @@ import itertools
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 from fractions import Fraction
@@ -108,7 +109,7 @@ class World:
             },
         )
         self.criterion = tmp / "criterion.json"
-        dump(self.criterion, {"passed": True, "primary_predictor": "q"})
+        dump(self.criterion, ext2_record(True))
         self.opening = tmp / "opening.json"
         dump(self.opening, {"kind": "study5-e2-opening", "note_sha256": "9" * 64})
 
@@ -212,6 +213,26 @@ def world(tmp_path, monkeypatch) -> World:
     return found
 
 
+def ext2_record(passed: bool | None, predictor: str | None = "", status: str | None = None) -> dict:
+    """The extension-2 analysis record as study5_ext2_cli writes it, its criterion as
+    study5_ext2.criterion returns it (the fields read here, the parts' summaries beside)."""
+    if predictor == "":
+        predictor = None if passed is None else {True: "q", False: "ln_K_harmful_at_K*"}[passed]
+    status = status or ("withheld" if passed is None else "decided")
+    return {
+        "kind": "study5-extension-2-analysis",
+        "version": 1,
+        "m2": {"seeds": 40},
+        "criterion": {
+            "q": "q_lin", "seeds": [50000, 50001], "diverged": [],
+            "part1_rank": {"passed": passed}, "part2_scale": {"passed": passed},
+            "part3_pairs": {"passed": passed},
+            "status": status, "withheld": [] if status == "decided" else ["s50003: no row"],
+            "passed": passed, "primary_predictor": predictor,
+        },
+    }  # fmt: skip
+
+
 def call(argv) -> tuple[int, str]:
     try:
         return et.main(argv), ""
@@ -300,21 +321,33 @@ def test_above_twenty_seeds_the_sign_flip_p_is_sampled_with_its_seed() -> None:
     assert "sampled" in found["method"] and et.sign_flip(d, observed) == found
 
 
-def test_the_criterion_record_is_read_by_its_two_fields(tmp_path, monkeypatch) -> None:
-    path = tmp_path / "c.json"
-    dump(path, {"m2": {"criterion": {"passed": False, "primary_predictor": "ln_K_harmful_at_K*",
-                                     "other": 1}}})  # fmt: skip
-    found = et.criterion_of(path, "m2.criterion")
-    assert (found["passed"], found["primary_predictor"]) == (False, "ln_K_harmful_at_K*")
-    assert found["sha256"] == sha(path.read_bytes()) and found["key"] == "m2.criterion"
-    for value, why in (({"passed": 1, "primary_predictor": "q"}, "not a boolean"),
-                       ({"passed": True, "primary_predictor": "r"}, "neither"),
-                       ({"passed": True}, "neither")):  # fmt: skip
+def test_the_criterion_is_read_from_the_extension_2_record(tmp_path) -> None:
+    path = tmp_path / "ext2.json"
+    for passed, predictor in ((True, "q"), (False, "ln_K_harmful_at_K*")):
+        dump(path, ext2_record(passed))
+        found = et.criterion_of(path)  # under "criterion", the default key
+        assert found == {"record": "ext2.json", "sha256": sha(path.read_bytes()),
+                         "kind": "study5-extension-2-analysis", "key": "criterion",
+                         "status": "decided", "passed": passed,
+                         "primary_predictor": predictor}  # fmt: skip
+    dump(path, ext2_record(True)["criterion"])  # the criterion alone, read at the top level
+    assert et.criterion_of(path, "")["primary_predictor"] == "q"
+    refused = [
+        (ext2_record(None), "the δ_lin criterion is withheld"),
+        (ext2_record(True, status="withheld"), "the δ_lin criterion is withheld"),
+        (ext2_record(None, status="decided"), "the δ_lin criterion is withheld"),
+        (ext2_record(True, "ln_K_harmful_at_K*"), "disagree: passed selects 'q'"),
+        (ext2_record(False, "q"), "disagree: passed selects 'ln_K_harmful_at_K*'"),
+        (ext2_record(True, "r"), "is neither 'q' nor"),
+        (ext2_record(True, status="open"), "neither 'decided' nor 'withheld'"),
+        ({**ext2_record(True), "criterion": {**ext2_record(True)["criterion"], "passed": 1}},
+         "passed is not a boolean"),
+        ({"kind": "study5-extension-2-analysis"}, "no object at criterion"),
+    ]  # fmt: skip
+    for value, why in refused:
         dump(path, value)
-        with pytest.raises(cli.Refused, match=why):
-            et.criterion_of(path, None)
-    with pytest.raises(cli.Refused, match="no object at m2"):
-        et.criterion_of(path, "m2")
+        with pytest.raises(cli.Refused, match=re.escape(why)):
+            et.criterion_of(path)
 
 
 def test_the_module_imports_without_torch_and_states_its_secondary_outcome() -> None:
@@ -384,7 +417,7 @@ def test_the_test_with_q_end_to_end(world, capsys) -> None:
 
 
 def test_the_test_with_ln_k_harmful_needs_no_predictions(world, monkeypatch) -> None:
-    dump(world.criterion, {"passed": False, "primary_predictor": "ln_K_harmful_at_K*"})
+    dump(world.criterion, ext2_record(False))
     out = world.tmp / "out.json"
     touched = spy(monkeypatch)
     code, why = call(world.argv(out, predictions=False))
@@ -425,6 +458,7 @@ def test_a_top_up_seed_is_tested_beside_the_ten(world) -> None:
         ("no-opening", "--open-e2 OPENING_RECORD is required"),
         ("bad-opening", "is not of kind study5-e2-opening"),
         ("bad-criterion", "is neither 'q' nor"),
+        ("withheld", "the δ_lin criterion is withheld"),
         ("no-prediction", "seed 50011 order2: no prediction"),
         ("no-q", "seed 50007 order1: its prediction is complete without a finite q"),
         ("twice", "two predictions of seed 50006, order seed 51006"),
@@ -439,7 +473,9 @@ def test_a_refusal_comes_before_any_e2_read(world, monkeypatch, change, why) -> 
     elif change == "bad-opening":
         dump(world.opening, {"kind": "other", "note_sha256": "x"})
     elif change == "bad-criterion":
-        dump(world.criterion, {"passed": True, "primary_predictor": "p_s"})
+        dump(world.criterion, ext2_record(True, "p_s"))
+    elif change == "withheld":
+        dump(world.criterion, ext2_record(None))
     elif change == "no-prediction":
         (world.sealed / "s50011-order2" / "record.json").unlink()
     elif change == "no-q":

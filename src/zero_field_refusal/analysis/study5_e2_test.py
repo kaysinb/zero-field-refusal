@@ -3,7 +3,7 @@ E2 and "Extension 2" M2: the δ_lin criterion selects the predictor; the test it
 dated note before any E2 outcome is read), written once as one JSON record.
 
     python -m zero_field_refusal.analysis.study5_e2_test --open-e2 OPENING.json
-        --criterion CRITERION.json [--criterion-key KEY] [--predictions PATH ...]
+        --criterion EXT2_ANALYSIS.json [--criterion-key KEY] [--predictions PATH ...]
         --pod3-runs DIR --registered ANALYSIS.json --out RECORD.json [--seeds S ...]
 
 It sits in the analysis package, outside the GPU code identity, as ``study5_ext1`` does, and reads
@@ -47,9 +47,12 @@ cancels.
 **Inputs.**
 - --open-e2: the opening record, required (``study5_ext1.opening_record``), checked before
   anything of E2 is read.
-- --criterion: the δ_lin criterion record. Only its ``passed`` (a boolean) and
-  ``primary_predictor`` (``q`` or ``ln_K_harmful_at_K*``) are read, at the top level or under
-  --criterion-key (a dotted path); anything else is refused.
+- --criterion: the extension-2 analysis record, its δ_lin criterion under --criterion-key (a
+  dotted path, default ``criterion``; empty for the top level). Only ``status``, ``passed`` and
+  ``primary_predictor`` are read: ``status`` ``decided``, ``passed`` a boolean and
+  ``primary_predictor`` the one it selects (passed: ``q``; not passed:
+  ``ln_K_harmful_at_K*``). A withheld criterion (``status`` ``withheld`` or ``passed`` null) is
+  refused by name, and so is a disagreement of the two.
 - --predictions: the sealed predictions, required for ``q`` (optional otherwise, then reported
   beside only). Each PATH is a record or a folder whose ``*/record.json`` are read (pod 4's
   ``study5_records/<ID>/sealed/s<seed>-order<k>/record.json``,
@@ -101,6 +104,8 @@ TOP_UP = (*range(50000, 50006), *range(50016, 50040))
 ORDERS = ext.NEW_ORDERS  # (order1, 1000), (order2, 2000)
 Q, LN_K = "q", "ln_K_harmful_at_K*"
 PREDICTORS = (Q, LN_K)
+PRIMARY = {True: Q, False: LN_K}  # the criterion passed selects q, else ln K_harmful at K*
+CRITERION_KEY = "criterion"  # the extension-2 analysis record's criterion (study5_ext2.criterion)
 ALPHA = 0.05
 ENUMERATED = 20  # n up to which the 2ⁿ sign patterns are enumerated
 PATTERNS, PATTERN_SEED, CHUNK = 1_000_000, 20261114, 100_000
@@ -209,25 +214,36 @@ def registration_text() -> str:
     return ext.registration_text()
 
 
-def criterion_of(path: Path, key: str | None) -> dict[str, Any]:
-    """The δ_lin criterion's verdict: ``passed`` (a boolean) and ``primary_predictor`` (one of
-    ``PREDICTORS``), at the top level or under the dotted ``key``; refused otherwise."""
+def criterion_of(path: Path, key: str | None = CRITERION_KEY) -> dict[str, Any]:
+    """The δ_lin criterion's verdict, under the dotted ``key`` (the top level when empty):
+    ``status`` ``decided``, ``passed`` a boolean and ``primary_predictor`` the one it selects
+    (``PRIMARY``); refused otherwise, a withheld criterion by name."""
     try:
         data = Path(path).read_bytes()
-        found: Any = json.loads(data)
+        record: Any = json.loads(data)
     except (OSError, ValueError) as exc:
         refuse(f"the criterion record does not read ({type(exc).__name__})")
+    found = record
     for part in key.split(".") if key else ():
         found = found.get(part) if isinstance(found, Mapping) else None
     if not isinstance(found, Mapping):
         refuse(f"the criterion record holds no object at {key or 'its top level'}")
-    if not isinstance(found.get("passed"), bool):
-        refuse("the criterion record's passed is not a boolean")
-    if found.get("primary_predictor") not in PREDICTORS:
-        refuse(f"the criterion record's primary_predictor {found.get('primary_predictor')!r} is "
-               f"neither {Q!r} nor {LN_K!r}")  # fmt: skip
-    return {"record": Path(path).name, "sha256": sha256(data), "key": key,
-            "passed": found["passed"], "primary_predictor": found["primary_predictor"]}  # fmt: skip
+    status, passed = found.get("status"), found.get("passed")
+    if status == "withheld" or (status == "decided" and passed is None):
+        refuse("the δ_lin criterion is withheld: no predictor is selected")
+    if status != "decided":
+        refuse(f"the criterion's status {status!r} is neither 'decided' nor 'withheld'")
+    if not isinstance(passed, bool):
+        refuse("the criterion's passed is not a boolean")
+    predictor = found.get("primary_predictor")
+    if predictor not in PREDICTORS:
+        refuse(f"the criterion's primary_predictor {predictor!r} is neither {Q!r} nor {LN_K!r}")
+    if predictor != PRIMARY[passed]:
+        refuse(f"the criterion's passed ({passed}) and primary_predictor ({predictor!r}) "
+               f"disagree: passed selects {PRIMARY[passed]!r}")  # fmt: skip
+    kind = record.get("kind") if isinstance(record, Mapping) else None
+    return {"record": Path(path).name, "sha256": sha256(data), "kind": kind, "key": key,
+            "status": status, "passed": passed, "primary_predictor": predictor}  # fmt: skip
 
 
 def prediction_of(path: Path, data: bytes) -> dict[str, Any]:
@@ -494,7 +510,7 @@ def parser_of() -> argparse.ArgumentParser:
                                      description=__doc__.splitlines()[0])  # fmt: skip
     parser.add_argument("--open-e2", type=Path, metavar="OPENING_RECORD")
     parser.add_argument("--criterion", type=Path, required=True)
-    parser.add_argument("--criterion-key")
+    parser.add_argument("--criterion-key", default=CRITERION_KEY)  # "": the top level
     parser.add_argument("--predictions", type=Path, action="append")
     parser.add_argument("--pod3-runs", type=Path, required=True)
     parser.add_argument("--registered", type=Path, required=True)
