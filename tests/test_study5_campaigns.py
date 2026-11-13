@@ -769,7 +769,7 @@ def test_pod4_extension_2(where, tmp_path):
     assert seen[50000] == list(camp.FORCE_SEED_STEPS)
     assert all(seen[s] == list(camp.TWIN_STEPS) for s in (50001, 50002, 50003))
     assert all(seen[s] is None for s in range(50004, 50040))
-    checks = [s for s in steps(plan, "replays") if s.gate == "engineering"]
+    checks = [s for s in steps(plan, "replays") if s.gate == "replay"]
     assert len(checks) == 10 and all(s.on_fail == "stop" for s in checks)
     hashes = [s for s in steps(plan, "replays") if "scripts/study5_tensor_hash.py" in s.argv]
     assert len(hashes) == 10 and all(s.on_fail == "stop" for s in hashes)
@@ -831,7 +831,7 @@ def test_pod4_amendment_numerical_equivalence(where):
     assert eng.argv[eng.argv.index("--tolerance") + 1] == tol
     assert eng.outputs[0].endswith("engineering-check-numerical.json")
     all_steps = steps(plan, "replays")
-    checks = [s for s in all_steps if s.gate == "engineering"]
+    checks = [s for s in all_steps if s.gate == "replay"]
     fetched = [s for s in all_steps if s.argv[:2] == ("scripts/study5_campaigns.py",
                                                        "fetch-endpoint")]  # fmt: skip
     assert len(fetched) == 40
@@ -912,12 +912,12 @@ def test_pod4_amendment_2_endpoint_bound(where):
     plan = pod4(where)
     (eng,) = [s for s in steps(plan, "engineering") if s.gate == "engineering"]
     assert eng.argv[eng.argv.index("--endpoint-tolerance") + 1] == "0.001"
-    checks = [s for s in steps(plan, "replays") if s.gate == "engineering"]
+    checks = [s for s in steps(plan, "replays") if s.gate == "replay"]
     assert len(checks) == 10
     for c in checks:
         assert c.argv[c.argv.index("--tolerance") + 1] == "0.0001"
         assert c.argv[c.argv.index("--endpoint-tolerance") + 1] == "0.001"
-        assert c.outputs[0].endswith(f"/replays/check-{c.group}-endpoint-0.001.json")
+        assert c.outputs[0].endswith(f"/replays/check-{c.group}-endpoint-analysis-0.001.json")
         assert c.argv[c.argv.index("--out") + 1] == c.outputs[0]
     stands = camp.tolerance_stands
     assert stands(dict(camp.EXT2_TOLERANCE))
@@ -941,6 +941,31 @@ def test_pod4_amendment_2_endpoint_bound(where):
     assert "another tolerance" in camp.gate_problem(
         "engineering", _write(where, "l.json", looser), plan
     )
+
+
+def test_pod4_amendment_3_replays_accepted_for_endpoint_analysis(where):
+    """Extension 2's third amendment: every replay group's check runs with --endpoint-analysis
+    into a record of its own and is kept by ``accepted_for_endpoint_analysis`` (the gate
+    ``replay``), its ``passed`` aside; the engineering gate still reads ``passed``; a record
+    without the acceptance (the second amendment's) does not stand for a replay group."""
+    plan = pod4(where)
+    checks = [s for s in steps(plan, "replays") if s.name.endswith("/check")]
+    assert len(checks) == 10 and {c.gate for c in checks} == {"replay"}
+    assert all("--endpoint-analysis" in c.argv for c in checks)
+    (eng,) = [s for s in steps(plan, "engineering") if s.gate == "engineering"]
+    assert "--endpoint-analysis" not in eng.argv
+    accepted = {"kind": "study5-engineering-check", "exact": False, "passed": False,
+                "within_tolerance": False, "accepted_for_endpoint_analysis": True,
+                "tolerance": dict(camp.EXT2_TOLERANCE), "pairs": []}  # fmt: skip
+    assert camp.gate_problem("replay", _write(where, "a3.json", accepted), plan) == (
+        "the engineering check holds no pair")  # past the verdict and the tolerance  # fmt: skip
+    assert "found a difference" in camp.gate_problem(
+        "engineering", _write(where, "a3e.json", accepted), plan
+    )
+    second = {k: v for k, v in accepted.items() if k != "accepted_for_endpoint_analysis"}
+    for name, record in (("no.json", {**accepted, "accepted_for_endpoint_analysis": False}),
+                         ("a2.json", {**second, "passed": True})):  # fmt: skip
+        assert "did not accept" in camp.gate_problem("replay", _write(where, name, record), plan)
 
 
 def test_pod4_floor_repeat_runs_anew_beside_the_completed_replay(where, tmp_path):

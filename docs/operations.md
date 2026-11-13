@@ -3405,7 +3405,11 @@ as the `pod4` campaign of `scripts/study5_campaigns.py` (`pod4_plan`). Its new c
   replay's); the driver's `fetch-endpoint` (pod 2's checkpoint fetched back from its archive by
   the sha256 its inventory shows, only for a replay whose endpoint tensors differ) and
   `remove-fetched` (the copy removed once read). The engineering gate reads `passed`, and a
-  record's tolerance must be the registered one (`EXT2_TOLERANCE`).
+  record's tolerance must be the registered one (`EXT2_TOLERANCE`). The replay groups' checks
+  run with `--endpoint-analysis`
+  ([amendment 3](study5-preregistration.md#extension-2-amendment-3-2026-11-12-replays-accepted-for-endpoint-analysis))
+  into `check-<group>-endpoint-analysis-0.001.json`; their gate (`replay`) reads
+  `accepted_for_endpoint_analysis`.
 
 **GPU code.** Recorded in `docs/study5-extension-2-code-identity.json` with the paths changed
 from extension 1's record. The driver refuses another GPU code, a registration without the
@@ -3440,7 +3444,8 @@ removed by hand after the campaign, once the step it belonged to has a record.
 2. `fetch`: the 40 seeds' streams, pod 2's 40 fresh η_l runs, two panels of 1000 fresh θ₀
    responses (seeds 59990, 59991).
 3. `replays`: the 40 fresh η_l cells in groups of four, each group checked against pod 2's runs
-   by numerical equivalence as a gate, the endpoints by their tensors (`--endpoint-tensors`;
+   as a gate (accepted for endpoint analysis, the numerical equivalence recorded beside), the
+   endpoints by their tensors (`--endpoint-tensors`;
    `--ignore step_checkpoints` on the first group) and, where they differ, by their distance to
    pod 2's checkpoint fetched back (`fetch-endpoint`, `study5_pairs.py`, `remove-fetched`); the
    twins and their pairs; in the first group, seed 50000's replay again in its own order with the

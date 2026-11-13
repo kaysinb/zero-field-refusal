@@ -283,6 +283,7 @@ def _run_check(tmp_path: Path, a: Path, b: Path, *extra: str, name: str = "r.jso
     code = check.main(["--archived", str(a), "--rerun", str(b), "--out", str(out), *extra])
     record = json.loads(out.read_text()) if out.exists() else None
     check.TOLERANCE = check.ENDPOINT_TOLERANCE = None
+    check.ENDPOINT_ANALYSIS = False
     return code, record
 
 
@@ -534,3 +535,174 @@ def test_types_the_config_and_incomplete_answers_never_pass_by_the_tolerance(tmp
     entry = next(f for f in record["pairs"][0]["files"] if f["name"].startswith("responses/"))
     assert code == 2 and entry["answers_complete"] is False and "answers_differing" not in entry
     assert record["answers_differing"] == 0
+
+
+# ------------------------------- extension 2's third amendment: accepted for endpoint analysis
+
+
+def _observations(run: Path, factual: list[tuple[float, str]], letters: list[tuple[float, int]],
+                  nll: float = 2.5, factual_ids=None) -> None:  # fmt: skip
+    ids = factual_ids or [f"f{i}" for i in range(len(factual))]
+    rows = [{"condition": "step-25", "measure": "heldout_nll", "item_id": "n0", "value": nll,
+             "tokens": 7}]  # fmt: skip
+    rows += [{"condition": "step-25", "measure": "factual_qa", "item_id": i, "value": v,
+              "text": t} for i, (v, t) in zip(ids, factual, strict=True)]  # fmt: skip
+    rows += [{"condition": "step-25", "measure": "benchmark", "item_id": f"m{i}", "value": v,
+              "predicted": p} for i, (v, p) in enumerate(letters)]  # fmt: skip
+    (run / "observations").mkdir(exist_ok=True)
+    (run / "observations" / "measurements.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows)
+    )
+
+
+FACTUAL = [(1.0, "Paris"), (1.0, "four"), (0.0, "no idea")]
+LETTERS = [(1.0, 2), (0.0, 1)]
+
+
+def _replay(tmp_path: Path, name: str):
+    """An archived run and its replay, both with an endpoint checkpoint whose tensors differ:
+    returns them and the arguments that name the tensors (the distance record apart)."""
+    hasher = script_module(REPO_ROOT / "scripts" / "study5_tensor_hash.py", f"s5_th_{name}")
+    a = fake_run(tmp_path / name / "a", "run-a")
+    b = fake_run(tmp_path / name / "b", "run-b")
+    for run, value in ((a, 1.0), (b, 1.0 + 1e-6)):
+        _metrics(run, {"step": 24, "loss": 1.5}, {"step": 25, "loss": 2.0})
+        _answers(run, ["abcd", "efgh", "ijkl", "mnop"])
+        _observations(run, FACTUAL, LETTERS)
+        ckpt = tmp_path / name / f"{run.name}.pt"
+        _with_endpoint(run, ckpt, _checkpoint(ckpt, value), f"/{run.name}/ckpt", steps=None)
+    from zero_field_refusal.tensor_hash import tensors_sha256
+
+    expected = tensors_sha256(list(torch.load(tmp_path / name / "run-a.pt",
+                                              weights_only=True).items()))  # fmt: skip
+    hashed = tmp_path / name / "hashed.json"
+    assert hasher.main([str(b), "--out", str(hashed)]) == 0
+    tensors = ["--endpoint-tensors", f"aaaaaaaaaaaa={expected}", "--rerun-endpoint-tensors",
+               str(hashed)]  # fmt: skip
+    return a, b, tensors
+
+
+def _endpoint_analysis(tmp_path: Path, a: Path, b: Path, tensors: list[str], ratio: float,
+                       name: str, *extra: str):  # fmt: skip
+    sha = {r.name: json.loads((r / "meta.json").read_text())["inputs"]["endpoint_checkpoint"]
+           ["sha256"] for r in (a, b)}  # fmt: skip
+    rec = _distance(tmp_path / f"d-{name}.json", sha["run-a"], "run-b", sha["run-b"], ratio)
+    return _run_check(tmp_path, a, b, *tensors, "--endpoint-distance", f"aaaaaaaaaaaa={rec}",
+                      "--tolerance", "1e-4", "--endpoint-tolerance", "1e-3", *extra,
+                      name=f"{name}.json")  # fmt: skip
+
+
+def test_a_replay_is_accepted_for_endpoint_analysis_whatever_its_drift(tmp_path, capsys):
+    """Extension 2's third amendment: a replay whose endpoint lies within the bound is accepted
+    with its measurements beyond 1e-4, three greedy answers, two factual answers and a letter
+    changed; within_tolerance and passed stay as before, the outputs are counted (no text) and
+    the exit code follows the acceptance. Beyond the endpoint bound it is not accepted."""
+    a, b, tensors = _replay(tmp_path, "drift")
+    _metrics(b, {"step": 24, "loss": 1.5 * (1 + 3e-3)}, {"step": 25, "loss": 2.0 * (1 - 1e-3)})
+    _answers(b, ["abXd", SECRET, "iXkl", "mnop"])
+    _observations(b, [(1.0, "Paris"), (0.0, SECRET), (0.0, "no clue")], [(0.0, 3), (0.0, 1)],
+                  nll=2.5 * (1 + 2e-3))  # fmt: skip
+    capsys.readouterr()
+    code, record = _endpoint_analysis(tmp_path, a, b, tensors, 9.78e-4, "drift",
+                                      "--endpoint-analysis")  # fmt: skip
+    printed = capsys.readouterr()
+    pair = record["pairs"][0]
+    assert code == 0 and record["accepted_for_endpoint_analysis"] is True
+    assert pair["accepted_for_endpoint_analysis"] is True
+    assert record["passed"] is False and record["within_tolerance"] is False
+    assert record["answers_differing"] == 3
+    assert "Extension 2 amendment 3" in record["endpoint_analysis"]
+    metrics = next(f for f in pair["files"] if f["name"] == "metrics.jsonl")
+    assert metrics["within_tolerance"] is False and [s for s, _ in metrics["by_step"]] == [24, 25]
+    rows = {r["measure"]: r for r in pair["outputs"]}
+    assert rows["harmful_answers"] == {"measure": "harmful_answers", "condition": "final",
+                                       "items": 4, "differing": 3}  # fmt: skip
+    factual = rows["factual_qa"]
+    assert (factual["items"], factual["differing"], factual["flips"]) == (3, 2, 1)
+    assert factual["archived_accuracy"] == pytest.approx(2 / 3)
+    assert factual["accuracy_difference"] == pytest.approx(-1 / 3)
+    letters = rows["benchmark"]
+    assert (letters["items"], letters["differing"], letters["flips"]) == (2, 1, 1)
+    assert letters["rerun_accuracy"] == 0.0 and letters["accuracy_difference"] == -0.5
+    assert SECRET not in json.dumps(record) and SECRET not in printed.out + printed.err
+    code, record = _endpoint_analysis(tmp_path, a, b, tensors, 1.2e-3, "far",
+                                      "--endpoint-analysis")  # fmt: skip
+    assert code == 2 and record["accepted_for_endpoint_analysis"] is False
+    assert all(f["accepted"] for f in record["pairs"][0]["files"])  # the endpoint alone
+    code, record = _endpoint_analysis(tmp_path, a, b, tensors, 9.78e-4, "before")
+    assert code == 2 and "accepted_for_endpoint_analysis" not in record  # the rule as it was
+    assert "outputs" not in record["pairs"][0]
+
+
+def _textless(run: Path) -> None:
+    path = run / "responses" / "harmful_evaluation.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    del rows[0]["text"]
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+@pytest.mark.parametrize("change", ["item id", "flag not finite", "letter type", "a step",
+                                    "not finite", "an answer without text", "a file on one side",
+                                    "the config", "no endpoint", "answers without text on both",
+                                    "no answers on both", "no observations on both",
+                                    "factual text in metrics"])  # fmt: skip
+def test_identities_completeness_and_finiteness_still_decide(tmp_path, change):
+    """Under the third amendment an identity, a type, a non-finite number where the archive's is
+    finite, an incomplete answer (on one side or, equal, on both), answers or observations
+    absent from both runs, an output field outside ``observations/``, a file on one side only,
+    the config or a missing endpoint checkpoint keeps the replay from endpoint analysis."""
+    a, b, tensors = _replay(tmp_path, "x")
+    if change == "answers without text on both":
+        _textless(a)
+        _textless(b)
+    elif change == "no answers on both":
+        (a / "responses" / "harmful_evaluation.jsonl").unlink()
+        (b / "responses" / "harmful_evaluation.jsonl").unlink()
+    elif change == "no observations on both":
+        shutil.rmtree(a / "observations")
+        shutil.rmtree(b / "observations")
+    elif change == "factual text in metrics":
+        row = {"step": 25, "loss": 2.0, "measure": "factual_qa", "value": 1.0}
+        _metrics(a, {"step": 24, "loss": 1.5}, {**row, "text": "Paris"})
+        _metrics(b, {"step": 24, "loss": 1.5}, {**row, "text": "Lyon"})
+    elif change == "item id":
+        _observations(b, FACTUAL, LETTERS, factual_ids=["f0", "f1", "f9"])
+    elif change == "flag not finite":
+        _observations(b, [(1.0, "Paris"), (float("nan"), "four"), (0.0, "no idea")], LETTERS)
+    elif change == "letter type":
+        _observations(b, FACTUAL, [(1.0, "C"), (0.0, 1)])
+    elif change == "a step":
+        _metrics(b, {"step": 23, "loss": 1.5}, {"step": 25, "loss": 2.0})
+    elif change == "not finite":
+        _metrics(b, {"step": 24, "loss": float("nan")}, {"step": 25, "loss": 2.0})
+    elif change == "an answer without text":
+        _textless(b)
+    elif change == "a file on one side":
+        (b / "summary.json").write_text("{}")
+    elif change == "the config":
+        path = b / "config.yaml"
+        path.write_text(path.read_text() + "optimizer:\n  lr: 1.0e-05\n")
+    else:
+        meta = json.loads((b / "meta.json").read_text())
+        del meta["inputs"]["endpoint_checkpoint"]
+        (b / "meta.json").write_text(json.dumps(meta))
+        meta = json.loads((a / "meta.json").read_text())
+        del meta["inputs"]["endpoint_checkpoint"]
+        (a / "meta.json").write_text(json.dumps(meta))
+        code, record = _run_check(tmp_path, a, b, *tensors, "--tolerance", "1e-4",
+                                  "--endpoint-tolerance", "1e-3", "--endpoint-analysis",
+                                  name="no-endpoint.json")  # fmt: skip
+        assert code == 2 and record["accepted_for_endpoint_analysis"] is False
+        assert record["pairs"][0]["endpoint_tensors"] is None
+        return
+    code, record = _endpoint_analysis(tmp_path, a, b, tensors, 5e-4, change.replace(" ", "-"),
+                                      "--endpoint-analysis")  # fmt: skip
+    assert code == 2 and record["accepted_for_endpoint_analysis"] is False, change
+
+
+def test_endpoint_analysis_needs_both_bounds(tmp_path):
+    a, b, tensors = _replay(tmp_path, "args")
+    for extra, name in (((), "none.json"), (("--tolerance", "1e-4"), "one.json")):
+        code, record = _run_check(tmp_path, a, b, *tensors, "--endpoint-analysis", *extra,
+                                  name=name)  # fmt: skip
+        assert code == 1 and record is None, name

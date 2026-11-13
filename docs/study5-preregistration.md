@@ -679,3 +679,58 @@ bounds a projection: |Δ⟨δ_i, g⟩| ≤ e_i‖g‖, and the mean displacement
 units, measured or propagated; an endpoint ratio is not compared with them directly. The observed
 envelope of discrepancies is not a confidence bound. A contrast smaller than ten times its
 uncertainty is reported as unresolved.
+
+### Extension 2 amendment 3 (2026-11-12): replays accepted for endpoint analysis
+
+**Why.** Under amendment 2, pod 4's campaign stopped at the check of replay group g50012
+(`check-g50012-endpoint-0.001.json`, sha256 `cc349407…`). Seeds 50012–50014 are bit-identical with
+their archived runs. The replay of seed 50015 at η_l (config `5ff1ca1bc35a`) has its endpoint at
+9.78·10⁻⁴ of ‖θ_archived − θ₀‖, within 10⁻³. Its identities are exact, and its 222 factual answers
+and 500 benchmark letters are identical. Six of its 521 greedy answers to the harmful prompts
+differ, each from its 38th to 115th generated token on. Its recorded measurements drift from step
+14 on: about 10⁻⁶ through step 18, about 10⁻³ from step 19, at most 3.4·10⁻³ (an update scalar at
+step 22). That is beyond the measurement tolerance of 10⁻⁴, so the check failed. This amendment was
+written with that record known. Two diagnostic repeats of seed 50015's replay config had been
+started on the same card; none of their results had been read. The amendment is prospective for
+those repeats and for the later replay groups, not for the check of seed 50015.
+
+**The amendment.** A small endpoint distance neither requires nor bounds the drift of recorded
+measurements or changes of greedy answers: they measure different things. For the replay groups,
+whose endpoint distance is checked, the measurement drift becomes a diagnostic, not a second
+endpoint gate. A replay is accepted for endpoint analysis when:
+- its identities are exact: the inputs, the config, the run's metadata, the structure of every
+  record, the prompts, reference answers, item identities and counts, and the training's
+  termination;
+- its greedy answers are complete;
+- every number finite in the archived run is finite in the replay;
+- the evidence is present: the replay's endpoint checkpoint matches its record, and the distance
+  record exists;
+- its endpoint distance is at most 10⁻³ of ‖θ_archived − θ₀‖. The bound is unchanged.
+
+Generated outputs may differ: the greedy answers (521 harmful, 222 factual), the benchmark letters
+(500), their correctness flags and the correct counts derived from them. Each check records, beside
+its acceptance, the changed outputs k of 521, of 222 and of 500, the correctness flips, the
+archived and replayed accuracies and their difference. The measurement tolerance of 10⁻⁴ and its
+verdict (`within_tolerance`, with the drift by file and by step) are computed and recorded as
+before. The initial engineering check, which has no endpoint checkpoint, is unchanged.
+
+**What acceptance does not give.** k/521 bounds only the contribution of the changed labels at the
+endpoint (6/521 ≈ 1.15 percentage points for seed 50015); it does not bound r, K or the effects of
+interventions. Outcomes of archived runs are reported as archived everywhere. Accepting an
+endpoint establishes no precision for M3's and M4's nonlinear readouts, nor for M5's and M6's
+intermediate checkpoints and trajectory contrasts. Each of these needs an uncertainty of its own,
+appropriate to the quantity interpreted; a contrast smaller than ten times its uncertainty is
+reported as unresolved (amendment 2).
+
+**Pauses and diagnosis.** A seed whose endpoint later exceeds 10⁻³ is a technical pause, not a
+scientific rejection. The first replay is kept; diagnostic repeats describe the spread and never
+select a replacement. Evidence of a fault leads to diagnosis, as under amendment 2.
+
+**How it is applied** (`scripts/study5_engineering_check.py --tolerance 1e-4 --endpoint-tolerance
+1e-3 --endpoint-analysis`). Each replay group is checked into a record of its own
+(`study5_records/<id>/replays/check-<group>-endpoint-analysis-0.001.json`). The record holds
+`accepted_for_endpoint_analysis` beside `exact`, `within_tolerance` and `passed`, and the campaign
+continues on the acceptance. Groups g50000–g50012 are checked again on their existing replays and
+distance records. Every earlier record and verdict stays as it was written: `check-<group>.json`,
+`check-<group>-endpoint-0.001.json`, the failed checks of g50004 and g50012 among them. So does
+every original replay. The diagnostic repeats are kept in a runs root of their own (`study5_diag/s50015`).
