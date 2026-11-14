@@ -4,11 +4,13 @@ confirmatory test"; docs/operations.md, "Study 5 campaigns")."""
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import importlib.util
 import json
 import math
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -1224,7 +1226,7 @@ def test_pod4_windows_cover_their_groups(where):
 
 def test_no_plan_holds_a_bucket_path_or_a_key(where, monkeypatch):
     monkeypatch.setenv("ARTIFACT_REMOTE", "gs://secret-bucket/prefix")
-    for plan in (pod1(where), pod2(where), pod3(where), pod4(where)):
+    for plan in (pod1(where), pod2(where), pod3(where), pod4(where), topup(where)):
         text = json.dumps(plan.to_json()) + "".join(plan.campaigns.values())
         assert "gs://" not in text and "secret-bucket" not in text and "KEY" not in text
 
@@ -1234,7 +1236,8 @@ def test_the_plan_is_data_and_deterministic(where):
     assert pod2(where).to_json() == pod2(where).to_json()
     assert pod3(where).to_json() == pod3(where).to_json()
     assert pod4(where).to_json() == pod4(where).to_json()
-    for plan in (pod2(where), pod3(where), pod4(where)):
+    assert topup(where).to_json() == topup(where).to_json()
+    for plan in (pod2(where), pod3(where), pod4(where), topup(where)):
         names = [s.name for s in steps(plan)]
         assert len(names) == len(set(names))
 
@@ -2105,7 +2108,7 @@ def minutes_of(step) -> int:
 
 
 def test_every_planned_step_has_a_timeout_and_every_group_sets_its_deadline_first(where):
-    for plan in (pod1(where), pod2(where), pod2(where, 24)):
+    for plan in (pod1(where), pod2(where), pod2(where, 24), topup(where)):
         for block in plan.blocks:
             assert all(isinstance(s.timeout, int) and s.timeout > 0 for s in block.steps)
             if block.name == "close":
@@ -2819,3 +2822,451 @@ def test_pod4_k_readouts_only_where_k_is_declared_and_the_m1_purge_names_force(w
     assert force_archive.outputs[0] in purge_m1.argv
     close = [s.name for s in steps(plan, "close")]
     assert close.index("close/json-snapshot") < close.index("close/records")
+
+
+# ------------------------------------------------------------------ the top-up of E2's orders
+
+TOPUP_ID = "topup-20261113"
+E2_SEEDS = tuple(range(50006, 50016))
+# How the E2 test finds a seed's order runs and its predictions, copied from
+# zero_field_refusal.analysis.study5_e2_test (``campaign_of``: the seed's one launcher journal;
+# ``predictions_of``: ``*/record.json`` under the sealed folder) and
+# zero_field_refusal.analysis.study5_ext1 (``order_parts``: the cell's label, its config of
+# train.order_seed = s + offset and study5.role control); the analysis is not imported here
+E2_JOURNAL = "study5-*-orders-s{seed}.jsonl"
+E2_CELL = "s5-{order}-{eta!r}-s{seed}/s{seed}"
+E2_ORDERS = (("order1", 1000), ("order2", 2000))
+E2_RATES = (1.3e-05, 1.83e-05)
+E2_PREDICTION = "*/record.json"
+
+
+def topup(where, archive_id=TOPUP_ID):
+    return camp.topup_plan(archive_id=archive_id, commit=COMMIT, gpu_code=GPU, **where)
+
+
+def replay_steps(plan, block):
+    return [s for s in steps(plan, block) if "scripts/study5_linear_replay.py" in s.argv]
+
+
+def test_topup_repeats_e2s_design_on_the_thirty_seeds_outside_it(where, tmp_path):
+    """Every fresh seed outside E2, in order; per seed one launcher campaign of four F runs built
+    as pod 3 builds E2's (two new orders at both rates, role control); no checkpoint, no
+    labeling."""
+    plan = topup(where)
+    assert [b.name for b in plan.blocks] == ["engineering", "fetch", "predictions", "orders",
+                                             "close"]  # fmt: skip
+    assert (*range(50000, 50006), *range(50016, 50040)) == camp.TOPUP_SEEDS
+    assert not set(camp.TOPUP_SEEDS) & set(camp.ORDER_SEEDS)
+    assert sorted({*camp.TOPUP_SEEDS, *camp.ORDER_SEEDS}) == list(camp.EXT2_SEEDS)
+    orders = [s for s in steps(plan, "orders") if s.kind == "launch"]
+    assert [s.group for s in orders] == [f"s{s}" for s in camp.TOPUP_SEEDS]
+    hashes = set()
+    for s in orders:
+        name, seed = Path(s.argv[1]).stem, int(s.group[1:])
+        assert name == f"study5-{TOPUP_ID}-orders-s{seed}"
+        found = []
+        for r in campaign_runs(plan, tmp_path, name):
+            cfg = load_run_config(r.config, list(r.overrides))
+            assert (
+                r.config == camp.CONTROL_ORDER and cfg.study5.role == "control" and r.seed == seed
+            )
+            found.append((cfg.train.order_seed - seed, cfg.optimizer.lr))
+            hashes.add(config_hash(cfg))
+        assert sorted(found) == [(1000, 1.3e-05), (1000, 1.83e-05), (2000, 1.3e-05),
+                                 (2000, 1.83e-05)]  # fmt: skip
+    assert len(hashes) == 120
+    # pod 3's E2 group of 50006, renamed, is the top-up's group of 50016
+    three = camp.pod3_plan(archive_id="pod3-20261111", commit=COMMIT, gpu_code=GPU, **where)
+
+    def renamed(text: str) -> str:
+        text = text.replace("pod3-20261111", TOPUP_ID).replace("pod3", "topup")
+        for offset in (0, 1000, 2000):
+            text = text.replace(str(50006 + offset), str(50016 + offset))
+        return text
+
+    group = [s for s in steps(three, "orders") if s.group == "s50006"]
+    mine = [s for s in steps(plan, "orders") if s.group == "s50016"]
+    assert [renamed(json.dumps(camp.asdict(s))) for s in group] == [
+        json.dumps(camp.asdict(s)) for s in mine]  # fmt: skip
+    theirs = three.campaigns["study5-pod3-20261111-orders-s50006"]
+    assert OmegaConf.create(renamed(theirs)) == OmegaConf.create(
+        plan.campaigns[f"study5-{TOPUP_ID}-orders-s50016"]
+    )  # the cells and the header
+    text = " ".join(" ".join(s.argv) for s in steps(plan))
+    assert "scripts/label_runs.py" not in text and "linear_shuffled_d" not in text
+    commands = {s.argv[1] for s in steps(plan) if s.argv[0] == "scripts/study5_campaigns.py"}
+    assert not commands & {"checkpoint", "check-checkpoints", "export-checkpoints",
+                           "drop-checkpoints"}  # fmt: skip
+    assert not any("endpoint_checkpoint" in text for text in plan.campaigns.values())
+
+
+def test_topup_names_are_those_the_e2_test_reads(where, tmp_path):
+    """The E2 test, given the top-up's seeds, finds each seed's one journal and its four cells
+    by pod 3's names, and each order's prediction as ``*/record.json`` of the sealed folder; the
+    prediction's config is that of the order's η_l run (the same config hash)."""
+    plan = topup(where)
+    journals = [f"{name}.jsonl" for name in plan.campaigns]
+    eta_l = {}
+    for seed in (*camp.TOPUP_SEEDS, *E2_SEEDS):
+        found = [j for j in journals if fnmatch.fnmatch(j, E2_JOURNAL.format(seed=seed))]
+        if seed in E2_SEEDS:
+            assert found == [], seed
+            continue
+        (journal,) = found
+        expected = {E2_CELL.format(order=order, eta=eta, seed=seed): (seed + offset, eta)
+                    for order, offset in E2_ORDERS for eta in E2_RATES}  # fmt: skip
+        runs = campaign_runs(plan, tmp_path, journal.removesuffix(".jsonl"))
+        assert {r.label for r in runs} == set(expected)
+        for r in runs:
+            cfg = load_run_config(r.config, [*r.overrides, f"seed={r.seed}"])
+            assert (cfg.train.order_seed, cfg.optimizer.lr) == expected[r.label]
+            assert cfg.study5.role == "control" and cfg.seed == seed
+            if cfg.optimizer.lr == 1.3e-05:
+                eta_l[(seed, cfg.train.order_seed)] = r.config_hash
+    sealed = where["runs"] / "study5_records" / TOPUP_ID / "sealed"
+    settles = {s.argv[s.argv.index("--dir") + 1]: Path(s.argv[s.argv.index("--records") + 1])
+               for s in steps(plan, "predictions") if s.name.endswith("-settle")}  # fmt: skip
+    assert sorted(settles.values()) == sorted(
+        sealed / f"s{s}-order{k}" for s in camp.TOPUP_SEEDS for k in (1, 2))  # fmt: skip
+    assert all(fnmatch.fnmatch(f"{t.name}/record.json", E2_PREDICTION) for t in settles.values())
+    replays = replay_steps(plan, "predictions")
+    assert len(replays) == 60
+    for s in replays:
+        argv = list(s.argv)
+        folder = argv[argv.index("--out-dir") + 1]
+        assert s.outputs == (f"{folder}/record.json",) and folder in settles  # settled from there
+        script = argv.index("scripts/study5_linear_replay.py")
+        config, overrides = argv[script + 1], argv[script + 2 : argv.index("--out-dir")]
+        cfg = load_run_config(config, overrides)
+        assert config_hash(cfg) == eta_l.pop((cfg.seed, cfg.train.order_seed))
+    assert not eta_l  # every order has its prediction
+
+
+def test_topup_predicts_every_order_before_any_order_run_as_pod4_sealed(where):
+    """The 60 orders' δ̂, δ_lin and q from θ₀ with pod 4's sealed options (--no-k, pod 2's fresh
+    η_l run as the reference); a failed replay or settle stops the campaign, each seed's records
+    are archived before its vector files are purged, and the whole block ends before the first
+    order run."""
+    plan = topup(where)
+    names = [s.name for s in steps(plan)]
+    predictions = steps(plan, "predictions")
+    first_run = min(names.index(s.name) for s in steps(plan) if s.kind == "launch"
+                    and s.name.startswith("orders/"))  # fmt: skip
+    assert max(names.index(s.name) for s in predictions) < first_run
+    replays = replay_steps(plan, "predictions")
+    for s in predictions:
+        if s in replays or s.name.endswith("-settle") or s.kind in ("archive", "receipt"):
+            assert s.on_fail == "stop", s.name
+    vec = where["checkpoints"] / "vec" / TOPUP_ID / "sealed"
+    for seed in camp.TOPUP_SEEDS:
+        group = [s for s in predictions if s.group == f"s{seed}"]
+        (archive,) = [s for s in group if s.name.endswith("/archive")]
+        paths = [archive.argv[i + 1] for i, a in enumerate(archive.argv) if a == "--path"]
+        assert paths == [f"study5_records/{TOPUP_ID}/sealed/s{seed}-order{k}" for k in (1, 2)]
+        purges = [s for s in group if s.name.endswith("-purge")]
+        assert len(purges) == 2 and all(archive.outputs[0] in p.argv for p in purges)
+        assert all(names.index(archive.name) < names.index(p.name) for p in purges)
+        assert {p.argv[p.argv.index("--dir") + 1] for p in purges} == {
+            str(vec / f"s{seed}-order{k}") for k in (1, 2)}  # fmt: skip
+    (snapshot,) = [s for s in steps(plan, "close") if s.name == "close/json-snapshot"]
+    assert snapshot.argv[snapshot.argv.index("--src") + 1] == str(vec.parent)
+
+    def shape(step) -> tuple[list[str], list[str]]:
+        """The step's with-runs flags and its replay's argv, its seed, run and folder named."""
+        argv = list(step.argv)
+        cut = argv.index("--")
+        command = argv[cut + 1 :]
+        seed = int(next(a for a in command if a.startswith("seed=")).split("=")[1])
+        folder = command[command.index("--out-dir") + 1]
+        run = command[command.index("--reference-fresh-run") + 1]
+        assert run.endswith(f"/fetched/study5/{camp.POD2_FRESH_L[seed]}")
+        out = []
+        for a in command:
+            a = a.replace(folder, "<folder>").replace(run, "<run>")
+            for offset, tag in ((1000, "<s1>"), (2000, "<s2>"), (0, "<s>")):
+                a = a.replace(str(seed + offset), tag)
+            out.append(a)
+        return [a for a in argv[:cut] if a.startswith("--")], out
+
+    mine = {json.dumps(shape(s)) for s in replays}
+    theirs = {json.dumps(shape(s)) for s in replay_steps(pod4(where), "sealed")}
+    assert mine == theirs and len(mine) == 2  # order 1 and order 2
+    assert all("--no-k" in s.argv and camp.SURROGATE in s.argv for s in replays)
+
+
+def test_topup_never_names_an_e2_run(where):
+    """No planned argv, step, output or campaign names an E2 seed, its new orders' seeds, an E2
+    cell or pod 3's archive; every seed named is a top-up seed, every run fetched pod 2's."""
+    plan = topup(where)
+    numbers = "|".join(str(s + offset) for s in E2_SEEDS for offset in (0, 1000, 2000))
+    e2 = re.compile(rf"(?<!\d)(?:{numbers})(?!\d)")
+    texts = [x for s in steps(plan) for x in (s.name, *s.argv, *s.outputs, *s.kept_if_runs)]
+    texts += [*plan.campaigns, *plan.campaigns.values()]
+    assert [t for t in texts if e2.search(t)] == []
+    assert [t for t in texts if "pod3" in t] == []
+    argv = [s.argv for s in steps(plan)]
+    seeds = {int(a.split("=", 1)[1]) for args in argv for a in args if a.startswith("seed=")}
+    seeds |= {int(args[args.index("--seeds") + 1]) for args in argv if "--seeds" in args}
+    assert seeds == set(camp.TOPUP_SEEDS)
+    fetched = {args[args.index("--run-id") + 1] for args in argv if "fetch-run" in args}
+    assert fetched == {camp.POD2_ORDER_RUN, *(camp.POD2_FRESH_L[s] for s in camp.TOPUP_SEEDS)}
+    assert all(args[args.index("--prefix") + 1] == camp.POD2_RUNS for args in argv
+               if "fetch-run" in args)  # fmt: skip
+    streams = [args for args in argv if "fetch-streams" in args]
+    assert sorted(int(a[a.index("--seeds") + 1]) for a in streams) == sorted(camp.TOPUP_SEEDS)
+
+
+def test_topup_engineering_check_reads_pod4s_completed_rerun(where, tmp_path, monkeypatch):
+    """The engineering check as on pod 4, under the numerical rule: pod 2's order control of
+    50000 at η_l, the same cell. On pod 4's volume the launcher reuses pod 4's completed rerun of
+    that config and journals nothing in the top-up's campaign, so the check names that rerun
+    through pod 4's engineering campaign, and pod 4's diagnostic rerun beside it when present."""
+    from zero_field_refusal import launch
+
+    plan = topup(where)
+    eng = steps(plan, "engineering")
+    assert all(s.on_fail == "stop" for s in eng)
+    launch_step = next(s for s in eng if s.kind == "launch")
+    name = Path(launch_step.argv[launch_step.argv.index("--campaign-file") + 1]).stem
+    assert name == f"study5-{TOPUP_ID}-engineering"
+    (rerun,) = campaign_runs(plan, tmp_path, name)
+    four = pod4(where)
+    (theirs,) = campaign_runs(four, tmp_path, "study5-pod4-20261112-engineering")
+    assert (rerun.label, rerun.config_hash) == (theirs.label, theirs.config_hash)
+    assert camp.POD2_ORDER_RUN.split("-")[-2] == rerun.config_hash[:8]
+    (check,) = [s for s in eng if s.gate == "engineering"]
+    assert check.argv[check.argv.index("--tolerance") + 1] == str(camp.EXT2_TOLERANCE["relative"])
+    assert str(where["out"] / "fetched" / "study5" / camp.POD2_ORDER_RUN) in check.argv
+    pod4_eng = f"study5-{camp.POD4_ARCHIVE_ID}-engineering"
+    reruns = check.argv[check.argv.index("--rerun") + 1 : check.argv.index("--out")]
+    assert list(reruns) == [f"{{run:{rerun.label}@{pod4_eng}}}"]
+    assert check.outputs[0].endswith(f"study5_records/{TOPUP_ID}/engineering-check-numerical.json")
+    # pod 4's volume: its rerun completed under its own engineering campaign
+    runs = where["runs"]
+    done = runs / rerun.experiment / f"20261111T000000Z-x-{rerun.config_hash[:8]}-a1"
+    done.mkdir(parents=True)
+    (done / "meta.json").write_text(json.dumps({"config_hash": rerun.config_hash,
+                                                "status": "completed"}))  # fmt: skip
+    journal_of(runs, pod4_eng, [
+        {"event": "start", "run": rerun.label, "run_id": done.name, "attempt": 1,
+         "experiment": rerun.experiment, "config_hash": rerun.config_hash},
+        {"event": "end", "run": rerun.label, "run_id": done.name, "attempt": 1,
+         "outcome": "done"}])  # fmt: skip
+    monkeypatch.setattr(launch, "_disqualification", lambda run, run_dir, meta: None)
+
+    def never(*args):
+        raise AssertionError("the completed rerun is not run again")
+
+    result = launch.run_campaign(name, [rerun], runs, execute=never)
+    assert result["skipped"] == [rerun.label]
+    assert not (runs / "launch" / f"{name}.jsonl").exists()  # nothing journaled here
+    assert camp.substituted(list(reruns), runs, name) == [str(done)]
+    with pytest.raises(camp.StepError):  # the top-up's own campaign has no end of it
+        camp.substituted([f"{{run:{rerun.label}}}"], runs, name)
+    diag = runs / camp.POD4_DIAG / camp.POD4_DIAG_RERUN
+    diag.mkdir(parents=True)
+    (check,) = [s for s in steps(topup(where), "engineering") if s.gate == "engineering"]
+    reruns = check.argv[check.argv.index("--rerun") + 1 : check.argv.index("--out")]
+    assert list(reruns) == [f"{{run:{rerun.label}@{pod4_eng}}}", str(diag)]
+
+
+def test_topup_fetches_only_what_is_missing(where, tmp_path, bucket):
+    """The top-up's fetch steps on pod 4's volume: a stream already in DATA_DIR is checked by its
+    sha256 and kept, a missing one fetched; a run already fetched is kept by its output."""
+    plan = topup(where)
+    seed = 50016
+    (step,) = [s for s in steps(plan, "fetch") if s.name == f"fetch/s{seed}/streams"]
+    data, rows = where["data"], []
+    for rel, body in ((f"teacher/M/training/h/seed-{seed}/chunk-00000/samples.jsonl", b"t"),
+                      (f"teacher/M/preconditioner/g/seed-{seed}/samples.jsonl", b"p")):  # fmt: skip
+        (bucket / "data" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (bucket / "data" / rel).write_bytes(body)
+        rows.append(
+            f"{rel}\t1\t{hashlib.sha256(body).hexdigest()}\tx\tgs://bkt/proj/data/{rel}\tok\n"
+        )
+    inventory = bucket / camp.POD2_STREAMS.format(seed=seed)
+    inventory.parent.mkdir(parents=True)
+    inventory.write_text("path\tsize\tsha256\tmd5_b64\turl\tstatus\n" + "".join(rows))
+    present = data / rows[0].split("\t")[0]  # fetched by pod 4
+    present.parent.mkdir(parents=True)
+    present.write_bytes(b"t")
+    assert camp.main(list(step.argv[1:])) == 0
+    assert (data / rows[1].split("\t")[0]).read_bytes() == b"p"
+    assert camp.main(list(step.argv[1:])) == 0  # both kept now
+    present.write_bytes(b"other")
+    assert camp.main(list(step.argv[1:])) == 1  # never replaced
+    (run,) = [s for s in steps(plan, "fetch") if s.name == f"fetch/s{seed}/f-run"]
+    assert run.on_fail == "stop" and run.outputs == (
+        str(where["out"] / "fetched" / "study5" / camp.POD2_FRESH_L[seed] / "meta.json"),
+    )
+
+
+def _pod4_volume(tmp_path):
+    """Pod 4's runs root after its campaign, with the top-up's plan on it."""
+    runs = tmp_path / "runs"
+    where = {"out": runs / "campaigns" / "study5-topup", "runs": runs, "data": tmp_path / "data",
+             "checkpoints": Path("/workspace/ckpt/study5-pod4")}  # fmt: skip
+    plan = topup(where)
+    own = camp.POD4_ARCHIVE_ID
+    _meta(runs, "study5/20261111T000000Z-s5-fresh-1.3e-05-s50000-s50000-f3e969f1-a1", own)
+    _meta(runs, "study5_floor/20261111T000000Z-s5-floor-1.3e-05-s50000-s50000-f3e969f1-a1", own)
+    (runs / "study5_records" / own).mkdir(parents=True)
+    (runs / "launch").mkdir()
+    (runs / "launch" / f"study5-{own}-engineering.jsonl").write_text("")
+    (runs / "launch" / f"study5-{own}-replays-g50000").mkdir()
+    (runs / "study5_vector" / f"s5-{own}-mean").mkdir(parents=True)
+    for folder in ("study5-pod4", "study5-pod4-r2"):  # pod 4's attempts
+        (runs / "campaigns" / folder).mkdir(parents=True)
+        (runs / "campaigns" / folder / "plan.json").write_text(
+            json.dumps({"pod": "pod4", "archive_id": own}))  # fmt: skip
+    (runs / camp.POD4_DIAG / "study5").mkdir(parents=True)
+    # the top-up's own, as at a restart
+    _meta(runs, "study5/20261113T000000Z-s5-order1-1.3e-05-s50016-s50016-aaaaaaaa-a1", TOPUP_ID)
+    (runs / "study5_records" / TOPUP_ID).mkdir()
+    (runs / "launch" / f"study5-{TOPUP_ID}-orders-s50016.jsonl").write_text("")
+    plan.out.mkdir(parents=True)
+    return plan, runs
+
+
+@pytest.mark.parametrize("entry", [
+    "pod3-journal", "pod3-records", "pod3-order-run", "other-pod4-records", "pod3-campaign-folder",
+    "other-vector-run", "run-without-meta",
+])  # fmt: skip
+def test_topup_needs_pod4s_root_holding_only_pod4s_archive_and_its_own(tmp_path, entry):
+    """The top-up writes into pod 4's runs root, which may hold pod 4's archive and the top-up's
+    own and nothing else: pod 3's E2 journals, records or runs, another pod 4 id, another
+    campaign folder or a run without a readable meta.json are refused before anything is
+    written."""
+    plan, runs = _pod4_volume(tmp_path)
+    assert camp.own_root_problems(plan) == []
+    {
+        "pod3-journal": lambda: (
+            runs / "launch" / "study5-pod3-20261111-orders-s50006.jsonl").write_text(""),
+        "pod3-records": lambda: (runs / "study5_records" / "pod3-20261111").mkdir(),
+        "pod3-order-run": lambda: _meta(
+            runs, "study5/20261111T000000Z-s5-order1-1.3e-05-s50006-s50006-bbbbbbbb-a1",
+            "pod3-20261111"),
+        "other-pod4-records": lambda: (runs / "study5_records" / "pod4-20261112").mkdir(),
+        "pod3-campaign-folder": lambda: (runs / "campaigns" / "study5-pod3").mkdir(),
+        "other-vector-run": lambda: (runs / "study5_vector" / "s5-pod4-20261112-mean").mkdir(),
+        "run-without-meta": lambda: (runs / "study5" / "20261113T000000Z-s5-order2").mkdir(),
+    }[entry]()  # fmt: skip
+    (found,) = camp.own_root_problems(plan)
+    assert f"is not topup's own or {camp.POD4_ARCHIVE_ID}'s" in found
+
+
+def test_topup_needs_an_archive_id_of_its_own_and_pod4_refuses_the_topups(where):
+    for archive_id in (camp.POD4_ARCHIVE_ID, "pod3-20261111", "t5"):
+        (found,) = camp.own_root_problems(topup(where, archive_id))
+        assert "topup's archive id starts with 'topup-'" in found
+    assert camp.own_root_problems(topup(where)) == []
+    (found,) = camp.own_root_problems(camp.pod4_plan(archive_id="topup-20261113", commit=COMMIT,
+                                                     gpu_code=GPU, **where))  # fmt: skip
+    assert "pod4's archive id starts with 'pod4-'" in found
+    plan = pod4(where)
+    (where["runs"] / "study5_records" / TOPUP_ID).mkdir(parents=True)
+    (found,) = camp.own_root_problems(plan)
+    assert "is not pod4's own" in found
+
+
+def test_topup_needs_pod4s_gpu_code_and_both_extensions(where, monkeypatch):
+    plan = topup(where)
+    problems = camp.preflight(plan)
+    assert any("study5-extension-2-code-identity.json" in p for p in problems)
+    plan.gpu_code = json.loads((REPO_ROOT / camp.EXT2_IDENTITY).read_text())["gpu_code_sha256"]
+    problems = camp.preflight(plan)
+    assert not any("GPU code" in p or "does not hold" in p for p in problems)
+    monkeypatch.setattr(camp, "EXTENSION_HEADING", "### Extension 9")
+    assert any("does not hold extension 1" in p for p in camp.preflight(plan))
+    monkeypatch.setattr(camp, "EXT2_HEADING", "### Extension 10")
+    assert any("does not hold extension 2" in p for p in camp.preflight(plan))
+
+
+def test_topup_admits_each_group_by_its_minutes_and_the_dry_run_prints_its_hours(
+    where, tmp_path, capsys, monkeypatch
+):
+    """Minutes from the unit costs the code holds (an F run 6.9, a q-only replay 4.5, a settle or
+    purge 0.5, an archive 1.0); each block and seed group admitted only when 1.5 × its minutes
+    and the close's 10 fit before the cap; the dry run prints the hours, planned and × 1.5, and
+    writes nothing."""
+    plan = topup(where)
+    for block, seed, work in (("predictions", 50016, 2 * (4.5 + 0.5 + 0.5) + 1.0),
+                              ("orders", 50016, 4 * 6.9 + 1.0)):  # fmt: skip
+        group = [s for s in steps(plan, block) if s.group == f"s{seed}"]
+        assert group[0].kind == "deadline" and group[0].on_fail == "stop"
+        assert sum(s.minutes for s in group[1:]) == pytest.approx(work)
+        admit = int(group[0].argv[group[0].argv.index("--admit") + 1])
+        assert admit == math.ceil(1.5 * work + 10)
+        assert minutes_of(group[0]) == camp.deadline_minutes(work)
+    deadlines = [s for b in plan.blocks if b.name != "close" for s in b.steps
+                 if s.kind == "deadline"]  # fmt: skip
+    assert all("--admit" in s.argv and "--reserve" not in s.argv for s in deadlines)
+    minutes = camp.planned_minutes(plan)
+    assert minutes["predictions"] == pytest.approx(30 * 12.0 + 1.5)
+    assert minutes["orders"] == pytest.approx(30 * 28.6 + 1.5)
+    total = sum(minutes.values())
+    monkeypatch.setenv("RUNS_DIR", str(tmp_path / "runs"))
+    out = tmp_path / "c"
+    assert camp.main(["topup", "--out", str(out), "--archive-id", TOPUP_ID, "--checkpoints",
+                      "/workspace/ckpt/study5-pod4", "--dry-run"]) == 0  # fmt: skip
+    printed = capsys.readouterr().out
+    assert f"planned {total / 60:.2f} h, x1.5 {1.5 * total / 60:.2f} h" in printed
+    assert "block predictions: 243 steps, 361.5 min" in printed
+    assert not out.exists() and not (tmp_path / "runs").exists()
+
+
+def test_topup_preflight_refuses_a_short_cap_a_lost_prediction_and_a_missing_pod4_rerun(
+    where, tmp_path, monkeypatch
+):
+    """Before anything runs, the top-up refuses: a cap ZFR_DEADLINE_EPOCH not set or under 33 h
+    away (1.5 × the planned minutes and the close fit in 33 h); a prediction settled under
+    sealed/ whose vector folder's record.json is gone, which would be computed again; pod 4's
+    engineering rerun, which the check names, without its completed run in pod 4's journal."""
+    plan = topup({**where, "checkpoints": tmp_path / "ckpt"})
+    runs, now = where["runs"], 1_800_000_000
+    pod4_eng = f"study5-{camp.POD4_ARCHIVE_ID}-engineering"
+    label = "s5-order-1.3e-05-s50000/s50000"
+    start = {"event": "start", "run": label, "run_id": "r-a1", "experiment": "study5"}
+    done = {"event": "end", "run": label, "run_id": "r-a1", "outcome": "done"}
+    (runs / "study5" / "r-a1").mkdir(parents=True)
+    journal_of(runs, pod4_eng, [start, done])
+    monkeypatch.setenv("ZFR_DEADLINE_EPOCH", str(now + 33 * 3600))
+    assert camp.topup_problems(plan, now) == []
+    # the cap
+    need = camp.ADMIT_FACTOR * sum(camp.planned_minutes(plan).values()) + camp.CLOSE_BUDGET
+    assert need <= 60 * camp.TOPUP_CAP_HOURS == 60 * 33
+    monkeypatch.setenv("ZFR_DEADLINE_EPOCH", str(now + 33 * 3600 - 60))
+    (found,) = camp.topup_problems(plan, now)
+    assert "is 32.98 h away, under the 33 h the top-up needs" in found
+    monkeypatch.setenv("ZFR_DEADLINE_EPOCH", str(int(time.time()) + 32 * 3600))
+    assert any("under the 33 h" in p for p in camp.preflight(plan))
+    monkeypatch.delenv("ZFR_DEADLINE_EPOCH")
+    (found,) = camp.topup_problems(plan, now)
+    assert "ZFR_DEADLINE_EPOCH is not set" in found
+    monkeypatch.setenv("ZFR_DEADLINE_EPOCH", str(now + 34 * 3600))
+    # a settled prediction whose vector folder lost its record
+    settle = next(
+        s for s in steps(plan, "predictions") if s.name == "predictions/s50016/order1-settle"
+    )
+    folder = Path(settle.argv[settle.argv.index("--dir") + 1])
+    target = Path(settle.argv[settle.argv.index("--records") + 1])
+    target.mkdir(parents=True)
+    (target / "record.json").write_text("{}")
+    (found,) = camp.topup_problems(plan, now)
+    assert "1 predictions are settled" in found and "s50016-order1" in found
+    folder.mkdir(parents=True)
+    (folder / "record.json").write_text("{}")  # as the replay left it: kept, never recomputed
+    assert camp.topup_problems(plan, now) == []
+    (target / "record.json").unlink()  # written but not settled yet: settle copies it
+    assert camp.topup_problems(plan, now) == []
+    # pod 4's rerun: not ended, not completed, its directory gone, its journal gone
+    for lines, gone in (([start], False), ([start, {**done, "outcome": "technical"}], False),
+                        ([start, done], True)):  # fmt: skip
+        journal_of(runs, pod4_eng, lines)
+        if gone:
+            (runs / "study5" / "r-a1").rmdir()
+        (found,) = camp.topup_problems(plan, now)
+        assert found.startswith("the run a step names is not there") and pod4_eng in found
+    (runs / "launch" / f"{pod4_eng}.jsonl").unlink()
+    (found,) = camp.topup_problems(plan, now)
+    assert "has no completed run (no end)" in found
