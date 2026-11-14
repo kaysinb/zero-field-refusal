@@ -19,6 +19,7 @@ authoritative copies.
 | [docs/study3-preregistration.md](study3-preregistration.md) | Study 3 question, comparisons, candidates, numerical qualification, analysis and failure routes (registered) |
 | [docs/study5-preregistration.md](study5-preregistration.md) | Study 5 question, surrogate, first-order predictor, confirmatory test on fresh seeds and descriptive measurements (draft) |
 | [docs/study5-related-work.md](study5-related-work.md) | Study 5 related work, prior predictors of safety loss from fine-tuning data, seed variance, and what in study 5 is not new |
+| [docs/study5-e2-note.md](study5-e2-note.md) | Study 5's prospective test on extension 1's order repeats (E2), fixed before any E2 outcome is read |
 | [docs/study2-pilot-momentum.md](study2-pilot-momentum.md) | Proposed preregistration of study 2's SGD-momentum pilot, for the barrier branch |
 | [docs/study2-stage-a-analysis.md](study2-stage-a-analysis.md) | Study 2 Stage A's K-only analyses and recorded predictions, outside the selection rule |
 | [docs/study2-fa-control-diagnostic.md](study2-fa-control-diagnostic.md) | Frozen specification of the outcome-blind diagnostic of the FA soft-control failure |

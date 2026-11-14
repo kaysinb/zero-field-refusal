@@ -17,6 +17,8 @@ documents:
   purpose: Study 5 question, surrogate, first-order predictor, confirmatory test on fresh seeds and descriptive measurements (draft)
 - path: docs/study5-related-work.md
   purpose: Study 5 related work, prior predictors of safety loss from fine-tuning data, seed variance, and what in study 5 is not new
+- path: docs/study5-e2-note.md
+  purpose: Study 5's prospective test on extension 1's order repeats (E2), fixed before any E2 outcome is read
 - path: docs/study2-pilot-momentum.md
   purpose: Proposed preregistration of study 2's SGD-momentum pilot, for the barrier branch
 - path: docs/study2-stage-a-analysis.md
