@@ -49,6 +49,15 @@ the training loss over the trainable set of ``models.freeze``).
   gradient against the production pass, the central difference at the probe's steps h with the
   rounded shift θ₀ ± hv actually set, and the gradient over the full step against the product.
   No r, q or K.
+- ``--gradient-backend math`` (extension 2's fifth amendment; default ``default``): every
+  production gradient pass of the replay (g_t(θ₀), the central differences) runs under the math
+  attention kernel, as the exact product does; with ``--hvp exact`` the replay's sensitivity to
+  the attention kernel. The record names the backend (``gradient_backend``).
+- ``--kernel-diagnostic FILE`` writes the attention kernel's diagnostic instead of a replay
+  (``kernel_diagnostic``): at θ₀, at the steps of ``--probe-steps``, the production gradient under
+  the math kernel against the production gradient under the default kernel selection (a), and
+  the exact product's gradient against the production gradient under the math kernel (b), plain
+  and in D's weights, every path at the production micro-batch. No r, q or K.
 
 The points θ₀ ± εδ are set over the trainable set (``evaluation.set_point``) from a host copy of
 θ₀, and θ₀ is copied back exactly before every pass at θ₀ and at the end: the record holds the
@@ -134,6 +143,8 @@ PROBE_KIND = "study5-dlin-probe"
 PROBE_STEPS = (2, 5)
 PROBE_H = (1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4)
 PROBE_RESIDUAL_H = (1e-2, 1e-3, 1e-4)  # where H is also applied to the shift's rounding residual
+GRADIENT_BACKENDS = ("default", "math")  # the production pass's attention kernels
+KERNEL_KIND = "study5-dlin-kernel-diagnostic"
 
 Named = Mapping[str, torch.Tensor]
 Trainable = Sequence[tuple[str, torch.nn.Parameter]]
@@ -163,6 +174,22 @@ def _pass(trainable: Trainable, gradient: Gradient, batch: Any) -> float:
     gradient."""
     _clear(trainable)
     return float(gradient(batch))
+
+
+def production_gradient(model: torch.nn.Module, cfg, env, backend: str = "default") -> Gradient:
+    """The production gradient pass (``train.accumulate_gradient``): under the attention
+    kernels' default selection, or (``backend`` "math") under the math kernel only, the kernel
+    of ``exact_hvp``."""
+    if backend not in GRADIENT_BACKENDS:
+        raise ValueError(f"gradient backend {backend!r}: one of {GRADIENT_BACKENDS}")
+
+    def gradient(batch) -> float:
+        if backend == "math":
+            with sdpa_kernel(SDPBackend.MATH):
+                return accumulate_gradient(model, batch, cfg, env)["loss"]
+        return accumulate_gradient(model, batch, cfg, env)["loss"]
+
+    return gradient
 
 
 def _product(
@@ -794,6 +821,103 @@ def probe(
     }  # fmt: skip
 
 
+def kernel_diagnostic(
+    cfg,
+    env,
+    numerics: dict,
+    *,
+    steps: Sequence[int] = PROBE_STEPS,
+    reference: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The attention kernel's share in the probe's gradient requirement (extension 2's fifth
+    amendment): at θ₀, on batch t of each step, every path at the production micro-batch, with the
+    same parameters, batch and order of accumulation —
+
+    - (a) ``kernel``: the production gradient under the math kernel against the production
+      gradient under the default kernel selection;
+    - (b) ``implementation``: the exact product's gradient (``exact_hvp``'s g, math kernel)
+      against the production gradient under the math kernel;
+    - ``probe_requirement``: the exact product's gradient against the production gradient under
+      the default selection (the probe's comparison);
+
+    each plain (‖a − b‖/‖b‖) and in D's weights, with the losses and the repeat of the
+    math-kernel production pass (bit equality). Numbers only; no r, q or K. θ₀ is checked
+    unchanged on return."""
+    started = time.perf_counter()
+    device = torch.device(env.device)
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+    s = _setup(cfg, env, reference)
+    batches, model, trainable, names = s["batches"], s["model"], s["trainable"], s["names"]
+    theta0, D = s["theta0"], s["D"]
+    micro = int(cfg.execution.micro_batch_size)
+    steps = sorted(set(int(t) for t in steps))
+    bad = [t for t in steps if not 1 <= t <= len(batches)]
+    if bad:
+        raise ValueError(f"diagnostic steps {bad}: each must lie in 1 … {len(batches)}")
+    default = production_gradient(model, cfg, env, "default")
+    math_kernel = production_gradient(model, cfg, env, "math")
+    zeros = [torch.zeros_like(theta0[name]) for name in names]  # the product itself is not used
+
+    def pair(a: Named, b: Named) -> dict[str, float | None]:
+        return {"relative": _relative(a, b), "relative_d": _relative_d(a, b, D)}
+
+    entries = []
+    for t in steps:
+        batch = batches[t - 1]
+        loss_default = _pass(trainable, default, batch)
+        g_default = _grad_copy(trainable)
+        loss_math = _pass(trainable, math_kernel, batch)
+        g_math = _grad_copy(trainable)
+        loss_math_b = _pass(trainable, math_kernel, batch)
+        g_math_b = _grad_copy(trainable)
+        math_equal = all(torch.equal(g_math[n], g_math_b[n]) for n in names)
+        del g_math_b
+        g_new = {name: torch.zeros_like(theta0[name]) for name in names}
+        out = {name: torch.empty_like(theta0[name]) for name in names}
+        loss_new = exact_hvp(model, trainable, batch, cfg, env, zeros, out,
+                             micro_batch_size=micro, gradient_out=g_new)  # fmt: skip
+        del out
+        entries.append({
+            "step": t,
+            "kernel": pair(g_math, g_default),
+            "implementation": pair(g_new, g_math),
+            "probe_requirement": pair(g_new, g_default),
+            "math_repeat_equal": math_equal,
+            "losses": {"default": _number(loss_default), "math": _number(loss_math),
+                       "math_repeat": _number(loss_math_b), "new": _number(loss_new)},
+        })  # fmt: skip
+        del g_default, g_math, g_new
+    restored = tensors_sha256(trainable)
+    if restored != s["theta0_sha"]:
+        raise ValueError(f"θ₀ changed in the diagnostic: {restored} against {s['theta0_sha']}")
+    order = s["order"]
+    return {
+        "kind": KERNEL_KIND,
+        "point": "theta0",
+        "steps": steps,
+        "order": "stream" if order is None else order_record(cfg, order),
+        "backends": {"default": "the default selection", "math": "math"},
+        "micro_batch_size": micro,
+        "entries": entries,
+        "theta0_trainable_sha256": s["theta0_sha"],
+        "restored_trainable_sha256": restored,
+        "v0_sha256": s["v0_sha"],
+        "streams": {"training": s["training"], "preconditioner": s["preconditioner"]},
+        "seed": int(cfg.seed),
+        "config_hash": config_hash(cfg),
+        "optimizer": cfg.optimizer.name,
+        "model": {"name": cfg.model.name, "revision": cfg.model.revision,
+                  "dtype": cfg.model.dtype, "attn_implementation": cfg.model.attn_implementation},
+        "numerics": numerics,
+        "device": device_name(device),
+        "git": git_state(),
+        "memory": _memory(device),
+        "seconds": time.perf_counter() - started,
+        "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+    }  # fmt: skip
+
+
 def run(
     cfg,
     env,
@@ -808,11 +932,14 @@ def run(
     hvp_mode: str = "central",
     hvp_micro_batch_size: int | None = None,
     r_readouts: bool = True,
+    gradient_backend: str = "default",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """The replay of ``cfg``'s seed and order in ``env``: (record, vectors), vectors holding
     ``names``, ``provenance``, ``delta_hat`` and ``delta_lin`` (None when diverged)."""
     if hvp_mode not in HVP_MODES:
         raise ValueError(f"hvp mode {hvp_mode!r}: one of {HVP_MODES}")
+    if gradient_backend not in GRADIENT_BACKENDS:
+        raise ValueError(f"gradient backend {gradient_backend!r}: one of {GRADIENT_BACKENDS}")
     exact = hvp_mode == "exact"
     started = time.perf_counter()
     device = torch.device(env.device)
@@ -831,8 +958,7 @@ def run(
     limit = None if not reference else DIVERGENCE_FACTOR * float(reference["norm"])
     began = time.perf_counter()
     result = replay(
-        trainable, theta0, D, batches,
-        lambda batch: accumulate_gradient(model, batch, cfg, env)["loss"],
+        trainable, theta0, D, batches, production_gradient(model, cfg, env, gradient_backend),
         lr=lr, beta1=beta1, epsilon=epsilon, check_steps=check_steps, limit=limit,
         hvp=(lambda batch, direction, out: exact_hvp(
             model, trainable, batch, cfg, env, direction, out, micro_batch_size=hvp_micro))
@@ -926,6 +1052,7 @@ def run(
                                          "previous_norm": None})},
         "hvp": {"mode": hvp_mode, "backend": "math" if exact else None,
                 "micro_batch_size": hvp_micro},
+        "gradient_backend": gradient_backend,
         "r_readouts": r_readouts,
         "r": None if not r_readouts else {
             "theta0": _number(r0), "delta_hat": _number(r_hat),
@@ -957,7 +1084,9 @@ def run(
                   "eps": eps, "epsilon": epsilon, "order": order_rec,
                   "config_hash": common["config_hash"],
                   "streams": record["streams"], "v0_sha256": v0_sha,
-                  **({"hvp": "exact"} if exact else {})}  # fmt: skip
+                  **({"hvp": "exact"} if exact else {}),
+                  **({"gradient_backend": "math"} if gradient_backend == "math"
+                     else {})}  # fmt: skip
     return record, {"names": names, "provenance": provenance, "delta_hat": delta_hat,
                     "delta_lin": delta_lin}  # fmt: skip
 
@@ -1046,7 +1175,8 @@ def report(record: dict) -> None:
         div = record["divergence"]
         print(f"delta_lin {div['status']} step {div['step']} reason {div['reason']} "
               f"norm {_fmt(div['norm'])}")  # fmt: skip
-        print(f"hvp {record['hvp']['mode']} r_readouts {record['r_readouts']}")
+        print(f"hvp {record['hvp']['mode']} r_readouts {record['r_readouts']} "
+              f"gradient_backend {record.get('gradient_backend')}")  # fmt: skip
         if record["r"] is not None:
             print(f"q_hat {_fmt(record['q_hat'])} q_lin {_fmt(record['q_lin'])} "
                   f"r_theta0 {_fmt(record['r']['theta0'])}")  # fmt: skip
@@ -1106,8 +1236,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--probe")
     parser.add_argument("--probe-steps", type=int, nargs="+", default=list(PROBE_STEPS))
     parser.add_argument("--direction-seed", type=int, default=0)
+    # the production gradient pass under the math attention kernel (a replay's sensitivity)
+    parser.add_argument("--gradient-backend", choices=GRADIENT_BACKENDS, default="default")
+    # the attention kernel's diagnostic: its record at --out-dir/<FILE>, no replay
+    parser.add_argument("--kernel-diagnostic")
     args = parser.parse_args(argv)
-    if args.probe is not None:
+    if args.kernel_diagnostic is not None and (args.probe is not None or args.grad_r_only):
+        print("ValueError: --kernel-diagnostic goes alone: no --probe, no --grad-r-only")
+        return 1
+    if args.gradient_backend != "default" and (
+        args.probe is not None or args.kernel_diagnostic is not None or args.grad_r_only
+    ):
+        print("ValueError: --gradient-backend applies to a replay only")
+        return 1
+    if args.kernel_diagnostic is not None:
+        files = [args.kernel_diagnostic]
+    elif args.probe is not None:
         files = [args.probe]
     else:
         files = [RECORD, *([FILES["grad_r"]] if args.grad_r_only
@@ -1125,7 +1269,7 @@ def main(argv: list[str] | None = None) -> int:
         linear_response.require_frozen_adam(cfg)
         check_steps, ref = [], None
         if not args.grad_r_only:
-            if args.probe is None:  # the probe takes no check steps and no ε
+            if args.probe is None and args.kernel_diagnostic is None:  # no check steps or ε
                 check_steps = check_steps_of(args.check_steps, int(cfg.train.steps))
             if not (math.isfinite(args.epsilon) and args.epsilon > 0):
                 raise ValueError(f"--epsilon {args.epsilon!r}: a finite positive step is needed")
@@ -1137,6 +1281,15 @@ def main(argv: list[str] | None = None) -> int:
     spec = surrogate.load_spec(args.surrogate)
     env = environment(cfg, cfg.execution.device)
     try:
+        if args.kernel_diagnostic is not None:
+            found = kernel_diagnostic(cfg, env, numerics, steps=args.probe_steps, reference=ref)
+            write_new(args.out_dir / args.kernel_diagnostic, found)
+            for e in found["entries"]:
+                print(f"step {e['step']} " + " ".join(
+                    f"{k} {_fmt(e[k]['relative'])}/{_fmt(e[k]['relative_d'])}"
+                    for k in ("kernel", "implementation", "probe_requirement"))
+                    + f" math_repeat_equal {e['math_repeat_equal']}")  # fmt: skip
+            return 0
         if args.probe is not None:
             found = probe(cfg, env, numerics, steps=args.probe_steps,
                           direction_seed=args.direction_seed,
@@ -1156,7 +1309,8 @@ def main(argv: list[str] | None = None) -> int:
                                panel_size=args.panel_size, k_readouts=not args.no_k,
                                hvp_mode=args.hvp,
                                hvp_micro_batch_size=args.hvp_micro_batch_size,
-                               r_readouts=not args.no_r)  # fmt: skip
+                               r_readouts=not args.no_r,
+                               gradient_backend=args.gradient_backend)  # fmt: skip
         write(args.out_dir, record, vecs)
     except (ValueError, OSError) as exc:
         print(f"{type(exc).__name__}: {exc}")

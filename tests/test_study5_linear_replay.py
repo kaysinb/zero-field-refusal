@@ -789,3 +789,64 @@ def test_script_exact_end_to_end(env, tmp_path, monkeypatch, capsys) -> None:  #
         )
         == 1
     )  # never overwritten
+
+
+def test_script_kernel_diagnostic_and_math_gradient_backend(
+    env,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """``--kernel-diagnostic``: the kernel's and the implementation's comparisons at θ₀, numbers
+    only, θ₀ unchanged; ``--gradient-backend math`` with ``--hvp exact``: the record and the
+    vector provenance name the backend, δ_lin near the default backend's; the flags alone."""
+    torch.set_num_threads(1)
+    overrides = [*F_RUN, "+study5.role=fresh"]
+    cfg = ready(env, scheduled(tmp_path, *overrides, policy="short"))
+    f_dir = run_scheduled(cfg, env, run_id="f-fresh")
+    spec_path = tmp_path / "surrogate.yaml"
+    spec_path.write_text(SPEC_YAML)
+    monkeypatch.setattr(REPLAY, "environment", lambda cfg, device: env)
+    config = [str(tmp_path / "study2.yaml"), *SMALL, *APPENDABLE, "teacher.chunk_size=12"]
+    common = ["--surrogate", str(spec_path), "--panel-size", "3", "--reference-run", str(f_dir)]
+
+    kd = ["--out-dir", str(tmp_path / "kd"), "--kernel-diagnostic", "kd.json"]
+    assert REPLAY.main([*config, *overrides, *kd, "--probe-steps", "2", "3", *common]) == 0
+    found = json.loads((tmp_path / "kd" / "kd.json").read_text())
+    assert found["kind"] == "study5-dlin-kernel-diagnostic" and found["steps"] == [2, 3]
+    assert found["restored_trainable_sha256"] == found["theta0_trainable_sha256"]
+    assert found["micro_batch_size"] == cfg.execution.micro_batch_size
+    assert not {"r", "q_hat", "q_lin", "K"} & set(found)
+    for e in found["entries"]:
+        for key in ("kernel", "implementation", "probe_requirement"):
+            assert set(e[key]) == {"relative", "relative_d"}
+            assert e[key]["relative"] is not None and e[key]["relative_d"] is not None
+        assert e["implementation"]["relative"] < 1e-6 and e["implementation"]["relative_d"] < 1e-6
+        assert e["math_repeat_equal"] is True
+        assert abs(e["losses"]["new"] - e["losses"]["math"]) < 1e-6
+    assert "kernel" in capsys.readouterr().out
+    assert REPLAY.main([*config, *overrides, *kd, *common]) == 1  # never overwritten
+
+    exact, math_dir = tmp_path / "exact", tmp_path / "math"
+    base = ["--check-steps", "2", "3", "--no-k", "--no-r", "--hvp", "exact", *common]
+    assert REPLAY.main([*config, *overrides, "--out-dir", str(exact), *base]) == 0
+    assert REPLAY.main([*config, *overrides, "--out-dir", str(math_dir), *base,
+                        "--gradient-backend", "math"]) == 0  # fmt: skip
+    a = json.loads((exact / "record.json").read_text())
+    b = json.loads((math_dir / "record.json").read_text())
+    assert a["gradient_backend"] == "default" and b["gradient_backend"] == "math"
+    assert b["divergence"]["status"] == "complete"
+    model = env.new_model()
+    trainable = freeze(model, cfg.train.freeze)
+    names = [name for name, _ in trainable]
+    sha = a["theta0_trainable_sha256"]
+    lin_a, rec_a = vectors.load_vector(exact / "delta_lin.pt", names, theta0_sha256=sha)
+    lin_b, rec_b = vectors.load_vector(math_dir / "delta_lin.pt", names, theta0_sha256=sha)
+    assert "gradient_backend" not in rec_a["provenance"]
+    assert rec_b["provenance"]["gradient_backend"] == "math"
+    assert relative(lin_b, lin_a) < 1e-4
+
+    # the flags alone
+    probe = ["--out-dir", str(tmp_path / "p"), "--probe", "p.json", *common]
+    assert REPLAY.main([*config, *overrides, *probe, "--gradient-backend", "math"]) == 1
+    assert REPLAY.main([*config, *overrides, *probe, "--kernel-diagnostic", "k.json"]) == 1
