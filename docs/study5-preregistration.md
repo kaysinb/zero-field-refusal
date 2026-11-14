@@ -833,3 +833,60 @@ computation of H_t δ changes, from the central difference to the exact product.
 **How it is applied.** `scripts/study5_linear_replay.py --hvp exact` runs the replay, and
 `--probe FILE` writes the probe's record. Corrected records go to folders of their own
 (`linear-exact/…`). Every record of pod 4 stays as it was written.
+
+### Extension 2 amendment 5 (2026-11-14): the attention kernel in the exact product's validation
+
+**Why.** Amendment 4's probe compared, at step 2 of seed 50000, the new path's gradient with the
+production pass: 4.4 × 10⁻⁵ plainly and 5.6 × 10⁻⁴ in D's weights. The tolerance is 10⁻⁴, so the
+requirement in D's weights is not met. The other measures at that point met theirs: the
+product's repeat and linearity were 0, its symmetry 5.0 × 10⁻⁵. The two paths differ in the
+attention kernel. The product runs under the math kernel, which supports double backward; the
+production pass uses the default kernel selection. The micro-batch (4), the parameters, the
+batch and the order of accumulation are the same. Whether the kernel accounts for the
+difference is not established.
+
+**The amendment.** Amendment 4's tolerances are unchanged. Its requirement in D's weights at step
+2 of seed 50000 stays recorded as not met, with the probe's other points as measured. The gradient
+requirement against the default pass, plainly and in D's weights, is recorded at every probe
+point; as a gate it is replaced by the two checks below. Its threshold is no longer an admission
+gate; every observed value is reported. The product's repeat, linearity and symmetry stay gates at
+every probe point, as amendment 4 states them. Two checks decide whether the exact recursion
+counts as validated:
+- **Implementation agreement.** At θ₀, at steps 2 and 5 of seeds 50000 and 50025, with the
+  production micro-batch: the new path's gradient against the production pass run under the math
+  kernel, within 10⁻⁴ both plainly and in D's weights, at every point. Reported beside it,
+  descriptively: the production pass under the math kernel against the default selection, plainly
+  and in D's weights.
+- **Kernel sensitivity.** On each probe seed, the exact recursion is run once more with every
+  production gradient pass under the math kernel: g_t(θ₀) and the check differences. The product
+  is amendment 4's; there is no r, q or K. Its bound outcome, whether ‖δ_lin,t‖ passes 10‖Δθ_i‖
+  within the 25 steps, agrees with that of the registered exact recursion (production pass,
+  math-kernel product) on the same seed, and on seed 50000 with each of its two runs.
+- **Reading.**
+  - If both checks hold and the product's repeat, linearity and symmetry meet amendment 4's
+    tolerances at every probe point, the exact recursion is validated. Amendment 4's stopping rule
+    then applies as written to the registered recursions.
+  - If either check is not met, the correction is paused for technical diagnosis; the corrected
+    criterion and the stopping rule are not evaluated, and the original record ("decided, failed")
+    remains recorded. A check that is not met does not by itself select E2's branch: E2's note
+    takes its prospective branch only on a validated corrected criterion that passes; if the note
+    is committed while the correction is unresolved, it takes the association branch and states
+    that the corrected criterion was not evaluated.
+  - If the product's repeat, linearity or symmetry is not met at a probe point, no order is
+    recomputed, as amendment 4 states.
+- **Not done.** No tolerance is changed. The registered recursion keeps the production pass; the
+  math-kernel recursion is a check only.
+
+**How the probe was run.** The probe's first attempt stopped at its 70-minute step limit at seed
+50000, step 2, before writing a record. The float64 comparisons on the CPU took most of the time,
+with the process's threads beyond the Pod's CPU quota. Step 2 of seed 50000 was then run alone
+with the same code (`--probe-steps 2`) and CPU threads limited to 12. The probe's other points and
+its three exact recursions ran the same way. The number of threads changes only the order of the
+float64 sums in the comparisons.
+
+**Disclosure.** This amendment was written after the value 5.6 × 10⁻⁴ was seen. It precedes the
+values of its two checks and the reading of any exact recursion on the real model.
+
+**How it is applied.** `scripts/study5_linear_replay.py --kernel-diagnostic FILE` writes the first
+check's record. `--gradient-backend math` with `--hvp exact --no-k --no-r` runs the math-kernel
+recursion. Both records are archived apart from the probe's, as `dlin-probe-20261115-kernel`.
