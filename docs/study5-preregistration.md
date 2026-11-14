@@ -734,3 +734,102 @@ continues on the acceptance. Groups g50000–g50012 are checked again on their e
 distance records. Every earlier record and verdict stays as it was written: `check-<group>.json`,
 `check-<group>-endpoint-0.001.json`, the failed checks of g50004 and g50012 among them. So does
 every original replay. The diagnostic repeats are kept in a runs root of their own (`study5_diag/s50015`).
+
+### Extension 2 amendment 4 (2026-11-14): the exact Hessian–vector product of δ_lin
+
+**Why.** In pod 4's campaign (archive `pod4-20261111`, code `490eada`), the registered δ_lin was
+computed with H_t δ as the central difference at ε = 10⁻². It passed the bound 10‖Δθ_i‖ on every
+order it was run on: the 40 own orders (between steps 5 and 17 of 25), the six control orders,
+the forty edited orders and E2's twenty new orders.
+- Its ε-checks did not converge. Step 5 was the only check step reached on 39 of the 40 seeds;
+  one seed also reached step 15. At step 5, the median relative difference from P_ε was 1.18 at
+  ε/2 and 0.58 at 2ε, larger at ε/2 on 36 of the 40 seeds: about 1/ε.
+- The parameters, the shifts θ₀ ± εδ and the subtraction were fp32. A repeat on seed 50000
+  matched to nine digits.
+- At step 2, where ε‖δ₁‖ ≈ 0.005, ‖P_ε‖/‖g_2(θ₀)‖ was between 1.2 and 16.9 on five seeds read.
+  The actual runs stayed near δ̂: after five steps their displacement was 1.25–1.55, δ̂'s 1.24–1.29.
+
+The analysis at commit `a129f47` (`ext2-analysis-A.json`, sha256 `b109cb3a…`) returned the
+criterion "decided, failed": no seed was left for its rank and scale parts, and no pair could
+agree. The cause is not established. Rounding or noise in the difference and a difference
+saturated by nonlinearity over the finite displacement both give P_h ∝ 1/h. The exact product
+with a frozen D can also make the recursion unstable. This amendment was written with that record
+known. It precedes any value of the exact product on the real model and any E2 outcome being read.
+The record at `a129f47` and pod 4's δ_lin records are kept and reported.
+
+**The amendment.** The target is unchanged: M2's recursion δ_lin, driven by
+g_t(θ₀) + H_t δ_{t−1}, with H_t the Hessian of batch t's training loss at θ₀. Only the
+computation of H_t δ changes, from the central difference to the exact product.
+- **Method.** Reverse over reverse, micro-batch by micro-batch: g = ∇L_m(θ₀) with its graph, and
+  H_t δ = Σ_m ∇(gᵀ · stopgrad δ). D is a constant. The loss, its masks and its batch-wide
+  denominator are the training pass's. Each micro-batch's graph is freed before the next.
+- **Backend and precision.** fp32, as in the registered replay: TF32 off, matmul precision
+  "highest". The product runs under PyTorch's math attention kernel, which supports double
+  backward. g_t(θ₀) keeps the production pass, so δ̂ is unchanged bit for bit. The product's
+  micro-batch size is recorded: the training's, or smaller if memory requires it.
+- **Validation on CPU.**
+  - On a quadratic loss with frozen Adam's momentum and bias correction, the exact recursion is
+    the run's trajectory. On an unstable quadratic it passes the bound at the central
+    difference's step.
+  - On a tiny transformer in fp64, with logits and norms in fp64, the central difference
+    converges to the exact product as h².
+  - Without feedback, δ_lin is δ̂ bit for bit.
+- **The derivative probe,** on the real model, before any order is recomputed.
+  - Seeds 50000 and 50025. They are chosen by their raw ‖P_ε‖/‖g‖ at step 2, the largest and the
+    smallest of the five seeds read, and by no q, K or outcome.
+  - Steps 2 and 5, and two directions at each: δ̂_{t−1}, and a random direction of its norm
+    (seed 0).
+  - Measured:
+    - the gradient's repeat;
+    - the exact product's repeat, linearity and symmetry;
+    - the new path's gradient against the production pass;
+    - the repeat, the linearity and the gradient's agreement also in D's weights,
+      ‖D ⊙ (a − b)‖/‖D ⊙ b‖, since D ⊙ (g + H_t δ) drives the recursion;
+    - the central difference at h from 10⁻¹ to 10⁻⁴ against the exact product, also in D's
+      weights, with the shift actually set and H applied to its rounding residual;
+    - the gradient over the full step against the product.
+  - Then the exact recursion over 25 steps on both seeds, twice on 50000: its norms,
+    divergence, memory and time. No r, q or K.
+- **Requirements on the real model,** each at both probe steps and in both directions. These are
+  prospective screening tolerances.
+  - The exact product repeats within 10⁻⁴ (relative), both plainly and in D's weights.
+  - It is linear within 10⁻⁴, both plainly and in D's weights.
+  - It is symmetric within 10⁻³.
+  - The new path's gradient agrees with the production pass within 10⁻⁴, both plainly and in
+    D's weights.
+- **Reading the probe.** The probe is descriptive and decides only whether the recomputation is
+  done. If the error of P_h grows as h falls (∝ 1/h), rounding or noise dominates at ε = 10⁻². If
+  it falls as h² down to a floor, nonlinearity over the finite displacement dominates. A U shape is
+  read by where its minimum lies against 10⁻².
+- **Failures.**
+  - If a requirement is not met, no order is recomputed and the probe is reported. This stops
+    the recomputation for a technical diagnosis; it is not a scientific rejection, as under
+    amendment 1, and does not by itself select the note's branch for a failed criterion.
+  - If memory runs out, the product takes a smaller micro-batch, which is recorded.
+  - A non-finite value is a divergence, as registered.
+- **Stopping rule.**
+  - If the validated exact recursion passes the bound on both probe seeds: probe stopped;
+    corrected criterion not evaluated. No order is recomputed. The original result ("decided,
+    failed") and the note's branch for a failed criterion stay. What the probe shows about
+    instability is stated for the two tested seeds only.
+  - Otherwise, the 40 own orders, the six control orders and one repeat (below) are recomputed.
+  - The 20 E2 orders and the 60 top-up orders are recomputed only if the unchanged criterion
+    passes on that recomputation.
+- **The floor of q.** Part 3 of the criterion takes the exact repeat's |q_lin − q′_lin| as its
+  floor. The repeat is of seed 50000. If seed 50000's exact recursion diverges, it is of the
+  first seed by number of the 40 own orders whose exact recursion completed, chosen by that
+  completion status alone. k = 10 is unchanged.
+- **Unchanged.** The criterion and its three parts, the cohorts, the rule 10‖Δθ_i‖ and the note's
+  branches.
+- **Not done.**
+  - ε is not tuned.
+  - No Fisher or Gauss–Newton product replaces the Hessian.
+  - δ̂ does not replace δ_lin.
+  - No method is chosen by its correlations or by whether the criterion passes.
+- **Disclosure.** The corrected result is reported beside the original all-diverged one, with the
+  ε-check evidence and the fact that this amendment followed it. Corrected predictions are
+  prospective to the opening of E2's outcomes, not to E2's training, which had ended.
+
+**How it is applied.** `scripts/study5_linear_replay.py --hvp exact` runs the replay, and
+`--probe FILE` writes the probe's record. Corrected records go to folders of their own
+(`linear-exact/…`). Every record of pod 4 stays as it was written.
