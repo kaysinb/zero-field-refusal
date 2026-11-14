@@ -3477,6 +3477,76 @@ project-run "$SRC" python scripts/study5_campaigns.py pod4 --out "$RUNS_DIR/camp
 runs' full evaluations (`study5_vector/`), the swaps and the shuffles with the registered judge.
 No E2 run is labeled under this extension.
 
+### Study 5, E2's top-up: pod 4
+
+The top-up repeats E2's design (extension 1's order repeats) on the 30 fresh seeds outside it,
+50000–50005 and 50016–50039 (`TOPUP_SEEDS`, in that order): each seed in two new orders
+(`train.order_seed` = s + 1000 and s + 2000) at η_l and η_u, 120 runs. The predictions of their
+60 orders from θ₀ are archived before any of them is trained. It is the `topup` campaign of
+`scripts/study5_campaigns.py` (`topup_plan`), run on pod 4's volume after pod 4's campaign.
+
+**Code and preflight.** The GPU code is pod 4's (`docs/study5-extension-2-code-identity.json`): the
+top-up changes only the driver, an analysis script outside the GPU code. The driver refuses:
+- another GPU code, or a registration without the headings of extensions 1 and 2;
+- an archive id outside `topup-…`;
+- a `RUNS_DIR` that holds anything but pod 4's archive (`pod4-20261111`, `POD4_ARCHIVE_ID`) and
+  the top-up's own: records, launcher journals, runs, vector runs or campaign folders of another
+  archive, pod 3's E2 runs and journals among them (`own_root_problems`);
+- a cap `ZFR_DEADLINE_EPOCH` that is not set or is less than 33 hours away (`TOPUP_CAP_HOURS`):
+  1.5 × the planned minutes and the close's 10 minutes fit in 33 hours (`topup_problems`, as the
+  next two);
+- a prediction settled under `study5_records/<ID>/sealed/` whose vector folder's `record.json` is
+  gone (a restored root, a lost or another `--checkpoints`): its replay would run again, and a
+  written prediction is never computed twice;
+- pod 4's engineering rerun, which the check names, without its completed run in pod 4's
+  engineering journal.
+
+**Names.** Per seed one launcher campaign `study5-<ID>-orders-s<seed>` with the cells
+`s5-order<1|2>-<η>-s<seed>`, built as pod 3 builds E2's (`order_repeats`). The E2 test, given the
+top-up's seeds, finds them by these names in a runs root that holds pod 3's runs as well: one
+journal per seed. The predictions are `study5_records/<ID>/sealed/s<seed>-order<k>/record.json`,
+the layout of pod 4's sealed records.
+
+**Blocks:**
+1. `engineering`: pod 2's order control of 50000 at η_l, the same cell as on pod 4. The launcher
+   finds pod 4's completed rerun of that config and reuses it, journaling nothing in the top-up's
+   campaign. The check therefore names that rerun through pod 4's engineering campaign
+   (`{run:…@study5-pod4-20261111-engineering}`), with pod 4's diagnostic rerun (`study5_diag/`)
+   beside it, under the numerical rule (`--tolerance 1e-4`), into
+   `engineering-check-numerical.json`. Any failure stops the campaign.
+2. `fetch`: the 30 seeds' streams and pod 2's 30 fresh η_l runs, which are the predictions'
+   reference runs. A stream already in `DATA_DIR` (pod 4 fetched them all) is checked by its
+   sha256 and kept, a missing one is fetched, one with another sha256 is refused.
+3. `predictions`: per seed, δ̂, δ_lin and q of its two new orders from θ₀, with pod 4's `sealed`
+   options (`study5_linear_replay.py --no-k`, `predict_orders`). The vector files go under
+   `<--checkpoints>/vec/<ID>/`, apart from pod 4's. The records are settled under
+   `study5_records/<ID>/sealed/` and archived with their inventory, then the vector files are
+   purged. A failed replay or settle stops the campaign, so no order run starts before all 60
+   predictions are archived.
+4. `orders`: 30 launcher campaigns of 4 F runs, each archived as its seed ends. No checkpoint.
+5. `close`.
+
+**Admission** is pod 4's: each block and seed group is admitted only when 1.5 × its estimated
+minutes and the close's 10 minutes end before the cap. The minutes come from the unit costs the
+driver holds (an F run as measured in study 3, pod 4's q-only replay). The dry run prints each
+block's minutes and the plan's hours, planned and × 1.5.
+
+**The Pod.** Pod 4's close sets its deadline 15 minutes ahead, and the watcher stops the Pod.
+Before the top-up, `ZFR_DEADLINE_EPOCH` is set at least 33 hours ahead with `update-pod`
+([deadlines between campaigns](#study-2-stage-a)) and the container is prepared again as for pod
+4 (the archive key and the Google Cloud CLI). The volume keeps `RUNS_DIR`, `DATA_DIR` and
+`--checkpoints`.
+
+```bash
+project-run "$SRC" python scripts/study5_campaigns.py topup --out "$RUNS_DIR/campaigns/study5-topup" \
+  --archive-id topup-<date> --checkpoints /workspace/ckpt/study5-pod4   # --dry-run first
+```
+
+**After the Pod:** restore its runs (`restore-runs --archive-id <ID>`) into the root that holds
+pod 3's order runs and check them against the inventories. The E2 test reads them beside E2's
+(its `--seeds`, and the top-up's sealed folder as `--predictions`) only as it reads E2's: after
+E2's opening record.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project

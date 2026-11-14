@@ -1,6 +1,7 @@
 """Study 5's GPU code, pinned. The registered runs' code (docs/study5-code-identity.json, pods 1
-and 2), extension 1's (docs/study5-extension-1-code-identity.json, pod 3) and extension 2's
-(docs/study5-extension-2-code-identity.json, pod 4): HEAD's GPU code identity
+and 2), extension 1's (docs/study5-extension-1-code-identity.json, pod 3), extension 2's
+(docs/study5-extension-2-code-identity.json, pod 4) and extension 2's after its fourth and fifth
+amendments (docs/study5-extension-2-amendment-5-code-identity.json): HEAD's GPU code identity
 (``code_identity.gpu_code_identity``: every GPU path's blob at the commit) is the latest record's,
 so that any later change of a GPU path fails here until a record is written again after a new
 engineering check (docs/study5-preregistration.md, "Protocol", "Extension 1" and "Extension 2").
@@ -20,6 +21,7 @@ from zero_field_refusal.paths import REPO_ROOT
 RECORD = REPO_ROOT / "docs" / "study5-code-identity.json"
 EXTENSION = REPO_ROOT / "docs" / "study5-extension-1-code-identity.json"
 EXTENSION_2 = REPO_ROOT / "docs" / "study5-extension-2-code-identity.json"
+AMENDMENT_5 = REPO_ROOT / "docs" / "study5-extension-2-amendment-5-code-identity.json"
 FIELDS = {"what", "rule", "commit", "files", "gpu_code_sha256", "engineering_check"}
 
 
@@ -43,6 +45,12 @@ def extension_2() -> dict:
     return record
 
 
+def amendment_5() -> dict:
+    record = recorded(AMENDMENT_5, FIELDS | {"changed_from"})
+    assert record["changed_from"]["record"] == "docs/study5-extension-2-code-identity.json"
+    return record
+
+
 def in_history(commit: str) -> bool:
     found = subprocess.run(
         ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
@@ -53,16 +61,16 @@ def in_history(commit: str) -> bool:
 
 
 def test_heads_gpu_code_is_the_latest_recorded_one() -> None:
-    record = extension_2()
+    record = amendment_5()
     head = code_identity.gpu_code_identity("HEAD")
     assert (head["sha256"], head["files"]) == (record["gpu_code_sha256"], record["files"]), (
-        "a GPU path changed since docs/study5-extension-2-code-identity.json: rerun the "
-        "engineering check, then record the new identity"
+        "a GPU path changed since docs/study5-extension-2-amendment-5-code-identity.json: rerun "
+        "the engineering check, then record the new identity"
     )
 
 
 def test_each_recorded_commit_has_its_code() -> None:
-    for record in (recorded(), extension(), extension_2()):
+    for record in (recorded(), extension(), extension_2(), amendment_5()):
         if not in_history(record["commit"]):
             pytest.skip(f"the recorded commit {record['commit'][:7]} is not in this history")
         identity = code_identity.gpu_code_identity(record["commit"])
@@ -71,7 +79,7 @@ def test_each_recorded_commit_has_its_code() -> None:
 
 
 def test_only_the_named_paths_changed_from_record_to_record() -> None:
-    chain = (recorded(), extension(), extension_2())
+    chain = (recorded(), extension(), extension_2(), amendment_5())
     if not all(in_history(r["commit"]) for r in chain):
         pytest.skip("the recorded commits are not in this history")
     for earlier, later in zip(chain, chain[1:], strict=False):

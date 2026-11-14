@@ -8,6 +8,8 @@ docs/operations.md, "Study 5 campaigns").
         --engineering-check RECORD --surrogate-checks RECORD --retrospective RECORD
         [--surrogate SPEC] [--checkpoints DIR] [--dry-run]
     python scripts/study5_campaigns.py pod3 --out DIR --archive-id ID [--dry-run]
+    python scripts/study5_campaigns.py topup --out DIR --archive-id topup-... --checkpoints DIR
+        [--dry-run]
 
 On a Pod: ``project-run "$SRC" python scripts/study5_campaigns.py pod1 ...``, detached. The other
 commands (``deadline``, ``fetch-streams``, ``fetch-run``, ``with-runs``, ``archive``,
@@ -111,6 +113,15 @@ is written, so the close exports none. No labeling. Before anything is written, 
 requires an archive id of pod 3's own and a runs root holding nothing of another archive
 (``own_root_problems``), and each block and seed group is admitted only when ``ADMIT_FACTOR`` × its
 minutes and ``CLOSE_BUDGET`` end before the cap (``deadline --admit``).
+
+**The top-up** (``topup_plan``) repeats E2's design on the 30 fresh seeds outside it
+(``TOPUP_SEEDS``) on pod 4's volume after pod 4's campaign, under pod 4's GPU code: its archive
+id starts with ``topup-`` and its runs root may hold pod 4's archive besides its own, nothing
+else. Every new order's prediction from θ₀ is archived before any order run starts, and is
+computed once: its preflight (``topup_problems``) also refuses a cap under ``TOPUP_CAP_HOURS``
+away, a settled prediction whose vector folder lost its record, and a missing completed rerun of
+pod 4's that the engineering check names. The dry run prints each block's planned minutes and the
+plan's hours, planned and × ``ADMIT_FACTOR``.
 
 **Failures.** Every run goes through ``scripts/launch.py FILE --max-attempts 1`` (one attempt; a
 rerun is a recovery round of the run's own, zero_field_refusal.launch, "Recovery rounds"). A step
@@ -1269,6 +1280,18 @@ def order_cell(seed: int, offset: int, eta: float) -> dict[str, Any]:
     }
 
 
+def order_repeats(b: Builder, seeds) -> None:
+    """E2's runs (extension 1): per seed one launcher campaign ``study5-<ID>-orders-s<seed>`` of
+    four F runs (``order_cell``: ``train.order_seed`` = s + 1000 and s + 2000, each at η_l and
+    η_u), archived as its seed group ends. Pod 3's ``orders`` block and the top-up's."""
+    for seed in seeds:
+        group = f"s{seed}"
+        cells = [order_cell(seed, offset, eta) for offset in ORDER_OFFSETS
+                 for eta in (ETA_L, ETA_U)]  # fmt: skip
+        _, name = b.launch(f"orders-{group}", "orders", cells, minutes="orders", group=group)
+        b.runs_archive(f"orders/{group}/archive", campaign=name, group=group)
+
+
 def pod3_plan(
     *,
     out: Path,
@@ -1351,12 +1374,7 @@ def pod3_plan(
     b.end("ladder")
 
     b.begin()  # two new orders of each seed's own responses, both rates
-    for seed in ORDER_SEEDS:
-        group = f"s{seed}"
-        cells = [order_cell(seed, offset, eta) for offset in ORDER_OFFSETS
-                 for eta in (ETA_L, ETA_U)]  # fmt: skip
-        _, name = b.launch(f"orders-{group}", "orders", cells, minutes="orders", group=group)
-        b.runs_archive(f"orders/{group}/archive", campaign=name, group=group)
+    order_repeats(b, ORDER_SEEDS)
     b.end("orders")
     b.close()
     return b.plan(commit, gpu_code, None, spec)
@@ -1596,6 +1614,43 @@ def edit_args(seed: int, edit: str) -> tuple[str, ...]:
 
 def shuffle_edit(first: int, last: int, draw: int) -> str:
     return f"{{kind: shuffle, first: {first}, last: {last}, draw: {draw}}}"
+
+
+def predict_orders(b: Builder, block: str, seeds, *, vec: Path, fetched: Path, campaign: str,
+                   surrogate: str, on_fail: str = "record") -> None:  # fmt: skip
+    """Predictions only, from θ₀, of each seed's two new orders at η_l (``train.order_seed`` =
+    s + 1000 and s + 2000, ``ORDER_OFFSETS``): δ̂, δ_lin and q by
+    ``scripts/study5_linear_replay.py --no-k`` into ``<vec>/sealed/s<seed>-order<k>/`` (an
+    incomplete folder moved aside), with pod 2's fresh η_l run of the seed (fetched into
+    ``fetched``) as the reference; no order run is read. Per seed group: each record settled into
+    ``study5_records/<ID>/sealed/s<seed>-order<k>/``, the group archived, then its vector files
+    purged. Pod 4's ``sealed`` block (extension 1's twenty orders) and the top-up's
+    ``predictions``, where ``on_fail`` of the replay and its settle is ``stop``."""
+    minutes = POD4_MINUTES
+    for s in seeds:
+        group = f"s{s}"
+        paths, made = [], []
+        for offset in ORDER_OFFSETS:
+            tag, order = f"s{s}-order{offset // 1000}", f"order{offset // 1000}"
+            folder = vec / "sealed" / tag
+            record = folder / "record.json"
+            b.step(f"{block}/{group}/{order}", b.own(
+                "with-runs", "--runs", b.runs, "--campaign", campaign, "--unless", record,
+                "--aside-dir", folder, "--", "scripts/study5_linear_replay.py", CONTROL_ORDER,
+                rate(ETA_L), f"seed={s}", f"train.order_seed={s + offset}", "--out-dir", folder,
+                "--reference-fresh-run", fetched / POD2_FRESH_L[s], "--surrogate", surrogate,
+                "--no-k"), on_fail=on_fail, outputs=(str(record),), group=group,
+                minutes=minutes["linear-q"])  # fmt: skip
+            target = b.record("sealed", tag)
+            b.step(f"{block}/{group}/{order}-settle", b.own("settle", "--dir", folder, "--records",
+                   target), on_fail=on_fail, group=group, minutes=minutes["settle"])  # fmt: skip
+            paths.append(b.rel(target))
+            made.append((folder, f"{b.rel(target)}/record.json"))
+        archived = b.runs_archive(f"{block}/{group}/archive", paths=paths, group=group)
+        for folder, record in made:
+            b.step(f"{block}/{group}/{folder.name}-purge", b.own(
+                "purge", "--dir", folder, "--runs", b.runs, "--inventory", archived.outputs[0],
+                "--consumer", record), group=group, minutes=minutes["settle"])  # fmt: skip
 
 
 def pod4_plan(
@@ -2005,23 +2060,8 @@ def pod4_plan(
 
     # ---- predictions only, for extension 1's twenty new orders (no E2 run is read)
     b.begin()
-    for s in ORDER_SEEDS:
-        group = f"s{s}"
-        paths, made = [], []
-        for offset in ORDER_OFFSETS:
-            tag = f"s{s}-order{offset // 1000}"
-            folder = vec / "sealed" / tag
-            linear(f"sealed/{group}/order{offset // 1000}", (CONTROL_ORDER, rate(ETA_L),
-                   f"seed={s}", f"train.order_seed={s + offset}"), folder,
-                   ("--reference-fresh-run", pod2_run(s)), group=group, k=False)  # fmt: skip
-            target = b.record("sealed", tag)
-            settle(f"sealed/{group}/order{offset // 1000}-settle", folder, target, group)
-            paths.append(b.rel(target))
-            made.append((folder, f"{b.rel(target)}/record.json"))
-        archived = b.runs_archive(f"sealed/{group}/archive", paths=paths, group=group)
-        for folder, record in made:
-            purge(f"sealed/{group}/{folder.name}-purge", folder, [inventory(archived)], [record],
-                  group)  # fmt: skip
+    predict_orders(b, "sealed", ORDER_SEEDS, vec=vec, fetched=fetched, campaign=eng,
+                   surrogate=spec[0])  # fmt: skip
     b.end("sealed")
 
     # ---- M3 (small amplitudes, tokens) and M4's removals per seed; then, in a group of their
@@ -2110,6 +2150,106 @@ def pod4_plan(
         (f"shuffle{a}-{z}-{d}", shuffle_edit(a, z, d)) for a, z in SHUFFLE_RANGES
         for d in SHUFFLE_DRAWS])  # fmt: skip
     b.close(records=(b.rel(b.records), VECTOR_EXPERIMENT), json_from=vec)
+    return b.plan(commit, gpu_code, None, spec)
+
+
+# ------------------------------------------------------------------ the top-up of E2's orders
+
+TOPUP_PREFIX = "topup-"  # the top-up's archive namespace
+POD4_ARCHIVE_ID = "pod4-20261111"  # pod 4's archive: the top-up runs on its volume, after it
+# every fresh seed outside E2 (ORDER_SEEDS), in this order
+TOPUP_SEEDS = (*range(50000, 50006), *range(50016, 50040))
+# the least time from the top-up's start to its cap ZFR_DEADLINE_EPOCH: ADMIT_FACTOR × its planned
+# minutes and the close's CLOSE_BUDGET (32.6 h) fit in it (``topup_problems``)
+TOPUP_CAP_HOURS = 33
+
+
+def topup_plan(
+    *,
+    out: Path,
+    runs: Path,
+    data: Path,
+    checkpoints: Path,
+    archive_id: str,
+    commit: str,
+    gpu_code: str,
+    surrogate: str = SURROGATE,
+) -> Plan:
+    """The top-up of E2's order repeats (docs/operations.md, "Study 5, E2's top-up: pod 4"): on
+    pod 4's volume after pod 4's campaign, under pod 4's GPU code, E2's design on
+    ``TOPUP_SEEDS``, with the predictions of all their new orders archived before any of them is
+    trained.
+
+    ``engineering``: pod 2's order control of 50000 at η_l and its cell, as on pod 4. The
+    launcher finds pod 4's completed rerun of that config and reuses it, journaling nothing in
+    this campaign, so the check names that rerun through pod 4's engineering campaign
+    (``POD4_ARCHIVE_ID``), with pod 4's diagnostic rerun beside it when present
+    (``POD4_DIAG``), under extension 2's numerical equivalence; any failure stops. ``fetch``: the
+    other seeds' streams (``fetch-streams``: present files checked by their sha256 and kept,
+    missing ones fetched) and pod 2's fresh η_l runs of the 30 seeds (the predictions'
+    reference runs). ``predictions``: the 60 new orders' δ̂, δ_lin and q from θ₀
+    (``predict_orders``, pod 4's ``sealed`` options), records under
+    ``study5_records/<ID>/sealed/``, archived per seed; a failed replay or settle stops the
+    campaign, so the orders never start without every prediction archived. ``orders``: the 120
+    runs, per seed one campaign as on pod 3 (``order_repeats``). No checkpoint, no labeling. The
+    vector files go under ``<checkpoints>/vec/<ID>/``, apart from pod 4's. Before the start, the
+    preflight's ``topup_problems``."""
+    spec = surrogate_spec(surrogate)
+    b = Builder("topup", archive_id, out, runs, data, checkpoints)
+    b.admit = True  # each block and seed group admitted only when it and the close fit the cap
+    fetched = b.out / "fetched" / "study5"
+    vec = b.checkpoints / "vec" / b.id
+    first = TOPUP_SEEDS[0]
+
+    def fetch_streams(name: str, seed: int) -> None:
+        b.step(name, b.own("fetch-streams", "--inventory", POD2_STREAMS.format(seed=seed),
+                           "--data", b.data, "--work", b.out, "--seeds", seed),
+               on_fail="stop", minutes="fetch-seed")  # fmt: skip
+
+    def fetch_run(name: str, run_id: str) -> None:
+        b.step(name, b.own("fetch-run", "--run-id", run_id, "--dest", fetched,
+                           "--prefix", POD2_RUNS),
+               on_fail="stop", outputs=(str(fetched / run_id / "meta.json"),),
+               minutes="fetch-run")  # fmt: skip
+
+    b.begin()  # the engineering check, as on pod 4; any failure stops
+    fetch_streams("engineering/fetch-streams", first)
+    fetch_run("engineering/fetch-run", POD2_ORDER_RUN)
+    cell = {"name": f"s5-order-{ETA_L!r}-s{first}", "config": CONTROL_ORDER,
+            "overrides": [rate(ETA_L)], "seeds": [first]}  # fmt: skip
+    eng_file = b.launcher("engineering", "engineering", [cell])
+    eng = Path(eng_file).stem
+    b.step("engineering/launch", b.own("eng-launch", "--runs", b.runs, "--campaign-file",
+           eng_file, "--gpu-code", gpu_code), kind="launch", on_fail="stop",
+           minutes="fresh-upper")  # fmt: skip
+    diag = b.runs / POD4_DIAG
+    reruns = [f"{{run:{label(cell)}@study5-{POD4_ARCHIVE_ID}-engineering}}",
+              *([diag / POD4_DIAG_RERUN] if diag.is_dir() else [])]  # fmt: skip
+    check = b.record("engineering-check-numerical.json")
+    b.step("engineering/check", b.own("with-runs", "--runs", b.runs, "--campaign", eng, "--",
+           "scripts/study5_engineering_check.py", "--archived", fetched / POD2_ORDER_RUN,
+           "--rerun", *reruns, "--out", check, "--tolerance", EXT2_TOLERANCE["relative"]),
+           on_fail="stop", outputs=(str(check),), minutes="engineering-check",
+           gate="engineering")  # fmt: skip
+    b.runs_archive("engineering/archive", mutable=(b.rel(check),), campaign=eng)
+    b.end("engineering")
+
+    b.begin()  # the other seeds' streams and pod 2's fresh η_l runs, each fetched only if missing
+    for seed in TOPUP_SEEDS[1:]:
+        fetch_streams(f"fetch/s{seed}/streams", seed)
+    for seed in TOPUP_SEEDS:
+        fetch_run(f"fetch/s{seed}/f-run", POD2_FRESH_L[seed])
+    b.end("fetch")
+
+    b.begin()  # every new order's prediction, archived before any order run
+    predict_orders(b, "predictions", TOPUP_SEEDS, vec=vec, fetched=fetched, campaign=eng,
+                   surrogate=spec[0], on_fail="stop")  # fmt: skip
+    b.end("predictions")
+
+    b.begin()  # two new orders of each seed's own responses, both rates
+    order_repeats(b, TOPUP_SEEDS)
+    b.end("orders")
+    b.close(records=(b.rel(b.records),), json_from=vec)
     return b.plan(commit, gpu_code, None, spec)
 
 
@@ -3750,41 +3890,49 @@ def gate_problems(plan: Plan, engineering: Path | None, checks: Path | None) -> 
 
 
 POD3_PREFIX = "pod3-"  # pod 3's archive namespace: never pod 1's or pod 2's
+PREFIXES = {"pod3": POD3_PREFIX, "pod4": POD4_PREFIX, "topup": TOPUP_PREFIX}
+# the archive a plan's runs root holds beside its own, by pod and archive id: the top-up runs on
+# pod 4's volume
+HOSTS = {"topup": ("pod4", POD4_ARCHIVE_ID)}
 
 
-def _earlier_attempt(folder: Path, plan: Plan) -> bool:
-    """A campaign folder an earlier attempt of the same pod and archive id wrote (its
-    ``plan.json``): a stopped campaign goes on from a new --out (module docstring, "Resumable")."""
+def _earlier_attempt(folder: Path, pod: str, archive_id: str) -> bool:
+    """A campaign folder an attempt of ``pod`` with ``archive_id`` wrote (its ``plan.json``): a
+    stopped campaign goes on from a new --out (module docstring, "Resumable")."""
     try:
         stored = json.loads((folder / "plan.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return (isinstance(stored, dict) and stored.get("pod") == plan.pod
-            and stored.get("archive_id") == plan.archive_id)  # fmt: skip
+    return (isinstance(stored, dict) and stored.get("pod") == pod
+            and stored.get("archive_id") == archive_id)  # fmt: skip
 
 
 def own_root_problems(plan: Plan) -> list[str]:
-    """Pod 3 writes only into a runs root and an archive namespace of its own, so that it can
-    neither move nor reuse a registered run or record: its archive id starts with ``pod3-``, and
-    the runs root holds nothing of another archive (each a refusal before anything is written):
-    no records folder of another id under ``study5_records/``, no launcher journal of another
-    campaign under ``launch/``, no run under ``study5/``, ``study3/`` or ``study5_floor/`` whose
-    ``meta.json`` names another archive (or that has none that reads), no scan or ladder run of
-    another id, no
-    campaign folder under ``campaigns/`` but the plan's own --out and those of earlier attempts
-    of the same pod and archive id (``_earlier_attempt``)."""
-    problems, own = [], f"study5-{plan.archive_id}-"
-    prefix = POD4_PREFIX if plan.pod == "pod4" else POD3_PREFIX
+    """Pods 3 and 4 write only into a runs root and an archive namespace of their own, so that
+    they can neither move nor reuse a registered run or record: the archive id starts with the
+    pod's prefix (``PREFIXES``), and the runs root holds nothing of another archive (each a
+    refusal before anything is written): no records folder of another id under
+    ``study5_records/``, no launcher journal of another campaign under ``launch/``, no run under
+    ``study5/``, ``study3/`` or ``study5_floor/`` whose ``meta.json`` names another archive (or
+    that has none that reads), no scan, ladder or vector run of another id, no campaign folder
+    under ``campaigns/`` but the plan's own --out and those of earlier attempts of the same pod
+    and archive id (``_earlier_attempt``). The top-up's root is pod 4's: it may hold pod 4's
+    archive (``HOSTS``) beside the top-up's own, and nothing else."""
+    problems = []
+    prefix = PREFIXES[plan.pod]
     if not plan.archive_id.startswith(prefix):
         problems.append(f"--archive-id {plan.archive_id}: {plan.pod}'s archive id starts with "
                         f"{prefix!r}, never another pod's")  # fmt: skip
+    attempts = [(plan.pod, plan.archive_id), *([HOSTS[plan.pod]] if plan.pod in HOSTS else [])]
+    archives = {archive_id for _, archive_id in attempts}
+    own = tuple(f"study5-{archive_id}-" for archive_id in archives)
     runs = plan.runs
 
     def children(name: str) -> list[Path]:
         folder = runs / name
         return sorted(folder.iterdir()) if folder.is_dir() else []
 
-    other = [p.name for p in children("study5_records") if p.name != plan.archive_id]
+    other = [p.name for p in children("study5_records") if p.name not in archives]
     other += [p.name for p in children("launch") if not p.name.startswith(own)]
     for experiment in ("study5", "study3", FLOOR_EXPERIMENT):
         for run_dir in children(experiment):
@@ -3793,18 +3941,63 @@ def own_root_problems(plan: Plan) -> list[str]:
                 archive_id = meta["campaign"]["header"]["archive_id"]
             except (OSError, ValueError, KeyError, TypeError):
                 archive_id = None
-            if archive_id != plan.archive_id:
+            if archive_id not in archives:
                 other.append(f"{experiment}/{run_dir.name}")
+    runs_of = tuple(f"s5-{archive_id}-" for archive_id in archives)
     for experiment in (SCAN_EXPERIMENT, "study5_ladder", VECTOR_EXPERIMENT):
         other += [f"{experiment}/{p.name}" for p in children(experiment)
-                  if not p.name.startswith(f"s5-{plan.archive_id}-")]  # fmt: skip
+                  if not p.name.startswith(runs_of)]  # fmt: skip
     out = plan.out.resolve()
-    other += [f"campaigns/{p.name}" for p in children("campaigns")
-              if p.resolve() != out and not _earlier_attempt(p, plan)]  # fmt: skip
+    other += [f"campaigns/{p.name}" for p in children("campaigns") if p.resolve() != out
+              and not any(_earlier_attempt(p, *found) for found in attempts)]  # fmt: skip
     if other:
-        problems.append(f"RUNS_DIR {runs} is not {plan.pod}'s own: it holds {len(other)} entries "
+        whose = f"{plan.pod}'s own" + (f" or {HOSTS[plan.pod][1]}'s" if plan.pod in HOSTS else "")
+        problems.append(f"RUNS_DIR {runs} is not {whose}: it holds {len(other)} entries "
                         f"of another archive or campaign (first: {other[0]})")  # fmt: skip
     return problems
+
+
+def topup_problems(plan: Plan, now: float | None = None) -> list[str]:
+    """What forbids the top-up's start, each before anything runs: a cap ``ZFR_DEADLINE_EPOCH``
+    not set or under ``TOPUP_CAP_HOURS`` away (1.5 × the planned minutes and the close fit in
+    it); a prediction settled under ``study5_records/<ID>/sealed/`` whose vector folder's
+    ``record.json`` is gone (a restored root, a lost or another --checkpoints), whose replay would
+    otherwise run again, since a written prediction is never computed twice; a run of another
+    campaign that a step names (``{run:LABEL@CAMPAIGN}``, pod 4's engineering rerun) without its
+    completed run in that campaign's journal."""
+    problems = []
+    cap, now = deadline_cap(), time.time() if now is None else now
+    if cap is None:
+        problems.append(f"ZFR_DEADLINE_EPOCH is not set: the top-up needs its cap at least "
+                        f"{TOPUP_CAP_HOURS} h away")  # fmt: skip
+    elif cap - now < 3600 * TOPUP_CAP_HOURS:
+        problems.append(f"the cap ZFR_DEADLINE_EPOCH {_iso(cap)} is {(cap - now) / 3600:.2f} h "
+                        f"away, under the {TOPUP_CAP_HOURS} h the top-up needs")  # fmt: skip
+    lost = []
+    for step in (s for b in plan.blocks if b.name == "predictions" for s in b.steps):
+        if step.name.endswith("-settle"):
+            folder = Path(step.argv[step.argv.index("--dir") + 1])
+            settled = Path(step.argv[step.argv.index("--records") + 1]) / "record.json"
+            if settled.exists() and not (folder / "record.json").exists():
+                lost.append(settled.parent.name)
+    if lost:
+        problems.append(f"{len(lost)} predictions are settled but their vector folders' "
+                        f"record.json is gone (first: {lost[0]}): a written prediction is never "
+                        "computed again")  # fmt: skip
+    named = {(found.group(2), found.group(1)) for step in steps_of(plan) for arg in step.argv
+             for found in RUN_REF.finditer(arg) if found.group(2)}  # fmt: skip
+    for campaign, run_label in sorted(named):
+        if campaign in plan.campaigns:
+            continue  # the plan's own: run by the plan before the step that names it
+        try:
+            completed_run(plan.runs, campaign, run_label)
+        except StepError as exc:
+            problems.append(f"the run a step names is not there: {exc}")
+    return problems
+
+
+def steps_of(plan: Plan) -> list[Step]:
+    return [s for b in plan.blocks for s in b.steps]
 
 
 def preflight(plan: Plan, args: argparse.Namespace | None = None) -> list[str]:
@@ -3812,22 +4005,28 @@ def preflight(plan: Plan, args: argparse.Namespace | None = None) -> list[str]:
     bucket, the key, the folder; for pod 2 also the registration, the committed seeds and pod 1's
     gates (``registration_problems``, ``seeds_problems``, ``gate_problems``); for pod 3 the
     registration holding extension 1 and a runs root and archive id of its own
-    (``own_root_problems``)."""
+    (``own_root_problems``); pod 4 the same with extension 2; the top-up pod 4's GPU code, the
+    registration holding both extensions, pod 4's runs root holding nothing but pod 4's
+    archive and its own, its cap, its settled predictions and pod 4's rerun
+    (``topup_problems``)."""
     problems = []
     state = git_state(REPO)
     if state.get("dirty") is not False or state.get("commit") != plan.commit:
         problems.append("the checkout is not clean at the plan's commit")
-    identity = {"pod3": EXTENSION_IDENTITY, "pod4": EXT2_IDENTITY}.get(plan.pod, IDENTITY_FILE)
+    identity = {"pod3": EXTENSION_IDENTITY, "pod4": EXT2_IDENTITY,
+                "topup": EXT2_IDENTITY}.get(plan.pod, IDENTITY_FILE)  # fmt: skip
     recorded = json.loads((REPO / identity).read_text(encoding="utf-8"))
     if plan.gpu_code != recorded.get("gpu_code_sha256"):
         problems.append(f"HEAD's GPU code is not the one {identity} records")
-    heading = {"pod3": (EXTENSION_HEADING, "extension 1"), "pod4": (EXT2_HEADING, "extension 2")}
-    if plan.pod in heading and heading[plan.pod][0] not in (REPO / REGISTRATION).read_text(
-        encoding="utf-8"
-    ):
-        problems.append(f"{REGISTRATION} does not hold {heading[plan.pod][1]}")
-    if plan.pod in ("pod3", "pod4"):
+    ext1, ext2 = (EXTENSION_HEADING, "extension 1"), (EXT2_HEADING, "extension 2")
+    headings = {"pod3": [ext1], "pod4": [ext2], "topup": [ext1, ext2]}.get(plan.pod, [])
+    text = (REPO / REGISTRATION).read_text(encoding="utf-8") if headings else ""
+    problems += [f"{REGISTRATION} does not hold {name}" for heading, name in headings
+                 if heading not in text]  # fmt: skip
+    if plan.pod in PREFIXES:
         problems += own_root_problems(plan)
+    if plan.pod == "topup":
+        problems += topup_problems(plan)
     if not os.environ.get("ARTIFACT_REMOTE", "").startswith("gs://"):
         problems.append("ARTIFACT_REMOTE is not a gs:// path")
     if not Path(os.environ.get("ARTIFACT_GCS_KEY", "/nonexistent")).is_file():
@@ -3865,11 +4064,21 @@ def prepare(plan: Plan) -> None:
         write_json(stored, plan.to_json())
 
 
+def planned_minutes(plan: Plan) -> dict[str, float]:
+    """Each block's estimated minutes: those of its steps but the deadlines (which set windows)."""
+    return {b.name: sum(s.minutes for s in b.steps if s.kind != "deadline") for b in plan.blocks}
+
+
 def show(plan: Plan) -> None:
+    """The plan (the dry run), each block's planned minutes, and the plan's hours planned and
+    × ``ADMIT_FACTOR``."""
+    minutes = planned_minutes(plan)
     for block in plan.blocks:
-        print(f"block {block.name}: {len(block.steps)} steps")
+        print(f"block {block.name}: {len(block.steps)} steps, {minutes[block.name]:.1f} min")
         for step in block.steps:
             print(f"  [{step.on_fail}] {step.name}: {' '.join(step.argv)}")
+    total = sum(minutes.values())
+    print(f"planned {total / 60:.2f} h, x{ADMIT_FACTOR:g} {ADMIT_FACTOR * total / 60:.2f} h")
 
 
 def install_sigterm() -> None:
@@ -3903,6 +4112,8 @@ def cmd_pod(args) -> int:
         plan = pod3_plan(**where, surrogate=args.surrogate)
     elif args.kind == "pod4":
         plan = pod4_plan(**where, checkpoints=args.checkpoints, surrogate=args.surrogate)
+    elif args.kind == "topup":
+        plan = topup_plan(**where, checkpoints=args.checkpoints, surrogate=args.surrogate)
     else:
         n = args.n if args.n is not None else committed_n() or N_CHOICES[0]
         plan = pod2_plan(**where, checkpoints=args.checkpoints, n=n, surrogate=args.surrogate)
@@ -3939,13 +4150,13 @@ def cmd_pod(args) -> int:
 def parser_of() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="kind", required=True)
-    for kind in ("pod1", "pod2", "pod3", "pod4"):
+    for kind in ("pod1", "pod2", "pod3", "pod4", "topup"):
         p = sub.add_parser(kind)
         p.add_argument("--out", type=Path, required=True)
         p.add_argument("--archive-id", required=True)
         p.add_argument("--dry-run", action="store_true")
         p.add_argument("--surrogate", default=SURROGATE)
-        if kind == "pod4":  # the volume's folder for checkpoints and vector files (absolute)
+        if kind in ("pod4", "topup"):  # the volume's folder for checkpoints and vector files
             p.add_argument("--checkpoints", type=Path, required=True)
         if kind == "pod2":
             p.add_argument("--n", type=int, default=None, choices=N_CHOICES)  # SEEDS_FILE's
@@ -4081,6 +4292,7 @@ COMMANDS = {
     "pod2": cmd_pod,
     "pod3": cmd_pod,
     "pod4": cmd_pod,
+    "topup": cmd_pod,
     "deadline": cmd_deadline,
     "settle": cmd_settle,
     "purge": cmd_purge,

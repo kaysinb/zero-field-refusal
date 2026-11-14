@@ -18,8 +18,9 @@ from test_study5_options import F_RUN, ready
 from test_train import APPENDABLE, SMALL, read_jsonl
 from test_train import env as env  # noqa: F401  (the fixture)
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from transformers.models.qwen2 import modeling_qwen2
 
-from zero_field_refusal import linear_response, study5_options, surrogate, vectors
+from zero_field_refusal import linear_response, losses, study5_options, surrogate, vectors
 from zero_field_refusal.batches import chunks, collate
 from zero_field_refusal.evaluation import set_point
 from zero_field_refusal.losses import loss_denominator, summed_nll
@@ -537,3 +538,315 @@ def test_script_end_to_end(env, tmp_path, monkeypatch, capsys) -> None:  # noqa:
     assert REPLAY.main([*config, *overrides, "--out-dir", str(other), "--epsilon", "0",
                         "--check-steps", "2", *common]) == 1  # fmt: skip
     assert not other.exists()
+
+
+# ------------------------------------------------------------------------------- the exact product
+# (extension 2's fourth amendment: H_t δ by reverse over reverse instead of the central difference)
+
+
+def quadratic_hvp(params):
+    """The toy's exact product: H = A_t, so out ← A_t v; returns the loss at the current point."""
+
+    def product(term, direction, out) -> float:
+        A, b = term
+        with torch.no_grad():
+            x = torch.cat([p.reshape(-1) for _, p in params]) - b
+            hv = A @ torch.cat([d.reshape(-1) for d in direction])
+            offset = 0
+            for (name, _), d in zip(params, direction, strict=True):
+                out[name].copy_(hv[offset : offset + d.numel()].reshape(d.shape))
+                offset += d.numel()
+        return (0.5 * x @ (A @ x)).item()
+
+    return product
+
+
+def test_exact_on_a_quadratic_loss_delta_lin_is_frozen_adams_trajectory() -> None:
+    """With the exact product, δ_lin is still frozen Adam's trajectory on the toy (its momentum
+    and bias correction), δ̂ is unchanged bit for bit, the checks compare the central difference
+    with the exact product (both exact here: rounding only), and the passes are counted apart."""
+    params, v0, terms, theta0, D = toy_inputs(0)
+    lr = 2e-2
+    central = REPLAY.replay(params, theta0, D, terms, quadratic(params), lr=lr, beta1=BETA1,
+                            epsilon=0.5, check_steps=[5])  # fmt: skip
+    exact_product = quadratic_hvp(params)
+    out = REPLAY.replay(params, theta0, D, terms, quadratic(params), lr=lr, beta1=BETA1,
+                        epsilon=0.5, check_steps=[5, 15, 25], hvp=exact_product)  # fmt: skip
+    assert out["divergence"] is None
+    assert out["hvp_passes"] == 24 and out["passes"] == 25 + 3 * 2 * 3
+    for name, p in params:
+        assert torch.equal(p.detach(), theta0[name]), name
+        assert torch.equal(out["delta_hat"][name], central["delta_hat"][name]), name
+    frozen = {"name": "adam_frozen", "lr": lr, "beta1": BETA1, "eps": EPS, "weight_decay": 0.0}
+    optimizer = build_optimizer(OmegaConf.create(frozen), [p for _, p in params],
+                                second_moment=[v0[name] for name, _ in params])  # fmt: skip
+    for term in terms:
+        optimizer.zero_grad(set_to_none=True)
+        quadratic(params)(term)
+        optimizer.step()
+    moved = {name: p.detach() - theta0[name] for name, p in params}
+    assert relative(out["delta_lin"], moved) < 1e-5
+    assert relative(out["delta_lin"], central["delta_lin"]) < 1e-5
+    rows = out["per_step"]
+    assert rows[0]["hdelta_norm"] == 0.0 and all(r["loss_plus"] is None for r in rows)
+    assert all(r["loss_hvp"] is not None for r in rows[1:])
+    assert [c["step"] for c in out["checks"]] == [5, 15, 25]
+    for check in out["checks"]:
+        assert check["mode"] == "exact" and set(check["fd"]) == {"half", "unit", "double"}
+        for found in check["fd"].values():
+            assert found["relative"] < 1e-4 and found["relative_d"] < 1e-4
+
+
+def test_exact_divergence_on_an_unstable_quadratic() -> None:
+    """Past the toy's stability, the exact recursion grows as the central one does on a quadratic
+    and the bound stops it at the same step; δ̂ runs to the end."""
+    params, _, terms, theta0, D = toy_inputs(1)
+    lr = 10.0
+    frozen = REPLAY.replay(params, theta0, D, terms, quadratic(params), lr=lr, beta1=BETA1,
+                           feedback=False)  # fmt: skip
+    bound = 10 * vectors.norm(frozen["delta_hat"])
+    central = REPLAY.replay(params, theta0, D, terms, quadratic(params), lr=lr, beta1=BETA1,
+                            limit=bound)  # fmt: skip
+    exact = REPLAY.replay(params, theta0, D, terms, quadratic(params), lr=lr, beta1=BETA1,
+                          limit=bound, hvp=quadratic_hvp(params))  # fmt: skip
+    assert exact["delta_lin"] is None and exact["divergence"]["reason"] == "bound"
+    assert exact["divergence"]["step"] == central["divergence"]["step"]
+    assert exact["divergence"]["norm"] == pytest.approx(central["divergence"]["norm"], rel=1e-4)
+    assert relative(exact["delta_hat"], frozen["delta_hat"]) == 0.0
+    for name, p in params:
+        assert torch.equal(p.detach(), theta0[name]), name
+
+
+def test_exact_without_feedback_is_delta_hat_bit_for_bit() -> None:
+    params, _, terms, theta0, D = toy_inputs(2)
+    out = REPLAY.replay(params, theta0, D, terms, quadratic(params), lr=2e-2, beta1=BETA1,
+                        check_steps=[5], feedback=False, hvp=quadratic_hvp(params))  # fmt: skip
+    assert out["passes"] == 25 and out["hvp_passes"] == 0 and out["checks"] == []
+    for name in SHAPES:
+        assert torch.equal(out["delta_lin"][name], out["delta_hat"][name]), name
+
+
+def float64_logits(model, batch):
+    """``losses.response_logits`` without its fp32 cast, for an fp64 oracle."""
+    hidden = model.base_model(input_ids=batch.input_ids,
+                              attention_mask=batch.attention_mask).last_hidden_state  # fmt: skip
+    return model.get_output_embeddings()(hidden[:, :-1][batch.target_mask])
+
+
+def float64_rms_norm(self, x):
+    """Qwen2's RMSNorm in the input's dtype (it computes in fp32), for an fp64 oracle."""
+    return self.weight * (x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.variance_epsilon))
+
+
+def test_exact_hvp_matches_double_backward_and_a_converged_fp64_difference(
+    env,
+    tmp_path,
+    monkeypatch,  # noqa: F811
+) -> None:
+    """On the tiny model: the exact product against the double-backward helper (fp32), its
+    gradient and loss against the production pass, then in fp64 (logits kept in fp64) against
+    the central difference, whose error falls with h towards it; the micro-batch size does not
+    matter beyond rounding."""
+    torch.set_num_threads(1)
+    cfg, model, trainable, theta0, D, batches, gradient = tiny(env, tmp_path)
+    v = REPLAY.replay(trainable, theta0, D, batches, gradient, lr=1e-3, beta1=BETA1,
+                      feedback=False)["delta_hat"]  # fmt: skip
+    names = [name for name, _ in trainable]
+    batch = batches[1]
+    with torch.no_grad():
+        set_point(trainable, [theta0[n] for n in names], [theta0[n] for n in names], 0.0)
+    out = {name: torch.empty_like(t) for name, t in v.items()}
+    seen = {name: torch.zeros_like(t) for name, t in v.items()}
+    loss = REPLAY.exact_hvp(model, trainable, batch, cfg, env, [v[n] for n in names], out,
+                            gradient_out=seen)  # fmt: skip
+    assert all(p.grad is None for _, p in trainable)
+    helper = hessian_vector(model, trainable, batch, cfg, env, v)
+    assert vectors.norm(out) > 0 and relative(out, helper) < 1e-6
+    production = accumulate_gradient(model, batch, cfg, env)["loss"]
+    g = {name: p.grad.detach().clone() for name, p in trainable}
+    for _, p in trainable:
+        p.grad = None
+    assert loss == pytest.approx(production, rel=1e-6) and relative(seen, g) < 1e-6
+    one = {name: torch.empty_like(t) for name, t in v.items()}
+    REPLAY.exact_hvp(model, trainable, batch, cfg, env, [v[n] for n in names], one,
+                     micro_batch_size=1)  # fmt: skip
+    assert relative(one, out) < 1e-5
+
+    # fp64: the model, θ₀, v, the logits and the norms (Qwen2's RMSNorm computes in fp32, which
+    # puts a 1/h floor of fp32 rounding under the difference); the difference then converges to
+    # the exact product as h²
+    monkeypatch.setattr(losses, "response_logits", float64_logits)
+    monkeypatch.setattr(modeling_qwen2.Qwen2RMSNorm, "forward", float64_rms_norm)
+    model.double()
+    trainable = freeze(model, cfg.train.freeze)
+    start = [p.detach().clone() for _, p in trainable]
+    v64 = {name: t.double() for name, t in v.items()}
+    exact64 = {name: torch.empty_like(t) for name, t in v64.items()}
+    REPLAY.exact_hvp(model, trainable, batch, cfg, env, [v64[n] for n in names], exact64)
+    errors = {}
+    for h in (1e-2, 1e-3, 1e-4):
+        p_h = {name: torch.empty_like(t) for name, t in v64.items()}
+        REPLAY._product(
+            trainable,
+            start,
+            [v64[n] for n in names],
+            lambda b: accumulate_gradient(model, b, cfg, env)["loss"],
+            batch,
+            h,
+            p_h,
+        )
+        errors[h] = relative(p_h, exact64)
+    with torch.no_grad():
+        set_point(trainable, start, start, 0.0)
+    assert errors[1e-4] < 1e-9 and errors[1e-4] < errors[1e-3] < errors[1e-2]
+    assert 50 < errors[1e-2] / errors[1e-3] < 200  # h²: the truncation, not rounding
+    assert relative(exact64, {n: t.double() for n, t in out.items()}) < 1e-3  # fp32 close
+
+
+def test_script_exact_end_to_end(env, tmp_path, monkeypatch, capsys) -> None:  # noqa: F811
+    """The script with ``--hvp exact --no-r --no-k``: δ̂ the central run's bit for bit, δ_lin
+    near it on the tiny model, no r or q, the exact checks and passes, the vector provenance
+    naming the exact product; then ``--probe``: the derivative probe's record."""
+    torch.set_num_threads(1)
+    overrides = [*F_RUN, "+study5.role=fresh"]
+    cfg = ready(env, scheduled(tmp_path, *overrides, policy="short"))
+    f_dir = run_scheduled(cfg, env, run_id="f-fresh")
+    spec_path = tmp_path / "surrogate.yaml"
+    spec_path.write_text(SPEC_YAML)
+    monkeypatch.setattr(REPLAY, "environment", lambda cfg, device: env)
+    config = [str(tmp_path / "study2.yaml"), *SMALL, *APPENDABLE, "teacher.chunk_size=12"]
+    common = ["--surrogate", str(spec_path), "--panel-size", "3", "--reference-run", str(f_dir)]
+    central, exact = tmp_path / "central", tmp_path / "exact"
+    assert REPLAY.main([*config, *overrides, "--out-dir", str(central), "--check-steps", "2", "3",
+                        "--no-k", "--no-r", *common]) == 0  # fmt: skip
+    assert REPLAY.main([*config, *overrides, "--out-dir", str(exact), "--check-steps", "2", "3",
+                        "--no-k", "--no-r", "--hvp", "exact", *common]) == 0  # fmt: skip
+    a = json.loads((central / "record.json").read_text())
+    b = json.loads((exact / "record.json").read_text())
+    assert a["hvp"] == {"mode": "central", "backend": None, "micro_batch_size": None}
+    assert b["hvp"]["mode"] == "exact" and b["hvp"]["backend"] == "math"
+    assert b["r_readouts"] is False and b["r"] is None and b["q_hat"] is None and b["q_lin"] is None
+    assert b["panel"] is None and b["K"] is None
+    assert b["vectors"]["delta_hat"]["sha256"] == a["vectors"]["delta_hat"]["sha256"]
+    assert b["hvp_passes"] == 2 and b["passes"] == 3 + 2 * 2 * 3 and a["hvp_passes"] == 0
+    assert b["divergence"]["status"] == "complete"
+    for check in b["checks"]:
+        assert check["mode"] == "exact"
+        assert 0 < check["fd"]["unit"]["relative"] < 1e-2
+    model = env.new_model()
+    trainable = freeze(model, cfg.train.freeze)
+    names = [name for name, _ in trainable]
+    sha = a["theta0_trainable_sha256"]
+    lin_a, _ = vectors.load_vector(central / "delta_lin.pt", names, theta0_sha256=sha)
+    lin_b, rec_b = vectors.load_vector(exact / "delta_lin.pt", names, theta0_sha256=sha)
+    assert rec_b["provenance"]["hvp"] == "exact"
+    assert relative(lin_b, lin_a) < 1e-2
+    printed = capsys.readouterr().out
+    assert "hvp exact r_readouts False" in printed and "q_hat" not in printed
+
+    # the derivative probe: numbers only, θ₀ restored, no r, q or K
+    probe = ["--out-dir", str(tmp_path / "probe"), "--probe", "probe.json"]
+    assert REPLAY.main([*config, *overrides, *probe, "--probe-steps", "2", "3", *common]) == 0
+    found = json.loads((tmp_path / "probe" / "probe.json").read_text())
+    assert found["kind"] == "study5-dlin-probe" and found["steps"] == [2, 3]
+    assert found["restored_trainable_sha256"] == found["theta0_trainable_sha256"] == sha
+    assert not {"r", "q_hat", "q_lin", "K"} & set(found)
+    assert [(e["step"], e["direction"]) for e in found["entries"]] == [
+        (2, "delta_hat"), (2, "random"), (3, "delta_hat"), (3, "random")]  # fmt: skip
+    for e in found["entries"]:
+        assert e["v_norm"] > 0 and e["gradient_repeat"]["relative"] < 1e-6
+        x = e["exact"]
+        assert x["norm"] > 0 and x["repeat_relative"] < 1e-6 and x["linearity_relative"] < 1e-6
+        assert x["gradient_vs_production"] < 1e-6 and x["loss_vs_production"] < 1e-6
+        for key in ("repeat_relative_d", "linearity_relative_d", "gradient_vs_production_d"):
+            assert x[key] < 1e-6, key  # the same errors in D's weights
+        assert e["gradient_repeat"]["relative_d"] < 1e-6
+        assert [r["h"] for r in e["central"]] == list(REPLAY.PROBE_H)
+        for r in e["central"]:
+            assert r["relative"] is not None and r["relative_d"] is not None
+            assert all(s >= 0 for s in r["shift_error"])
+            assert all(0 <= s <= 1 for s in r["shift_lost_share"])
+            assert (r["residual_relative"] is not None) == (r["h"] in REPLAY.PROBE_RESIDUAL_H)
+        # fp32 rounds a smaller shift relatively more
+        first, last = e["central"][0]["shift_error"], e["central"][-1]["shift_error"]
+        assert max(last) >= max(first)
+        unit = next(r for r in e["central"] if r["h"] == 1e-2)
+        assert unit["relative"] < 1e-2  # converged on the tiny model at the registered ε
+        assert e["full_step"]["relative_to_product"] is not None
+    for s in found["symmetry"]:
+        assert s["relative"] < 1e-4
+    assert (
+        REPLAY.main(
+            [
+                *config,
+                *overrides,
+                "--out-dir",
+                str(tmp_path / "probe"),
+                "--probe",
+                "probe.json",
+                *common,
+            ]
+        )
+        == 1
+    )  # never overwritten
+
+
+def test_script_kernel_diagnostic_and_math_gradient_backend(
+    env,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """``--kernel-diagnostic``: the kernel's and the implementation's comparisons at θ₀, numbers
+    only, θ₀ unchanged; ``--gradient-backend math`` with ``--hvp exact``: the record and the
+    vector provenance name the backend, δ_lin near the default backend's; the flags alone."""
+    torch.set_num_threads(1)
+    overrides = [*F_RUN, "+study5.role=fresh"]
+    cfg = ready(env, scheduled(tmp_path, *overrides, policy="short"))
+    f_dir = run_scheduled(cfg, env, run_id="f-fresh")
+    spec_path = tmp_path / "surrogate.yaml"
+    spec_path.write_text(SPEC_YAML)
+    monkeypatch.setattr(REPLAY, "environment", lambda cfg, device: env)
+    config = [str(tmp_path / "study2.yaml"), *SMALL, *APPENDABLE, "teacher.chunk_size=12"]
+    common = ["--surrogate", str(spec_path), "--panel-size", "3", "--reference-run", str(f_dir)]
+
+    kd = ["--out-dir", str(tmp_path / "kd"), "--kernel-diagnostic", "kd.json"]
+    assert REPLAY.main([*config, *overrides, *kd, "--probe-steps", "2", "3", *common]) == 0
+    found = json.loads((tmp_path / "kd" / "kd.json").read_text())
+    assert found["kind"] == "study5-dlin-kernel-diagnostic" and found["steps"] == [2, 3]
+    assert found["restored_trainable_sha256"] == found["theta0_trainable_sha256"]
+    assert found["micro_batch_size"] == cfg.execution.micro_batch_size
+    assert not {"r", "q_hat", "q_lin", "K"} & set(found)
+    for e in found["entries"]:
+        for key in ("kernel", "implementation", "probe_requirement"):
+            assert set(e[key]) == {"relative", "relative_d"}
+            assert e[key]["relative"] is not None and e[key]["relative_d"] is not None
+        assert e["implementation"]["relative"] < 1e-6 and e["implementation"]["relative_d"] < 1e-6
+        assert e["math_repeat_equal"] is True
+        assert abs(e["losses"]["new"] - e["losses"]["math"]) < 1e-6
+    assert "kernel" in capsys.readouterr().out
+    assert REPLAY.main([*config, *overrides, *kd, *common]) == 1  # never overwritten
+
+    exact, math_dir = tmp_path / "exact", tmp_path / "math"
+    base = ["--check-steps", "2", "3", "--no-k", "--no-r", "--hvp", "exact", *common]
+    assert REPLAY.main([*config, *overrides, "--out-dir", str(exact), *base]) == 0
+    assert REPLAY.main([*config, *overrides, "--out-dir", str(math_dir), *base,
+                        "--gradient-backend", "math"]) == 0  # fmt: skip
+    a = json.loads((exact / "record.json").read_text())
+    b = json.loads((math_dir / "record.json").read_text())
+    assert a["gradient_backend"] == "default" and b["gradient_backend"] == "math"
+    assert b["divergence"]["status"] == "complete"
+    model = env.new_model()
+    trainable = freeze(model, cfg.train.freeze)
+    names = [name for name, _ in trainable]
+    sha = a["theta0_trainable_sha256"]
+    lin_a, rec_a = vectors.load_vector(exact / "delta_lin.pt", names, theta0_sha256=sha)
+    lin_b, rec_b = vectors.load_vector(math_dir / "delta_lin.pt", names, theta0_sha256=sha)
+    assert "gradient_backend" not in rec_a["provenance"]
+    assert rec_b["provenance"]["gradient_backend"] == "math"
+    assert relative(lin_b, lin_a) < 1e-4
+
+    # the flags alone
+    probe = ["--out-dir", str(tmp_path / "p"), "--probe", "p.json", *common]
+    assert REPLAY.main([*config, *overrides, *probe, "--gradient-backend", "math"]) == 1
+    assert REPLAY.main([*config, *overrides, *probe, "--kernel-diagnostic", "k.json"]) == 1
