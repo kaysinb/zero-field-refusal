@@ -1055,6 +1055,144 @@ def test_a_start_that_a_later_record_of_its_label_follows_is_not_ended(tmp_path)
         ("start", None), ("superseded", None), ("start", None), ("end", None)]  # fmt: skip
 
 
+# ------------------------ a conflict of the stream-prefix check gets the end the launcher writes
+
+
+def reordered_run_dir(root: Path, run, name: str, count: int, status: str = "completed") -> Path:
+    """A reordered run (train.order_seed) stopped by a gradient spike after 18 of its 25 steps,
+    its recorded training prefix ``count`` responses (test_stage_a), standing for ``run``."""
+    from test_stage_a import _stopped_early
+
+    run_dir = _stopped_early(root / run.experiment, name, "order_seed", count)
+    meta = json.loads((run_dir / "meta.json").read_text())
+    meta.update(status=status, config_hash=run.config_hash, git={"commit": "abc", "dirty": False})
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+    return run_dir
+
+
+def log_conflict(root: Path, name: str, run, run_id: str, problem: str) -> None:
+    """A start and its ``conflict`` end, as the launcher writes them when an attempt ends."""
+    log_start(root, name, run, run_id)
+    end = {"event": "end", "run": run.label, "attempt": 1, "run_id": run_id, "returncode": 0,
+           "outcome": "conflict", "problem": problem}  # fmt: skip
+    with (root / "launch" / f"{name}.jsonl").open("a") as f:
+        f.write(json.dumps(end) + "\n")
+
+
+def prefix_problem(run_dir: Path) -> str:
+    """The problem the earlier check gave a reordered run stopped after 18 steps of B = 20."""
+    return (f"a scheduled run's records are incomplete: {run_dir}: the recorded stream prefix "
+            "holds 500 responses, the run used 360")  # fmt: skip
+
+
+@pytest.mark.parametrize("status", ["completed", "diverged"])
+def test_a_conflict_of_the_stream_prefix_check_gets_the_launchers_end(tmp_path, status) -> None:
+    """The analysis reads a run from its campaign's last end (study5_analysis_cli.completed,
+    unchanged): the conflict hides it; after the launcher writes the end it writes when an
+    attempt ends (``end_outcome``), with ``requalified`` naming the conflict's place, the run is
+    read. A dry run writes nothing, and a later call finds the end and writes nothing."""
+    from zero_field_refusal.analysis.study5_analysis_cli import Reader, completed
+    from zero_field_refusal.launch import REQUALIFIED, end_outcome
+
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    run_id = f"x-{run.config_hash[:8]}-a1"
+    run_dir = reordered_run_dir(root, run, run_id, 500, status)
+    log_conflict(root, name, run, run_id, prefix_problem(run_dir))
+    reader, found = Reader({"runs": root}), (name, run.label)
+    assert completed(reader, root, found, "r") == f"r: no completed run in {name} (conflict)"
+    executor = Executor(root, {})
+    run_campaign(name, runs, root, execute=executor, only=run.label, dry_run=True)
+    assert len(launch_log(root, name)) == 2
+    result = run_campaign(name, runs, root, execute=executor, only=run.label, max_attempts=1)
+    assert result["skipped"] == [run.label] and executor.calls == []
+    *_, end = launch_log(root, name)
+    outcome = end_outcome(run, run_dir, json.loads((run_dir / "meta.json").read_text()))
+    assert outcome[0] in ("done", "diverged")
+    fields = ("event", "run", "run_id", "attempt", "returncode", "settled", "only")
+    assert [end[k] for k in fields] == ["end", run.label, run_id, 1, None, True, run.label]
+    assert (end["outcome"], end["problem"]) == outcome
+    assert end["requalified"] == {"reason": REQUALIFIED,
+                                  "conflict": {"log": f"{name}.jsonl", "line": 2}}  # fmt: skip
+    assert completed(reader, root, found, "r") == run_dir
+    run_campaign(name, runs, root, execute=executor, only=run.label, max_attempts=1)
+    assert len(launch_log(root, name)) == 3
+
+
+def test_any_other_conflict_stays_the_runs_last_end(tmp_path) -> None:
+    """A conflict of another cause gets no end, though the run stands now; the check's conflict
+    of a run that still cannot stand gets none either, and stops the campaign as before."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    other, still = runs[1], runs[2]
+    other_id, still_id = (f"x-{r.config_hash[:8]}-a1" for r in (other, still))
+    reordered_run_dir(root, other, other_id, 500)
+    log_conflict(root, name, other, other_id, "responses/harmful_judged.jsonl is missing")
+    still_dir = reordered_run_dir(root, still, still_id, 360)
+    log_conflict(root, name, still, still_id, prefix_problem(still_dir))
+    before = launch_log(root, name)
+    executor = Executor(root, {})
+    result = run_campaign(name, runs, root, execute=executor, only=other.label, max_attempts=1)
+    assert result["skipped"] == [other.label] and launch_log(root, name) == before
+    with pytest.raises(CampaignError, match="the reordered run read its permutation's 500"):
+        run_campaign(name, runs, root, execute=executor, only=still.label, max_attempts=1)
+    assert launch_log(root, name) == before and executor.calls == []
+
+
+def journal_lines(root: Path, name: str) -> list[dict]:
+    path = root / "launch" / f"{name}.jsonl"
+    return launch_log(root, name) if path.is_file() else []
+
+
+@pytest.mark.parametrize(("own", "other"), [("z-original", "a-recovery"),
+                                            ("a-original", "z-recovery")])  # fmt: skip
+def test_the_launchers_end_goes_only_to_the_journal_of_the_attempts_start(
+    tmp_path, own, other
+) -> None:
+    """The attempt's start and its conflict lie in ``own``. A call under another campaign name
+    writes nothing, whichever file name sorts first; a call under ``own`` writes the end there
+    once, and no later call under either name writes another."""
+    from zero_field_refusal.analysis.study5_analysis_cli import Reader, completed
+
+    _, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    run_id = f"x-{run.config_hash[:8]}-a1"
+    run_dir = reordered_run_dir(root, run, run_id, 500)
+    log_conflict(root, own, run, run_id, prefix_problem(run_dir))
+    executor = Executor(root, {})
+
+    def call(name: str) -> dict:
+        return run_campaign(name, runs, root, execute=executor, only=run.label, max_attempts=1)
+
+    assert call(other)["skipped"] == [run.label]
+    assert [len(journal_lines(root, n)) for n in (own, other)] == [2, 0]
+    call(own)
+    assert [len(journal_lines(root, n)) for n in (own, other)] == [3, 0]
+    assert journal_lines(root, own)[-1]["requalified"]["conflict"] == {"log": f"{own}.jsonl",
+                                                                       "line": 2}  # fmt: skip
+    for name in (other, own, other):
+        call(name)
+    assert [len(journal_lines(root, n)) for n in (own, other)] == [3, 0]
+    assert completed(Reader({"runs": root}), root, (own, run.label), "r") == run_dir
+    assert executor.calls == []
+
+
+def test_an_attempt_with_a_record_in_another_journal_gets_no_end(tmp_path) -> None:
+    """The conflict's end is also in another journal: which end is the last is not told by the
+    file names, so nothing is written, under either name."""
+    _, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    run_id = f"x-{run.config_hash[:8]}-a1"
+    run_dir = reordered_run_dir(root, run, run_id, 500)
+    log_conflict(root, "own", run, run_id, prefix_problem(run_dir))
+    (conflict,) = [r for r in launch_log(root, "own") if r["event"] == "end"]
+    (root / "launch" / "other.jsonl").write_text(json.dumps(conflict) + "\n")
+    before = [launch_log(root, n) for n in ("own", "other")]
+    for name in ("own", "other"):
+        run_campaign(name, runs, root, execute=Executor(root, {}), only=run.label, max_attempts=1)
+    assert [launch_log(root, n) for n in ("own", "other")] == before
+
+
 @pytest.mark.parametrize(("first", "second"), [("z-original", "a-recovery"),
                                                ("a-original", "z-recovery")])  # fmt: skip
 def test_a_start_in_another_journal_is_settled_whatever_the_file_names(
