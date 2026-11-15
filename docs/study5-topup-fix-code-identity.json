@@ -1,0 +1,15 @@
+{
+ "what": "The GPU code of study 5's E2 top-up after the stream-prefix fix (the qualification of a reordered run stopped before its last step, and the launcher's end for the conflicts the earlier check wrote): the identity of its GPU paths at the commit named.",
+ "rule": "zero_field_refusal.code_identity.gpu_code_identity",
+ "commit": "5ec29051dbe86035166ee710b22f1057f6f270c3",
+ "files": 155,
+ "gpu_code_sha256": "05a3bfbb145b53e6217095b27b319cc628e2ea56cc73d2b0047b634045e7541b",
+ "engineering_check": "No run trains under this code. The two GPU paths changed since pod 4's record qualify a run's terminal records (analysis.stage_a, which the launcher and the judge import) and write the launcher's journal ends (launch); the training, evaluation and replay paths are pod 4's, which pod 4's engineering check covers. The top-up's runs train at c6277f3177d2085b60348a147cd5687cfaa7453d, under pod 4's GPU code, a missing one by its own label alone. A run the earlier stream-prefix check refused stands as its observed outcome and is not trained again: under this code the launcher writes, in the journal of its attempt's start, the end it writes when an attempt ends (launch.run_campaign, \"A conflict of the stream-prefix check\"). A later GPU change needs a new check and a new record.",
+ "changed_from": {
+  "record": "docs/study5-extension-2-code-identity.json",
+  "paths": [
+   "src/zero_field_refusal/analysis/stage_a.py",
+   "src/zero_field_refusal/launch.py"
+  ]
+ }
+}
