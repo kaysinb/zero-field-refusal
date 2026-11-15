@@ -1911,10 +1911,10 @@ def gate_plan(tmp_path, step, n=None):
 
 
 HEAD = camp.code_identity.gpu_code_identity()
-# The commit of HEAD's GPU code's record (extension 2's after its fifth amendment): an earlier
-# commit of HEAD's GPU code
+# The commit of HEAD's GPU code's record (extension 2's after its fifth amendment with the E2
+# top-up's stream-prefix fix merged): an earlier commit of HEAD's GPU code
 SAME = json.loads(
-    (REPO_ROOT / "docs" / "study5-extension-2-amendment-5-code-identity.json").read_text()
+    (REPO_ROOT / "docs" / "study5-extension-2-topup-fix-code-identity.json").read_text()
 )["commit"]
 OTHER = "fd54945"  # study 3's qualified GPU code: another identity
 
