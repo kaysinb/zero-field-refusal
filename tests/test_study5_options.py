@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections import Counter
 
 import pytest
@@ -111,6 +112,45 @@ def test_order_seed_permutes_only_order(env, tmp_path, monkeypatch) -> None:  # 
     assert a["streams"]["preconditioner"] == b["streams"]["preconditioner"]
     checks = read_jsonl(ordered_dir / "chunk_checks.jsonl")
     assert [r["chunk"] for r in checks] == [0, 1, 2]  # every chunk, before the first update
+
+
+# (the scripted gradient norms, the stop, the steps taken): a spike before the second update, a
+# non-finite gradient before the first
+STOPS = {
+    "spike": ([1.0, 50.0], "gradient_spike", 1),
+    "before-any-update": ([math.inf], "nonfinite_gradient", 0),
+}
+
+
+@pytest.mark.parametrize("stop", sorted(STOPS))
+@pytest.mark.parametrize(
+    "extra",
+    [("+study5.role=control", "+train.order_seed=7"), ("+study5.role=fresh",)],
+    ids=["ordered", "plain"],
+)
+def test_a_run_stopped_early_stands_on_the_prefix_it_read(env, tmp_path, monkeypatch, extra, stop):  # noqa: F811
+    """An instability rule stops the run before its second update, or before its first. A
+    reordered run that updated read and records its permutation's whole prefix, a run in stream
+    order the batches it used, and a run with no update records none; the run's records stand
+    either way (analysis.stage_a.load_trajectory, as the launcher and the judge read them)."""
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+
+    torch.set_num_threads(1)
+    cfg = ready(env, scheduled(tmp_path, *F_RUN, "teacher.chunk_size=5", *extra, policy="short"))
+    scripted, reason, steps = STOPS[stop]
+    norms, real = iter(scripted), schedule._norm
+
+    def norm(tensors):  # the gradient norms are scripted, the weight check stays real
+        first = next(t for t in tensors if t is not None)
+        return next(norms) if first.requires_grad is False and first.grad is None else real(tensors)
+
+    monkeypatch.setattr(schedule, "_norm", norm)
+    run_dir = run_scheduled(cfg, env, run_id="stopped")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert (terminal["stop"]["reason"], terminal["steps"]) == (reason, steps)
+    count = inputs_of(run_dir)["streams"]["training"]["count"]
+    assert count == (0 if steps == 0 else 12 if "+train.order_seed=7" in extra else 4)
+    assert load_trajectory(run_dir).steps == steps
 
 
 # ---------------------------------------------------------------------------- preconditioner

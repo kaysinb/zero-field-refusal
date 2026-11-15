@@ -3589,7 +3589,13 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   are ordered by their attempt number, then the start's time, whichever journal file holds them
   (a recovery logged under another campaign name included): the start ended is the latest one
   no such record names. A settled `done` keeps the launcher's meaning (a valid terminal outcome,
-  a declared instability stop included), never a qualification.
+  a declared instability stop included), never a qualification. A `conflict` the earlier
+  stream-prefix check wrote for a reordered run stopped before its last step (its problem holds
+  "a scheduled run's records are incomplete: " and "the recorded stream prefix holds ") gets the
+  end the launcher writes when an attempt ends (`done` or `diverged`), settled, with
+  `"requalified"` naming the conflict's log and line, when the attempt is the run's latest, its
+  run now stands, and its start and every record of it lie in the journal of the campaign
+  assessed, where the end goes; any other conflict stays the run's last end.
   `SIGTERM` to the launcher alone (not its process group) stops the campaign at a run boundary:
   the running attempt finishes and is recorded, a `stop` record is logged, and the launcher exits
   non-zero without starting another; the same command carries on later. `--only LABEL` (a run's

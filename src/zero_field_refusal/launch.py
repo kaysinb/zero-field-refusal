@@ -94,7 +94,9 @@ per attempt start and end, per recovery round and per stop; each attempt's outpu
 ``RUNS_DIR/launch/<campaign name>/``. A start record carries the campaign's ``header`` when it
 has one (study 2's campaigns record the w_max they were written under, which the replay reads
 back). An end the launcher writes after the fact, for a start it
-finds without one, carries ``"settled": true`` (``run_campaign``, "A start found without its end").
+finds without one, carries ``"settled": true`` (``run_campaign``, "A start found without its end");
+so does the end it writes after a conflict the stream-prefix check raised in error, with
+``"requalified"`` (``run_campaign``, "A conflict of the stream-prefix check").
 Ends, ``superseded`` and ``held`` records are matched to their starts by run id, and a label's
 attempts are ordered by their attempt number, then the start's time (``label_starts``), never by
 the journal file that holds them.
@@ -1111,6 +1113,22 @@ def run_campaign(
     a run left out of ``runs``) and nothing in a dry run; the end goes to this campaign's log.
     Attempts are counted from the starts, as before, so the new end changes no count.
 
+    **A conflict of the stream-prefix check** (``PREFIX_CONFLICT``). A reordered run stopped
+    before its last step records its permutation's whole prefix, which the check once compared
+    with the steps it ran, so its end was a ``conflict``. When an assessed run's latest attempt
+    is the run that now stands (``Assessment.done``, no conflict), every record naming that
+    attempt's run id (its start and its ends; no ``superseded`` or ``held`` record) lies in this
+    campaign's own journal, and that journal's last end of it, in line order, is a conflict whose
+    problem has both unchanged parts of that message, the launcher writes there, after the
+    settled ends and before it skips the run, the end it writes when an attempt ends
+    (``end_outcome``: ``done`` or ``diverged``, never a ``conflict`` or ``technical`` one): the
+    same run id and attempt, ``returncode`` null, ``"settled": true``, ``only`` as any end
+    carries it, and ``"requalified"``: its reason and the conflict end's place (its log's file
+    name and line number). Nothing else is written or rewritten: a conflict of any other cause,
+    or one the run still cannot pass, stays the run's last end; an attempt with a record in
+    another journal (the file names do not order records) gets nothing, nor does a run not
+    assessed or a dry run; a later call finds the new end and writes nothing.
+
     **A journal that is not whole** (module docstring, "The journal"). Before anything else,
     while any log under ``runs_root/launch/`` holds a torn line that no ``torn_resolved`` record
     names (``torn_lines``), or a published qualification record under
@@ -1154,6 +1172,9 @@ def run_campaign(
     if not dry_run:  # before a run is skipped, a conflict raised or an attempt started
         for run in runs:
             _settle(run, assessments[run.label], records, log, extra)
+        settled = journal_entries(runs_root)  # with the ends just written
+        for run in runs:
+            _requalify(run, assessments[run.label], settled, log, extra)
     conflicts = {f"{run.experiment}/{run_dir}": problem for run in runs
                  for run_dir, problem in assessments[run.label].conflicts.items()}  # fmt: skip
     if conflicts:
@@ -1372,6 +1393,76 @@ def _settle(run: Run, state: Assessment, records: Sequence[Mapping[str, Any]], l
                **({"only": extra["only"]} if "only" in extra else {})})  # fmt: skip
 
 
+def end_outcome(run: Run, run_dir: Path, meta: Any) -> tuple[str, str | None]:
+    """The outcome and problem of an attempt's end, as the launcher judges the attempt's
+    directory (``meta`` its ``meta.json``, None when unreadable) when the attempt ends: ``done``
+    for a run that can stand (completed, or a published scheduled outcome on whole records),
+    ``conflict`` with why one cannot, ``diverged``, else ``technical``."""
+    status = None if meta is None else meta.get("status")
+    if status == "completed" or _published(run_dir):
+        problem = _disqualification(run, run_dir, meta)
+        return ("done", None) if problem is None else ("conflict", problem)
+    if status == "diverged":
+        return "diverged", None
+    return "technical", f"status {status!r}"
+
+
+# The conflicts the stream-prefix check wrote in error (``_requalify``): a reordered run stopped
+# before its last step, whose recorded prefix is its permutation's whole prefix
+# (analysis.stage_a._stream_prefix_problems), was refused as incomplete. Matched by the unchanged
+# parts of the message, never by its numbers.
+PREFIX_CONFLICT = (
+    "a scheduled run's records are incomplete: ",
+    "the recorded stream prefix holds ",
+)
+REQUALIFIED = (
+    "the stream-prefix check compares a reordered run's recorded prefix with its permutation's "
+    "whole prefix (analysis.stage_a); the conflict end named was written under the check that "
+    "compared it with the steps run"
+)
+
+
+def _requalify(run: Run, state: Assessment, entries: Entries, log: Path,
+               extra: Mapping[str, Any]) -> None:  # fmt: skip
+    """Write the end the launcher would have written for a run the stream-prefix check refused in
+    error (``run_campaign``, "A conflict of the stream-prefix check"), or nothing."""
+    if state.done is None or state.conflicts:
+        return
+    records = [record for _, _, record in entries]
+    starts = label_starts(run, records)
+    if not starts or starts[-1]["run_id"] != state.done.name:
+        return
+    run_id = starts[-1]["run_id"]
+    # the attempt's records: its start, its ends, never a supersession or a hold, every one in
+    # this campaign's own journal (the one the analysis reads the run from); its last end is that
+    # journal's last, in line order (journal_entries keeps each log's lines in order)
+    named = [(log_name, number, record) for log_name, number, record in entries
+             if record.get("run_id") == run_id]  # fmt: skip
+    if {log_name for log_name, _, _ in named} != {log.name} or any(
+        record.get("event") in ("superseded", "held") for _, _, record in named
+    ):
+        return
+    ends = [(number, record) for _, number, record in named if record.get("event") == "end"]
+    if not ends:
+        return
+    number, last = ends[-1]
+    problem = last.get("problem")
+    if last.get("outcome") != "conflict" or not (
+        isinstance(problem, str) and problem.startswith(PREFIX_CONFLICT[0])
+        and PREFIX_CONFLICT[1] in problem
+    ):  # fmt: skip
+        return
+    outcome, problem = end_outcome(run, state.done, _read_json(state.done / "meta.json"))
+    if outcome not in ("done", "diverged"):
+        return
+    _log(log, {"event": "end", "run": run.label, "attempt": last.get("attempt"),
+               "run_id": run_id, "returncode": None, "outcome": outcome, "problem": problem,
+               "settled": True,
+               "requalified": {"reason": REQUALIFIED, "conflict": {"log": log.name,
+                                                                   "line": number}},
+               **({"only": extra["only"]} if "only" in extra else {})})  # fmt: skip
+
+
 def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
              execute: Callable[[Run, str, Path, Mapping[str, Any]], int],
              header: Mapping[str, Any] | None, name: str,
@@ -1392,16 +1483,7 @@ def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
                 "header": None if header is None else dict(header)}  # fmt: skip
     code = execute(run, run_id, output, campaign)
     run_dir = Path(runs_root) / run.experiment / run_id
-    meta = _read_json(run_dir / "meta.json")
-    status = None if meta is None else meta.get("status")
-    problem = None
-    if status == "completed" or _published(run_dir):
-        problem = _disqualification(run, run_dir, meta)
-        outcome = "done" if problem is None else "conflict"
-    elif status == "diverged":
-        outcome = "diverged"
-    else:
-        outcome, problem = "technical", f"status {status!r}"
+    outcome, problem = end_outcome(run, run_dir, _read_json(run_dir / "meta.json"))
     _log(log, {"event": "end", "run": run.label, "attempt": attempt, "run_id": run_id,
                "returncode": code, "outcome": outcome, "problem": problem,
                **({"only": extra["only"]} if "only" in extra else {})})  # fmt: skip

@@ -32,6 +32,7 @@ from zero_field_refusal.analysis.stage_a import (
     spike_ratio,
     trigger_checks,
 )
+from zero_field_refusal.study5_options import training_order
 
 SPEC = prescribed()  # the schedules, model and protocol of the study-2 configs
 LEVELS = SPEC["long"]["levels"]
@@ -374,6 +375,55 @@ def test_a_published_outcome_loads_whatever_the_status(tmp_path) -> None:
         )
     )
     assert run.status == "failed" and run.stop == "target"
+
+
+# A 25-step run of B = 20 stopped by a gradient spike after 18 steps, as a study-5 run in
+# stream order or reordered (study5_options.training_order); a reordered run reads and records
+# its permutation's whole prefix, 500 responses, before its first batch (schedule.BatchFeed).
+ORDERS = {
+    "order_seed": 2000,
+    "order_edit": {"kind": "shuffle", "first": 1, "last": 25, "draw": 0},
+}
+
+
+def _stopped_early(tmp_path: Path, name: str, order: str | None, count: int, edit=None) -> Path:
+    run_dir = write_run(tmp_path, name, arm="frozen_adam_25", batch=20, lr=1.3e-5, seed=2000,
+                        steps=18, stop="gradient_spike",
+                        detail={"grad_norm": 12.0, "reference_median": 1.0})  # fmt: skip
+    cfg = OmegaConf.load(run_dir / "config.yaml")
+    cfg.train.steps = 25
+    if order is not None:
+        cfg.train[order] = edit if edit is not None else ORDERS[order]
+    OmegaConf.save(cfg, run_dir / "config.yaml")
+    _edit(run_dir / "meta.json", lambda m: m["inputs"]["streams"]["training"].update(count=count))
+    return run_dir
+
+
+@pytest.mark.parametrize("order", sorted(ORDERS))
+def test_a_reordered_run_stopped_early_stands_on_its_whole_permutation(tmp_path, order) -> None:
+    run = load_trajectory(_stopped_early(tmp_path, "r", order, 500))
+    assert (run.steps, run.stop, run.stream["count"]) == (18, "gradient_spike", 500)
+    assert len(training_order(OmegaConf.load(run.run_dir / "config.yaml"))) == 500
+
+
+def test_a_run_in_stream_order_records_the_responses_it_used(tmp_path) -> None:
+    assert load_trajectory(_stopped_early(tmp_path, "used", None, 360)).steps == 18
+    with pytest.raises(TrajectoryError, match="prefix holds 500 responses, the run used 360$"):
+        load_trajectory(_stopped_early(tmp_path, "whole", None, 500))
+
+
+@pytest.mark.parametrize("order", sorted(ORDERS))
+@pytest.mark.parametrize("count", [340, 360, 499, 520])
+def test_a_reordered_run_records_no_other_prefix(tmp_path, order, count) -> None:
+    with pytest.raises(TrajectoryError, match=f"prefix holds {count} responses, the reordered "
+                       "run read its permutation's 500 and used 360"):  # fmt: skip
+        load_trajectory(_stopped_early(tmp_path, "r", order, count))
+
+
+def test_an_invalid_order_edit_does_not_stand(tmp_path) -> None:
+    edit = {"kind": "shuffle", "first": 1, "last": 30, "draw": 0}
+    with pytest.raises(TrajectoryError, match="the run's training order is invalid"):
+        load_trajectory(_stopped_early(tmp_path, "r", "order_edit", 500, edit=edit))
 
 
 def _edit(path: Path, change) -> None:

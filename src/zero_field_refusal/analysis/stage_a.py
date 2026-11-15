@@ -332,12 +332,7 @@ def load_trajectory(run_dir: Path) -> Trajectory:
     problems += _pilot_control_problems(cfg, terminal, training, readings, diagnostics, checks,
                                         terminal_step)  # fmt: skip
     stream = inputs.get("streams", {}).get("training", {})
-    used = stream.get("count")
-    if used != steps * cfg.train.batch_size:
-        problems.append(
-            f"the recorded stream prefix holds {used} responses, the run used "
-            f"{steps * cfg.train.batch_size}"
-        )
+    problems += _stream_prefix_problems(cfg, stream.get("count"), steps)
     if problems:
         raise TrajectoryError(f"{run_dir}: " + "; ".join(problems))
     return Trajectory(
@@ -370,6 +365,32 @@ def load_trajectory(run_dir: Path) -> Trajectory:
         momentum=_momentum(cfg),
         contamination_checks=tuple(checks),
     )
+
+
+def _stream_prefix_problems(cfg: Any, count: Any, steps: int) -> list[str]:
+    """The recorded training stream's prefix against what the run read (schedule.BatchFeed). A
+    run in stream order reads and records the responses of its steps, steps × B. A reordered run
+    (``study5_options.training_order``: train.order_seed or train.order_edit) reads its
+    permutation's whole prefix before its first batch and records that prefix, whatever step it
+    stopped at: the permutation's length, which holds the steps it ran. A reordered run stopped
+    before its first update records none (``BatchFeed.identity(0)``), as a run in stream order."""
+    from ..study5_options import training_order  # its import reaches the runtime, kept local
+
+    used = steps * int(cfg.train.batch_size)
+    try:
+        order = training_order(cfg)
+    except ValueError as exc:  # an invalid order edit
+        return [f"the run's training order is invalid ({exc})"]
+    if order is None or steps == 0:
+        if count != used:
+            return [f"the recorded stream prefix holds {count} responses, the run used {used}"]
+        return []
+    if count != len(order) or used > len(order):
+        return [
+            f"the recorded stream prefix holds {count} responses, the reordered run read its "
+            f"permutation's {len(order)} and used {used}"
+        ]
+    return []
 
 
 def _version2_problems(
