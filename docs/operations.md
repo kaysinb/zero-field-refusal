@@ -3468,6 +3468,61 @@ pod 3's order runs and check them against the inventories. The E2 test reads the
 (its `--seeds`, and the top-up's sealed folder as `--predictions`) only as it reads E2's: after
 E2's opening record.
 
+### Study 5, the dose experiment: pods dose-a and dose-b
+
+The dose experiment (docs/study5-dose-registration.md) runs on two L40S Pods at once, each with
+eight of the 16 seeds (`docs/study5-dose-seeds.json`, `zero_field_refusal.dose`): Pod A with the
+pilot seed 50036, Pod B with 50006. It is `scripts/study5_dose_campaigns.py run`, one detached
+driver per Pod of two plans on `scripts/study5_campaigns.py`'s machinery (`Builder`, `execute`,
+deadlines, archives, receipts, restarts and the close).
+
+**Code and preflight.** The GPU code is the one `docs/study5-dose-code-identity.json` records
+(`train.rate_schedule`, the `dose` role, the one-point scan). Each plan refuses another GPU code,
+a dirty checkout, a registration not `registered`, an archive id outside `dose-a-…` or `dose-b-…`
+by the Pod, and a `RUNS_DIR` that holds anything of another archive (`own_root_problems`).
+
+**The pilot plan** (`--out DIR` → campaign folder `DIR-pilot`):
+1. `engineering`: pod 2's order control of 50000 at η_l rerun and checked under the numerical rule
+   (`--tolerance 1e-4`) into `engineering-check-numerical.json`; any failure stops.
+2. `fetch`: the Pod's eight seeds' streams from pod 2's archive.
+3. `pilot`: the pilot seed at 3 early × 3 late levels (9 runs, endpoint checkpoints on the volume),
+   then its table (each run's end and K_benign at step 25, nothing else) published to
+   `study5/<ID>/pilot/pilot-table.json` and read back.
+4. `grid`: the other Pod's table fetched (waiting at most 45 minutes), both checked, the rule
+   applied (`dose.grid_choice`) into `study5_records/<ID>/grid.json`, which holds both tables;
+   a missing table stops.
+5. `close`.
+
+**The main plan** (campaign folder `DIR-main`), built from that grid record only once the pilot
+plan completed:
+1. `pilot-scans`: the record's sha256 checked; the scans at a = −0.5 of the pilot's three runs at
+   L_lo; the nine pilot checkpoints removed once the records that read them are archived.
+2. `main`: per other seed one launcher campaign of six runs, the scans of its three L_lo runs,
+   the seed's archive, its three checkpoints removed.
+3. `close`.
+
+**Time and the cap.** The dry run prints 2.4 h for the pilot plan (45 minutes of them the wait's
+bound) and 7.6 h for the main plan. Each Pod's cap `ZFR_DEADLINE_EPOCH` is at most 11 hours after
+its start; each block and seed group is admitted only when 1.5 × its minutes and the close fit
+before it. The two Pods start together, so that each finds the other's table within the wait.
+
+**The Pod.** L40S Secure, a data center with local xfs (US-TX-4 or OC-AU-1), a 150 GB volume,
+the file-reading deadline watcher with `ZFR_DEADLINE_EPOCH` as its cap. `DATA_DIR` is restored
+with `pod_setup.sh` from study 5's data inventories, as for pod 4; the archive key and the Google
+Cloud CLI as for pod 4. `--checkpoints` lies on the volume.
+
+```bash
+C="$RUNS_DIR/campaigns"
+project-run "$SRC" python scripts/study5_dose_campaigns.py run --pod a --out "$C/study5-dose-a" \
+  --archive-id dose-a-<date> --other-archive-id dose-b-<date> \
+  --checkpoints /workspace/ckpt/dose          # --dry-run first; Pod B: --pod b, the ids swapped
+```
+
+**After the Pods:** restore both Pods' runs (`restore-runs`) into one root and check them against
+the inventories. The 96 main runs are labeled with the registered judge only after both forecast
+files are hashed; the scans and the pilot's six other runs are not labeled. The analysis
+(`scripts/study5_dose_analysis.py`) is fixed before the labels are read.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project
