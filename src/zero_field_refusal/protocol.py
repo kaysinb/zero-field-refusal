@@ -45,8 +45,9 @@ ATTENTION = ("sdpa", "eager")
 STUDY3_CHECKPOINT_ROLES = ("numerical", "engineering")
 # Study 5's roles (study5.role): the fresh seeds' F runs and the crossed controls; both may save
 # the endpoint checkpoint. The keys only the controls carry:
-STUDY5_ROLES = ("fresh", "control")
+STUDY5_ROLES = ("fresh", "control", "dose")
 STUDY5_KEYS = ("train.order_seed", "optimizer.preconditioner.source_seed", "train.order_edit")
+RATE_SCHEDULE = "train.rate_schedule"  # the dose role's key (study5_options)
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 REQUIRED = (
@@ -285,10 +286,13 @@ def _study5_problems(cfg: DictConfig) -> list[str]:
     F run (its line scan is a run of its own, ``line_scan``), a ``control`` run sets exactly one
     of ``train.order_seed``, ``optimizer.preconditioner.source_seed`` and ``train.order_edit``
     (extension 2; ``study5_options.edit_problems`` checks it); both may save the endpoint
-    checkpoint. Every study-5 run is a fixed-policy scheduled F run; no other run carries
-    a study-5 key."""
+    checkpoint. A ``dose`` run (docs/study5-dose-registration.md) carries a valid
+    ``train.rate_schedule`` (``study5_options.schedule_problems``) and none of the three
+    control keys; no other role carries the schedule. Every study-5 run is a fixed-policy
+    scheduled F run; no other run carries a study-5 key."""
     role = OmegaConf.select(cfg, "study5.role", default=None)
-    present = {key: OmegaConf.select(cfg, key, default=None) for key in STUDY5_KEYS}
+    present = {key: OmegaConf.select(cfg, key, default=None)
+               for key in (*STUDY5_KEYS, RATE_SCHEDULE)}  # fmt: skip
     present = {key: value for key, value in present.items() if value is not None}
     if OmegaConf.select(cfg, "study5", default=None) is None:
         return [f"{key}: carried by a study-5 role only (study5.role), got {value!r}"
@@ -317,7 +321,21 @@ def _study5_problems(cfg: DictConfig) -> list[str]:
         )
         problems += edit_problems(container, int(cfg.train.steps))
     controls = [key for key in STUDY5_KEYS if key in present]
-    if role == "fresh":
+    schedule = present.get(RATE_SCHEDULE)
+    if role != "dose" and schedule is not None:
+        problems.append(f"{RATE_SCHEDULE}: carried by the dose role only, got role {role!r}")
+    if role == "dose":
+        from .study5_options import schedule_problems  # late, as above
+
+        problems += [f"{key}: a control's key; a study-5 run of role 'dose' takes none"
+                     for key in controls]  # fmt: skip
+        if schedule is None:
+            problems.append(f"{RATE_SCHEDULE}: a dose run needs one")
+        else:
+            container = (OmegaConf.to_container(schedule, resolve=True)
+                         if OmegaConf.is_config(schedule) else schedule)  # fmt: skip
+            problems += schedule_problems(container, int(cfg.train.steps))
+    elif role == "fresh":
         problems += [f"{key}: a control's key; a study-5 run of role 'fresh' takes none"
                      for key in controls]  # fmt: skip
     elif len(controls) != 1:  # control

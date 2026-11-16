@@ -99,7 +99,13 @@ from .panels import CacheMismatch, Monitor, ScoringDiagnostics, cache_check
 from .prechecks import check_run_chi_square, check_teacher_gap, require_path_check
 from .runtime import Environment, ReplayedSoftTargets, StreamPrefix, extend_stream
 from .seeding import derive_seed, seed_everything
-from .study5_options import batch_samples, order_record, training_order
+from .study5_options import (
+    batch_samples,
+    order_record,
+    schedule_record,
+    step_rates,
+    training_order,
+)
 from .teacher import Sample
 from .tensor_hash import file_sha256, tensors_sha256
 from .tracking import Diverged, Run
@@ -548,6 +554,9 @@ def run_scheduled(
                 run.record_inputs({"v0_sha256": tensors_sha256(list(named))})
         optimizer = build_optimizer(cfg.optimizer, params, second_moment=second_moment)
         del second_moment
+        rates = step_rates(cfg)  # the dose experiment's rate of each update; None: optimizer.lr
+        if rates is not None:
+            run.record_inputs({"rate_schedule": schedule_record(cfg)})
         scalars = None  # read-only; the pre-warmed arm's v₀ goes to host memory now
         if cfg.tracking.get("update_scalars", False) and isinstance(optimizer, Adam):
             scalars = UpdateScalars(optimizer)
@@ -577,6 +586,9 @@ def run_scheduled(
                 loop.rejected = {"step": step, "loss": stats["loss"],
                                  "grad_norm": stats["grad_norm"]}  # fmt: skip
                 break
+            if rates is not None:  # before the update: step_size reads the rate it used
+                for group in optimizer.param_groups:
+                    group["lr"] = rates[step]
             optimizer.step()
             loop.steps = step + 1  # the update is applied, whatever it did to the weights
             run.log(stats, step=step)

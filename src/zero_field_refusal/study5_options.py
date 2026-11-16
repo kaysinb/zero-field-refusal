@@ -27,12 +27,22 @@ carry them (``study5.role``).
   Steps count from 1 (t < ``train.steps``, 1 ≤ a < b ≤ ``train.steps``). The edit's permutation
   goes the same way as an order seed's (``batch_samples``), and ``order_record`` records the edit
   beside the permutation's sha256. ``protocol`` lets a control set exactly one of the three keys.
+- ``train.rate_schedule`` (the dose experiment, docs/study5-dose-registration.md): a mapping of
+  exactly ``early_steps`` k (an integer, 1 ≤ k < ``train.steps``) and ``early_lr`` (a positive
+  finite float): updates 1 … k take the rate ``early_lr``, updates k + 1 … ``train.steps`` the
+  rate ``optimizer.lr`` (``step_rates``). ``schedule.run_scheduled`` sets every parameter
+  group's ``lr`` to the update's rate just before that update, so Adam's bias correction and
+  the read accessors (``optim.Adam.step_size``) see the rate the update used; the first moment
+  carries over unchanged. The run records ``inputs.rate_schedule`` (``schedule_record``).
+  ``protocol`` lets only the ``dose`` role carry it, and that role carries none of the three
+  keys above. With ``early_lr`` equal to ``optimizer.lr`` the run is the plain run.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -151,6 +161,55 @@ def batch_samples(
             if i // prefix.size == chunk:
                 out[position] = samples[i - base]
     return out  # type: ignore[return-value]
+
+
+SCHEDULE_FIELDS = ("early_lr", "early_steps")
+
+
+def rate_schedule(cfg: DictConfig) -> dict[str, Any] | None:
+    value = OmegaConf.select(cfg, "train.rate_schedule", default=None)
+    if value is None:
+        return None
+    return OmegaConf.to_container(value, resolve=True) if OmegaConf.is_config(value) else value
+
+
+def schedule_problems(value: Any, steps: int) -> list[str]:
+    """Why ``train.rate_schedule`` is not a valid schedule for a run of ``steps`` steps (empty:
+    valid)."""
+    if not isinstance(value, dict):
+        return [f"train.rate_schedule: expected a mapping, got {value!r}"]
+    if sorted(value) != list(SCHEDULE_FIELDS):
+        return [f"train.rate_schedule: exactly {list(SCHEDULE_FIELDS)}, got {sorted(value)}"]
+    problems = []
+    k, lr = value["early_steps"], value["early_lr"]
+    if not (_is_int(k) and 1 <= k < steps):
+        problems.append(f"train.rate_schedule.early_steps: expected 1 … {steps - 1}, got {k!r}")
+    if not (isinstance(lr, float) and math.isfinite(lr) and lr > 0):
+        problems.append(f"train.rate_schedule.early_lr: expected a positive float, got {lr!r}")
+    return problems
+
+
+def step_rates(cfg: DictConfig) -> list[float] | None:
+    """The rate of each update 1 … ``train.steps`` under ``train.rate_schedule`` (None without
+    it)."""
+    value = rate_schedule(cfg)
+    if value is None:
+        return None
+    steps = int(cfg.train.steps)
+    problems = schedule_problems(value, steps)
+    if problems:
+        raise ValueError("; ".join(problems))
+    k, late = int(value["early_steps"]), float(cfg.optimizer.lr)
+    return [float(value["early_lr"])] * k + [late] * (steps - k)
+
+
+def schedule_record(cfg: DictConfig) -> dict[str, Any]:
+    """``inputs.rate_schedule``: the early updates, the early and the late rate."""
+    value = rate_schedule(cfg)
+    if value is None:
+        raise ValueError("the run has no train.rate_schedule")
+    return {"early_steps": int(value["early_steps"]), "early_lr": float(value["early_lr"]),
+            "late_lr": float(cfg.optimizer.lr)}  # fmt: skip
 
 
 def preconditioner_source(cfg: DictConfig) -> int | None:

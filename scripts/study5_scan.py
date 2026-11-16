@@ -3,7 +3,7 @@ measurements", "Line scans"), in a run of its own from that run's endpoint check
 one JSON record.
 
     python scripts/study5_scan.py CONFIG --f-run RUN_DIR --checkpoints DIR --out RECORD.json
-        [--run-id ID] [key=value ...]
+        [--run-id ID] [--points A ...] [key=value ...]
 
 CONFIG and the overrides are those of the seed's fresh F run at η_l (``experiments/study5``,
 ``study5.role=fresh``, its rate and its ``seed``), one seed per call; RUN_DIR is that run's
@@ -18,6 +18,9 @@ decoding) under the condition ``line_scan_{a:+g}``, in a run directory of its ow
 The record holds the seed, η, the points, which were evaluated, each point's K and utilities, the
 F run's identities, the checkpoint's sha256, θ₀'s and the endpoint's trainable hashes, the
 streams' identities, the device memory peak, the numerics in force, the git state and the time.
+CONFIG may also be a dose run's (``experiments/study5_dose``, its rates and seed); ``--points``
+scans a subset of the registered points only (the dose experiment: ``--points -0.5``,
+``line_scan.scan_points``), and the record then holds the run's ``rate_schedule``.
 stdout carries numbers, ids and hashes only. An existing record is never overwritten. Exits 0
 when written, 1 on a refusal.
 """
@@ -75,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checkpoints", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument("--points", type=float, nargs="+", default=None)
     args = parser.parse_args(argv)
     if args.out.exists():
         print(f"record exists: {args.out}")
@@ -82,7 +86,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_run_config(args.config, args.overrides)  # the protocol: fp32, frozen modules
     try:
         linear_response.require_frozen_adam(cfg)
-        ladder.require_fresh(cfg)
+        line_scan.require_scannable(cfg)
+        line_scan.scan_points(args.points)
         f_run = ladder.read_f_run(args.f_run, cfg)  # its config hash this config's
         checkpoint = line_scan.checkpoint_of(args.f_run, f_run, args.checkpoints,
                                              int(cfg.train.steps))  # fmt: skip
@@ -92,7 +97,8 @@ def main(argv: list[str] | None = None) -> int:
     numerics = configure_numerics(cfg, cfg.execution.device)  # first: before any CUDA work
     env = environment(cfg, cfg.execution.device)
     try:
-        record = line_scan.run_scan(cfg, env, f_run, checkpoint, run_id=args.run_id)
+        record = line_scan.run_scan(cfg, env, f_run, checkpoint, run_id=args.run_id,
+                                    points=args.points)
     except ValueError as exc:
         print(exc)
         return 1

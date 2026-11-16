@@ -1,0 +1,15 @@
+# Study 5's dose experiment (docs/study5-dose-registration.md): arm F on the seed's own stream
+# order and v₀, its first train.rate_schedule.early_steps = 5 updates at
+# train.rate_schedule.early_lr and the other 20 at optimizer.lr, the late rate
+# (study5_options, "train.rate_schedule"). The early rate, the late rate, the seed and the
+# checkpoint directory come from the campaign (scripts/study5_campaigns.py, the dose plans); the
+# scan of a run is a run of its own (line_scan).
+defaults:
+  - experiments/study5
+
+study5:
+  role: dose
+train:
+  rate_schedule:
+    early_steps: 5
+    early_lr: ???

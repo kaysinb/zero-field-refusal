@@ -31,6 +31,13 @@ points are missing by name in the analysis. Nothing of the F run is written.
 **Identities.** The scan refuses an F run whose θ₀ or K-panel streams are not its own (where the
 F run recorded them) and a checkpoint that is not the run's.
 
+**The dose experiment** (docs/study5-dose-registration.md) scans its runs at the late level L_lo
+at a = −0.5 alone: ``run_scan(..., points=(-0.5,))`` (``scripts/study5_scan.py --points
+-0.5``). Points are a non-empty subset of ``POINTS`` in their order (``scan_points``); the scan
+run records them in ``study5.scan.points``, so a scan of other points is another config. A scan
+takes an F run of role ``fresh`` or ``dose`` (``require_scannable``); with every point the
+default, a fresh run's scan is as before.
+
 Device memory at the peak: the student and the reference model, Δθ and one evaluation; host
 memory: the checkpoint's trainable tensors.
 """
@@ -40,20 +47,21 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import torch
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 from . import linear_response
 from .config import config_hash
 from .evaluation import SCAN_RUN_TYPE, line_scan_condition, set_point
-from .ladder import _check, _peak_memory, require_fresh
+from .ladder import _check, _peak_memory
 from .models import freeze
 from .runtime import Environment
 from .seeding import derive_seed, seed_everything
+from .study5_options import rate_schedule, schedule_record
 from .tensor_hash import file_sha256, tensors_sha256
 from .tracking import Diverged, Run
 from .train import Evaluator
@@ -113,14 +121,36 @@ def endpoint_state(
     return state
 
 
-def scan_config(cfg: DictConfig, f_run_id: str) -> DictConfig:
+SCANNABLE = ("fresh", "dose")  # the F runs' roles a scan takes
+
+
+def require_scannable(cfg: DictConfig) -> None:
+    """A scan takes a fresh seed's F run or a dose run (``study5.role``)."""
+    role = OmegaConf.select(cfg, "study5.role", default=None)
+    if role not in SCANNABLE:
+        raise ValueError(f"study5.role is {role!r}: a scan takes an F run of role {SCANNABLE}")
+
+
+def scan_points(points: Sequence[float] | None) -> tuple[float, ...]:
+    """The scan's points: ``POINTS`` when None, else a non-empty subset of them in their order;
+    ``ValueError`` otherwise."""
+    if points is None:
+        return POINTS
+    chosen = tuple(float(a) for a in points)
+    if not chosen or len(set(chosen)) != len(chosen) or not set(chosen) <= set(POINTS):
+        raise ValueError(f"scan points {list(chosen)}: a non-empty subset of {list(POINTS)}")
+    return tuple(a for a in POINTS if a in chosen)
+
+
+def scan_config(cfg: DictConfig, f_run_id: str,
+                points: Sequence[float] | None = None) -> DictConfig:  # fmt: skip
     """The scan run's config: the F run's, run type ``SCAN_RUN_TYPE``, experiment
     ``EXPERIMENT`` and ``study5.scan`` = {f_run, points}."""
     out = copy.deepcopy(cfg)
     with open_dict(out):
         out.run_type = SCAN_RUN_TYPE
         out.experiment = EXPERIMENT
-        out.study5.scan = {"f_run": f_run_id, "points": list(POINTS)}
+        out.study5.scan = {"f_run": f_run_id, "points": list(scan_points(points))}
     return out
 
 
@@ -131,18 +161,21 @@ def run_scan(
     checkpoint: Mapping[str, Any],
     *,
     run_id: str | None = None,
+    points: Sequence[float] | None = None,
 ) -> dict[str, Any]:
-    """The scan of one seed's η_l run in a run directory of its own (module docstring). ``cfg``
-    is the F run's config, ``f_run`` its ``ladder.read_f_run`` and ``checkpoint`` its
-    ``checkpoint_of``. Returns the record (no git state or time: the caller's)."""
+    """The scan of one seed's η_l run (or a dose run) in a run directory of its own (module
+    docstring) at ``points`` (``scan_points``). ``cfg`` is the F run's config, ``f_run`` its
+    ``ladder.read_f_run`` and ``checkpoint`` its ``checkpoint_of``. Returns the record (no git
+    state or time: the caller's)."""
     linear_response.require_frozen_adam(cfg)
-    require_fresh(cfg)
+    require_scannable(cfg)
+    chosen = scan_points(points)
     seed = int(cfg.seed)
     torch_seed = derive_seed(seed, "torch")
     seed_everything(torch_seed)  # as the run seeds itself
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
-    scfg = scan_config(cfg, f_run["run_id"])
+    scfg = scan_config(cfg, f_run["run_id"], chosen)
     rows: list[dict[str, Any]] = []
     with Run(scfg, run_id=run_id) as run:
         run.record_inputs({"prompt_manifest_sha256": env.prompt_manifest_sha256,
@@ -171,8 +204,8 @@ def run_scan(
             direction = [state[name].to(theta0[name].device) - theta0[name]
                          for name, _ in trainable]  # fmt: skip
         del state
-        record: dict[str, Any] = {"points": list(POINTS), "conditions": [], "evaluated": []}
-        for a in POINTS:
+        record: dict[str, Any] = {"points": list(chosen), "conditions": [], "evaluated": []}
+        for a in chosen:
             condition = line_scan_condition(a)
             record["conditions"].append(condition)
             set_point(trainable, start, direction, a)
@@ -188,12 +221,12 @@ def run_scan(
         peak = _peak_memory()
         run.summarize({"line_scan": {**record, **peak}})
         run_dir = run.dir
-    return {
+    out = {
         "kind": "study5-scan",
         "seed": seed,
         "lr": float(cfg.optimizer.lr),
         "steps": int(cfg.train.steps),
-        "points": list(POINTS),
+        "points": list(chosen),
         "conditions": record["conditions"],
         "evaluated": record["evaluated"],
         "rows": [{key: row.get(key) for key in ("a", "condition", "evaluated", "reason", *KEYS)}
@@ -214,3 +247,6 @@ def run_scan(
                   "dtype": cfg.model.dtype, "attn_implementation": cfg.model.attn_implementation},
         "prompt_manifest_sha256": env.prompt_manifest_sha256,
     }  # fmt: skip
+    if rate_schedule(cfg) is not None:  # a dose run: its early and late rate ("lr" the late)
+        out["rate_schedule"] = schedule_record(cfg)
+    return out
