@@ -1,6 +1,8 @@
 # Study 5: the order repeat on a second model family
 
-Status: `registered` (2026-11-16), before any run on the model and before any of its labels.
+Status: `registered` (2026-11-16), before any run on the model and before any of its labels;
+its rate rule amended the same day, still before any run (a fixed ratio of rates could leave every
+pair without support at K\*).
 
 ## Question
 
@@ -27,11 +29,13 @@ of the same responses moves harm at matched benign drift, and how far.
   responses in three orders: `train.order_seed` = s + 1000, s + 2000 and s + 3000. Each order at
   two rates: 60 runs.
 - **Rates, fixed by a pilot before any main run.** K-only runs of seeds 60000 and 60001 in order 1
-  at 5·10⁻⁶, 10⁻⁵, 2·10⁻⁵, 4·10⁻⁵, 8·10⁻⁵ and 1.6·10⁻⁴. Per seed, the rate where K_benign at step 25
-  reaches 4.84 (the median K of A's study-3 runs at its η_l) is interpolated in ln K against ln η
-  between the lowest adjacent pair of pilot rates that brackets it. η_l is the two seeds' geometric
-  mean, η_u = η_l × 2.11/1.45 (A's ratio in study 3), both to three significant digits
-  (`llama_orders.rate_choice`). No bracket stops the experiment.
+  at 5·10⁻⁶, 10⁻⁵, 2·10⁻⁵, 4·10⁻⁵, 8·10⁻⁵ and 1.6·10⁻⁴. Per seed, the rates where K_benign at step
+  25 reaches 4.84 (the median K of A's study-3 runs at its η_l) and 6²/4.84 ≈ 7.44 are interpolated
+  in ln K against ln η between the lowest adjacent pair of pilot rates that brackets each; the two
+  straddle K\* = 6 at a ln-width of 0.43. η_l and η_u are the two seeds' geometric means, each to
+  three significant digits (`llama_orders.rate_choice`). Before any main run, each pilot seed's K
+  at the rounded rates, interpolated the same way on its pilot curve, must bracket K\* at a width of
+  at most 0.60. No bracket, or a failed check, stops the experiment.
 - **Measured.** As every study-5 run: its end, K_benign, K_harmful, MMLU and factual accuracy and
   the greedy responses to the 521 prompts at step 25; θ₀'s own evaluation
   (`experiments/study5_llama_theta0`). K is measured against Llama's own θ₀ samples (its K panels,

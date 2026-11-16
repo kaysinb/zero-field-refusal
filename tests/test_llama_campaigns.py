@@ -117,3 +117,55 @@ def test_the_pilot_table_and_the_rates(tmp_path):
     assert m.main(["table", "--runs", str(runs), "--campaign", "c", *args, "--out", str(table)]) == 0
     assert m.main(["rates", "--table", str(table), "--out", str(rates)]) == 0
     assert m.read_rates(rates)["choice"]["eta_l"] == 2e-05
+
+
+def test_every_command_of_the_checks_plan_passes_its_own_protocol_check(where, tmp_path):
+    """Each stream command loads its config as scripts/generate_teacher.py does
+    (``load_run_config``), stage 0 as scripts/stage0_checks.py does (``check_run_config``):
+    neither may refuse for the thresholds stage 0 has not set yet."""
+    from zero_field_refusal.config import load_config
+    from zero_field_refusal.protocol import check_run_config
+
+    plan = m.checks_plan(out=tmp_path / "o-checks", **where)
+    streams = [s for s in steps(plan) if s.argv[0] == "scripts/generate_teacher.py"]
+    assert len(streams) == len(m.INSTRUMENTS) + len(lo.SEEDS)
+    for step in streams:
+        args = list(step.argv[1:])
+        config, overrides = args[0], [a for a in args[1:] if "=" in a and not a.startswith("--")]
+        cfg = load_run_config(config, overrides)
+        assert cfg.run_type == "theta0" and cfg.model.name == "meta-llama/Llama-3.2-1B-Instruct"
+    (stage0,) = [s for s in steps(plan) if s.argv[0] == "scripts/stage0_checks.py"]
+    check_run_config(load_config(stage0.argv[1]))
+
+
+def test_the_streams_config_locates_the_runs_streams():
+    """``run_type=theta0`` and the placeholders aside, the streams' config is the runs'."""
+    from omegaconf import OmegaConf
+
+    run = load_run_config(lo.CONFIG, ["optimizer.lr=2.2e-05", "seed=60004",
+                                      "train.order_seed=61004",
+                                      *lo.threshold_overrides(lo.checks_record(SUMMARY, "r"))])  # fmt: skip
+    streams = load_run_config(*m.theta0_args(60004)[:1], list(m.theta0_args(60004)[1:]))
+    a, b = (OmegaConf.to_container(c, resolve=True) for c in (run, streams))
+    for x in (a, b):
+        x.pop("run_type"), x.pop("checks"), x["optimizer"].pop("lr"), x["train"].pop("order_seed")
+    assert a == b
+
+
+def test_the_certificate_is_archived_with_the_data_before_stage0s_receipt(where, tmp_path):
+    import torch
+
+    from zero_field_refusal.prechecks import environment_fingerprint, record_path
+
+    plan = m.checks_plan(out=tmp_path / "o-checks", **where)
+    stage0 = next(b for b in plan.blocks if b.name == "stage0")
+    names = [s.name for s in stage0.steps]
+    assert names.index("stage0/archive-certificate") < names.index("stage0/receipt")
+    step = stage0.steps[names.index("stage0/archive-certificate")]
+    argv = list(step.argv)
+    assert argv[argv.index("--remote") + 1] == "data" and step.on_fail == "stop"
+    assert argv[argv.index("--path") + 1] == m.CHECKS_DIR
+    run = load_run_config(lo.CONFIG, ["optimizer.lr=2.2e-05", "seed=60004", "train.order_seed=61004",
+                                      *lo.threshold_overrides(lo.checks_record(SUMMARY, "r"))])  # fmt: skip
+    certificate = record_path(Path("DATA"), environment_fingerprint(run, torch.device("cpu")))
+    assert certificate.parent.relative_to("DATA").as_posix() == m.CHECKS_DIR

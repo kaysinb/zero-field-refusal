@@ -164,7 +164,7 @@ def test_the_constants_are_the_registered_ones() -> None:
                                                    "train.order_seed=61000"])  # fmt: skip
     assert run.experiment == script.EXPERIMENT and run.study5.role == sll.ROLE
     assert run.optimizer.name == sll.OPTIMIZER and run.run_type == sll.RUN_TYPE
-    assert RATE == {L: 2e-05, U: 2.91e-05}
+    assert RATE == {L: 2e-05, U: 3.07e-05}
 
 
 def test_the_rates_record_must_be_the_rules_on_its_rows() -> None:
@@ -293,7 +293,7 @@ def test_each_branch_of_the_readings(erosion_lower, erosion, order_lower, noise,
 def test_a_full_design_gives_known_erosion_means_intervals_and_readings() -> None:
     found = analysis(design_runs())
     assert found["missing"] == [] and len(found["runs"]) == 60
-    assert found["rates"] == {L: 2e-05, U: 2.91e-05}
+    assert found["rates"] == {L: 2e-05, U: 3.07e-05}
     assert found["pairs"] == ["order1-order2", "order1-order3", "order2-order3"]
     kstar = found["kstar"]
     assert kstar["unsupported"]["n"] == 0 and kstar["without_labels"]["n"] == 0
@@ -353,7 +353,7 @@ def test_a_full_design_gives_known_erosion_means_intervals_and_readings() -> Non
         assert utility[group]["factual_loss_pp"] == {"n": n, "mean": pytest.approx(1.0)}
     run = next(r for r in found["runs"] if r["run_id"] == f"r-s{s0}-{O3}-{U}")
     assert run["h"] == pytest.approx(pp(harmful(s0, O3, U))) and run["state"] == "usable"
-    assert run["K_benign"] == 7.5 and run["lr"] == 2.91e-05
+    assert run["K_benign"] == 7.5 and run["lr"] == 3.07e-05
 
 
 def test_harm_that_did_not_rise_leaves_the_order_reading_not_read() -> None:
@@ -675,7 +675,7 @@ def test_the_script_writes_the_full_design_once_numbers_only(tmp_path, patched, 
     assert stdout.splitlines()[-1] == f"record sha256 {sha(data)}"
     assert record["kind"] == "study5-llama-analysis" and record["seeds"] == SEEDS
     rates = record["inputs"]["rates"]
-    assert rates["sha256"] == sha(world.rates_data) and rates["rates"] == {L: 2e-05, U: 2.91e-05}
+    assert rates["sha256"] == sha(world.rates_data) and rates["rates"] == {L: 2e-05, U: 3.07e-05}
     assert rates["choice"] == RATES_RECORD["choice"] and rates["file"] == "rates:rates.json"
     assert record["inputs"]["roots"] == ["runs1"] and record["inputs"]["qwen_adamw"] is None
     theta0 = record["inputs"]["theta0"]
@@ -770,7 +770,7 @@ def test_the_script_refuses_a_key_with_two_ended_runs(tmp_path, patched) -> None
     out = tmp_path / "record.json"
     code, why = call(world.argv(out))
     assert code == 1 and "more than one ended run" in why and not out.exists()
-    assert f"s{s} order3 eta_u: runs1:s5-llama-again, runs1:s5-llama-{O3}-2.91e-05-s{s}" in why
+    assert f"s{s} order3 eta_u: runs1:s5-llama-again, runs1:s5-llama-{O3}-3.07e-05-s{s}" in why
     (world.folder / "s5-llama-again" / "terminal.json").unlink()
     second = tmp_path / "runs-restored"
     world.run(s, O1, L, root=second)  # the same run restored under a second root

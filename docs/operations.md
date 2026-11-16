@@ -3562,13 +3562,16 @@ id outside `llama-…` and a runs root with anything of another archive.
 **The checks plan:** `engineering` as on the dose Pods (pod 2's Qwen order control, numerical
 rule); `instruments`, Llama's K panels (`kl_harmful`, `kl_benign`, `kl_monitor`) sampled on the
 Pod; `stage0`, `scripts/stage0_checks.py experiments/study5_llama_stage0` and its record
-(`llama-checks.json`: the path-field verdict and the teacher-gap thresholds, 10 × the largest gap);
+(`llama-checks.json`: the path-field verdict and the teacher-gap thresholds, 10 × the largest gap),
+and the path-field certificate under `DATA_DIR/checks/` archived with the data (a restored Pod's
+runs require it);
 `theta0`, θ₀'s evaluation; `streams`, the ten seeds' training streams of 500 responses, archived
 with the K panels under `data/`. Any failure of the check, the panels, stage 0 or θ₀ stops.
 
 **The pilot plan:** the K-only pilot (seeds 60000 and 60001, order 1, six rates) with the record's
-thresholds, its table and the rates record (`rates.json`, `llama_orders.rate_choice`); no bracket
-stops. **The main plan:** per seed one launcher campaign of six runs, archived as the seed ends.
+thresholds, its table and the rates record (`rates.json`, `llama_orders.rate_choice`: the rates of
+K = 4.84 and 7.44, then K\* supported at the rounded rates within 0.60); no bracket or a failed
+support check stops. **The main plan:** per seed one launcher campaign of six runs, archived as the seed ends.
 No checkpoint. The Hugging Face account of the Pod's `HF_TOKEN` must have accepted the model's
 licence (the model is gated). The Pod is prepared as a dose Pod.
 

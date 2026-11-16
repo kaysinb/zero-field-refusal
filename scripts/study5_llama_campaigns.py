@@ -28,8 +28,9 @@ ids, paths and hashes only and exits 0 on success, 1 otherwise.
 
 **The pilot plan** (``pilot_plan``, from the checks record): the K-only pilot, ``PILOT_SEEDS`` in
 order 1 at each of ``PILOT_RATES`` with the record's thresholds; ``table``: each run's end and
-K_benign at step 25; ``rates``: the registered rule (``llama_orders.rate_choice``) into the rates
-record; no bracket stops.
+K_benign at step 25; ``rates``: the registered rule (``llama_orders.rate_choice``: the rates of
+K = 4.84 and 7.44, then the support of K\\* at the rounded rates) into the rates record; no
+bracket or a failed support check stops.
 
 **The main plan** (``main_plan``, from both records): per seed one launcher campaign of six runs
 (three orders × the two rates), archived as the seed ends.
@@ -62,6 +63,7 @@ POD = "llama"
 IDENTITY = "docs/study5-llama-code-identity.json"
 REGISTRATION = "docs/study5-llama-registration.md"
 MODEL_DIR = "teacher/meta-llama--Llama-3.2-1B-Instruct"  # Llama's streams under DATA_DIR
+CHECKS_DIR = "checks/meta-llama--Llama-3.2-1B-Instruct"  # its path-field certificate there
 INSTRUMENTS = ("kl_harmful", "kl_benign", "kl_monitor")
 STAGE0_EXPERIMENT = "study5_llama_stage0"
 CHECKS, TABLE, RATES = "llama-checks.json", "pilot-table.json", "rates.json"
@@ -77,8 +79,10 @@ def builder(archive_id: str, out: Path, runs: Path, data: Path, checkpoints: Pat
 
 
 def theta0_args(seed: int) -> tuple[str, ...]:
-    """The runs' config resolved for a seed without training (streams and θ₀'s evaluation)."""
-    return (lo.THETA0_CONFIG, f"seed={seed}")
+    """The runs' config for a seed without training (the K panels and the training streams), as
+    a θ₀ evaluation: ``run_type=theta0`` needs no teacher-gap threshold, which stage 0 sets only
+    later; no key that locates a stream differs from a run's (tests/test_llama_campaigns.py)."""
+    return (lo.THETA0_CONFIG, f"seed={seed}", "run_type=theta0")
 
 
 def checks_plan(*, out: Path, runs: Path, data: Path, checkpoints: Path, archive_id: str,
@@ -100,6 +104,9 @@ def checks_plan(*, out: Path, runs: Path, data: Path, checkpoints: Path, archive
     b.step("stage0/record", (SELF, "checks-record", "--runs", b.runs, "--out", record),
            on_fail="stop", outputs=(str(record),))  # fmt: skip
     b.runs_archive("stage0/archive", paths=(b.rel(record), STAGE0_EXPERIMENT))
+    # the path-field certificate every Llama run requires (prechecks.require_path_check), under
+    # DATA_DIR/checks/: archived with the data, so that a restored Pod's runs find it
+    b.archive("stage0/archive-certificate", root=b.data, remote="data", paths=(CHECKS_DIR,))
     b.end("stage0")
 
     b.begin()  # θ₀'s evaluation on the 521 prompts: the analysis needs it, so a failure stops
