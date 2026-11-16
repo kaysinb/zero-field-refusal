@@ -46,7 +46,8 @@ K_benign.
   stops the Pod.
 - **Measured for every run.** Its end (instability stops are outcomes, never rerun); at step 25
   K_benign, K_harmful, MMLU and factual accuracy and the greedy responses to the 521 prompts;
-  K_monitor and ‖θ_t − θ₀‖ at every step, step 5 among them.
+  K_monitor and ‖θ_t − θ₀‖ at steps 5, 10, 15, 20 and 25 (the monitor's cadence); step 5 is
+  the registered one.
 - **Reverse scan.** For each of the 48 runs at L_lo, the point θ₀ − 0.5 Δθ evaluated
   (`scripts/study5_scan.py --points -0.5`): K and utility; its responses are not labeled.
 - **Labels.** WildGuard on the 521 prompts for the 96 main runs, as in study 5. h is the share
@@ -59,7 +60,10 @@ table alone (no K_harmful, no run of the main experiment), each with: the main c
 averaged and at L_lo and L_hi apart, as a point and an 80 % interval; the contrast at K\*; the
 number of seeds of 16 with a positive main contrast; the ratio of K_monitor at step 5 between
 early levels 1.25 and 0.6. Both files are hashed before the first label is produced; the analysis
-refuses a forecasts file whose sha256 is not the recorded one.
+refuses a forecasts file whose sha256 is not the recorded one. The main experiment starts right
+after the pilot, and the forecasts are checked against the 8.7 pp rule (below) while it runs: if
+their points differ by less than 8.7 pp, the judge is not started, and what is done with the runs
+is decided before any label.
 
 ## Analysis (`scripts/study5_dose_analysis.py`)
 
