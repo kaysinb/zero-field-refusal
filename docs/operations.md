@@ -187,11 +187,10 @@ passed record for their own environment that covers their steps, batch size and 
 run the checks on each GPU type and execution setting used. Each run also checks its own stream
 against the path-field bound and the teacher-gap thresholds.
 
-Choose the GPU by the cost of a run, not of an hour, from the stage-0 timings: in fp32 without
-TF32, the Ada cards (RTX 6000 Ada, L40S) are about 2.4 times faster than A6000/A40 and can cost
-less per run. Stages 0–2 run on the L40S, decided on 2026-10-09 after stage 0: it is the GPU type
-measured there, and another type would need its own checks and enter the teacher-gap thresholds;
-the saving on cheaper Ada cards is cents per run. Host RAM depends on the Pod's host, not only on the GPU type (an RTX 6000 Ada Pod
+Choose the GPU from the stage-0 timings: in fp32 without TF32, the Ada cards (RTX 6000 Ada,
+L40S) are about 2.4 times faster than A6000/A40. Stages 0–2 run on the L40S, decided on
+2026-10-09 after stage 0: it is the GPU type measured there, and another type would need its own
+checks and enter the teacher-gap thresholds. Host RAM depends on the Pod's host, not only on the GPU type (an RTX 6000 Ada Pod
 had 62 GB rather than the listed 167 GB), so check it after creating a Pod. The full soft-target
 control peaks at ≈ 30 GB of host RAM (one preallocated buffer, read back lazily), the path-field
 check at ≈ 10 GB, and training keeps the projection directions in pinned memory (≈ 2 × 5 GB for
@@ -1050,7 +1049,7 @@ python scripts/numerical_check.py void --batch 20 --upper 8 --runs-root "$RUNS_D
   move a run of another role, or one whose GPU code cannot be read; when the old runs hold several
   GPU codes; when the destination exists; when a launcher journal it would move also names a run
   it leaves in place; and, for the researcher to decide, when S3 has started (a validation,
-  confirmation or time-course run exists at B: voiding those means spending on S3 again) or when
+  confirmation or time-course run exists at B: voiding those means running S3 again) or when
   a check directory of another U exists at B. Without `numerical/b{B}-u{U}/` (a change between
   the K-only runs and their check) it moves the rest and records "no check directory".
 - **Afterwards** the voided check's marks are gone with its verdicts: the selection calls for the
@@ -1099,9 +1098,7 @@ reuses every record of their visit: after a three-arm validation, its verdict is
 same runs, with no campaign; otherwise it runs only what is missing at that U, its check if none
 qualified its rates and its validation (72 runs). No rate run at another U enters it, and the
 pair has no repair: a rate of its triples marked unusable (by its own check or before) stops
-that arm, blocked when the mark is technical, failed when scientific. Before a
-next candidate's campaigns, set its forecast (its checks and the confirmation) against what
-remains of the budget; if it does not fit, stop with the price.
+that arm, blocked when the mark is technical, failed when scientific.
 
 **The power forecast at U = 7 or U = 6**, before that candidate's confirmation: the simulation's
 procedure at its rates with `--upper 7` or `--upper 6` (`scripts/study2_short_simulate.py`;
@@ -2116,7 +2113,7 @@ before each command below.
     the reserved seeds gives a failed record: a pause for a decision (`cap_beyond_reserved_seeds`).
     N is never cut; once an amendment extends the reserved seeds past the cap, the same record
     reads as passed.
-  - `budget-c<N>`: the researcher's decision on the extra blocks and their price, `proceed` or
+  - `budget-c<N>`: the researcher's decision on the extra blocks, `proceed` or
     `stop`, when N is above 90 or raised for power (the step names it then).
   - `closure-c<N>-<arm>`: no step names one (below, "Holds and closures").
 
@@ -2796,7 +2793,7 @@ project-run "$SRC" python scripts/study3_analysis.py report --runs-root "$R" \
 
   A stage is one of `dry_run`, `engineering`, `simulation`, `search`, `numerical`, `repair`,
   `validation`, `confirmation`, `labeling` and `audit`. Each incident is counted once, with its
-  price ([amendment 5](study3-preregistration.md#amendment-5-the-budget-after-the-dry-runs-part-i),
+  price ([amendment 5](study3-preregistration.md#amendment-5-infrastructure-incidents-after-the-dry-runs-part-i),
   "Infrastructure incidents"): one Pod stop is one entry, whatever records it left (a recovery
   round of the launch journal, a case restart `restart-<n>.json`, a part record made with
   `--infrastructure`), and its `evidence` lists each of them, plus any provider reference
@@ -2832,7 +2829,7 @@ project-run "$SRC" python scripts/study3_analysis.py report --runs-root "$R" \
   by stage plus each incident with its billed price; the report names the stages an internal
   spending policy stopped, and no other money figure
   ([disclosure](study3-preregistration.md#disclosure),
-  [amendment 5](study3-preregistration.md#amendment-5-the-budget-after-the-dry-runs-part-i)).
+  [amendment 5](study3-preregistration.md#amendment-5-infrastructure-incidents-after-the-dry-runs-part-i)).
 
 ## Study 5 campaigns
 
@@ -3986,7 +3983,7 @@ Decided 2026-10-11. Three places, each with one role:
 | Place | Holds | Rules |
 |---|---|---|
 | This machine (the checkout, `./data`, `./runs`, `scratchpad/`) | code, documents, reports, scratchpad notes and small run results: run directories, judge labels, calibration samples and reference labels | Large data (teacher streams, soft-target distributions, checkpoints, model weights) takes at most 10 GB for the whole project here; beyond that it stays on the Pod's working storage and in the bucket. |
-| Working storage of the Pod (from stage 1) | model weights and caches, teacher streams, soft-target distributions while they exist, intermediate files, and the run directories of ongoing runs | Mounted at `/workspace`, so the [container defaults](#containers) put `DATA_DIR`, `RUNS_DIR` and the caches on it. Preferred: a Runpod network volume (Standard, about 50 GB, $0.07 per GB and month) in a data center with L40S capacity. Where no such data center exists, the Pod's own volume disk, which lives on its machine and goes with the Pod. Either way it is working storage, not a backup, and it is deleted only with the researcher's approval. |
+| Working storage of the Pod (from stage 1) | model weights and caches, teacher streams, soft-target distributions while they exist, intermediate files, and the run directories of ongoing runs | Mounted at `/workspace`, so the [container defaults](#containers) put `DATA_DIR`, `RUNS_DIR` and the caches on it. Preferred: a Runpod network volume (Standard, about 50 GB) in a data center with L40S capacity. Where no such data center exists, the Pod's own volume disk, which lives on its machine and goes with the Pod. Either way it is working storage, not a backup, and it is deleted only with the researcher's approval. |
 | `ARTIFACT_REMOTE`, a private, versioned Google Cloud Storage bucket | everything to be kept: finalized run directories, teacher streams, labels, inventories, scratchpad snapshots | Create and read only, no overwrite or delete ([archive](#rented-machines)). |
 
 Stage 1 (decided 2026-10-11): no data center offered both L40S and network volumes, so the
@@ -4070,8 +4067,8 @@ completed offline W&B records and rebuild the `scripts/index_runs.py` index.
 
 ## Artifact retention
 
-Before a costly campaign, record which configs/seeds and matched optimizer/control arms to retain,
-why, storage budget and retention review point. Choose coverage before interpreting outcomes;
+Before a long campaign, record which configs/seeds and matched optimizer/control arms to retain,
+why, the storage size and the retention review point. Choose coverage before interpreting outcomes;
 document changes.
 
 - **Evidence:** keep the [publication records](architecture.md#publication-evidence), actual teacher,

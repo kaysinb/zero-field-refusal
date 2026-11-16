@@ -61,7 +61,6 @@ The results below come from the two runs of snapshot `153ee510`.
 - **End tokens.** Three quarters of the responses are truncated at 96 tokens. Truncation keeps the
   field at zero; the end token enters the loss in 22–28 % of the responses.
 - **GPU.** Stages 0–2 run on the L40S. Other 48 GB cards would need their own checks and would
-  enter the thresholds; at about $0.04 (0.5B) and $0.06 (1.5B) per run on the L40S (estimated
-  from the step and greedy timings), the saving is cents per run.
+  enter the thresholds.
 - **Soft-target distributions** of the path-field check are deleted from the Pod's volume
   ([retention](../operations.md#retention-plan-stages-0-and-1)); their hashes and the records stay.

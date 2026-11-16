@@ -36,9 +36,8 @@ were. The engineering record's `checks.dry_run` is not marked passed: that needs
     outcome, J7 (d) for `responses/`).
 - **Separation.** Section 1 of the procedure held. The real record paths were absent throughout,
   both checkouts stayed clean at their commits, and G1 and G2 ended whole (step 33).
-- **D1.** One engineering case measured 37.0 GPU-min. The study's high total becomes
-  $279.02–287.16, against $272 available, so the decision is to bring the sum for option B before
-  any engineering seed.
+- **D1.** One engineering case measured 37.0 GPU-min. Option B is decided before any engineering
+  seed.
 - **D2.** SIGTERM to the driver's bash alone, during case 2's launcher attempt, behaved as the
   local experiment predicted, with one difference in timing. The driver's runner recorded exit
   143 at 17:06:32Z, 22 s after the SIGTERM and after the EXIT handling, not at once. D2 ended on
@@ -172,7 +171,7 @@ Results are against the binding checklist; the map is section 4.8 of the procedu
 
 | Line | Result | Steps | Evidence |
 |---|---|---|---|
-| D1: the engineering stage re-priced from a measured dry case | measured; decision "bring the sum for option B" | 16 | `D1-price`; `receipts/d1.json` |
+| D1: the engineering stage's GPU time from a measured dry case | measured; option B decided first | 16 | `D1-price`; `receipts/d1.json` |
 | D2: SIGTERM to the driver's bash while a launcher runs; the attempt recorded; a rerun resumes at the next baseline | pass | 15, 17 | `D2-recorded`, `D2-no-baseline` (1), `D2-group-empty`, `D2-gpu-idle`; runners `term-l2` 0, `eng-driver-1` 143, `eng-driver-2` (resumed at case 2's baseline) |
 | D2's documented negative: SIGTERM to the launcher alone does not stop the driver | not rehearsed (code and operations only) | — | — |
 
@@ -386,23 +385,19 @@ relaxation, and open to confirmation.
 - baseline with the diagnostic steps 4.7 min;
 - rest 27.5 min.
 
-The rest ran, so the price is a fully measured case (`flags` is empty).
+The rest ran, so the case is fully measured (`flags` is empty).
 
 | Quantity | Value |
 |---|---|
 | Engineering, central | 24 × 37.0 min + 1.8 h (the known case) + 0.6 h (θ₀, stage 0, streams) + 2.03 h (the dry run's own GPU time: measured, plus 77 central minutes left) = 19.23 GPU-h |
-| Engineering, high | × 1.7 = 32.69 GPU-h, × $1.094 = $35.76 |
-| Registered engineering line (high) | $16.74–18.60 |
-| Study's high total | $260–270 − $16.74–18.60 + $35.76 = **$279.02–287.16** |
-| Available | $272 |
-| Decision (at the upper end) | bring the sum for option B before any engineering seed |
+| Engineering, high | × 1.7 = 32.69 GPU-h |
+| Decision | option B decided before any engineering seed |
 
 D1 gates the engineering seeds only, and Part I ran to its end. The researcher set two rules
 before D1:
 
-- if the measured high total exceeds $272, no engineering seed starts until option B is decided;
-- even at or below $272, the engineering seeds would start only on a separate decision after D1's
-  summary.
+- no engineering seed starts until option B is decided;
+- the engineering seeds start only on a separate decision after D1's summary.
 
 ## D2
 
@@ -496,7 +491,7 @@ D2 thus ended on all three required observations: the group empty, the end line,
 - The procedure's estimate was 114–230 GPU-min. The three driver reruns that ran on CPU only
   (`eng-driver-3`, `fa-driver-2`, `fa-driver-3`) took 7.7 min more.
 - The Pod ran from its creation at 15:17:53Z (container start 15:22:21Z) to its stop at about
-  20:05Z: about 4.8 h. Step 34 ended at 19:50Z. The estimate was 5.8–11.3 h ($6.3–12.4).
+  20:05Z: about 4.8 h. Step 34 ended at 19:50Z. The estimate was 5.8–11.3 h.
 - No hours limit of section 6 was approached.
 
 **Cost.** Both Pods were one NVIDIA L40S (Secure) at $1.09/h for the GPU. The billed amounts are

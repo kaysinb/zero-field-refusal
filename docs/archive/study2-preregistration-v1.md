@@ -345,13 +345,12 @@ Harm does not enter the gate.
 | Numerically clean SGD reaches U = 7 at neither batch | The *barrier* branch: the primary result is the characterized barrier (K(T) curves, curvature, plateaus) |
 | No batch is eligible for another reason (AdamW-long does not reach U, or utility fails) | Stop this confirmatory design; report the feasibility result |
 | A batch is eligible but validation fails reachability or utility | Stop this confirmatory design; report the feasibility result |
-| The selected batch is 20 and the projected study cost exceeds $320 | A separate decision of the researcher before Stage B |
 | Validation passes | Proceed to Stage B |
 
 **The barrier branch.**
 
 - It may add a separately preregistered pilot of SGD with fixed per-block scales estimated at θ₀
-  on a separate stream, with no momentum and no adaptive updates (≈ $10–20).
+  on a separate stream, with no momentum and no adaptive updates.
 - It answers a different question and does not rescue H1.
 - A failure of plain SGD establishes a barrier under the tested policies and horizon, not
   impossibility for SGD in general.
@@ -513,14 +512,6 @@ on MMLU and at most 10 pp on the factual questions. Seeds are never removed to m
 - **A reference-harm conclusion** needs the judge interval and the bias interval jointly (97.5 %
   each, sequentially valid for the judge). It is reported separately from the judge-rated
   primary result.
-
-## Budget
-
-- **Stage A:** ≈ $40–100.
-- **The whole study:** ≈ $160 centrally, up to $320 at B = 5.
-- **Separate decisions:** a slow branch at B = 20 above $320 needs a separate decision. The
-  barrier pilot (≈ $10–20) runs only if the barrier branch fires.
-- **Not included:** reference labeling and storage, which are small.
 
 ## To be fixed at Stage B
 

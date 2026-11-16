@@ -290,10 +290,10 @@ Only validation's harm labels are opened, and only for the spread.
 - **Examples,** at L = 0.975 (z_L = 2.241): at m = 28, SD 3.5 gives N = 60 and SD 5.0 gives
   N = 88; at m = 22 and SD 5.0, N = 92. At L = 0.98 (z_L = 2.326), m = 28 and SD 5.0 give
   N = 93.
-- **N > 90.** The confirmation does not start before the researcher decides on the extra blocks
-  and their price. N is never cut, and the margins ±5 and ±2.5 are never widened to fit.
-  *Within the internal spending policy, no separate decision:
-  [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
+- **N > 90.** The confirmation does not start before the researcher decides on the extra blocks.
+  N is never cut, and the margins ±5 and ±2.5 are never widened to fit.
+  *Since [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run),
+  N > 90 needs no separate decision.*
 - P–F's power is reported, not targeted.
 
 ### Confirmation
@@ -734,32 +734,10 @@ Seeds are disjoint between stages and candidates. Each seed has its own fresh st
 - **Embargo breaches.** A harm label opened outside the two scheduled points is disclosed with the
   stage it affected.
 
-## Budget and timing
-
-*The spending rules' public form: [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
-
-| Stage | GPU-hours (central) |
-|---|---:|
-| Engineering and dry run | 9–10 |
-| Search | 5–6 |
-| Numerical qualification with the bridge (18 cases × 8 trajectories, 13 full-KL comparisons per case) | 18–22 |
-| Validation (28 blocks × 6 runs) | 20 |
-| Confirmation, N = 60 / N = 88 (to the cap) | 50 / 70 |
-| Judge | 5–6 |
+## Run rates and timing
 
 - **Rates.** A run takes about 7.1 min with the launcher, and a six-run block about 0.71 h. Pod
-  setup (about 1 h per new Pod to restore data), storage and idle time come on top.
-- **Central cost:** about $135 at a spread of 3.5 pp and $155 at 5 pp.
-- **Additions:**
-  - candidate 2: about $50–55;
-  - the 40-block validation: 8.5 GPU-h, about $9.3, per candidate tested.
-- **High case:** about $260–270, since study 2 overran its forecasts by 1.5–1.7 times. This is not a
-  bound under unlimited infrastructure retries.
-- **Available:** about $272 for study 3. *Raised to about $294, with a rule for infrastructure
-  incidents, by [amendment 5](#amendment-5-the-budget-after-the-dry-runs-part-i).*
-- **Spending checkpoint:** before the confirmation.
-- **When a step does not fit:** the work stops and the step's price is brought for a decision.
-  No step is cut to fit.
+  setup takes about 1 h per new Pod to restore data.
 - **Timing.** About 22–31 days from the start of work to the final analysis, if stages run back
   to back. The judge's reference labels for the audit are made outside this count.
 
@@ -918,39 +896,27 @@ remain unchanged. Engineering seeds may run after Part I passes and before Part 
 - **What was known.** The registration, the code up to commit 07b7568 and the dry-run plan. No
   study-3 outcome.
 
-### Amendment 5: the budget after the dry run's Part I
+### Amendment 5: infrastructure incidents after the dry run's Part I
 
 Decided on 2026-10-29 by the researcher, before any engineering seed, search or later study-3 stage
 ran. The only study-3 runs so far are the dry run's Part I, on dry seeds outside every registered
-range. This amendment changes only the money available and adds a stopping rule for infrastructure
-incidents. Scientific selection and failure rules, thresholds, seeds and the order of stages
-remain unchanged.
+range. This amendment adds a stopping rule for infrastructure incidents and states where a
+technical case's checkpoints are kept. Scientific selection and failure rules, thresholds, seeds and
+the order of stages remain unchanged.
 
-- **Available: about $294 for study 3.** That is the earlier $272, plus:
-  - $16 for the engineering stage. The dry run's spending checkpoint D1 re-priced the stage from a
-    measured case (37.0 GPU-min), which put the study's high total at $279.02–287.16
-    ([Part I's report](reports/study3-dry-run-part-1.md#d1)). The $16 brings the high total's
-    upper end within what is available;
-  - up to $6.0 for repeating Part I's affected GPU paths on a Pod, after the code that changed
-    the GPU-code identity ([amendment 4](#amendment-4-the-dry-run-in-two-parts), "Re-runs this
-    order can cause"). Its price is $4.4–6.0.
 - **Infrastructure incidents.**
   - **What counts.** An infrastructure incident is a loss the code records as infrastructure: a lost
     container disk, a Pod or container that stopped or restarted, an image pull or a provider fault.
-  - **Its price.** Each incident is counted once. Its price is its GPU minutes plus the Pod time of
+  - **Its cost.** Each incident is counted once. Its cost is its GPU minutes plus the Pod time of
     its recovery and setup, as billed.
-  - **Where it is listed.** Every incident is listed with its price at the stage's spending
-    checkpoints.
-  - **The stop.** A stage stops for a decision about the price at its third incident, or once its
-    incidents' cumulative price passes $5, whichever comes first. The rule of this section, "When a
-    step does not fit", applies to that decision: no step is cut to fit.
+  - **Where it is listed.** Every incident is listed with its cost at the stage's checkpoints.
+  - **The stop.** A stage stops for a decision at its third incident. No step is cut to fit.
 - **Storage.** A technical case's checkpoints are kept on the volume and in the bucket until the
-  study's report: about 46 GB per technical engineering case and 13 GB per numerical one, about
-  $0.3–1.2 per case-month. This is a running cost within "storage and idle time" above. It applies
+  study's report: about 46 GB per technical engineering case and 13 GB per numerical one. It applies
   to technical cases only. *Until the report they stay in the bucket, and on a volume only while the
   current stage reads them: [amendment 9](#amendment-9-where-a-technical-cases-checkpoints-are-kept).*
-- **Disclosure.** The final report states the money available, each stage's incidents with their
-  prices, and any stop this rule caused. *The public form:
+- **Disclosure.** The final report states each stage's incidents with their costs, and any stop this
+  rule caused. *The public form:
   [amendment 7](#amendment-7-technical-causes-the-simulations-stops-and-the-order-of-the-dry-run).*
 - **What was known.** The registration, the code up to the dry run's Part I, and Part I's report
   with its measured GPU minutes. Only GPU minutes were read; no study-3 outcome.
@@ -1074,7 +1040,7 @@ procedure and its records, and the simulation runs under them.
   - **The reserve.** C(N) exceeding the reserve (N > 168), or a power scan that reaches that point,
     is a pause for a decision and not a design stop. N is never cut. No seed is added here: further
     seeds need their own amendment, on disjoint seeds, before any confirmation run.
-  - **N > 90** needs no separate decision while it fits the internal spending policy.
+  - **N > 90** needs no separate decision.
 - **Candidate 2 and P.**
   - **Candidate 2's utility failure, in A or F,** with the support and numerical requirements
     passed, is a pause and not the end of the study. The branch is simulated if it is reached, not
@@ -1104,17 +1070,10 @@ procedure and its records, and the simulation runs under them.
   - A later change to analysis code replays the pieces it affects. The scientific rules stay frozen
     from before the search; later pieces' code is written with earlier K and utility visible.
 - **The report.** A missing audit or billing field gives a pending section, not a blocked report.
-- **The spending rules in the public text.**
-  - **What stays in force:** the spending policy, its checkpoints and its stops, with their figures
-    in the researcher's internal records. The public text states none. No step is cut to fit. Each
-    cycle's replacement runs are a stage under this policy, and they start after a decision.
-  - **What changes publicly.** The stop at a stage's third infrastructure incident
-    ([amendment 5](#amendment-5-the-budget-after-the-dry-runs-part-i)) stays as stated, and its
-    other stop on incidents stays in force, with its figure in the internal records. The final
-    report states the actual spending by stage and per incident, in place of the first item of that
-    amendment's disclosure.
-  - **The internal policy** is versioned, with a date and an identifier, before each use. The
-    report names the version each stage ran under.
+- **Infrastructure incidents in the public text.** The stop at a stage's third infrastructure
+  incident ([amendment 5](#amendment-5-infrastructure-incidents-after-the-dry-runs-part-i)) stays as
+  stated. No step is cut to fit. The final report states the actual spending by stage and per
+  incident.
 - **Unchanged.**
   - **One declared instability stop** in the search or the numerical qualification fails the rate
     as registered. The 80 % power is conditional on passing, and the report states that attrition.

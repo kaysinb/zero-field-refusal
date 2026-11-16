@@ -101,7 +101,7 @@ Each difference gets file:line and a note on whether it can change the dynamics.
     - the preconditioned Lanczos;
     - the twin K computation;
     - that no harmful generation happens.
-- **A driver** for P1 at the new commit. Cost estimate per part: GPU minutes and peak memory.
+- **A driver** for P1 at the new commit. Report per part: GPU minutes and peak memory.
 - **D4** as a markdown table in the report.
 - **Out of scope:** no protocol, selection or analysis code changes.
 

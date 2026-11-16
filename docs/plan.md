@@ -163,8 +163,7 @@ Gate: none.
 
 Study 2 compares long AdamW with long SGD at equal K_benign, under a common batch, a common
 appendable stream prefix and a common step limit. Its rules, gates and outcomes are stated in
-the [study-2 preregistration](study2-preregistration.md); this section gives the order of work
-and its cost.
+the [study-2 preregistration](study2-preregistration.md); this section gives the order of work.
 
 **Closed on 2026-10-25** ([feasibility report](reports/study2-feasibility.md)): the selection
 stopped at a technical numerical-qualification block at the primary pair at (7, 20); the primary
@@ -185,8 +184,7 @@ K-only seeds (voided after a GPU-path change and repeated once); then, after the
 analysis code is fixed (gate C) and the versions record, S3, the three-arm validation on 12 fresh blocks;
 S4, the confirmation up to 60 blocks jointly supported for the three arms (cap 80), with the time
 course on its first 10 blocks and the drift diagnostic; S5, judging, the looks, the final
-analyses and the audit. Before each stage its forecast is set against the remaining budget. The
-procedure is in [operations](operations.md#study-2-amendment-4-numerical-qualification-batch-20-and-the-mechanism-cohort).
+analyses and the audit. The procedure is in [operations](operations.md#study-2-amendment-4-numerical-qualification-batch-20-and-the-mechanism-cohort).
 
 **Stage A (feasibility):** code first, then numerics, discovery and validation on fresh seeds:
 
@@ -219,34 +217,28 @@ procedure is in [operations](operations.md#study-2-amendment-4-numerical-qualifi
 4. **Validation:** twelve seeds at the selected batch and rates, with the instability rule
    frozen.
 
-Planning cost of Stage A, on one L40S at $1.09/h. The estimates rest on the pilot's measured step
+Planning estimates of Stage A, on one L40S. They rest on the pilot's measured step
 times (≈ 1.0 s per SGD step at batch 5, ≈ 1.8 s at batch 20), ≈ 150 s per full evaluation (≈ 95 s
 of it the greedy responses to the 521 harmful evaluation prompts, against ≈ 55 s for the pilot's
-300) and ≈ 61 s per 1000 teacher responses. The monitor's cost is measured in Stage A.
+300) and ≈ 61 s per 1000 teacher responses. The monitor's time is measured in Stage A.
 
-| Step | Runs | GPU hours | Cost |
-|---|---|---|---|
-| Curvature at θ₀, both batches (≈ 1.9 h with the defaults of `scripts/curvature.py`) | 1 | ≈ 2 | ≈ $2 |
-| Soft-target screen: 10 rates × 2 batches × 100 steps | 20 | ≈ 1–2 | ≈ $1–2 |
-| Full-length soft-target controls: 2 candidate rates × 2 batches, seed 2000, ≤ 4000 steps | 4 | ≈ 5–12 | ≈ $5–13 |
-| Teacher streams of the discovery seeds, generated as needed | — | ≈ 1–4 | ≈ $1–4 |
-| SGD-long discovery: 2 rates × 3 seeds × 2 batches, ≤ 4000 steps | ≤ 12 | ≈ 11–31 | ≈ $12–34 |
-| AdamW-long discovery: 4 rates × 3 seeds × 2 batches | 24 | ≈ 4–9 | ≈ $4–10 |
-| AdamW-25 and frozen Adam-25 grids: 6 rates (up to 8 at batch 5) × 3 seeds × 2 batches × 2 arms | 72–84 | ≈ 6–7 | ≈ $7–8 |
-| Validation: 12 seeds, both long arms and AdamW-25 at three rates | ≈ 60 | ≈ 13–26 | ≈ $14–28 |
-| Judge for the discovery and validation labels, opened after the selection is sealed | — | ≈ 2–3 | ≈ $2–3 |
-| **Stage A** | | **≈ 45–95** | **≈ $50–105** |
+| Step | Runs | GPU hours |
+|---|---|---|
+| Curvature at θ₀, both batches (≈ 1.9 h with the defaults of `scripts/curvature.py`) | 1 | ≈ 2 |
+| Soft-target screen: 10 rates × 2 batches × 100 steps | 20 | ≈ 1–2 |
+| Full-length soft-target controls: 2 candidate rates × 2 batches, seed 2000, ≤ 4000 steps | 4 | ≈ 5–12 |
+| Teacher streams of the discovery seeds, generated as needed | — | ≈ 1–4 |
+| SGD-long discovery: 2 rates × 3 seeds × 2 batches, ≤ 4000 steps | ≤ 12 | ≈ 11–31 |
+| AdamW-long discovery: 4 rates × 3 seeds × 2 batches | 24 | ≈ 4–9 |
+| AdamW-25 and frozen Adam-25 grids: 6 rates (up to 8 at batch 5) × 3 seeds × 2 batches × 2 arms | 72–84 | ≈ 6–7 |
+| Validation: 12 seeds, both long arms and AdamW-25 at three rates | ≈ 60 | ≈ 13–26 |
+| Judge for the discovery and validation labels, opened after the selection is sealed | — | ≈ 2–3 |
+| **Stage A** | | **≈ 45–95** |
 
 **Stage B (fixation):** no GPU beyond measurements already made; the simulation runs on CPU.
 
 **Stage C (confirmation):** two looks on fresh seeds. After look 1 the pods stop until its
 analysis is done; one terminal audit follows.
-
-**Budget for the whole study:**
-
-- ≈ $160 centrally, and up to $320 at batch 5;
-- a slow branch at batch 20 above $320 needs a separate decision;
-- the barrier pilot (≈ $10–20) runs only if the barrier branch fires.
 
 **Hardware:**
 

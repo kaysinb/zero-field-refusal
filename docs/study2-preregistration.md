@@ -363,13 +363,12 @@ Harm does not enter the gate.
 | Numerically clean SGD reaches U = 7 at neither batch | The *barrier* branch: the primary result is the characterized barrier (K(T) curves, curvature, plateaus) |
 | No batch is eligible for another reason (AdamW-long does not reach U, or utility fails) | Stop this confirmatory design; report the feasibility result |
 | A batch is eligible but validation fails reachability or utility | Stop this confirmatory design; report the feasibility result |
-| The selected batch is 20 and the projected study cost exceeds $320 | A separate decision of the researcher before Stage B |
 | Validation passes | Proceed to Stage B |
 
 **The barrier branch.**
 
 - It may add a separately preregistered pilot of SGD with fixed per-block scales estimated at θ₀
-  on a separate stream, with no momentum and no adaptive updates (≈ $10–20).
+  on a separate stream, with no momentum and no adaptive updates.
 - It answers a different question and does not rescue H1.
 - A failure of plain SGD establishes a barrier under the tested policies and horizon, not
   impossibility for SGD in general.
@@ -531,14 +530,6 @@ on MMLU and at most 10 pp on the factual questions. Seeds are never removed to m
 - **A reference-harm conclusion** needs the judge interval and the bias interval jointly (97.5 %
   each, sequentially valid for the judge). It is reported separately from the judge-rated
   primary result.
-
-## Budget
-
-- **Stage A:** ≈ $40–100.
-- **The whole study:** ≈ $160 centrally, up to $320 at B = 5.
-- **Separate decisions:** a slow branch at B = 20 above $320 needs a separate decision. The
-  barrier pilot (≈ $10–20) runs only if the barrier branch fires.
-- **Not included:** reference labeling and storage, which are small.
 
 ## To be fixed at Stage B
 
@@ -1048,7 +1039,7 @@ Replaced by [amendment 4 §5](#5-fixed-before-any-harm-label) (the terminal audi
 
 - WildGuard as before, on the study-2 path above.
 - One terminal audit of 400 items per primary arm (AdamW-25, FA-25), stratified as preregistered,
-  with recorded inclusion probabilities. Pre-warmed is audited only if the budget allows.
+  with recorded inclusion probabilities.
 - Judge-rated and reference-harm claims are kept apart.
 
 #### The simulation
@@ -1140,17 +1131,6 @@ procedure.
   committed, or when the running commit, the model, the judge's identity or the fixation record
   departs from it
   ([operations](operations.md#study-2-short-regime-amendment-3)).
-
-#### Budget
-
-Project 1's total is about $170, set by the researcher:
-
-- amendment 2's reruns, ≈ $9;
-- the momentum pilot, at most $40;
-- this stage's GPU, ≈ $50–120, covering discovery completion, validation, confirmation, judging
-  and contingency.
-
-Reference labelling and API costs are excluded. The ≈ $64 of Stage A is sunk.
 
 ### Amendment 4: a corrected numerical criterion, batch 20, and the mechanism cohort
 
@@ -1759,7 +1739,7 @@ The following go into the fixation record and this text before any study-2 harm 
 **Audit** (the audit design v3; it replaces the preregistration's
 [audit](#judge-and-audit), stratified by arm, K band and the judge's label with inclusion
 probabilities, and amendment 3's "stratified as preregistered, with recorded inclusion
-probabilities; pre-warmed is audited only if the budget allows").
+probabilities").
 
 - **One terminal draw,** after the confirmation has ended (the final analysis is available). Audit
   results never trigger further training and never change the primary.
@@ -1821,45 +1801,11 @@ qualification (gate B). The analysis, simulation, audit and fixation follow befo
 (gate C), and change no GPU path: `tests/test_gate_c.py` checks every gate-C commit against the
 gate-B record. The versions record pins one commit for validation and confirmation.
 
-#### 6. Budget and resources
+#### 6. Resources
 
-- **The ceiling for project 1's remaining work is about $227,** set by the researcher on 2026-10-19:
-  about $275 with the ≈ $48.4 spent since Stage A. Stage A is excluded.
-- **Before each stage**, an estimate is set against what remains. A stage whose forecast does not fit
-  is neither trimmed nor cancelled. It is stopped, and it goes to the researcher with its price: how much
-  must be added for it to run, and what would be cut otherwise. The researcher may raise the ceiling.
-- **Before validation,** the confirmation's cost up to its 80-block cap is reserved.
-- **What remains** is always the ceiling minus the actual billed spend (Runpod billing, per pod),
-  never minus a forecast.
 - **Reference labels** for the terminal audit (400 + 400 primary draws and 200 pre-warmed) are made
-  outside the project's API, as in study 1's D7. If paid API labellers become
-  necessary, their price comes to the researcher before S5. No planned step disappears to make the
-  numbers fit.
-- **Forecast at B = 20,** made at the decision, active GPU cost; ×1.15 for long campaigns, ×1.5 for
-  small gated rounds; the "high" column uses ×1.67 everywhere:
-
-  | Item | Active | Centre | High |
-  |---|---|---|---|
-  | Discovery: 15 + 18 runs, a repair | $5.1 | $7.7 | $8.5 |
-  | Numerical: 3 seeds' streams, 15 K-only runs, 15 twin cases, 3 controls | $9.7 | $14.6 | $16.2 |
-  | Validation, 12 three-arm blocks, with its judging | $15.2 | $17.5 | $25.4 |
-  | Confirmation, ≈ 65 started in the centre; 80 (the cap) in the high column | $82.5 / $101.6 | $94.9 | $169.7 |
-  | Time course, 30 runs × 4 evaluations, with judging | $9.5 | $10.9 | $15.9 |
-  | Drift: 2 streams, 4 × 64 gradients | $0.4 | $0.6 | $0.7 |
-  | Judging sessions | $1.6 | $1.8 | $2.7 |
-  | **Total** | | **≈ $148** | **≈ $239** |
-  | One further candidate: discovery, numerical, validation | $30 | +$38 | +$50 |
-
-- **Reading.**
-  - The centre fits with room for one further candidate (≈ $186).
-  - The high column assumes the overhead of small gated rounds, 1.67, for an 80-block confirmation
-    as well. That exceeds $227.
-  - The long chained campaigns of Stage A measured 1.05. With confirmation at 1.15 and everything
-    else at 1.67, the forecast is ≈ $188, and ≈ $238 with a further candidate.
-- **Rule.** Confirmation runs as long unattended campaigns. Before validation, the forecast is redone
-  with the overhead measured in discovery and the numerical stage, and with the cap reserved. If it
-  exceeds what remains, the work stops before validation and goes to the researcher with the price, as
-  above. The repeat of S2 is part of the actual spend.
+  outside the project's API, as in study 1's D7.
+- **Confirmation** runs as long unattended campaigns.
 - **Pods.** L40S, minCuda 13.0, not OC-AU-1, with a hard-stop deadline, created
   on request. GPU work for a stage needs the researcher's approval of the code it runs. The
   simulation's final run uses a dedicated CPU Pod.
@@ -1920,8 +1866,8 @@ Decided on 2026-10-22 by the researcher, **before any outcome of the U = 7 candi
 three-arm validation at (8, 20) (S3) failed on utility. Where this amendment differs from
 amendment 4, it governs; everything else in amendment 4 stands. It amends the order of the
 B = 20 candidates ([amendment 4 §2](#2-batch-and-u-replaces-amendment-3s-batch-and-u)) and where
-the primary pair takes its rates (item 7), gives the simulation a U input (item 6), and changes
-no threshold. Items 6 and 7 were settled the same day, also before any outcome of the U = 7
+the primary pair takes its rates (item 6), gives the simulation a U input (item 5), and changes
+no threshold. Items 5 and 6 were settled the same day, also before any outcome of the U = 7
 candidate.
 
 #### The decision
@@ -1934,7 +1880,7 @@ candidate.
    5. the primary pair at (6, 20);
    6. otherwise the stage ends `infeasible`, with the **B = 20 feasibility report**.
 2. **The primary pair at U = 8 is not visited.** S3's records decide it: the pair's rates at
-   U = 8 are the three arms' triple there (item 7), so its verdict is a recomputation on S3's
+   U = 8 are the three arms' triple there (item 6), so its verdict is a recomputation on S3's
    runs for the pair alone, a family of six utility bounds, and FA fails its MMLU bound at 1.62
    and 2.0 · 10⁻⁵ ([below](#what-was-known-when-it-was-decided-2)).
 3. **U = 6 is the floor.** K\* = √30 ≈ 5.477, so the twin bound is D_twin ≤ 0.01·K\* ≈ 0.05477.
@@ -1942,16 +1888,13 @@ candidate.
 4. **Unchanged:**
    - B = 20 and 25 steps;
    - the rate selection and the bounded repairs (the rounds and the search allowance), except
-     the pair's rates and repairs (item 7);
+     the pair's rates and repairs (item 6);
    - a fresh numerical qualification at each candidate, under its own K\*;
    - support in ≥ 10 of 12 validation blocks;
    - the utility bounds (5 pp MMLU, 10 pp factual) and the ±5 pp equivalence margin;
    - the confirmation's looks and caps.
    - **Once a confirmation has started, U never changes.**
-5. **Money.** A next candidate is visited only when what remains of the budget covers its checks
-   and the confirmation. Otherwise the stage stops for a budget decision, with the price, as
-   [amendment 4 §6](#6-budget-and-resources) sets out. This is procedural: no code enforces it.
-6. **Power at U = 6, and at U = 7.** The simulation gains a U input, `--upper` of
+5. **Power at U = 6, and at U = 7.** The simulation gains a U input, `--upper` of
    `scripts/study2_short_simulate.py`, which sets K\* = √(5U) and the nominal half-span
    ln √(U/5) of the endpoints and nothing else; its default, U = 8, gives every earlier run's
    constants (K\* = √40, half-span 0.235). Before a U = 6 candidate is fixed, its power and
@@ -1962,7 +1905,7 @@ candidate.
    as a diagnostic, never fixed or used. A U = 7 candidate's forecast is made the same way, with
    `--upper 7`, before its confirmation. Each forecast is a report, made before any
    confirmation, and decides nothing.
-7. **The pair at a given U takes the three arms' triples at that U.** Its rates are the primary
+6. **The pair at a given U takes the three arms' triples at that U.** Its rates are the primary
    arms' triples of the three-arm visit at the same U (their last selection there, a re-solve
    of the search allowance included), with no round and no selection of its own, so that no
    rate run at another U enters them. Every record of that visit is reused.
@@ -2011,9 +1954,9 @@ candidate.
   qualified, not by choice.
 - **A lower U narrows the window.** At U = 6 the targets are 5, 5.48 and 6 in K, about 0.09 apart
   in ln K, inside the selection's coverage tolerance of 0.1; the realized-width bound w_max 0.47
-  and the other selection rules are unchanged. The forecast of item 6 shows what this does to
+  and the other selection rules are unchanged. The forecast of item 5 shows what this does to
   support and power before a U = 6 candidate is fixed.
-- **The pair forgoes later rates.** Pinned to the three arms' triples (item 7), the pair at U = 7
+- **The pair forgoes later rates.** Pinned to the three arms' triples (item 6), the pair at U = 7
   never takes a rate that U = 6's rounds run, even one nearer U = 7's targets. That keeps the
   pair's verdict a recomputation of records made before any later candidate, and it is the
   reason the pair at U = 8 needs no visit.
@@ -2022,7 +1965,7 @@ candidate.
 
 - **The code.** `analysis.study2_short`: `CANDIDATES` holds the three arms' order, (8, 20), (7, 20),
   (6, 20); `FALLBACK_CANDIDATES` the pair's, (7, 20), (6, 20). The pair's visit takes the three
-  arms' triples (item 7). `pair_recomputation` gives the pair's verdict on a three-arm
+  arms' triples (item 6). `pair_recomputation` gives the pair's verdict on a three-arm
   validation's runs. The archived records up to S3 replay exactly to S3's verdict at (8, 20), to
   the pair's recomputation there (5.62 and 6.40 pp), and to the same next step: U = 7's
   discovery for the three arms, six FA runs at 1.52 and 1.75 · 10⁻⁵ on seeds 2000–2002.

@@ -212,13 +212,6 @@ Recorded with this document, before any run of the pilot.
   depends on g beyond the measured range. Near the stability edge, stiff directions raise K above
   this approximation by the factor above.
 
-## Budget
-
-- **Screen:** ≈ $2–3.
-- **Long runs and full controls:** ≈ $8–35, depending on the candidates and how far the search
-  descends.
-- **Cap:** $40, including Pod setup, on three L40S Pods (one seed per Pod, as in Stage A).
-
 ## Implementation
 
 - **Configs:**
