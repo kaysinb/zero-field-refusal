@@ -67,6 +67,10 @@ ANALYSIS_SCRIPTS = frozenset(
         "study5_campaigns.py",
         "study5_engineering_check.py",
         "study5_fixation.py",
+        # The dose experiment's Pod driver (it plans on study5_campaigns.py's machinery) and its
+        # analysis (it reads run records and labels), listed before the analysis exists
+        "study5_dose_campaigns.py",
+        "study5_dose_analysis.py",
     )
 )
 
