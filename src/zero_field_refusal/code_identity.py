@@ -73,6 +73,10 @@ ANALYSIS_SCRIPTS = frozenset(
         "study5_dose_analysis.py",
         # the order repeat under AdamW's analysis, listed before it exists
         "study5_adamw_analysis.py",
+        # the order repeat on Llama: its Pod driver (study5_campaigns.py's machinery) and its
+        # analysis, listed before it exists
+        "study5_llama_campaigns.py",
+        "study5_llama_analysis.py",
     )
 )
 
