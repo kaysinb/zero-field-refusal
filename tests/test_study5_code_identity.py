@@ -4,7 +4,8 @@ and 2), extension 1's (docs/study5-extension-1-code-identity.json, pod 3), exten
 amendments (docs/study5-extension-2-amendment-5-code-identity.json) and the merge of the E2
 top-up's stream-prefix fix into it (docs/study5-extension-2-topup-fix-code-identity.json), then
 the dose experiment's (docs/study5-dose-code-identity.json, docs/study5-dose-registration.md), then
-the order repeat under AdamW's (docs/study5-adamw-code-identity.json): HEAD's
+the order repeat under AdamW's (docs/study5-adamw-code-identity.json), then the order repeat on
+Llama's (docs/study5-llama-code-identity.json): HEAD's
 GPU code identity (``code_identity.gpu_code_identity``: every GPU path's blob at the commit) is the
 latest record's, so that any later change of a GPU path fails here until a record is written again
 after a new engineering check (docs/study5-preregistration.md, "Protocol", "Extension 1" and
@@ -31,6 +32,7 @@ TOPUP_FIX = REPO_ROOT / "docs" / "study5-topup-fix-code-identity.json"
 MERGED = REPO_ROOT / "docs" / "study5-extension-2-topup-fix-code-identity.json"
 DOSE = REPO_ROOT / "docs" / "study5-dose-code-identity.json"
 ADAMW = REPO_ROOT / "docs" / "study5-adamw-code-identity.json"
+LLAMA = REPO_ROOT / "docs" / "study5-llama-code-identity.json"
 FIELDS = {"what", "rule", "commit", "files", "gpu_code_sha256", "engineering_check"}
 
 
@@ -88,6 +90,12 @@ def adamw() -> dict:
     return record
 
 
+def llama() -> dict:
+    record = recorded(LLAMA, FIELDS | {"changed_from"})
+    assert record["changed_from"]["record"] == "docs/study5-adamw-code-identity.json"
+    return record
+
+
 def in_history(commit: str) -> bool:
     found = subprocess.run(
         ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
@@ -98,17 +106,17 @@ def in_history(commit: str) -> bool:
 
 
 def test_heads_gpu_code_is_the_latest_recorded_one() -> None:
-    record = adamw()
+    record = llama()
     head = code_identity.gpu_code_identity("HEAD")
     assert (head["sha256"], head["files"]) == (record["gpu_code_sha256"], record["files"]), (
-        "a GPU path changed since docs/study5-adamw-code-identity.json: rerun the engineering "
+        "a GPU path changed since docs/study5-llama-code-identity.json: rerun the engineering "
         "check, then record the new identity"
     )
 
 
 def test_each_recorded_commit_has_its_code() -> None:
     for record in (recorded(), extension(), extension_2(), amendment_5(), topup_fix(), merged(),
-                   dose(), adamw()):  # fmt: skip
+                   dose(), adamw(), llama()):  # fmt: skip
         if not in_history(record["commit"]):
             pytest.skip(f"the recorded commit {record['commit'][:7]} is not in this history")
         identity = code_identity.gpu_code_identity(record["commit"])
@@ -117,7 +125,8 @@ def test_each_recorded_commit_has_its_code() -> None:
 
 
 def test_only_the_named_paths_changed_from_record_to_record() -> None:
-    chain = (recorded(), extension(), extension_2(), amendment_5(), merged(), dose(), adamw())
+    chain = (recorded(), extension(), extension_2(), amendment_5(), merged(), dose(), adamw(),
+             llama())
     if not all(in_history(r["commit"]) for r in chain):
         pytest.skip("the recorded commits are not in this history")
     for earlier, later in zip(chain, chain[1:], strict=False):

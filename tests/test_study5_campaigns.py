@@ -1911,9 +1911,9 @@ def gate_plan(tmp_path, step, n=None):
 
 
 HEAD = camp.code_identity.gpu_code_identity()
-# The commit of HEAD's GPU code's record (the order repeat under AdamW's,
-# docs/study5-adamw-code-identity.json): an earlier commit of HEAD's GPU code
-SAME = json.loads((REPO_ROOT / "docs" / "study5-adamw-code-identity.json").read_text())["commit"]
+# The commit of HEAD's GPU code's record (the order repeat on Llama's,
+# docs/study5-llama-code-identity.json): an earlier commit of HEAD's GPU code
+SAME = json.loads((REPO_ROOT / "docs" / "study5-llama-code-identity.json").read_text())["commit"]
 OTHER = "fd54945"  # study 3's qualified GPU code: another identity
 
 
