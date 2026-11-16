@@ -27,7 +27,8 @@ reported per cell.
   L_lo) + c(s, L_hi)) / 2 when both are defined; each one's mean over its seeds with the bootstrap
   interval (``mean_with_interval``); the shape, mean h per early level at each L over the seeds
   with h at all three early levels there and the contrasts 1.0 − 0.6 and 1.25 − 1.0; the signs of
-  d (``signs``).
+  d from the exact harmful counts (``count_difference``), a seed with d = 0 kept in the
+  binomial's n (``signs``).
 - ``kstar_contrast``: per seed and early level the two runs (e, L_lo) and (e, L_hi) as
   ``study5_analysis.endpoint_of`` endpoints with their late rate as the rate; their support by
   ``study3_blocks.arm_support`` (study 3's bracket and its weight in ln K, no width limit) and
@@ -270,15 +271,35 @@ def binomial_tail(k: int, n: int) -> float:
 
 
 def signs(values: Mapping[int, Value], seeds: Sequence[int]) -> dict[str, Any]:
-    """Of the seeds with a value: how many are positive, negative and zero, and the one-sided
-    binomial P(X ≥ positive) over the non-zero ones at p = 1/2."""
-    xs = [float(values[s]) for s in seeds if _is_number(values.get(s))]
+    """Of the seeds with a value (d's sign as an exact integer: the sum over the two late levels
+    of the harmful counts' differences, ``count_difference``): how many are positive, negative
+    and zero, and the one-sided binomial P(X ≥ positive) at p = 1/2 over all of them, a zero
+    among them (the registration's "12 of 16 or more: 0.038")."""
+    xs = [values[s] for s in seeds if _is_count(values.get(s))]
     positive, negative = sum(x > 0 for x in xs), sum(x < 0 for x in xs)
-    nonzero = positive + negative
     return {"n": len(xs), "positive": positive, "negative": negative,
-            "zero": len(xs) - nonzero, "nonzero": nonzero,
-            "p_one_sided": binomial_tail(positive, nonzero),
-            "rule": "P(X >= positive), X ~ Binomial(nonzero, 0.5)"}  # fmt: skip
+            "zero": len(xs) - positive - negative, "basis": "harmful counts, exact",
+            "p_one_sided": binomial_tail(positive, len(xs)),
+            "rule": "P(X >= positive), X ~ Binomial(n, 0.5), zeros in n"}  # fmt: skip
+
+
+def count_of(run: Run | None, measure: str = "harmful") -> int | str:
+    """A run's harmful count over the 521 (``harmful_high``: unlabeled items counted harmful) when
+    it has h (``harm``), else why not."""
+    found = harm(run, measure)
+    if not _is_number(found):
+        return found
+    labels = run["labels"]
+    return int(labels["harmful"]) + (int(labels["missing"]) if measure == "harmful_high" else 0)
+
+
+def count_difference(counts: Mapping[Key, int | str], seed: int, lo: str, hi: str) -> int | str:
+    """d(s)'s sign as an exact integer: Σ over L ∈ {L_lo, L_hi} of count(1.25, L) − count(0.6, L)
+    (d(s) is that sum × 100 / (2 × 521) pp), or why it has none."""
+    terms = [(counts[(seed, HIGH, late)], counts[(seed, LOW, late)]) for late in (lo, hi)]
+    if all(_is_count(a) and _is_count(b) for a, b in terms):
+        return sum(a - b for a, b in terms)
+    return "; ".join(str(v) for pair in terms for v in pair if not _is_count(v))
 
 
 # ------------------------------------------------------------------ the main contrast
@@ -293,6 +314,7 @@ def main_contrast(runs: Mapping[Key, Run], seeds: Sequence[int], lo: str, hi: st
     intervals; the signs of d; and the shape at each L."""
     lates = {"L_lo": lo, "L_hi": hi}
     h = {key: harm(runs.get(key), measure) for key in design(seeds, lo, hi)}
+    counts = {key: count_of(runs.get(key), measure) for key in design(seeds, lo, hi)}
     cells = []
     for key in design(seeds, lo, hi):
         run = runs.get(key)
@@ -320,7 +342,7 @@ def main_contrast(runs: Mapping[Key, Run], seeds: Sequence[int], lo: str, hi: st
         "d": mean_with_interval(d, seeds),
         "c_L_lo": mean_with_interval(c["L_lo"], seeds),
         "c_L_hi": mean_with_interval(c["L_hi"], seeds),
-        "signs": signs(d, seeds),
+        "signs": signs({s: count_difference(counts, s, lo, hi) for s in seeds}, seeds),
         "shape": {name: shape(h, seeds, late) for name, late in lates.items()},
     }  # fmt: skip
 
@@ -699,6 +721,10 @@ def _loss_pp(theta0: float, accuracy: Any) -> float | None:
 
 def _number_or_none(value: Any) -> float | None:
     return float(value) if _is_number(value) else None
+
+
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _is_number(value: Any) -> bool:

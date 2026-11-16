@@ -39,6 +39,8 @@ def script_module(path: Path, name: str):
 
 
 script = script_module(REPO_ROOT / "scripts" / "study5_dose_analysis.py", "study5_dose_script")
+driver = script_module(REPO_ROOT / "scripts" / "study5_dose_campaigns.py", "study5_dose_driver")
+GPU = "e" * 64  # the pilot tables' GPU code
 
 SEEDS_RECORD = json.loads((REPO_ROOT / dose.SEEDS_FILE).read_text())
 SEEDS = SEEDS_RECORD["seeds"]
@@ -126,11 +128,26 @@ def test_the_binomial_check_12_of_16_is_0038() -> None:
     assert sd.binomial_tail(12, 16) == 2517 / 65536
     assert round(sd.binomial_tail(12, 16), 3) == 0.038
     assert sd.binomial_tail(0, 0) == 1.0 and sd.binomial_tail(16, 16) == 1 / 65536
-    found = sd.signs({s: float(y) for s, y in zip(SEEDS, Y, strict=True)}, SEEDS)
+    found = sd.signs({s: int(y) for s, y in zip(SEEDS, Y, strict=True)}, SEEDS)
     assert (found["positive"], found["negative"], found["zero"]) == (12, 4, 0)
     assert found["p_one_sided"] == 2517 / 65536
-    zeros = sd.signs({SEEDS[0]: 0.0, SEEDS[1]: 1.0, SEEDS[2]: "no run"}, SEEDS[:3])
-    assert (zeros["n"], zeros["zero"], zeros["nonzero"], zeros["p_one_sided"]) == (2, 1, 1, 0.5)
+    zeros = sd.signs({SEEDS[0]: 0, SEEDS[1]: 1, SEEDS[2]: "no run"}, SEEDS[:3])
+    assert (zeros["n"], zeros["zero"], zeros["p_one_sided"]) == (2, 1, 0.75)  # the zero in n
+
+
+def test_signs_come_from_exact_counts_and_a_zero_stays_in_n() -> None:
+    """Harmful counts 100 → 110 at one late level and 210 → 200 at the other: d is exactly 0,
+    whatever the percentages' rounding; 12 positive, 3 negative and that zero give the
+    registered 12 of 16 (0.038), not 12 of 15."""
+    counts = {(1, LOW, LO): 100, (1, HIGH, LO): 110, (1, LOW, HI): 210, (1, HIGH, HI): 200}
+    assert sd.count_difference(counts, 1, LO, HI) == 0
+    assert sd.signs({1: sd.count_difference(counts, 1, LO, HI)}, [1])["zero"] == 1
+    absent = dict(counts) | {(1, HIGH, HI): "r: no labels"}
+    assert sd.count_difference(absent, 1, LO, HI) == "r: no labels"
+    values = dict(zip(range(16), [1] * 12 + [-1] * 3 + [0], strict=True))
+    found = sd.signs(values, list(range(16)))
+    assert (found["n"], found["positive"], found["negative"], found["zero"]) == (16, 12, 3, 1)
+    assert found["p_one_sided"] == sd.binomial_tail(12, 16) == 2517 / 65536
 
 
 def test_the_constants_are_the_registered_ones() -> None:
@@ -403,6 +420,30 @@ def lines(path: Path, rows) -> None:
     path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
 
 
+def grid_record(folder: Path, out: Path) -> bytes:
+    """The grid record exactly as the Pods' driver writes it (``study5_dose_campaigns.py grid``)
+    from the two Pods' pilot tables of the synthetic K, the other Pod's table already fetched."""
+    paths = {}
+    for pod, seed in zip(dose.PODS, PILOTS, strict=True):
+        rows = [{"seed": seed, "early": e, "late": late, "label": f"x/s{seed}",
+                 "run_id": f"r-{seed}-{e}-{late}", "outcome": "done", "steps": 25, "stop": "steps",
+                 "complete": True, "K": K_AT[late]}
+                for e in sd.EARLY_NAMES for late in (LO, HI, THIRD)]  # fmt: skip
+        paths[pod] = folder / f"pilot-table-{pod}.json"
+        dump(paths[pod], {"kind": driver.TABLE_KIND, "pod": pod, "seed": seed, "gpu_code": GPU,
+                          "rows": rows})  # fmt: skip
+    import os
+    from unittest import mock
+
+    with mock.patch.dict(os.environ, {"ARTIFACT_REMOTE": "gs://bucket"}):
+        code = driver.main(["grid", "--own", str(paths["a"]), "--other-remote",
+                            "study5/dose-b-t/pilot/pilot-table.json", "--fetched", str(paths["b"]),
+                            "--wait", "0", "--pilot", f"a={PILOTS[0]}", "--pilot",
+                            f"b={PILOTS[1]}", "--gpu-code", GPU, "--out", str(out)])  # fmt: skip
+    assert code == 0
+    return out.read_bytes()
+
+
 class World:
     """A synthetic runs root: θ₀'s evaluation run (role fresh, under ``study5/``), the 16 seeds ×
     3 early levels × the chosen pair, the pilot seeds' third candidate, each run with its records,
@@ -426,10 +467,8 @@ class World:
                         continue
                     self.run(s, e, late, stop=("gradient_spike", 12) if key in stopped
                              else ("steps", 25))  # fmt: skip
-        rows = [{"seed": s, "early": e, "late": late, "K": K_AT[late], "complete": True}
-                for s in PILOTS for e in sd.EARLY_NAMES for late in (LO, HI, THIRD)]  # fmt: skip
         self.grid = tmp / "inputs" / "grid.json"
-        self.grid_sha = sha(dump(self.grid, dose.grid_choice(rows, PILOTS)))
+        self.grid_sha = sha(grid_record(tmp / "inputs", self.grid))
         self.forecasts = tmp / "inputs" / "forecasts.json"
         self.forecasts_sha = sha(dump(self.forecasts, forecast_values()))
 
@@ -622,6 +661,16 @@ def test_the_script_refuses_inputs_whose_sha256_is_not_the_one_given(tmp_path, p
     assert code == 1 and "the forecasts: its sha256" in why and not out.exists()
     code, why = call(world.argv(out, **{"--grid-sha256": "0" * 64}))
     assert code == 1 and "the grid record: its sha256" in why and not out.exists()
+    record = json.loads(world.grid.read_text())
+    inner = world.tmp / "inputs" / "inner.json"  # the rule's return value alone: not the record
+    code, why = call(world.argv(out, **{"--grid": inner,
+                                        "--grid-sha256": sha(dump(inner, record["grid"]))}))  # fmt: skip
+    assert code == 1 and "study5-dose-grid" in why and not out.exists()
+    record["grid"]["chosen"]["lo"], record["grid"]["chosen"]["hi"] = HI, THIRD  # not the rule's
+    tampered = world.tmp / "inputs" / "tampered.json"
+    code, why = call(world.argv(out, **{"--grid": tampered,
+                                        "--grid-sha256": sha(dump(tampered, record))}))  # fmt: skip
+    assert code == 1 and "not the rule's" in why and not out.exists()
 
 
 def test_the_script_refuses_a_run_at_a_rate_of_no_level(tmp_path, patched) -> None:

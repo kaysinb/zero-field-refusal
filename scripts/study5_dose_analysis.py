@@ -8,9 +8,11 @@ once as one JSON record.
 
 **Inputs.** ROOT is the runs root: the dose runs are the run directories under ``ROOT/study5/``
 whose ``config.yaml`` gives ``study5.role: dose``; no other run is read further. --seeds is the
-committed seeds record, its seeds the draw's (``dose.draw_seeds``). --grid is the grid record
-(``dose.grid_choice``'s return value), read only when its sha256 is --grid-sha256; its ``chosen``
-pair names two late candidates, each by its name and its rate. --theta0-run is study 5's θ₀
+committed seeds record, its seeds the draw's (``dose.draw_seeds``). --grid is the grid record the
+Pods' driver writes (``scripts/study5_dose_campaigns.py grid``: kind ``study5-dose-grid``, both
+Pods' pilot tables whole and ``grid``, ``dose.grid_choice``'s return value on them), read only when
+the whole file's sha256 is --grid-sha256; its ``grid`` must be the rule's on its tables, and its
+``grid.chosen`` pair names two late candidates, each by its name and its rate. --theta0-run is study 5's θ₀
 evaluation run (``experiments/study5_theta0``, run type ``theta0``): its accuracies decide gross
 collapse and the utility losses. --forecasts holds the forecasts of C and A, each exactly the ten
 keys ``study5_dose.FIELDS`` (``study5_dose.check_forecasts``), read only when its sha256 is
@@ -104,10 +106,29 @@ def seeds_of(reader: cli.Reader, path: Path) -> list[int]:
     return list(seeds)
 
 
-def chosen_of(grid: Any) -> dict[str, Any]:
-    """The grid record's chosen pair: two late candidates, each named with its exact rate, the
-    lower first."""
-    chosen = grid.get("chosen") if isinstance(grid, dict) else None
+GRID_KIND = "study5-dose-grid"  # the Pods' driver's grid record (scripts/study5_dose_campaigns.py)
+
+
+def chosen_of(record: Any) -> dict[str, Any]:
+    """The grid record's chosen pair (``record["grid"]["chosen"]``): the record the Pods' driver
+    writes, its ``grid`` the rule's (``dose.grid_choice``) on the two pilot tables it holds; two
+    late candidates, each named with its exact rate, the lower first."""
+    if not isinstance(record, dict) or record.get("kind") != GRID_KIND:
+        refuse(f"the grid record is not a {GRID_KIND} record")
+    tables = record.get("tables")
+    if not isinstance(tables, dict) or sorted(tables) != sorted(dose.PODS) or not all(
+            isinstance(tables[pod], dict) and isinstance(tables[pod].get("rows"), list)
+            for pod in dose.PODS):  # fmt: skip
+        refuse("the grid record does not hold both Pods' pilot tables")
+    try:
+        rule = dose.grid_choice([row for pod in dose.PODS for row in tables[pod]["rows"]],
+                                [int(tables[pod]["seed"]) for pod in dose.PODS])  # fmt: skip
+    except (ValueError, KeyError, TypeError) as exc:
+        refuse(f"the grid record's tables are not the pilot's ({type(exc).__name__}: {exc})")
+    grid = record.get("grid")
+    if grid != rule:
+        refuse("the grid record's choice is not the rule's on its tables")
+    chosen = grid.get("chosen")
     rates = dict(dose.LATE_CANDIDATES)
     if not isinstance(chosen, dict) or chosen.get("lo") not in rates or (
             chosen.get("hi") not in rates):  # fmt: skip
