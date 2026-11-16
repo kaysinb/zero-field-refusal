@@ -16,7 +16,7 @@ dist/
 *.local.*
 /scratchpad/
 
-# Local coding-agent instructions and workspace settings
+# Local tool instructions and workspace settings
 AGENTS.md
 AGENTS.override.md
 CLAUDE.md
