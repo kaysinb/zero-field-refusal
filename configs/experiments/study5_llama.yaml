@@ -1,0 +1,33 @@
+# Study 5's order repeat on a second model family (docs/study5-llama-registration.md):
+# Llama-3.2-1B-Instruct trained on its own θ₀'s responses under arm A (AdamW, its own adaptive
+# second moment), each fresh seed's 500 responses in a new order (train.order_seed), 25 updates
+# of B = 20: experiments/study5_order_a's composition with model/llama-3.2-1b-instruct and the
+# experiment's name its own, so that Llama's runs and records stay apart from Qwen's. The rate,
+# the seed and the order seed come from the campaign; the teacher-gap thresholds from the Llama
+# Pod's stage-0 record (checks.teacher_gap, overrides of the campaign).
+defaults:
+  - base
+  - protocol/zero_field
+  - model/llama-3.2-1b-instruct
+  - optimizer/adamw
+  - data/study2
+  - eval/study2
+  - schedule/short
+
+experiment: study5_llama
+protocol_version: 2
+study5:
+  role: order_a
+teacher:
+  stream: appendable
+  chunk_size: 1000
+eval:
+  projections: 0
+tracking:
+  require_clean_git: true
+  update_scalars: true
+  provenance_hashes: true
+execution:
+  memory_limit_gb: 46
+train:
+  order_seed: ???

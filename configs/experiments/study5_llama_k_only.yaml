@@ -1,0 +1,8 @@
+# The Llama rate pilot (docs/study5-llama-registration.md, "Rates"): experiments/study5_llama with
+# a K-only evaluation (the scoring panel's K, the monitor and utility; no response to a harmful
+# prompt), so that a pilot run and a main run of one seed, order and rate agree in every key of
+# train, optimizer, execution and data.
+defaults:
+  - experiments/study5_llama
+eval:
+  k_only: true

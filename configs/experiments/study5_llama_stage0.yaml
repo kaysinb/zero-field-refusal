@@ -1,0 +1,11 @@
+# Llama's stage-0 checks (docs/plan.md, stage 0; docs/study5-llama-registration.md): the checks of
+# experiments/stage0_checks on Llama-3.2-1B-Instruct under protocol 2, so that the path-field
+# record it writes is the one the Llama runs require (prechecks.environment_fingerprint: the same
+# protocol, model, numerics and batch shapes; tests/test_llama_configs.py). Its teacher-gap
+# measurement sets the runs' thresholds (checks.GAP_MARGIN × the largest gap over seeds 0-2).
+defaults:
+  - experiments/stage0_checks
+  - model/llama-3.2-1b-instruct
+
+experiment: study5_llama_stage0
+protocol_version: 2

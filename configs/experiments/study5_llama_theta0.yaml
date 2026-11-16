@@ -1,0 +1,10 @@
+# Llama's θ₀ baseline (docs/study5-llama-registration.md): the starting model evaluated in full,
+# no training (run_type=theta0, the launcher's entry `theta0`), under the runs' config: their
+# panels, utility and the 521 harmful prompts. The rate and the order seed only let the config
+# resolve; θ₀'s evaluation reads neither.
+defaults:
+  - experiments/study5_llama
+optimizer:
+  lr: 1.0e-05
+train:
+  order_seed: ${seed}
