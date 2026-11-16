@@ -376,6 +376,8 @@ topics:
   - src/zero_field_refusal/analysis/study5_analysis_cli.py
   - src/zero_field_refusal/analysis/study5_ext1.py
   - src/zero_field_refusal/analysis/study5_e2_test.py
+  - src/zero_field_refusal/analysis/study5_ext2.py
+  - src/zero_field_refusal/analysis/study5_ext2_cli.py
   - configs/experiments/study5*.yaml
   - docs/study5-code-identity.json
   - docs/study5-fixation.json
@@ -398,6 +400,7 @@ topics:
   - tests/test_study5_analysis.py
   - tests/test_study5_ext1_analysis.py
   - tests/test_study5_e2_test.py
+  - tests/test_study5_ext2_analysis.py
   - tests/test_line_scan.py
   - tests/test_study5_chain.py
 - id: study5_dose
