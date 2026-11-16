@@ -17,7 +17,7 @@ authoritative copies.
 | [docs/preregistration.md](preregistration.md) | Authoritative hypotheses, analysis, gate criteria and amendments of study 1 (the pilot) |
 | [docs/study2-preregistration.md](study2-preregistration.md) | Study 2 question, arms, stages, gates, analysis and amendments |
 | [docs/study3-preregistration.md](study3-preregistration.md) | Study 3 question, comparisons, candidates, numerical qualification, analysis and failure routes (registered) |
-| [docs/study5-preregistration.md](study5-preregistration.md) | Study 5 question, surrogate, first-order predictor, confirmatory test on fresh seeds and descriptive measurements (draft) |
+| [docs/study5-preregistration.md](study5-preregistration.md) | Study 5 question, surrogate, first-order predictor, confirmatory test on fresh seeds, descriptive measurements and extensions 1 and 2 (registered) |
 | [docs/study5-dose-registration.md](study5-dose-registration.md) | Study 5's dose experiment, its design, pilot grid rule, forecasts and decision rule (registered) |
 | [docs/study5-adamw-registration.md](study5-adamw-registration.md) | Study 5's order repeat under AdamW, its design, seeds and fixed reading (registered) |
 | [docs/study5-llama-registration.md](study5-llama-registration.md) | Study 5's order repeat on Llama-3.2-1B-Instruct, its zero-field checks, rate rule and fixed reading (registered) |
