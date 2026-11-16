@@ -47,3 +47,10 @@ def test_the_stage0_record_is_the_one_the_runs_require():
     cpu = torch.device("cpu")
     assert environment_fingerprint(stage0, cpu) == environment_fingerprint(run, cpu)
     assert stage0.checks.teacher_gap.token_max_abs is None  # measured there
+
+
+def test_the_stage0_cap_covers_the_runs_responses():
+    stage0 = load_config("experiments/study5_llama_stage0")
+    run = load_run_config("experiments/study5_llama", RUN)
+    assert stage0.train.max_response_tokens >= run.train.max_response_tokens
+    assert stage0.teacher.sampling == run.teacher.sampling  # the same θ₀ sampling
