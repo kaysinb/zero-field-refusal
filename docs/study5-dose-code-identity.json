@@ -1,0 +1,21 @@
+{
+ "what": "The GPU code of study 5's dose experiment (docs/study5-dose-registration.md): the identity of its GPU paths at the commit named.",
+ "rule": "zero_field_refusal.code_identity.gpu_code_identity",
+ "commit": "955b8a80146b812ee05ff28c3402ffca95dcabfc",
+ "files": 157,
+ "gpu_code_sha256": "4b254f95269fd99337b63207fcab342afa8f5926708cf9c144824c5b0ea31b94",
+ "engineering_check": "Each of the two dose Pods reruns pod 2's order control of seed 50000 at η_l under this code before any dose run and compares it under extension 2's numerical equivalence (scripts/study5_dose_campaigns.py, block engineering); a failure stops the Pod. The paths changed since the record it descends from add the early and late rate of a run (train.rate_schedule) and its role, the dose module, its config and the one-point scan; a run without the schedule is unchanged (tests/test_study5_dose_runs.py). A later GPU change needs a new check and a new record.",
+ "changed_from": {
+  "record": "docs/study5-extension-2-topup-fix-code-identity.json",
+  "paths": [
+   "configs/experiments/study5_dose.yaml",
+   "scripts/study5_scan.py",
+   "src/zero_field_refusal/code_identity.py",
+   "src/zero_field_refusal/dose.py",
+   "src/zero_field_refusal/line_scan.py",
+   "src/zero_field_refusal/protocol.py",
+   "src/zero_field_refusal/schedule.py",
+   "src/zero_field_refusal/study5_options.py"
+  ]
+ }
+}
