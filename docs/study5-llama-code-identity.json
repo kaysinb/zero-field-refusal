@@ -1,9 +1,9 @@
 {
  "what": "The GPU code of study 5's order repeat on Llama-3.2-1B-Instruct (docs/study5-llama-registration.md): the identity of its GPU paths at the commit named.",
  "rule": "zero_field_refusal.code_identity.gpu_code_identity",
- "commit": "b8207d9f989be59b973fb8b1d56759739f42e87c",
+ "commit": "0129bc422b6d2e6ac9aaffc5935d0de29e65050a",
  "files": 165,
- "gpu_code_sha256": "1dccef23d190d6d3af248db254ccddaf2779f4cf3f532f731ddecfdf586ecc94",
+ "gpu_code_sha256": "dc712b990841663b659b1daff0ad6dee740a3bb86801b6eab04417555fb7fb51",
  "engineering_check": "The Llama Pod reruns pod 2's Qwen order control of seed 50000 at η_l under this code before anything else and compares it under extension 2's numerical equivalence; a failure stops the Pod. On Llama itself the stage-0 checks run before any training run (scripts/study5_llama_campaigns.py, checks plan): a failed path-field check stops, and their teacher-gap measurement sets the runs' thresholds. The paths changed since the AdamW repeat's record add Llama's model config (its pad token and fixed chat date, models.pin_tokenizer, which leaves a config without them unchanged), its experiment configs and its seeds, orders and rate rule, and list its driver and analysis outside the GPU code. A later GPU change needs a new check and a new record.",
  "changed_from": {
   "record": "docs/study5-adamw-code-identity.json",
