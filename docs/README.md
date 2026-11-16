@@ -19,6 +19,7 @@ authoritative copies.
 | [docs/study3-preregistration.md](study3-preregistration.md) | Study 3 question, comparisons, candidates, numerical qualification, analysis and failure routes (registered) |
 | [docs/study5-preregistration.md](study5-preregistration.md) | Study 5 question, surrogate, first-order predictor, confirmatory test on fresh seeds and descriptive measurements (draft) |
 | [docs/study5-dose-registration.md](study5-dose-registration.md) | Study 5's dose experiment, its design, pilot grid rule, forecasts and decision rule (registered) |
+| [docs/study5-adamw-registration.md](study5-adamw-registration.md) | Study 5's order repeat under AdamW, its design, seeds and fixed reading (registered) |
 | [docs/study5-related-work.md](study5-related-work.md) | Study 5 related work, prior predictors of safety loss from fine-tuning data, seed variance, and what in study 5 is not new |
 | [docs/study2-pilot-momentum.md](study2-pilot-momentum.md) | Proposed preregistration of study 2's SGD-momentum pilot, for the barrier branch |
 | [docs/study2-stage-a-analysis.md](study2-stage-a-analysis.md) | Study 2 Stage A's K-only analyses and recorded predictions, outside the selection rule |

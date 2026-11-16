@@ -3523,6 +3523,31 @@ the inventories. The 96 main runs are labeled with the registered judge only aft
 files are hashed; the scans and the pilot's six other runs are not labeled. The analysis
 (`scripts/study5_dose_analysis.py`) is fixed before the labels are read.
 
+### Study 5, the order repeat under AdamW: pod adamw
+
+The repeat (docs/study5-adamw-registration.md) trains ten fresh seeds (`docs/study5-adamw-seeds.json`)
+in E2's two new orders under arm A at A's two rates, 40 runs, on one L40S Pod of its own:
+`scripts/study5_dose_campaigns.py adamw`, one plan (`adamw_plan`) on `scripts/study5_campaigns.py`'s
+machinery. Its GPU code is the one `docs/study5-adamw-code-identity.json` records (the `order_a`
+role and `experiments/study5_order_a`); the preflight refuses another, a registration not
+`registered`, an archive id outside `adamw-…` and a runs root with anything of another archive.
+
+**Blocks:** `engineering` as on the dose Pods (pod 2's order control of 50000 at η_l, numerical
+rule, any failure stops); `fetch`, the ten seeds' streams; `orders`, per seed one launcher
+campaign of four runs (`adamw_orders.cell`), archived as the seed ends; `close`. No checkpoint.
+The dry run prints 5.2 h; the Pod's cap is at most 6 h after its start, and each block and seed
+group is admitted only when 1.5 × its minutes and the close fit before it. The Pod is prepared as
+a dose Pod.
+
+```bash
+project-run "$SRC" python scripts/study5_dose_campaigns.py adamw --out "$RUNS_DIR/campaigns/study5-adamw" \
+  --archive-id adamw-<date> --checkpoints /workspace/ckpt/adamw   # --dry-run first
+```
+
+**After the Pod:** restore its runs beside E2's (pod 3's and the top-up's roots), label the 40
+runs with the registered judge, then `scripts/study5_adamw_analysis.py`, fixed before the labels
+are read.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project

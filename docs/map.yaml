@@ -17,6 +17,8 @@ documents:
   purpose: Study 5 question, surrogate, first-order predictor, confirmatory test on fresh seeds and descriptive measurements (draft)
 - path: docs/study5-dose-registration.md
   purpose: Study 5's dose experiment, its design, pilot grid rule, forecasts and decision rule (registered)
+- path: docs/study5-adamw-registration.md
+  purpose: Study 5's order repeat under AdamW, its design, seeds and fixed reading (registered)
 - path: docs/study5-related-work.md
   purpose: Study 5 related work, prior predictors of safety loss from fine-tuning data, seed variance, and what in study 5 is not new
 - path: docs/study2-pilot-momentum.md
@@ -405,6 +407,14 @@ topics:
   - docs/study5-dose-seeds.json
   - docs/study5-dose-code-identity.json
   - tests/test_study5_dose*.py
+  - src/zero_field_refusal/adamw_orders.py
+  - configs/experiments/study5_order_a.yaml
+  - docs/study5-adamw-seeds.json
+  - docs/study5-adamw-code-identity.json
+  - docs/study5-adamw-registration.md
+  - scripts/study5_adamw_analysis.py
+  - src/zero_field_refusal/analysis/study5_adamw.py
+  - tests/test_study5_adamw*.py
 - id: study3_simulation
   title: Study 3's simulation before validation — inputs, fixation, run, verification and record
   source: docs/operations.md#study-3-simulation

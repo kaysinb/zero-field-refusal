@@ -236,3 +236,44 @@ def test_the_grid_step_refuses_another_gpu_code_or_no_table(tmp_path, monkeypatc
     absent = tmp_path / "absent.json"
     assert m.main(grid_args(tmp_path, own, absent)) == 1
     assert not absent.exists() and not (tmp_path / "grid.json").exists()
+
+
+def test_the_adamw_plan(where, tmp_path):
+    """The order repeat under AdamW: the dose Pods' engineering check first, the ten seeds'
+    streams, then per seed one campaign of four A runs (E2's two orders × A's two rates), each
+    passing the protocol under ``order_a``."""
+    from zero_field_refusal import adamw_orders
+
+    out = where["runs"] / "campaigns" / "study5-adamw"
+    plan = m.adamw_plan(out=out, archive_id="adamw-t", **where)
+    assert plan.pod == "adamw"
+    assert [b.name for b in plan.blocks] == ["engineering", "fetch", "orders", "close"]
+    check = next(s for s in steps(plan) if s.name == "engineering/check")
+    assert check.on_fail == "stop" and check.gate == "engineering"
+    seeds = json.loads((REPO_ROOT / adamw_orders.SEEDS_FILE).read_text())["seeds"]
+    fetched = [s for s in steps(plan, "fetch") if s.name.endswith("/streams")]
+    assert [int(s.argv[s.argv.index("--seeds") + 1]) for s in fetched] == seeds
+    assert len(plan.campaigns) == 11  # the engineering rerun and ten seeds
+    for seed in seeds:
+        runs = campaign_runs(plan, tmp_path, f"study5-adamw-t-orders-s{seed}")
+        found = {(r.overrides[0], r.overrides[1]) for r in runs}
+        assert found == {(f"optimizer.lr={lr!r}", f"train.order_seed={seed + offset}")
+                         for _, offset in adamw_orders.ORDER_OFFSETS
+                         for _, lr in adamw_orders.RATES}  # fmt: skip
+        for run in runs:
+            cfg = load_run_config(adamw_orders.CONFIG, list(run.overrides))
+            assert config_hash(cfg) == run.config_hash and cfg.optimizer.name == "adamw"
+            assert not any("endpoint_checkpoint" in o for o in run.overrides)
+    assert m.main(["adamw", "--out", str(tmp_path / "o"), "--archive-id", "dose-a-x",
+                   "--checkpoints", "/x", "--dry-run"]) == 1  # not the AdamW Pod's archive id
+
+
+def test_the_adamw_plan_refuses_a_seeds_record_that_is_not_the_draw(where, tmp_path):
+    from zero_field_refusal import adamw_orders
+
+    (tmp_path / "docs").mkdir()
+    record = json.loads((REPO_ROOT / adamw_orders.SEEDS_FILE).read_text())
+    record["seeds"] = record["seeds"][:-1]
+    (tmp_path / adamw_orders.SEEDS_FILE).write_text(json.dumps(record))
+    with pytest.raises(camp.StepError, match="draw"):
+        m.adamw_plan(out=tmp_path / "o", archive_id="adamw-t", repo=tmp_path, **where)

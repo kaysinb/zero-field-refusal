@@ -71,6 +71,8 @@ ANALYSIS_SCRIPTS = frozenset(
         # analysis (it reads run records and labels), listed before the analysis exists
         "study5_dose_campaigns.py",
         "study5_dose_analysis.py",
+        # the order repeat under AdamW's analysis, listed before it exists
+        "study5_adamw_analysis.py",
     )
 )
 

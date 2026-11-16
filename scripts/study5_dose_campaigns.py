@@ -5,6 +5,11 @@ archives, receipts, restarts and close; that module's docstring).
 
     python scripts/study5_dose_campaigns.py run --pod a|b --out DIR --archive-id dose-a-...
         --other-archive-id dose-b-... --checkpoints DIR [--dry-run [--grid FILE]]
+    python scripts/study5_dose_campaigns.py adamw --out DIR --archive-id adamw-... \
+        --checkpoints DIR [--dry-run]
+
+``adamw`` runs the order repeat under AdamW (docs/study5-adamw-registration.md) on a Pod of its
+own, one plan (``adamw_plan``) with the dose Pods' engineering check first.
 
 The two plans' campaign folders are DIR-pilot and DIR-main, siblings (``RUNS_DIR/campaigns/
 study5-dose-a-pilot``: a runs root's campaign folders are each a plan's own or an earlier
@@ -69,13 +74,17 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import study5_campaigns as c  # noqa: E402  (the driver's machinery)
 
-from zero_field_refusal import code_identity, dose  # noqa: E402
+from zero_field_refusal import adamw_orders, code_identity, dose  # noqa: E402
 from zero_field_refusal.paths import data_root, runs_root  # noqa: E402
 from zero_field_refusal.tracking import git_state  # noqa: E402
 
 SELF = "scripts/study5_dose_campaigns.py"
 IDENTITY = "docs/study5-dose-code-identity.json"
 REGISTRATION = "docs/study5-dose-registration.md"
+# The order repeat under AdamW (``adamw_plan``): its Pod, GPU code record and registration
+ADAMW_POD = "adamw"
+ADAMW_IDENTITY = "docs/study5-adamw-code-identity.json"
+ADAMW_REGISTRATION = "docs/study5-adamw-registration.md"
 CONFIG = "experiments/study5_dose"
 WAIT = 45  # minutes a Pod waits for the other Pod's pilot table
 POLL = 60  # seconds between two looks for it
@@ -88,6 +97,7 @@ TABLE, GRID = "pilot-table.json", "grid.json"
 LEFT_MAX = 6
 TABLE_KIND, GRID_KIND = "study5-dose-pilot-table", "study5-dose-grid"
 c.PREFIXES.update({f"dose-{pod}": f"dose-{pod}-" for pod in dose.PODS})  # own_root_problems
+c.PREFIXES[ADAMW_POD] = "adamw-"
 
 
 def other(pod: str) -> str:
@@ -136,14 +146,10 @@ def pilot_campaign(archive_id: str, seed: int) -> str:
     return f"study5-{archive_id}-pilot-s{seed}"
 
 
-def pilot_plan(*, pod: str, out: Path, runs: Path, data: Path, checkpoints: Path,
-               archive_id: str, other_archive_id: str, commit: str, gpu_code: str,
-               repo: Path = c.REPO) -> c.Plan:  # fmt: skip
-    """The pilot plan (module docstring)."""
-    record = seeds_record(repo)
-    share, rival = record["pods"][pod], record["pods"][other(pod)]
-    pilot = share["pilot"]
-    b = builder(pod, archive_id, out, runs, data, checkpoints)
+def engineering(b: c.Builder, gpu_code: str):
+    """The ``engineering`` block, as pods 3 and 4 and the top-up ran it: pod 2's order control of
+    50000 at η_l rerun and compared under extension 2's numerical equivalence; any failure stops.
+    Returns the plan's stream fetcher (``fetch_streams(name, seed)``, a stop on failure)."""
     fetched = b.out / "fetched" / "study5"
 
     def fetch_streams(name: str, seed: int) -> None:
@@ -172,6 +178,18 @@ def pilot_plan(*, pod: str, out: Path, runs: Path, data: Path, checkpoints: Path
            minutes="engineering-check", gate="engineering")  # fmt: skip
     b.runs_archive("engineering/archive", mutable=(b.rel(check),), campaign=eng)
     b.end("engineering")
+    return fetch_streams
+
+
+def pilot_plan(*, pod: str, out: Path, runs: Path, data: Path, checkpoints: Path,
+               archive_id: str, other_archive_id: str, commit: str, gpu_code: str,
+               repo: Path = c.REPO) -> c.Plan:  # fmt: skip
+    """The pilot plan (module docstring)."""
+    record = seeds_record(repo)
+    share, rival = record["pods"][pod], record["pods"][other(pod)]
+    pilot = share["pilot"]
+    b = builder(pod, archive_id, out, runs, data, checkpoints)
+    fetch_streams = engineering(b, gpu_code)
 
     b.begin()  # the Pod's seeds' streams, each fetched only if missing
     for seed in share["seeds"]:
@@ -299,6 +317,38 @@ def main_plan(*, pod: str, out: Path, runs: Path, data: Path, checkpoints: Path,
             drop(f"main/{group}/drop-e{e}", campaign, c.label(cell(seed, e, lo)),
                  archived.outputs[0], scans[e][0], group)  # fmt: skip
     b.end("main")
+    b.close(records=(b.rel(b.records),))
+    return b.plan(commit, gpu_code, None, c.surrogate_spec(c.SURROGATE, repo))
+
+
+def adamw_plan(*, out: Path, runs: Path, data: Path, checkpoints: Path, archive_id: str,
+               commit: str, gpu_code: str, repo: Path = c.REPO) -> c.Plan:  # fmt: skip
+    """The order repeat under AdamW (docs/study5-adamw-registration.md) on a Pod of its own:
+    ``engineering`` as on the dose Pods; ``fetch``, the ten seeds' streams
+    (``docs/study5-adamw-seeds.json``, checked against the draw); ``orders``, per seed one
+    launcher campaign of four A runs (``adamw_orders.cell``: E2's two orders × A's two rates),
+    archived as its seed group ends; ``close``. No checkpoint, no labeling."""
+    record = json.loads((repo / adamw_orders.SEEDS_FILE).read_text(encoding="utf-8"))
+    if record != adamw_orders.seeds_record():
+        raise c.StepError(f"{adamw_orders.SEEDS_FILE} is not the draw")
+    b = c.Builder(ADAMW_POD, archive_id, out, runs, data, checkpoints)
+    b.admit = True  # each block and seed group admitted only when it and the close fit the cap
+    fetch_streams = engineering(b, gpu_code)
+
+    b.begin()  # the ten seeds' streams, each fetched only if missing
+    for seed in record["seeds"]:
+        fetch_streams(f"fetch/s{seed}/streams", seed)
+    b.end("fetch")
+
+    b.begin()  # per seed: E2's two orders at A's two rates
+    for seed in record["seeds"]:
+        group = f"s{seed}"
+        cells = [adamw_orders.cell(seed, order, rate) for order, _ in adamw_orders.ORDER_OFFSETS
+                 for rate, _ in adamw_orders.RATES]  # fmt: skip
+        _, campaign = b.launch(f"orders-{group}", "orders", cells, group=group,
+                               minutes=len(cells) * RUN)  # fmt: skip
+        b.runs_archive(f"orders/{group}/archive", campaign=campaign, group=group)
+    b.end("orders")
     b.close(records=(b.rel(b.records),))
     return b.plan(commit, gpu_code, None, c.surrogate_spec(c.SURROGATE, repo))
 
@@ -458,17 +508,20 @@ def cmd_check_grid(args) -> int:
 
 def preflight(plan: c.Plan, repo: Path = c.REPO) -> list[str]:
     """What forbids the start: the checkout clean at the plan's commit, its GPU code the one
-    ``IDENTITY`` records, the registration ``registered``, a runs root and archive id of the
+    ``IDENTITY`` records (``ADAMW_IDENTITY`` for the AdamW Pod), the registration (the AdamW
+    Pod's: ``ADAMW_REGISTRATION``) ``registered``, a runs root and archive id of the
     Pod's own (``own_root_problems``), the bucket, the key, the folder."""
     problems = []
     state = git_state(repo)
     if state.get("dirty") is not False or state.get("commit") != plan.commit:
         problems.append("the checkout is not clean at the plan's commit")
-    recorded = json.loads((repo / IDENTITY).read_text(encoding="utf-8"))
+    identity, registration = ((ADAMW_IDENTITY, ADAMW_REGISTRATION) if plan.pod == ADAMW_POD
+                              else (IDENTITY, REGISTRATION))  # fmt: skip
+    recorded = json.loads((repo / identity).read_text(encoding="utf-8"))
     if plan.gpu_code != recorded.get("gpu_code_sha256"):
-        problems.append(f"HEAD's GPU code is not the one {IDENTITY} records")
-    if not c.REGISTERED.search((repo / REGISTRATION).read_text(encoding="utf-8")):
-        problems.append(f"{REGISTRATION} is not registered")
+        problems.append(f"HEAD's GPU code is not the one {identity} records")
+    if not c.REGISTERED.search((repo / registration).read_text(encoding="utf-8")):
+        problems.append(f"{registration} is not registered")
     problems += c.own_root_problems(plan)
     if not os.environ.get("ARTIFACT_REMOTE", "").startswith("gs://"):
         problems.append("ARTIFACT_REMOTE is not a gs:// path")
@@ -526,6 +579,24 @@ def cmd_run(args) -> int:
     return start(main_plan(**where, out=main_out, grid_path=grid, pilot_out=pilot_out))
 
 
+def cmd_adamw(args) -> int:
+    if not args.archive_id.startswith("adamw-"):
+        raise c.StepError(f"--archive-id {args.archive_id}: the AdamW Pod's starts with adamw-")
+    commit = git_state(c.REPO).get("commit") or "unknown"
+    try:
+        gpu_code = code_identity.gpu_code_identity(commit)["sha256"]
+    except Exception:  # no commit: the preflight refuses
+        gpu_code = "unknown"
+    plan = adamw_plan(out=args.out.absolute(), runs=runs_root(), data=data_root(),
+                      checkpoints=args.checkpoints, archive_id=args.archive_id, commit=commit,
+                      gpu_code=gpu_code)  # fmt: skip
+    if args.dry_run:
+        c.show(plan)
+        return c.COMPLETED
+    c.install_sigterm()
+    return start(plan)
+
+
 def parser_of() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="kind", required=True)
@@ -537,6 +608,11 @@ def parser_of() -> argparse.ArgumentParser:
     p.add_argument("--checkpoints", type=Path, required=True)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--grid", type=Path)  # the dry run's main plan, from a grid record
+    p = sub.add_parser("adamw")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--archive-id", required=True)
+    p.add_argument("--checkpoints", type=Path, required=True)  # unused: no run saves one
+    p.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("table")
     p.add_argument("--runs", type=Path, required=True)
     p.add_argument("--campaign", required=True)
@@ -563,7 +639,7 @@ def parser_of() -> argparse.ArgumentParser:
     return parser
 
 
-COMMANDS = {"run": cmd_run, "table": cmd_table, "publish": cmd_publish, "grid": cmd_grid,
+COMMANDS = {"run": cmd_run, "adamw": cmd_adamw, "table": cmd_table, "publish": cmd_publish, "grid": cmd_grid,
             "check-grid": cmd_check_grid}  # fmt: skip
 
 
