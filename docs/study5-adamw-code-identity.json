@@ -1,0 +1,17 @@
+{
+ "what": "The GPU code of study 5's order repeat under AdamW (docs/study5-adamw-registration.md): the identity of its GPU paths at the commit named.",
+ "rule": "zero_field_refusal.code_identity.gpu_code_identity",
+ "commit": "2ab42f8e513e3d308d8f06df3d36bbe688b416fb",
+ "files": 159,
+ "gpu_code_sha256": "e4c1da2f3c58e9c33ecac92d93e46c562e79f4340a55386154a6da2035f63792",
+ "engineering_check": "The AdamW Pod reruns pod 2's order control of seed 50000 at η_l under this code before any A run and compares it under extension 2's numerical equivalence (scripts/study5_dose_campaigns.py adamw, block engineering); a failure stops the Pod. The paths changed since the dose experiment's record add the order_a role (arm A in a new order), its config and the seeds module, and list the repeat's analysis outside the GPU code; an F or dose run is unchanged. A later GPU change needs a new check and a new record.",
+ "changed_from": {
+  "record": "docs/study5-dose-code-identity.json",
+  "paths": [
+   "configs/experiments/study5_order_a.yaml",
+   "src/zero_field_refusal/adamw_orders.py",
+   "src/zero_field_refusal/code_identity.py",
+   "src/zero_field_refusal/protocol.py"
+  ]
+ }
+}
