@@ -3296,8 +3296,87 @@ project-run "$SRC" python scripts/study5_campaigns.py pod3 --out "$RUNS_DIR/camp
 - Label with the registered judge: `scripts/label_runs.py --judge wildguard` on the evaluated
   rung runs (`study5_ladder/s5-<ID>-ladder-*`) and the 40 order runs.
 
-The extension's analysis is a script of its own, written after the labels exist. It computes
-exactly what the extension names and is reviewed before its numbers are reported.
+**The analysis** runs on a CPU through `python -m zero_field_refusal.analysis.study5_ext1` (its
+docstring holds every rule), from a clean checkout. It sits in the analysis package, outside the
+GPU code identity, and reuses the registered analysis's readers and functions. It reads:
+- pod 3's restored root (`--pod3-runs`);
+- the runs root the registered analysis read (`--pod2-runs`), each file located through the
+  registered record's `inputs` and refused unless its sha256 is the one listed there;
+- the registered record (`--registered`), refused unless the registration names its sha256.
+
+E1 gives each rung's row through the registered ladder table, with pod 2's `linear` rung (its
+rows checked against the registered ones) and the trained endpoint beside it. It also gives the
+means over the evaluated seeds, the registered shuffled-D trigger, and pod 2's grid points
+measured again. A rung's run is read only after its config. An E2 order repeat refuses the
+analysis, as in extension 2: an E2 cell in its name (checked before the config), an E2 seed with
+`train.order_seed` = s + 1000 or s + 2000, or one of those order seeds.
+
+E2 stays sealed (`"e2": {"sealed": true}`) unless `--open-e2` names an opening record:
+
+```json
+{"kind": "study5-e2-opening", "commit": "<full sha>", "note": "<path of the dated note>",
+ "note_sha256": "…", "inputs": "docs/study5-e2-inputs.json", "inputs_sha256": "…"}
+```
+
+It is checked before anything of E2 is read:
+- the commit is an ancestor of the checkout's HEAD, or HEAD itself;
+- the note's text at that commit has that sha256;
+- HEAD holds the same text.
+
+This analysis needs only the note. If the opening also names the E2 test's inputs file
+(`inputs`, `inputs_sha256`), that file is checked the same way at the same commit. Inputs written
+directly in the opening record are refused.
+
+Without it, no order run and no launcher journal of pod 3 is read. The analysis writes one record,
+never over an existing file, and prints numbers only.
+
+```bash
+python -m zero_field_refusal.analysis.study5_ext1 --pod3-runs "$POD3_RUNS" \
+  --pod2-runs "$RUNS_DIR" --registered "$RUNS_DIR/study5-final/analysis.json" \
+  --out "$POD3_RUNS/study5-ext1/analysis.json"   # --open-e2 OPENING.json: E2, once decided
+```
+
+**The prospective test on E2** (`python -m zero_field_refusal.analysis.study5_e2_test`; its
+docstring holds the test and every rule) runs once the dated note fixing it is committed and E2 is
+opened; `--open-e2` is required. It compares each seed's two new orders: the predicted sign of
+h₁ − h₂ against the sign at K\*, one-sided exact binomial p, with S and the η_l harm share beside.
+The predictor is the δ_lin criterion's `primary_predictor` (`q` from pod 4's sealed
+predictions, or ln K_harmful at K\*). It is read from the extension-2 analysis record
+(`study5_ext2_cli`'s `analysis.json`, `EXT2_ANALYSIS.json` below), under `criterion`
+(`--criterion-key`).
+
+The test's inputs are a committed JSON file, committed with or after the dated note. The opening
+names it (`inputs`, `inputs_sha256`) and checks it as it checks the note. The file holds:
+- `criterion_sha256`: the --criterion file;
+- `predictions`: a manifest {`<seed>-<order seed>` or the record's path: sha256}, exactly the
+  prediction files given;
+- `seeds`: the tested seeds;
+- `pair_floors`: 10, equal to the criterion's `part3_pairs.unresolved_floors`.
+
+Every input check is made against this committed content, never against the opening record, which
+may not carry the inputs inline. The test refuses before reading any E2 file in these cases:
+- the opening record does not stand, or the note or the inputs file it names does not;
+- one of the inputs differs;
+- the criterion is withheld, or its `passed` and `primary_predictor` disagree;
+- a prediction it needs is missing or invalid.
+
+A preflight then reads only each order run's config.yaml and meta.json. It checks the run's cell,
+its prompt set and, with `q`, the prediction bound to the run. Only after that are outcomes and
+labels read. A seed is excluded and listed only for a registered scientific cause:
+- an order unsupported at K\*;
+- δ_lin declared diverged;
+- a measured K_harmful that is not positive.
+
+A missing journal, run, end or label is a technical gap. While a tested seed has one, the verdict
+is withheld (no p and no reading), and the numbers over the resolved seeds are descriptive only.
+
+```bash
+python -m zero_field_refusal.analysis.study5_e2_test --open-e2 OPENING.json \
+  --criterion EXT2_ANALYSIS.json \
+  --predictions "$POD4_RUNS/study5_records/<ID>/sealed" \
+  --pod3-runs "$POD3_RUNS" --registered "$RUNS_DIR/study5-final/analysis.json" \
+  --out "$POD3_RUNS/study5-e2-test/test.json"   # [--seeds S ...]: top-up seeds
+```
 
 
 ### Study 5, extension 2: pod 4
