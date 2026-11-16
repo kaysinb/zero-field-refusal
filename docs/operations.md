@@ -3548,6 +3548,38 @@ project-run "$SRC" python scripts/study5_dose_campaigns.py adamw --out "$RUNS_DI
 runs with the registered judge, then `scripts/study5_adamw_analysis.py`, fixed before the labels
 are read.
 
+### Study 5, the order repeat on Llama: pod llama
+
+The repeat (docs/study5-llama-registration.md) trains Llama-3.2-1B-Instruct on its own θ₀
+samples, ten fresh seeds 60000–60009 in three orders at two rates, on one L40S Pod:
+`scripts/study5_llama_campaigns.py run`, three plans in order on `scripts/study5_campaigns.py`'s
+machinery, each built from the record the one before wrote (campaign folders `DIR-checks`,
+`DIR-pilot`, `DIR-main`). The GPU code is the one `docs/study5-llama-code-identity.json` records
+(the model's config with its pad token and fixed chat date, its experiment configs, the seeds,
+orders and rate rule); the preflight refuses another, a registration not `registered`, an archive
+id outside `llama-…` and a runs root with anything of another archive.
+
+**The checks plan:** `engineering` as on the dose Pods (pod 2's Qwen order control, numerical
+rule); `instruments`, Llama's K panels (`kl_harmful`, `kl_benign`, `kl_monitor`) sampled on the
+Pod; `stage0`, `scripts/stage0_checks.py experiments/study5_llama_stage0` and its record
+(`llama-checks.json`: the path-field verdict and the teacher-gap thresholds, 10 × the largest gap);
+`theta0`, θ₀'s evaluation; `streams`, the ten seeds' training streams of 500 responses, archived
+with the K panels under `data/`. Any failure of the check, the panels, stage 0 or θ₀ stops.
+
+**The pilot plan:** the K-only pilot (seeds 60000 and 60001, order 1, six rates) with the record's
+thresholds, its table and the rates record (`rates.json`, `llama_orders.rate_choice`); no bracket
+stops. **The main plan:** per seed one launcher campaign of six runs, archived as the seed ends.
+No checkpoint. The Hugging Face account of the Pod's `HF_TOKEN` must have accepted the model's
+licence (the model is gated). The Pod is prepared as a dose Pod.
+
+```bash
+project-run "$SRC" python scripts/study5_llama_campaigns.py run --out "$RUNS_DIR/campaigns/study5-llama" \
+  --archive-id llama-<date> --checkpoints /workspace/ckpt/llama   # --dry-run first
+```
+
+**After the Pod:** restore its runs, label the 60 runs and θ₀'s responses with the registered
+judge, then `scripts/study5_llama_analysis.py`, fixed before the labels are read.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project

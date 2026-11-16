@@ -19,6 +19,8 @@ documents:
   purpose: Study 5's dose experiment, its design, pilot grid rule, forecasts and decision rule (registered)
 - path: docs/study5-adamw-registration.md
   purpose: Study 5's order repeat under AdamW, its design, seeds and fixed reading (registered)
+- path: docs/study5-llama-registration.md
+  purpose: Study 5's order repeat on Llama-3.2-1B-Instruct, its zero-field checks, rate rule and fixed reading (registered)
 - path: docs/study5-related-work.md
   purpose: Study 5 related work, prior predictors of safety loss from fine-tuning data, seed variance, and what in study 5 is not new
 - path: docs/study2-pilot-momentum.md
@@ -415,6 +417,16 @@ topics:
   - scripts/study5_adamw_analysis.py
   - src/zero_field_refusal/analysis/study5_adamw.py
   - tests/test_study5_adamw*.py
+  - src/zero_field_refusal/llama_orders.py
+  - configs/model/llama-3.2-1b-instruct.yaml
+  - configs/experiments/study5_llama*.yaml
+  - scripts/study5_llama_campaigns.py
+  - scripts/study5_llama_analysis.py
+  - src/zero_field_refusal/analysis/study5_llama.py
+  - docs/study5-llama-registration.md
+  - docs/study5-llama-code-identity.json
+  - tests/test_llama_*.py
+  - tests/test_study5_llama*.py
 - id: study3_simulation
   title: Study 3's simulation before validation — inputs, fixation, run, verification and record
   source: docs/operations.md#study-3-simulation
