@@ -33,7 +33,37 @@ def set_numerics(model_cfg: DictConfig) -> None:
 
 
 def load_tokenizer(model_cfg: DictConfig) -> PreTrainedTokenizerBase:
-    return AutoTokenizer.from_pretrained(model_cfg.name, revision=model_cfg.revision)
+    """The pinned tokenizer, with the model config's ``pad_token`` and ``chat_date`` when given
+    (``pin_tokenizer``); a config without them (Qwen2.5) leaves the tokenizer as shipped."""
+    tokenizer = AutoTokenizer.from_pretrained(model_cfg.name, revision=model_cfg.revision)
+    return pin_tokenizer(tokenizer, model_cfg)
+
+
+# The chat template's date variable (Llama 3.x: "Today Date: <date>" in its system block, the
+# day of the call unless the caller defines it): pinned, so that a prompt is the same any day
+DATE_VARIABLE = "date_string"
+
+
+def pin_tokenizer(tokenizer: PreTrainedTokenizerBase,
+                  model_cfg: DictConfig) -> PreTrainedTokenizerBase:  # fmt: skip
+    """``model.pad_token`` (a token of the vocabulary, for a tokenizer that ships none) as the pad
+    token; ``model.chat_date`` as the chat template's ``date_string``, defined at the template's
+    top so that it never takes the day of the call. A key absent leaves that part unchanged."""
+    pad = model_cfg.get("pad_token", None)
+    if pad is not None:
+        token_id = tokenizer.convert_tokens_to_ids(pad)
+        if token_id is None or token_id == tokenizer.unk_token_id:
+            raise ValueError(f"pad token {pad!r} is not in the tokenizer's vocabulary")
+        tokenizer.pad_token = pad
+    date = model_cfg.get("chat_date", None)
+    if date is not None:
+        template = tokenizer.chat_template
+        if not isinstance(template, str) or DATE_VARIABLE not in template:
+            raise ValueError(f"model.chat_date is set but the chat template has no {DATE_VARIABLE}")
+        if not isinstance(date, str) or any(c in date for c in "\"'{}%"):
+            raise ValueError(f"model.chat_date {date!r}: plain text expected")
+        tokenizer.chat_template = '{%- set ' + DATE_VARIABLE + ' = "' + date + '" %}' + template
+    return tokenizer
 
 
 def load_model(

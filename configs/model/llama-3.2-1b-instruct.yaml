@@ -1,0 +1,13 @@
+model:
+  name: meta-llama/Llama-3.2-1B-Instruct
+  revision: 9213176726f574b556790deb65791e0c5aa438b6  # Hugging Face commit, model and tokenizer
+  dtype: float32                 # weights, compute and gradients; the teacher samples the same way
+  attn_implementation: sdpa      # identical for teacher sampling, training and evaluation
+  tf32: false
+  end_tokens: ["<|eot_id|>", "<|end_of_text|>", "<|eom_id|>"]  # the checkpoint's generation ends
+  pad_token: "<|finetune_right_pad_id|>"  # the tokenizer ships none; a reserved token, never sampled
+  chat_date: "26 Jul 2024"       # the template's own default date (models.pin_tokenizer)
+checks:                          # blocking-check thresholds of this model: set from its stage-0
+  teacher_gap:                   # measurement (10 × the largest gap), until then none
+    token_max_abs: null
+    response_mean_signed_abs: null
