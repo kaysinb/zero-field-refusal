@@ -1,0 +1,33 @@
+# Study 5's order repeat under AdamW (docs/study5-adamw-registration.md): arm A of study 3's
+# candidate 1 (optimizer=adamw, its own adaptive second moment) on a fresh seed's own 500
+# responses in a new order (train.order_seed: s + 1000 or s + 2000, extension 1's orders), with
+# everything else experiments/study5_control_order's: experiments/study5's composition, composed
+# here directly with optimizer/adamw (tests/test_study5_adamw.py compares the resolved configs).
+# The rate (A's η_l = 1.45e-05 or η_u = 2.11e-05), the seed and the order seed come from the
+# campaign; no scan, no checkpoint.
+defaults:
+  - base
+  - protocol/zero_field
+  - model/qwen2.5-1.5b-instruct
+  - optimizer/adamw
+  - data/study2
+  - eval/study2
+  - schedule/short
+
+experiment: study5
+protocol_version: 2
+study5:
+  role: order_a
+teacher:
+  stream: appendable
+  chunk_size: 1000
+eval:
+  projections: 0
+tracking:
+  require_clean_git: true
+  update_scalars: true
+  provenance_hashes: true
+execution:
+  memory_limit_gb: 46
+train:
+  order_seed: ???
