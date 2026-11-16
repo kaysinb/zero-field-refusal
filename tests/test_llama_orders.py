@@ -79,6 +79,28 @@ def test_a_stopped_run_above_the_bracket_is_not_read_one_below_is_a_refusal():
         lo.rate_choice(rows(k, complete=lambda s, r: r != 1e-5))
 
 
+MEASURED = {(60000, 5e-6): 2.8740360453101954, (60000, 1e-5): 7.703732838523675,
+            (60001, 5e-6): 2.669457411446251, (60001, 1e-5): 6.934710012876958}  # fmt: skip
+
+
+def test_the_amended_grid_brackets_7_44_below_the_stopped_runs():
+    """The first pilot's K at 5e-06 and 1e-05, every run from 2e-05 up stopped above the
+    instability bound (no K): with 1.25e-05 in the grid both targets are bracketed below the
+    stopped runs, which the rule then never reads."""
+    def k(s, r):
+        return MEASURED.get((s, r), {60000: 10.4, 60001: 9.3}[s] if r == 1.25e-5 else None)
+
+    found = lo.rate_choice(rows(k, complete=lambda s, r: r <= 1.25e-5))
+    assert found["eta_l"] == 7.45e-06  # both seeds from their 5e-06 and 1e-05 runs
+    assert found["per_seed"]["eta_u"]["60000"] < 1e-5 < found["per_seed"]["eta_u"]["60001"]
+    assert 1e-5 < found["eta_u"] < 1.25e-5
+    for seed in lo.PILOT_SEEDS:
+        assert found["support"][str(seed)]["supported"]
+    # without a K at 1.25e-05 the pair above 1e-05 has a stopped run: a refusal, as before
+    with pytest.raises(ValueError, match="no K"):
+        lo.rate_choice(rows(k, complete=lambda s, r: r <= 1e-5))
+
+
 def test_no_bracket_is_a_refusal():
     with pytest.raises(ValueError, match="bracket"):
         lo.rate_choice(rows(lambda s, r: 1.0 + r))  # K never reaches 4.84

@@ -2,7 +2,8 @@
 
 Status: `registered` (2026-11-16), before any run on the model and before any of its labels;
 its rate rule amended the same day, still before any run (a fixed ratio of rates could leave every
-pair without support at K\*).
+pair without support at K\*); its pilot grid amended the same day after the pilot's K values were
+known, before any main run and before any label (“Amendment of the pilot grid” below).
 
 ## Question
 
@@ -29,9 +30,10 @@ of the same responses moves harm at matched benign drift, and how far.
   responses in three orders: `train.order_seed` = s + 1000, s + 2000 and s + 3000. Each order at
   two rates: 60 runs.
 - **Rates, fixed by a pilot before any main run.** K-only runs of seeds 60000 and 60001 in order 1
-  at 5·10⁻⁶, 10⁻⁵, 2·10⁻⁵, 4·10⁻⁵, 8·10⁻⁵ and 1.6·10⁻⁴. Per seed, the rates where K_benign at step
-  25 reaches 4.84 (the median K of A's study-3 runs at its η_l) and 6²/4.84 ≈ 7.44 are interpolated
-  in ln K against ln η between the lowest adjacent pair of pilot rates that brackets each; the two
+  at 5·10⁻⁶, 10⁻⁵, 2·10⁻⁵, 4·10⁻⁵, 8·10⁻⁵ and 1.6·10⁻⁴, and at 1.25·10⁻⁵ by the amendment below.
+  Per seed, the rates where K_benign at step 25 reaches 4.84 (the median K of A's study-3 runs at
+  its η_l) and 6²/4.84 ≈ 7.44 are interpolated in ln K against ln η between the lowest adjacent
+  pair of pilot rates that brackets each; the two
   straddle K\* = 6 at a ln-width of 0.43. η_l and η_u are the two seeds' geometric means, each to
   three significant digits (`llama_orders.rate_choice`). Before any main run, each pilot seed's K
   at the rounded rates, interpolated the same way on its pilot curve, must bracket K\* at a width of
@@ -41,6 +43,21 @@ of the same responses moves harm at matched benign drift, and how far.
   (`experiments/study5_llama_theta0`). K is measured against Llama's own θ₀ samples (its K panels,
   sampled on the Pod).
 - **Labels.** WildGuard on the 521 prompts for the 60 runs and θ₀, as in study 5.
+
+## Amendment of the pilot grid (2026-11-16)
+
+The amendment was made after the K values of the pilot's twelve runs were known, before any main
+run and before any label. At 5·10⁻⁶ and 10⁻⁵, K_benign at step 25 was 2.87 and 7.70 for seed
+60000 and 2.67 and 6.93 for seed 60001. Every run from 2·10⁻⁵ up stopped at the instability bound
+(monitor K above 16, twice the schedule's top level); seed 60001's run at 2·10⁻⁵ stopped at its
+last step (monitor K 16.06), so it has no K at step 25. For seed 60001, K = 7.44 therefore lies
+between 10⁻⁵ and a run without K, and the rule refused: no main run started. On this model the
+doubling grid is too coarse in the steep range between 10⁻⁵ and 2·10⁻⁵. The amendment adds one
+pilot rate, 1.25·10⁻⁵, K-only, for both pilot seeds in order 1, under the same config and the same
+instability bound; the twelve runs stand. The targets 4.84 and 7.44, the interpolation, the support
+check with its width of 0.60, and the bound are unchanged. If a run at 1.25·10⁻⁵ also stops at the
+bound, or no pair of pilot rates brackets K = 7.44 or supports K\*, the experiment stops as
+registered, with no further amendment.
 
 ## Analysis (`scripts/study5_llama_analysis.py`)
 

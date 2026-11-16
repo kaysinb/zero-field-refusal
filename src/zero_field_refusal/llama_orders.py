@@ -35,7 +35,9 @@ SEEDS = tuple(range(60000, 60010))  # fresh seeds of Llama's own θ₀, none of 
 ORDER_OFFSETS = (("order1", 1000), ("order2", 2000), ("order3", 3000))
 PILOT_SEEDS = (60000, 60001)
 PILOT_ORDER = "order1"
-PILOT_RATES = (5.0e-06, 1.0e-05, 2.0e-05, 4.0e-05, 8.0e-05, 1.6e-04)
+# 1.25e-05 added by the registration's amendment after the first twelve pilot runs (their K at
+# 2e-05 stopped above the instability bound, so no pair bracketed K = 7.44 for seed 60001)
+PILOT_RATES = (5.0e-06, 1.0e-05, 1.25e-05, 2.0e-05, 4.0e-05, 8.0e-05, 1.6e-04)
 K_STAR = 6.0
 TARGET_K_LOW = 4.84  # A's median K_benign at η_l^A in study 3 (docs/reports/study3-confirmation-c1.md)
 TARGET_K_HIGH = K_STAR**2 / TARGET_K_LOW  # ≈ 7.44: ln-width 0.43 around K* = 6

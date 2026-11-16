@@ -53,6 +53,9 @@ def test_the_checks_plan(where, tmp_path):
                                                       lo.THETA0_CONFIG)  # fmt: skip
     assert names["stage0/checks"].argv == ("scripts/stage0_checks.py", lo.STAGE0_CONFIG)
     assert names["stage0/record"].on_fail == "stop"
+    # the checks are done once their record exists, so a later --out runs no second stage 0
+    assert names["stage0/checks"].outputs == names["stage0/record"].outputs
+    assert names["stage0/record"].outputs[0].endswith(f"/{m.CHECKS}")
     streams = [s for s in steps(plan, "streams") if s.name.endswith("/training")]
     assert [int(s.argv[s.argv.index("--seeds") + 1]) for s in streams] == list(lo.SEEDS)
     assert all(s.argv[s.argv.index("--responses") + 1] == "500" for s in streams)

@@ -66,7 +66,9 @@ MODEL_DIR = "teacher/meta-llama--Llama-3.2-1B-Instruct"  # Llama's streams under
 CHECKS_DIR = "checks/meta-llama--Llama-3.2-1B-Instruct"  # its path-field certificate there
 INSTRUMENTS = ("kl_harmful", "kl_benign", "kl_monitor")
 STAGE0_EXPERIMENT = "study5_llama_stage0"
-CHECKS, TABLE, RATES = "llama-checks.json", "pilot-table.json", "rates.json"
+# the pilot table of the amended grid (llama_orders.PILOT_RATES): pilot-table.json, the first
+# grid's table, is archived where an object is written once
+CHECKS, TABLE, RATES = "llama-checks.json", "pilot-table-amended.json", "rates.json"
 # Minutes, assumed for the 1B model where no measurement exists (the 1.5B model's as an upper bound)
 RUN, PILOT_RUN, STAGE0, INSTRUMENT, STREAM = c.F_RUN, 3.0, 60.0, 10.0, 3.0
 c.PREFIXES[POD] = "llama-"  # own_root_problems
@@ -99,8 +101,10 @@ def checks_plan(*, out: Path, runs: Path, data: Path, checkpoints: Path, archive
 
     b.begin()  # the zero-field checks on Llama, then their record: a failed check stops
     record = b.record(CHECKS)
+    # done once its record exists: a later --out (a new commit) never makes a second stage-0 run,
+    # which the record step would refuse
     b.step("stage0/checks", ("scripts/stage0_checks.py", lo.STAGE0_CONFIG), on_fail="stop",
-           minutes=STAGE0)  # fmt: skip
+           outputs=(str(record),), minutes=STAGE0)  # fmt: skip
     b.step("stage0/record", (SELF, "checks-record", "--runs", b.runs, "--out", record),
            on_fail="stop", outputs=(str(record),))  # fmt: skip
     b.runs_archive("stage0/archive", paths=(b.rel(record), STAGE0_EXPERIMENT))
