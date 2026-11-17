@@ -1,0 +1,18 @@
+{
+ "what": "The GPU code of study 5's run without momentum (docs/study5-beta0-registration.md): the identity of its GPU paths at the commit named.",
+ "rule": "zero_field_refusal.code_identity.gpu_code_identity",
+ "commit": "bd31984579eff26333ed8c65b3aef11bf3d945a5",
+ "files": 168,
+ "gpu_code_sha256": "9cafefa645f9c94bb574f9f5454f259ebe7dc91c4aa9a6904bcd89551105e4ea",
+ "engineering_check": "The Pod reruns pod 2's Qwen order control of seed 50000 at η_l under this code before anything else and compares it under extension 2's numerical equivalence (scripts/study5_beta0_campaigns.py, block engineering); a failure stops the Pod. The paths changed since the Llama repeat's record add the beta0 role (optimizer.beta1 0 in that role and in no other arm-F role), its configs and its module (seeds, orders, pilot rate rule, drift gate, campaign cells), and list its driver and analysis outside the GPU code; a run of any other role is unchanged (tests/test_study5_beta0.py). A later GPU change needs a new check and a new record.",
+ "changed_from": {
+  "record": "docs/study5-llama-code-identity.json",
+  "paths": [
+   "configs/experiments/study5_beta0.yaml",
+   "configs/experiments/study5_beta0_k_only.yaml",
+   "src/zero_field_refusal/beta0.py",
+   "src/zero_field_refusal/code_identity.py",
+   "src/zero_field_refusal/protocol.py"
+  ]
+ }
+}

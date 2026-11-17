@@ -447,6 +447,7 @@ topics:
   - docs/study5-beta0-registration.md
   - docs/study5-beta0-targets.json
   - docs/study5-beta0-reference.json
+  - docs/study5-beta0-code-identity.json
   - tests/test_study5_beta0*.py
 - id: study3_simulation
   title: Study 3's simulation before validation — inputs, fixation, run, verification and record
