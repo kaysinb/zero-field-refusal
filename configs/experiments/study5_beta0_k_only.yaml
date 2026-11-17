@@ -1,0 +1,8 @@
+# The rate pilot of the run without momentum (docs/study5-beta0-registration.md, "Pilot"):
+# experiments/study5_beta0 with a K-only evaluation (the scoring panel's K, the monitor and utility;
+# no response to a harmful prompt), so that a pilot run and a main run of one seed and rate agree
+# in every key of train, optimizer, execution and data.
+defaults:
+  - experiments/study5_beta0
+eval:
+  k_only: true

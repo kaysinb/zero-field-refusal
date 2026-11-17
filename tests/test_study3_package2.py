@@ -145,6 +145,7 @@ OTHER = (
     ANALYSIS / "study5_reference.py",  # study 5's reference consensus: pure, it reads no file
     ANALYSIS / "study5_dose.py",  # study 5's dose analysis: pure, it reads no file
     ANALYSIS / "study5_adamw.py",  # study 5's order repeat under AdamW: pure, it reads no file
+    ANALYSIS / "study5_beta0.py",  # study 5's run without momentum: pure, it reads no file
     ANALYSIS / "study5_llama.py",  # study 5's order repeat on Llama: pure, it reads no file
     ANALYSIS / "study5_ext1.py",  # study 5's extension 1 record (E1 and E2)
     ANALYSIS / "study5_e2_test.py",  # study 5's E2 test, through study5_ext1's extraction

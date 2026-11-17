@@ -1,0 +1,28 @@
+{
+  "evaluations_sha256": {
+    "50000": "a66b49bf9cd602c9451b7ad5d52d591ccf84af5a9260636218c299dbaa2e027d",
+    "50001": "69a45dcf77b61d1d2b1e8c04505f54ef1a8a1c5f4031ecd9b474d064825fa438",
+    "50002": "11de61f5e0237ca625c57bb80aa36929c7c80f20c045426177f6351b3322821b",
+    "50003": "162b166c09d81bc311c3d208711b490e4db1a7663ffb3dbc48a4260b8c437e23",
+    "50004": "6fa866cd1f91f9243f00350dcfb11defb737f2c816b6d7e794558994016c2e2a",
+    "50005": "faa10304cfb67ed6101c6fa5db57c52abc6841db6c1310e069222fce2c840640"
+  },
+  "k_benign": {
+    "50000": 4.913853850888751,
+    "50001": 4.7485262016421395,
+    "50002": 4.778891738121431,
+    "50003": 4.820320052265006,
+    "50004": 4.982650916222024,
+    "50005": 6.169250544288993
+  },
+  "runs": {
+    "50000": "20261109T192912Z-s5-fresh-1.3e-05-s50000-s50000-f3e969f1-a1",
+    "50001": "20261109T200448Z-s5-fresh-1.3e-05-s50001-s50001-52976e1f-a1",
+    "50002": "20261109T204049Z-s5-fresh-1.3e-05-s50002-s50002-99efec8b-a1",
+    "50003": "20261109T211734Z-s5-fresh-1.3e-05-s50003-s50003-21cff731-a1",
+    "50004": "20261109T215417Z-s5-fresh-1.3e-05-s50004-s50004-c431ca6c-a1",
+    "50005": "20261109T223154Z-s5-fresh-1.3e-05-s50005-s50005-d5d976a3-a1"
+  },
+  "source": "study 5's fresh runs (pod 2), evaluations.jsonl, the row of step 25",
+  "what": "K_benign at step 25 of each seed's frozen-Adam (beta1 0.9) stream-order run at eta_l = 1.3e-05: the targets of the run without momentum (docs/study5-beta0-registration.md)."
+}

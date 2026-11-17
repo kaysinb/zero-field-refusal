@@ -45,7 +45,7 @@ ATTENTION = ("sdpa", "eager")
 STUDY3_CHECKPOINT_ROLES = ("numerical", "engineering")
 # Study 5's roles (study5.role): the fresh seeds' F runs and the crossed controls; both may save
 # the endpoint checkpoint. The keys only the controls carry:
-STUDY5_ROLES = ("fresh", "control", "dose", "order_a")
+STUDY5_ROLES = ("fresh", "control", "dose", "order_a", "beta0")
 STUDY5_KEYS = ("train.order_seed", "optimizer.preconditioner.source_seed", "train.order_edit")
 RATE_SCHEDULE = "train.rate_schedule"  # the dose role's key (study5_options)
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -290,9 +290,12 @@ def _study5_problems(cfg: DictConfig) -> list[str]:
     ``train.rate_schedule`` (``study5_options.schedule_problems``) and none of the three
     control keys; no other role carries the schedule. An ``order_a`` run
     (docs/study5-adamw-registration.md) is arm A (``adamw``) of a fresh seed in a new order:
-    exactly ``train.order_seed`` among the three control keys, no schedule. Every other study-5 run
-    is arm F (``adam_frozen``); every study-5 run is a fixed-policy scheduled run; no other run
-    carries a study-5 key."""
+    exactly ``train.order_seed`` among the three control keys, no schedule. A ``beta0`` run
+    (docs/study5-beta0-registration.md) is arm F without momentum (``optimizer.beta1`` 0) on a
+    seed's own responses, with at most one of ``train.order_seed`` and ``train.order_edit``, no
+    other control key and no schedule; no other arm-F role takes ``optimizer.beta1`` 0. Every
+    other study-5 run is arm F (``adam_frozen``); every study-5 run is a fixed-policy scheduled
+    run; no other run carries a study-5 key."""
     role = OmegaConf.select(cfg, "study5.role", default=None)
     present = {key: OmegaConf.select(cfg, key, default=None)
                for key in (*STUDY5_KEYS, RATE_SCHEDULE)}  # fmt: skip
@@ -311,6 +314,11 @@ def _study5_problems(cfg: DictConfig) -> list[str]:
                         f"{OmegaConf.select(cfg, 'optimizer.name', default=None)!r}")  # fmt: skip
     if OmegaConf.select(cfg, "schedule.policy", default=None) != "fixed":
         problems.append("schedule.policy: a study-5 run is a fixed-policy scheduled run")
+    if arm == "adam_frozen":
+        beta1 = OmegaConf.select(cfg, "optimizer.beta1", default=None)
+        if (role == "beta0") != (beta1 == 0):
+            problems.append(f"optimizer.beta1: 0 in a run of role 'beta0' and in no other arm-F "
+                            f"role, got {beta1!r} with role {role!r}")  # fmt: skip
     for key in ("train.order_seed", "optimizer.preconditioner.source_seed"):
         value = present.get(key)
         if value is not None and not (isinstance(value, int) and not isinstance(value, bool)
@@ -342,6 +350,12 @@ def _study5_problems(cfg: DictConfig) -> list[str]:
     elif role == "fresh":
         problems += [f"{key}: a control's key; a study-5 run of role 'fresh' takes none"
                      for key in controls]  # fmt: skip
+    elif role == "beta0":
+        if len(controls) > 1 or "optimizer.preconditioner.source_seed" in controls:
+            problems.append(
+                "study5.role: a beta0 run sets at most one of train.order_seed "
+                f"and train.order_edit and no other control key, got {controls}"
+            )
     elif role == "order_a":
         if controls != ["train.order_seed"]:
             problems.append("study5.role: an order_a run sets train.order_seed and no other "

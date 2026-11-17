@@ -1,0 +1,15 @@
+# Study 5's run without momentum (docs/study5-beta0-registration.md): arm F (frozen Adam, the
+# seed's own v₀ and streams) with optimizer.beta1 = 0, so that m_t = g_t, the bias correction of the
+# first moment is 1 and every batch enters the weight change with weight 1. The rate (the pilot's
+# choice), the seed and at most one order key come from the campaign: none for the stream order,
+# +train.order_seed=<the seed> for the order of experiments/study5_control_order, or
+# +train.order_edit={kind: shuffle, …} for extension 2's shuffles (M6). Everything else is
+# experiments/study5's (tests/test_study5_beta0.py compares the resolved configs); no scan, no
+# checkpoint.
+defaults:
+  - experiments/study5
+
+study5:
+  role: beta0
+optimizer:
+  beta1: 0.0
