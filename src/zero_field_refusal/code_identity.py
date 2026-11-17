@@ -77,6 +77,10 @@ ANALYSIS_SCRIPTS = frozenset(
         # analysis, listed before it exists
         "study5_llama_campaigns.py",
         "study5_llama_analysis.py",
+        # the run without momentum: its Pod driver (study5_campaigns.py's machinery) and its
+        # analysis (it reads run records and labels)
+        "study5_beta0_campaigns.py",
+        "study5_beta0_analysis.py",
     )
 )
 
