@@ -1,4 +1,4 @@
-# Refusal Collapse at Zero Field
+# Refusal Erosion at Zero Field
 
 ## The question
 
