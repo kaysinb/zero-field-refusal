@@ -32,6 +32,9 @@ seen, the learning rate and the optimizer.
 | 3 | Harm after 25 updates under AdamW (A), Adam with its second moment frozen at v₀, the estimate at θ₀ (F), and AdamW whose second moment starts at v₀ (P), at K\* = 6 on Qwen2.5-1.5B-Instruct, in 60 seed blocks | Completed. [Preregistration](docs/study3-preregistration.md), [final report](docs/reports/study3-final-c1.md) and its stage reports |
 | 5 | Whether a first-order quantity computed at θ₀ ranks fresh seeds by their harm, and how harm at matched drift depends on the seed's samples and on their order | Runs and analyses completed; see below |
 
+The number 4 belonged to a repeat of study 3's A–F comparison on Qwen2.5-7B-Instruct, which was
+drafted but not registered or run; its draft is not in this repository.
+
 Study 5's registered parts:
 
 - [Study 5 preregistration](docs/study5-preregistration.md): the confirmatory test on fresh seeds,
