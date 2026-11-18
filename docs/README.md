@@ -22,6 +22,7 @@ authoritative copies.
 | [docs/study5-adamw-registration.md](study5-adamw-registration.md) | Study 5's order repeat under AdamW, its design, seeds and fixed reading (registered) |
 | [docs/study5-beta0-registration.md](study5-beta0-registration.md) | Study 5's order effect without momentum (beta1 0), its design, pilot rate rule, drift gate and fixed reading (registered) |
 | [docs/study5-llama-registration.md](study5-llama-registration.md) | Study 5's order repeat on Llama-3.2-1B-Instruct, its zero-field checks, rate rule and fixed reading (registered) |
+| [docs/study5-refdir-registration.md](study5-refdir-registration.md) | Study 5's training answers along the refusal direction at θ₀, its direction and selection rule, predictors, tests and controls (registered) |
 | [docs/study5-related-work.md](study5-related-work.md) | Study 5 related work, prior predictors of safety loss from fine-tuning data, seed variance, and what in study 5 is not new |
 | [docs/study5-e2-note.md](study5-e2-note.md) | Study 5's prospective test on extension 1's order repeats (E2), fixed before any E2 outcome is read |
 | [docs/study2-pilot-momentum.md](study2-pilot-momentum.md) | Proposed preregistration of study 2's SGD-momentum pilot, for the barrier branch |

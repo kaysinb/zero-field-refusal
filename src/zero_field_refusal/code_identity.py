@@ -81,6 +81,8 @@ ANALYSIS_SCRIPTS = frozenset(
         # analysis (it reads run records and labels)
         "study5_beta0_campaigns.py",
         "study5_beta0_analysis.py",
+        # the refusal-direction analysis: it reads the projections and the harm records
+        "study5_refdir_analysis.py",
     )
 )
 
