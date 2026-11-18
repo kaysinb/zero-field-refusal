@@ -23,6 +23,8 @@ documents:
   purpose: Study 5's order effect without momentum (beta1 0), its design, pilot rate rule, drift gate and fixed reading (registered)
 - path: docs/study5-llama-registration.md
   purpose: Study 5's order repeat on Llama-3.2-1B-Instruct, its zero-field checks, rate rule and fixed reading (registered)
+- path: docs/study5-refdir-registration.md
+  purpose: Study 5's training answers along the refusal direction at θ₀, its direction and selection rule, predictors, tests and controls (registered)
 - path: docs/study5-related-work.md
   purpose: Study 5 related work, prior predictors of safety loss from fine-tuning data, seed variance, and what in study 5 is not new
 - path: docs/study5-e2-note.md
@@ -449,6 +451,15 @@ topics:
   - docs/study5-beta0-reference.json
   - docs/study5-beta0-code-identity.json
   - tests/test_study5_beta0*.py
+  - src/zero_field_refusal/refdir.py
+  - scripts/study5_refdir.py
+  - scripts/study5_refdir_analysis.py
+  - src/zero_field_refusal/analysis/study5_refdir.py
+  - docs/study5-refdir-registration.md
+  - docs/study5-refdir-prompts.json
+  - docs/study5-refdir-code-identity.json
+  - tests/test_refdir.py
+  - tests/test_study5_refdir*.py
 - id: study3_simulation
   title: Study 3's simulation before validation — inputs, fixation, run, verification and record
   source: docs/operations.md#study-3-simulation
