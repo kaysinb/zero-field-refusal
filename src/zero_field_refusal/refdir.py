@@ -395,9 +395,10 @@ def answer_means(
     model: PreTrainedModel, samples: Sequence[Sample], layers: Sequence[int], device: torch.device
 ) -> tuple[torch.Tensor, list[int]]:
     """(samples, layers, d) float32: per answer, the mean of each block input over its answer
-    positions; and each answer's number of positions."""
+    positions; and each answer's number of positions. An answer without a position (its only
+    response token is the end token) has no mean: its rows are NaN, never 0."""
     d = model.config.hidden_size
-    out = torch.zeros(len(samples), len(layers), d, dtype=torch.float32)
+    out = torch.full((len(samples), len(layers), d), float("nan"), dtype=torch.float32)
     counts = [len(answer_positions(s)) for s in samples]
     lengths = [len(s.prompt_ids) + len(s.response_ids) for s in samples]
     for rows in equal_length_batches(lengths):

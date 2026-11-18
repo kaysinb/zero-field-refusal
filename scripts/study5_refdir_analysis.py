@@ -6,7 +6,9 @@
         --out RECORD.json
 
 --qwen and --llama are the projection folders of ``scripts/study5_refdir.py project`` (one
-``s<seed>.npz`` per seed); --qwen-direction and --llama-direction its direction folders
+``s<seed>.npz`` per seed with its receipt ``s<seed>.json``, whose sha256 and binding to the
+direction, its layers and the model are checked: any mismatch, a missing receipt among them,
+stops the analysis); --qwen-direction and --llama-direction its direction folders
 (``direction.json``, ``vectors.pt``). The harm records are the study's, each read for h* in
 percentage points:
 
@@ -31,6 +33,7 @@ import argparse
 import hashlib
 import json
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -97,10 +100,47 @@ def harm_of(final: dict, e2: dict, lam: dict) -> dict[str, Any]:
     return {"own": own, "e2": e2_h, "e2_order_seed": e2_seed, "llama": lam_h}
 
 
-def load_answers(folder: Path, seeds) -> dict[str, Any]:
-    out: dict[str, Any] = {"prompts": {}, "means": {}, "control": {}, "counts": {}, "files": {}}
+def binding_of(model: str, direction: Path) -> dict[str, Any]:
+    """The binding a projection file of this direction carries (``scripts/study5_refdir.py``'s
+    ``binding_of``): direction.json and vectors.pt checked against each other."""
+    found = json.loads((direction / "direction.json").read_text())
+    if found.get("model") != model:
+        raise Stop(f"{direction.name}: direction.json is {found.get('model')!r}'s, not {model!r}'s")
+    if sha256(direction / "vectors.pt") != found.get("vectors_sha256"):
+        raise Stop(f"{direction.name}: vectors.pt is not the direction record's")
+    import torch
+
+    v = torch.load(direction / "vectors.pt")
+    if {"layer": v["layer"], "position": v["position"]} != found["chosen"] or v[
+        "control_layer"
+    ] != found.get("control_layer"):
+        raise Stop(f"{direction.name}: vectors.pt's layers are not the direction record's")
+    return {
+        "model": model,
+        "model_name": found.get("model_name"),
+        "model_revision": found.get("model_revision"),
+        "direction_sha256": sha256(direction / "direction.json"),
+        "vectors_sha256": found["vectors_sha256"],
+        "layers": [v["layer"], v["control_layer"]],
+        "position": v["position"],
+    }
+
+
+def load_answers(folder: Path, seeds, binding: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Each seed's projection file, checked against its receipt (its sha256 and, with
+    ``binding``, the direction, layers and model it belongs to)."""
+    out: dict[str, Any] = {"prompts": {}, "means": {}, "control": {}, "counts": {}, "files": {},
+                           "empty": {}}  # fmt: skip
     for s in seeds:
         path = folder / f"s{s}.npz"
+        receipt = folder / f"s{s}.json"
+        if not receipt.exists():
+            raise Stop(f"s{s}.npz has no receipt")
+        found = json.loads(receipt.read_text())
+        if found.get("npz_sha256") != sha256(path):
+            raise Stop(f"s{s}.npz is not its receipt's")
+        if binding is not None and found.get("binding") != binding:
+            raise Stop(f"s{s}.npz is not this direction's projection")
         z = np.load(path)
         if z["means"].shape[0] != sr.STEPS * sr.BATCH_SIZE:
             raise Stop(f"s{s}: {z['means'].shape[0]} answers, not {sr.STEPS * sr.BATCH_SIZE}")
@@ -109,10 +149,19 @@ def load_answers(folder: Path, seeds) -> dict[str, Any]:
         out["control"][s] = z["means"][:, 1, :].astype(np.float64)
         out["counts"][s] = z["counts"].astype(np.float64)
         out["files"][f"s{s}.npz"] = sha256(path)
+        empty = np.flatnonzero(out["counts"][s] == 0)
+        if (
+            not np.all(np.isnan(out["means"][s][empty]))
+            or np.isnan(np.delete(out["means"][s], empty, axis=0)).any()
+        ):
+            raise Stop(f"s{s}.npz: undefined means are not exactly its empty answers")
+        if empty.size:
+            out["empty"][str(s)] = [int(i) for i in empty]
     return out
 
 
 def units_of(direction: Path) -> tuple[np.ndarray, np.ndarray]:
+    """The chosen and the control unit vectors (vectors.pt, checked by ``binding_of``)."""
     import torch
 
     v = torch.load(direction / "vectors.pt")
@@ -202,7 +251,9 @@ def stats(stream: dict, order: dict, des: dict, cohort: list[int]) -> dict[str, 
                 for s in sorted(des["groups"])
             ]
         )
-        o_stat = per.mean(axis=0)
+        with np.errstate(invalid="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            o_stat = np.nanmean(per, axis=0)  # a stream without ρ left out, as in T4
     return {"stream": rho, "order": o_stat}
 
 
@@ -226,17 +277,21 @@ def model_record(
     cohort = [s for s in seeds if all(h is not None for h in des["three"][s])]
     y = [float(np.mean(des["three"][s])) for s in cohort]
     rows = sr.centred_vectors(ans["prompts"], ans["means"])
-    tok = {s: ans["means"][s] * (ans["counts"][s][:, None] / sr.TOKEN_DENOMINATOR) for s in seeds}
+    tok = {s: sr.token_rows(ans["means"][s], ans["counts"][s]) for s in seeds}
     rows_tok = sr.centred_vectors(ans["prompts"], tok)
     rows_ctrl = sr.centred_vectors(ans["prompts"], ans["control"])
     res: dict[str, Any] = {
         "cohort": cohort,
         "stream_missing": [s for s in seeds if s not in cohort],
         "order_missing": des["order_missing"],
+        "empty_answers": ans["empty"],
         "missing_baseline": {
-            str(s): [ans["prompts"][s][i] for i in np.flatnonzero(np.isnan(rows[s][:, 0]))]
+            str(s): [
+                ans["prompts"][s][i]
+                for i in np.flatnonzero(np.isnan(rows[s][:, 0]) & (ans["counts"][s] > 0))
+            ]
             for s in seeds
-            if np.isnan(rows[s][:, 0]).any()
+            if (np.isnan(rows[s][:, 0]) & (ans["counts"][s] > 0)).any()
         },
     }
     all_units = np.column_stack([unit, random_units(unit.shape[0])])
@@ -257,8 +312,9 @@ def model_record(
     else:
         ws = {s: [w[(s, o)] for o in LLAMA_ORDERS] for s in des["groups"]}
         order = sr.within_stream_test(ws, des["groups"])
-        per = [sr.spearman(ws[s], des["groups"][s]) for s in sorted(ws)]
-        order["interval"] = sr.bootstrap_mean(per)
+        left_out = order.get("left_out") or []
+        per = [sr.spearman(ws[s], des["groups"][s]) for s in sorted(ws) if s not in left_out]
+        order["interval"] = sr.bootstrap_mean(per) if order["p"] is not None else (None, None)
     res["order_test"] = order
     # secondary, descriptive
     raw = {s: ans["means"][s] for s in seeds}
@@ -293,7 +349,9 @@ def m6_record(ext2: dict, rows: dict[int, np.ndarray], unit: np.ndarray) -> dict
         s, edit = r["seed"], r["edit"]
         order = order_of(s, edit=edit)
         recorded = ((r.get("prediction") or {}).get("order") or {}).get("permutation_sha256")
-        if recorded is not None and recorded != permutation_sha(order):
+        if recorded is None:
+            raise Stop(f"M6 {r['tag']} s{s}: the record names no permutation sha256")
+        if recorded != permutation_sha(order):
             raise Stop(f"M6 {r['tag']} s{s}: the rebuilt order differs from the record's")
         if order == list(range(len(order))):
             identities.append(f"{r['tag']}-s{s}")
@@ -335,13 +393,16 @@ def record_of(args) -> dict[str, Any]:
         ("llama", args.llama, args.llama_direction, LLAMA),
     ):
         found = json.loads((direction / "direction.json").read_text())
+        if found.get("model") != name:
+            raise Stop(f"{direction.name}: direction.json is {found.get('model')!r}'s")
         if found.get("chosen") is None:
             models[name] = {"direction": "unvalidated"}  # no projection analysis, no fallback
             continue
+        binding = binding_of(name, direction)
         unit, control = units_of(direction)
         res = model_record(
             name,
-            load_answers(folder, seeds),
+            load_answers(folder, seeds, binding),
             unit,
             control,
             design(name, harm, seeds),

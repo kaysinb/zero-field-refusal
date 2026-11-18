@@ -60,9 +60,10 @@ batch's projection by Adam's position weights. How each outcome would be read:
   answer, as the template renders them. Their ids and count are read from each tokenizer at θ₀ as
   the suffix that two one-token instructions share once rendered, every direction prompt must end
   with them, and they are recorded (five tokens are expected for both models).
-  - Llama's template writes the current date into its system turn, so its direction, selection and
-    confirmation prompts carry the date of the Pod's run; the training answers keep their archived
-    token ids.
+  - Llama's template would write the day of the call into its system turn; the project pins it
+    (`models.pin_tokenizer`, the model config's `chat_date`, "26 Jul 2024"), so the direction,
+    selection and confirmation prompts carry that fixed date, as training and evaluation do. The
+    training answers keep their archived token ids.
 - **Candidates.** r(ℓ, i) = mean of `hidden_states[ℓ]` at post-instruction position i over the 60
   harmful direction prompts, minus the same over the 60 harmless ones. A candidate whose vector is
   zero or not finite is excluded and listed. Template tokens at low layers can give identical
@@ -102,16 +103,27 @@ batch's projection by Adam's position weights. How each outcome would be read:
 ⟨`hidden_states[ℓ*]`(t), r̂⟩ over the answer's token positions t. The tokens are the archived prompt
 and response token ids of the stream, teacher-forced through θ₀ in FP32 without padding. ℓ\* is the
 chosen layer. The answer's positions are those of its response tokens, the end token excluded
-(explicit mask). A truncated answer (no end token) uses all its 96 tokens.
+(explicit mask). A truncated answer (no end token) uses all its 96 tokens. An answer whose only
+response token is its end token has no position: its p is undefined (stored as NaN, never 0); it
+is listed and enters neither a score nor any baseline.
+
+**Binding.** Each stream's projection file carries a receipt: its sha256, the stream's identity,
+and its binding (the model and its revision, the direction record's sha256, the vectors' sha256,
+the chosen layer and position, the control layer). A file is reused, and read by the analysis,
+only when its receipt holds and its binding is the direction's; a file without a receipt (an
+interrupted write) or of another binding is refused. The analysis checks `vectors.pt` against
+`direction.json` as the projection does.
 
 **Stream predictors.** Each stream holds 500 answers to prompts drawn with replacement from the 100
 training instructions (`teacher.draw_prompt_indices`), so streams differ in their prompt mixture.
 
-- Primary: P_s^c = (1/500) Σ_i [p(x_i, y_i) − b_{−s}(x_i)]. Here b_{−s}(x) is the mean of p over
-  all answers to prompt x in the other streams of the same model (leave one stream out). It is the
-  prompt-matched projection difference; its expectation is zero for every stream, because the
-  baseline answers are samples from the same distribution (θ₀ under the teacher's sampling). An
-  answer whose prompt has no answer in the other streams has no b and is left out, listed.
+- Primary: P_s^c, the mean of [p(x_i, y_i) − b_{−s}(x_i)] over the stream's answers with a defined
+  p and a baseline (500 less the empty answers and those without b). Here b_{−s}(x) is the mean of
+  the defined p over all answers to prompt x in the other streams of the same model (leave one
+  stream out). It is the prompt-matched projection difference; its expectation is zero for every
+  stream, because the baseline answers are samples from the same distribution (θ₀ under the
+  teacher's sampling). An answer whose prompt has no defined answer in the other streams has no b
+  and is left out, listed.
 - Secondary: the raw P_s = (1/500) Σ_i p(x_i, y_i).
 - Persona Vectors' projection difference uses greedy base answers, so its expectation need not be
   zero. Here the baseline is the same sampling distribution, which is what makes the centred score
@@ -128,7 +140,8 @@ preconditioner (fixed in frozen Adam, adaptive in AdamW).
     (`linear_response.momentum_weights`, β₁ = 0.9, 25 updates), which frozen Adam and AdamW share.
 - Secondary (token-weighted, as the training loss's constant denominator): W_tok, the same with each
   answer's projection summed over its positions and divided by 96 instead of averaged; P_tok the
-  stream analogue.
+  stream analogue. Here an empty answer's sum is 0 and it counts, in the scores and the baselines.
+- A batch mean is the mean over the batch's answers with a defined, centred value.
 - The hypothesis predicts more harm for the order with the lower W.
 
 ## Tests (one-sided, family of four, Holm at 0.05)
@@ -147,9 +160,16 @@ The harm measures are those already reported; no run is added and no outcome is 
   pp is a tie and is excluded and listed; a stream without h\* in both orders is missing and listed.
 - T4: the statistic is the mean over streams of Spearman ρ between W and h\* across the stream's
   three orders, predicted negative. Its null permutes the three h\* within each stream
-  (100 000 draws, RNG seed 20261118).
-- The four one-sided p-values are Holm-adjusted together. A test whose adjusted p < 0.05 reads
-  "retrospectively associated with harm"; otherwise "not established". Each is reported with its
+  (100 000 draws, RNG seed 20261118). A stream whose three W or three h\* are all equal has no ρ:
+  it is left out of T4 and listed.
+- **Undefined statistics.** A test whose inputs hold a non-finite value, or whose statistic is
+  undefined (a constant predictor or outcome, fewer than three streams, no untied pair in T3, no
+  stream left in T4), is "unavailable": it has no p, never a small one. The same holds for the
+  intervals and the control percentiles, which count only finite reference values.
+- The four one-sided p-values are Holm-adjusted together over the family of four, also when a test
+  is unavailable (an unvalidated direction among the cases): an unavailable test counts as p = 1
+  and reads "unavailable". A test whose adjusted p < 0.05 reads "retrospectively associated with
+  harm"; otherwise "not established". Each is reported with its
   effect: ρ or the agreement count, with a 95 % bootstrap interval over streams (10 000 resamples,
   RNG seed 20261118): for T1 and T2 of ρ, for T3 of the agreement share, for T4 of the mean
   within-stream ρ.
@@ -197,9 +217,13 @@ or T2 reads "associated" and the checkpoints exist.
   - Total: about 6.5 M tokens for Qwen (1.5 B parameters) and 2.7 M for Llama (1.2 B), ≈ 2.7·10¹⁶
     FLOPs.
 - The first step on the Pod (`direction --bench`, once per model) times the model load, the
-  baselines, one layer's candidates and the projection of 40 answers, and extrapolates to the
-  model's whole run; if the two models' projected totals add up to more than 2.5 h, the Pod stops
-  before the rest and the timing is reported. The Pod's cap is 3 h.
+  difference of means, the baselines, one layer's candidates and the projection of 40 answers,
+  and extrapolates the model's rest: the direction run (load, means, baselines, every candidate,
+  the confirmation) and the projection run (load, every answer). Then `admit` adds the Pod's
+  elapsed time since its start (setup and both benches) to the two models' rests; if the total
+  exceeds 2.5 h, the Pod stops before the rest and the timing is reported. The Pod's deadline,
+  3 h after its start, is its hard cut. A direction or bench folder that exists is refused before
+  any model is loaded.
 - **Data.** The answers are the training streams in the bucket: pod 2's archive for the 40 Qwen
   fresh seeds, and the Llama campaign's stream archive for the 10 Llama seeds. Both are fetched as
   the campaigns fetch them. No response to a harmful prompt is read; scripts print numbers only.

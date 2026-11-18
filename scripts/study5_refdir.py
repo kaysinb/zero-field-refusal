@@ -21,6 +21,11 @@ model's first seed, and writes the extrapolated total; nothing else. ``direction
 numbers only; ``vectors.pt`` the chosen vector and the control vector (layer ⌊L/4⌋, the chosen
 position). No candidate validated: ``chosen`` is null and nothing else is computed.
 
+``admit`` (CPU) applies the time rule to both models' benches: the Pod's elapsed time since its
+start (setup and the benches) plus the two models' estimates of the rest (direction, candidates,
+confirmation, projection, each run's load) must not exceed 2.5 h; it exits 1 otherwise and the
+Pod stops before the rest. The Pod's deadline (3 h after its start) is its hard cut.
+
 ``project`` reads each seed's training stream (the runs' ``StreamPrefix``: the archived token ids)
 and writes per seed ``s<seed>.npz``: per answer its prompt id, whether it ended, its number of
 answer positions and the mean block input at the chosen and the control layer, with the
@@ -61,6 +66,7 @@ MODELS = {
 ANSWERS = 500
 TOKEN_DENOMINATOR = 96
 BENCH_ANSWERS = 40
+ADMIT_SECONDS = 2.5 * 3600  # the registered admission limit; the Pod's own cap is 3 h
 
 
 def run_config(model: str, seed: int):
@@ -137,6 +143,30 @@ def texts_of(env, record: dict[str, Any]) -> dict[tuple[str, str], list[str]]:
 # ------------------------------------------------------------------ direction
 
 
+def estimate_parts(
+    load: float,
+    means: float,
+    baseline: float,
+    per_candidate: float,
+    candidates: int,
+    per_answer: float,
+    answers: int,
+) -> dict[str, float]:
+    """The model's whole run after its bench, in seconds: the direction run (a load, the
+    difference of means, the baselines, every candidate, the confirmation: four mean-r passes on
+    20 prompts each, twice the baselines' two) and the projection run (a load, every answer at the
+    two layers). The bench's own time is not in it: the admission counts it as elapsed."""
+    return {
+        "direction_load": load,
+        "direction_means": means,
+        "baselines": baseline,
+        "candidates": per_candidate * candidates,
+        "confirmation": 2 * baseline,
+        "projection_load": load,
+        "projection": per_answer * answers,
+    }
+
+
 def setup(model_name: str, seed: int):
     cfg = run_config(model_name, seed)
     numerics = configure_numerics(cfg, cfg.execution.device)
@@ -148,6 +178,8 @@ def setup(model_name: str, seed: int):
 
 def cmd_direction(args) -> int:
     _, seeds = MODELS[args.model]
+    if args.out.exists():  # before any model is loaded: a folder is written once
+        raise FileExistsError(f"{args.out.name} exists: never overwritten")
     cfg, numerics, env, model, load_s = setup(args.model, seeds[0])
     record = json.loads(args.prompts.read_text(encoding="utf-8"))
     texts = texts_of(env, record)
@@ -172,6 +204,8 @@ def cmd_direction(args) -> int:
     base = {
         "model": args.model,
         "model_name": cfg.model.name,
+        "model_revision": cfg.model.revision,
+        "chat_date": cfg.model.get("chat_date", None),
         "layers": layers,
         "num_layers": refdir.num_layers(model),
         "control_layer": control,
@@ -196,18 +230,22 @@ def cmd_direction(args) -> int:
         refdir.answer_means(model, samples, [layers[0], control], device)
         per_answer = (time.monotonic() - t) / BENCH_ANSWERS
         per_candidate = math.fsum(r["seconds"] for r in sel["rows"]) / len(sel["rows"])
-        estimate = (
-            2 * load_s
-            + 2 * means_s_time
-            + sel["baseline_seconds"] * 2
-            + per_candidate * len(vectors)
-            + per_answer * ANSWERS * len(seeds)
+        parts = estimate_parts(
+            load_s,
+            means_s_time,
+            sel["baseline_seconds"],
+            per_candidate,
+            len(vectors),
+            per_answer,
+            ANSWERS * len(seeds),
         )
+        estimate = math.fsum(parts.values())
         bench = {
             **base,
             "baseline_seconds": sel["baseline_seconds"],
             "per_candidate_seconds": per_candidate,
             "per_answer_seconds": per_answer,
+            "estimate_parts": parts,
             "estimate_seconds": estimate,
         }
         write_new(args.out / "bench.json", bench)
@@ -270,25 +308,67 @@ def cmd_direction(args) -> int:
 # ------------------------------------------------------------------ projections
 
 
+def binding_of(model: str, direction: Path) -> dict[str, Any]:
+    """What a projection file belongs to: the model, its revision, the direction record and its
+    vectors (each checked against the other), the chosen layer and position and the control layer.
+    ``ValueError`` when the folder does not hold one validated direction of ``model``."""
+    found = json.loads((direction / "direction.json").read_text(encoding="utf-8"))
+    if found.get("model") != model:
+        raise ValueError(f"direction.json is {found.get('model')!r}'s, not {model!r}'s")
+    if found.get("chosen") is None:
+        raise ValueError("the direction is unvalidated")
+    vec_path = direction / "vectors.pt"
+    if sha256_file(vec_path) != found.get("vectors_sha256"):
+        raise ValueError("vectors.pt is not the direction record's")
+    vectors = torch.load(vec_path)
+    chosen = {"layer": vectors["layer"], "position": vectors["position"]}
+    if chosen != found["chosen"] or vectors["control_layer"] != found.get("control_layer"):
+        raise ValueError("vectors.pt's layers are not the direction record's")
+    return {
+        "model": model,
+        "model_name": found.get("model_name"),
+        "model_revision": found.get("model_revision"),
+        "direction_sha256": sha256_file(direction / "direction.json"),
+        "vectors_sha256": found["vectors_sha256"],
+        "layers": [vectors["layer"], vectors["control_layer"]],
+        "position": vectors["position"],
+    }
+
+
+def kept(out: Path, seed: int, binding: dict[str, Any]) -> bool:
+    """Whether the seed's projection file stands: absent (False), or present with a receipt of
+    this binding and its sha256 (True); anything else raises ``ValueError``, a missing receipt
+    after an interruption included."""
+    path, receipt = out / f"s{seed}.npz", out / f"s{seed}.json"
+    if not path.exists():
+        return False
+    if not receipt.exists():
+        raise ValueError(f"s{seed}.npz has no receipt (move it aside and project again)")
+    record = json.loads(receipt.read_text(encoding="utf-8"))
+    if record.get("binding") != binding or record.get("npz_sha256") != sha256_file(path):
+        raise ValueError(f"s{seed}.npz is not this direction's projection")
+    return True
+
+
 def cmd_project(args) -> int:
     _, seeds = MODELS[args.model]
     found = json.loads((args.direction / "direction.json").read_text(encoding="utf-8"))
     if found.get("chosen") is None:
         print(f"project {args.model}: the direction is unvalidated: no projection")
         return 1
-    vec_path = args.direction / "vectors.pt"
-    if sha256_file(vec_path) != found["vectors_sha256"]:
-        raise ValueError("vectors.pt is not the direction record's")
-    vectors = torch.load(vec_path)
+    binding = binding_of(args.model, args.direction)
+    for seed in seeds:  # every existing file checked before the model is loaded
+        kept(args.out, seed, binding)
+    vectors = torch.load(args.direction / "vectors.pt")
     _, _, env, model, _ = setup(args.model, seeds[0])
-    layers = [vectors["layer"], vectors["control_layer"]]
+    layers = binding["layers"]
     units = [
         vectors["chosen"] / vectors["chosen"].norm(),
         vectors["control"] / vectors["control"].norm(),
     ]
     for seed in seeds:
         path = args.out / f"s{seed}.npz"
-        if path.exists():
+        if kept(args.out, seed, binding):
             print(f"s{seed} exists: kept")
             continue
         prefix = StreamPrefix(run_config(args.model, seed), env, seed)
@@ -307,26 +387,54 @@ def cmd_project(args) -> int:
             prompt_ids=np.asarray([s.prompt_id for s in samples]),
             ended=np.asarray([s.ended for s in samples]),
             p=p,
-            p_tok=p * n / TOKEN_DENOMINATOR,
+            p_tok=np.where(n > 0, p * n / TOKEN_DENOMINATOR, 0.0),
             p_control=q,
-            p_control_tok=q * n / TOKEN_DENOMINATOR,
+            p_control_tok=np.where(n > 0, q * n / TOKEN_DENOMINATOR, 0.0),
         )
         tmp.rename(path)
         identity = prefix.identity(ANSWERS)
-        (args.out / f"s{seed}.json").write_text(
-            json.dumps(
-                {"seed": seed, "stream": identity, "npz_sha256": sha256_file(path)},
-                sort_keys=True,
-                default=str,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        empty = int(np.sum(n == 0))
+        receipt = {"seed": seed, "stream": identity, "npz_sha256": sha256_file(path),
+                   "binding": binding, "empty_answers": empty}  # fmt: skip
+        part = args.out / f"s{seed}.json.partial"
+        part.write_text(json.dumps(receipt, sort_keys=True, default=str) + "\n", encoding="utf-8")
+        part.rename(args.out / f"s{seed}.json")
         print(
-            f"s{seed} answers {len(samples)} mean_p {float(np.mean(p)):.5f} sha256 "
-            f"{sha256_file(path)[:16]}"
+            f"s{seed} answers {len(samples)} empty {empty} mean_p {float(np.nanmean(p)):.5f} "
+            f"sha256 {sha256_file(path)[:16]}"
         )
     return 0
+
+
+# ------------------------------------------------------------------ admission
+
+
+def admission(benches: list[dict[str, Any]], started: float, now: float,
+              limit: float = ADMIT_SECONDS) -> dict[str, Any]:  # fmt: skip
+    """The time rule: the Pod's elapsed time since ``started`` (its setup and both benches) plus
+    each model's estimate of the rest (``estimate_parts``) must not exceed ``limit``; both models'
+    benches are needed."""
+    models = sorted(b["model"] for b in benches)
+    if models != sorted(MODELS):
+        raise ValueError(f"the benches of {sorted(MODELS)} are needed, got {models}")
+    elapsed = now - started
+    if elapsed < 0:
+        raise ValueError("the start lies in the future")
+    rest = {b["model"]: math.fsum(b["estimate_parts"].values()) for b in benches}
+    total = elapsed + math.fsum(rest.values())
+    return {"elapsed_seconds": elapsed, "rest_seconds": rest, "total_seconds": total,
+            "limit_seconds": limit, "admitted": total <= limit}  # fmt: skip
+
+
+def cmd_admit(args) -> int:
+    benches = [json.loads(Path(p).read_text(encoding="utf-8")) for p in args.bench]
+    found = admission(benches, args.started, time.time())
+    write_new(args.out, found)
+    print(f"admit elapsed {found['elapsed_seconds'] / 3600:.3f} h rest "
+          + " ".join(f"{k} {v / 3600:.3f} h" for k, v in sorted(found["rest_seconds"].items()))
+          + f" total {found['total_seconds'] / 3600:.3f} h limit {ADMIT_SECONDS / 3600:.1f} h "
+          f"admitted {found['admitted']}")  # fmt: skip
+    return 0 if found["admitted"] else 1
 
 
 def parser_of() -> argparse.ArgumentParser:
@@ -343,10 +451,15 @@ def parser_of() -> argparse.ArgumentParser:
     p.add_argument("--model", choices=sorted(MODELS), required=True)
     p.add_argument("--direction", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
+    p = sub.add_parser("admit")
+    p.add_argument("--bench", type=Path, action="append", required=True)
+    p.add_argument("--started", type=float, required=True)  # the Pod's start, Unix seconds
+    p.add_argument("--out", type=Path, required=True)
     return parser
 
 
-COMMANDS = {"prompts": cmd_prompts, "direction": cmd_direction, "project": cmd_project}
+COMMANDS = {"prompts": cmd_prompts, "direction": cmd_direction, "project": cmd_project,
+            "admit": cmd_admit}  # fmt: skip
 
 
 def main(argv: list[str] | None = None) -> int:

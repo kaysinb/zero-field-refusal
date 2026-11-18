@@ -43,6 +43,7 @@ SPEC = surrogate.SurrogateSpec(
     sha256="spec",
 )
 SEEDS = (11, 12, 13)
+MODEL_CFG = {"name": "tiny", "revision": "r0"}
 
 
 def four_blocks() -> Qwen2ForCausalLM:
@@ -112,7 +113,7 @@ def patched(monkeypatch):
     model = four_blocks()
     monkeypatch.setattr(script, "MODELS", {"qwen": (("cfg",), SEEDS), "llama": (("cfg",), SEEDS)})
     monkeypatch.setattr(
-        script, "run_config", lambda m, s: OmegaConf.create({"model": {"name": "tiny"}, "seed": s})
+        script, "run_config", lambda m, s: OmegaConf.create({"model": MODEL_CFG, "seed": s})
     )
     monkeypatch.setattr(
         script, "setup", lambda m, s: (script.run_config(m, s), {"tf32": False}, Env(), model, 0.0)
@@ -150,30 +151,21 @@ def test_the_committed_prompt_record_follows_the_rule():
         assert sorted(ids) == sorted(record["sets"][name]["text_sha256"]) and len(set(ids)) == 100
 
 
+def run(*argv: str) -> int:
+    return script.main([str(a) for a in argv])
+
+
 def test_direction_project_and_the_bench(patched, tmp_path, capsys):
     prompts = prompts_record(tmp_path)
     bench = tmp_path / "bench"
-    assert (
-        script.main(
-            [
-                "direction",
-                "--model",
-                "qwen",
-                "--prompts",
-                str(prompts),
-                "--out",
-                str(bench),
-                "--bench",
-            ]
-        )
-        == 0
-    )
+    assert run("direction", "--model", "qwen", "--prompts", prompts, "--out", bench, "--bench") == 0
     b = json.loads((bench / "bench.json").read_text())
     assert b["layers"] == [1, 2, 3] and b["control_layer"] == 1 and b["estimate_seconds"] > 0
+    assert b["estimate_seconds"] == pytest.approx(sum(b["estimate_parts"].values()))
     assert sorted(p.name for p in bench.iterdir()) == ["bench.json"]
 
     out = tmp_path / "direction"
-    rc = script.main(["direction", "--model", "qwen", "--prompts", str(prompts), "--out", str(out)])
+    rc = run("direction", "--model", "qwen", "--prompts", prompts, "--out", out)
     found = json.loads((out / "direction.json").read_text())
     rows = found["rows"]
     want = refdir.choose(rows, found["base_harmful"], found["base_harmless"])
@@ -182,22 +174,15 @@ def test_direction_project_and_the_bench(patched, tmp_path, capsys):
         pytest.skip("the tiny model validated no candidate")
     assert rc == 0 and found["chosen"] == {"layer": want["layer"], "position": want["position"]}
     assert found["positions"] == 3 and len(rows) == found["candidates"]
+    assert found["model_revision"] == "r0"
     vec = torch.load(out / "vectors.pt")
     assert (vec["layer"], vec["position"], vec["control_layer"]) == (
-        want["layer"],
-        want["position"],
-        1,
-    )
-    assert (
-        script.main(["direction", "--model", "qwen", "--prompts", str(prompts), "--out", str(out)])
-        == 1
-    )
+        want["layer"], want["position"], 1,
+    )  # fmt: skip
+    assert run("direction", "--model", "qwen", "--prompts", prompts, "--out", out) == 1
 
     proj = tmp_path / "proj"
-    assert (
-        script.main(["project", "--model", "qwen", "--direction", str(out), "--out", str(proj)])
-        == 0
-    )
+    assert run("project", "--model", "qwen", "--direction", out, "--out", proj) == 0
     z = np.load(proj / "s11.npz")
     assert z["means"].shape == (500, 2, 32) and z["counts"].min() >= 1
     unit = (vec["chosen"] / vec["chosen"].norm()).numpy()
@@ -205,31 +190,86 @@ def test_direction_project_and_the_bench(patched, tmp_path, capsys):
     assert np.allclose(z["p_tok"], z["p"] * z["counts"] / 96)
     meta = json.loads((proj / "s11.json").read_text())
     assert meta["stream"] == {"seed": 11, "count": 500}
+    assert meta["binding"] == script.binding_of("qwen", out)
+    assert meta["binding"]["layers"] == [want["layer"], 1] and meta["empty_answers"] == 0
     printed = capsys.readouterr().out
     assert "s11 answers 500" in printed
-    assert (
-        script.main(["project", "--model", "qwen", "--direction", str(out), "--out", str(proj)])
-        == 0
-    )
+    assert run("project", "--model", "qwen", "--direction", out, "--out", proj) == 0
     assert "s11 exists: kept" in capsys.readouterr().out
+    # a projection of another direction, or one without its receipt, is refused before any pass
+    receipt = proj / "s12.json"
+    other = json.loads(receipt.read_text())
+    other["binding"]["layers"] = [3, 1]
+    receipt.write_text(json.dumps(other))
+    assert run("project", "--model", "qwen", "--direction", out, "--out", proj) == 1
+    assert "not this direction's projection" in capsys.readouterr().out
+    receipt.unlink()
+    assert run("project", "--model", "qwen", "--direction", out, "--out", proj) == 1
+    assert "no receipt" in capsys.readouterr().out
+    # the direction of another model is refused
+    assert run("project", "--model", "llama", "--direction", out, "--out", tmp_path / "q") == 1
+    assert "not 'llama''s" in capsys.readouterr().out
 
 
 def test_an_unvalidated_direction_projects_nothing(patched, tmp_path):
     folder = tmp_path / "d"
     folder.mkdir()
-    (folder / "direction.json").write_text(json.dumps({"chosen": None}))
-    assert (
-        script.main(
-            [
-                "project",
-                "--model",
-                "llama",
-                "--direction",
-                str(folder),
-                "--out",
-                str(tmp_path / "p"),
-            ]
-        )
-        == 1
-    )
+    (folder / "direction.json").write_text(json.dumps({"model": "llama", "chosen": None}))
+    assert run("project", "--model", "llama", "--direction", folder, "--out", tmp_path / "p") == 1
     assert not (tmp_path / "p").exists()
+
+
+def test_an_existing_output_folder_is_refused_before_any_model_loads(
+    patched, tmp_path, monkeypatch
+):
+    prompts = prompts_record(tmp_path)
+    (tmp_path / "taken").mkdir()
+    monkeypatch.setattr(script, "setup", lambda m, s: pytest.fail("a model was loaded"))
+    for extra in ([], ["--bench"]):
+        argv = ["direction", "--model", "qwen", "--prompts", prompts, "--out", tmp_path / "taken"]
+        assert run(*argv, *extra) == 1
+
+
+def test_an_answer_of_only_its_end_token_has_no_mean(patched):
+    prompt = (2, 9, 12, 3, 2, 6)
+    ended = Sample(prompt_id="x", prompt_ids=prompt, response_ids=(3,), logprobs=(), ended=True)
+    full = Sample(prompt_id="y", prompt_ids=prompt, response_ids=(20, 3), logprobs=(), ended=True)
+    means, counts = refdir.answer_means(patched, [ended, full], [1, 2], torch.device("cpu"))
+    assert counts == [0, 1]
+    assert torch.isnan(means[0]).all() and torch.isfinite(means[1]).all()
+
+
+BENCH = {"estimate_parts": {"direction_load": 60.0, "candidates": 1800.0, "projection": 900.0}}
+
+
+@pytest.mark.parametrize(("elapsed", "admitted"), [(600.0, True), (3480.0, True), (3481.0, False)])
+def test_the_admission_adds_the_elapsed_time_and_both_models_rest(elapsed, admitted):
+    benches = [{"model": "qwen", **BENCH}, {"model": "llama", **BENCH}]
+    found = script.admission(benches, started=1000.0, now=1000.0 + elapsed)
+    assert found["total_seconds"] == pytest.approx(elapsed + 2 * 2760.0)
+    assert found["admitted"] is admitted and found["limit_seconds"] == 9000.0
+    with pytest.raises(ValueError, match="benches"):
+        script.admission(benches[:1], started=0.0, now=1.0)
+
+
+def test_the_estimate_counts_confirmation_and_projection():
+    parts = script.estimate_parts(10.0, 5.0, 4.0, 2.0, 110, 0.01, 20000)
+    assert parts == {
+        "direction_load": 10.0, "direction_means": 5.0, "baselines": 4.0, "candidates": 220.0,
+        "confirmation": 8.0, "projection_load": 10.0, "projection": 200.0,
+    }  # fmt: skip
+
+
+def test_the_admit_command_writes_its_record(tmp_path):
+    import time
+
+    paths = []
+    for model in ("qwen", "llama"):
+        path = tmp_path / f"{model}.json"
+        path.write_text(json.dumps({"model": model, **BENCH}))
+        paths += ["--bench", path]
+    out = tmp_path / "admit.json"
+    assert run("admit", *paths, "--started", time.time() - 60, "--out", out) == 0
+    assert json.loads(out.read_text())["admitted"] is True
+    late = tmp_path / "late.json"
+    assert run("admit", *paths, "--started", time.time() - 9000, "--out", late) == 1
