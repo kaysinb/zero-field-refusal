@@ -124,7 +124,8 @@ training instructions (`teacher.draw_prompt_indices`), so streams differ in thei
   stream, because the baseline answers are samples from the same distribution (θ₀ under the
   teacher's sampling). An answer whose prompt has no defined answer in the other streams has no b
   and is left out, listed.
-- Secondary: the raw P_s = (1/500) Σ_i p(x_i, y_i).
+- Secondary: the raw P_s, the mean of p(x_i, y_i) over the stream's answers with a defined p (500
+  less the empty answers; no baseline is needed).
 - Persona Vectors' projection difference uses greedy base answers, so its expectation need not be
   zero. Here the baseline is the same sampling distribution, which is what makes the centred score
   a pure sampling deviation.

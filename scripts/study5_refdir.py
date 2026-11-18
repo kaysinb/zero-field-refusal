@@ -308,13 +308,19 @@ def cmd_direction(args) -> int:
 # ------------------------------------------------------------------ projections
 
 
-def binding_of(model: str, direction: Path) -> dict[str, Any]:
+def binding_of(model: str, direction: Path, model_cfg: Any = None) -> dict[str, Any]:
     """What a projection file belongs to: the model, its revision, the direction record and its
     vectors (each checked against the other), the chosen layer and position and the control layer.
-    ``ValueError`` when the folder does not hold one validated direction of ``model``."""
+    ``ValueError`` when the folder does not hold one validated direction of ``model``, or, with
+    ``model_cfg`` (the runs' model config), one of another model name or revision."""
     found = json.loads((direction / "direction.json").read_text(encoding="utf-8"))
     if found.get("model") != model:
         raise ValueError(f"direction.json is {found.get('model')!r}'s, not {model!r}'s")
+    if model_cfg is not None and (found.get("model_name"), found.get("model_revision")) != (
+        model_cfg.name,
+        model_cfg.revision,
+    ):
+        raise ValueError("direction.json's model name or revision is not the runs' model's")
     if found.get("chosen") is None:
         raise ValueError("the direction is unvalidated")
     vec_path = direction / "vectors.pt"
@@ -356,7 +362,7 @@ def cmd_project(args) -> int:
     if found.get("chosen") is None:
         print(f"project {args.model}: the direction is unvalidated: no projection")
         return 1
-    binding = binding_of(args.model, args.direction)
+    binding = binding_of(args.model, args.direction, run_config(args.model, seeds[0]).model)
     for seed in seeds:  # every existing file checked before the model is loaded
         kept(args.out, seed, binding)
     vectors = torch.load(args.direction / "vectors.pt")

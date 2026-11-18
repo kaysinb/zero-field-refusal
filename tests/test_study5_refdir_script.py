@@ -206,6 +206,15 @@ def test_direction_project_and_the_bench(patched, tmp_path, capsys):
     receipt.unlink()
     assert run("project", "--model", "qwen", "--direction", out, "--out", proj) == 1
     assert "no receipt" in capsys.readouterr().out
+    # a direction of another revision of the same model is refused before any pass
+    revised = tmp_path / "revised"
+    revised.mkdir()
+    (revised / "vectors.pt").write_bytes((out / "vectors.pt").read_bytes())
+    record = json.loads((out / "direction.json").read_text())
+    (revised / "direction.json").write_text(json.dumps(record | {"model_revision": "r1"}))
+    assert run("project", "--model", "qwen", "--direction", revised, "--out", tmp_path / "rv") == 1
+    assert "revision is not the runs' model's" in capsys.readouterr().out
+    assert not (tmp_path / "rv").exists()
     # the direction of another model is refused
     assert run("project", "--model", "llama", "--direction", out, "--out", tmp_path / "q") == 1
     assert "not 'llama''s" in capsys.readouterr().out
