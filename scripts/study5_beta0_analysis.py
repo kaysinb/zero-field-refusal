@@ -104,7 +104,8 @@ def beta0_dirs(reader: cli.Reader,
     for name, root in roots.items():
         for run_dir in sorted(p for p in (Path(root) / EXPERIMENT).iterdir() if p.is_dir()):
             path = run_dir / "config.yaml"
-            if not path.is_file():
+            if not path.is_file():  # a run directory without its config: listed, never keyed
+                unreadable.append({"root": name, "run_id": run_dir.name, "reason": "no config"})
                 continue
             try:
                 data = path.read_bytes()
@@ -135,9 +136,13 @@ def beta0_dirs(reader: cli.Reader,
 
 
 def select(entries: list[dict], eta0: float) -> dict[str, Any]:
+    """The ended run of each key of the design; a key with only runs that did not end gets a stub
+    whose records do not read (a technical gap, never an absent run: ``analysis.study5_beta0``,
+    ``not_run``)."""
     keys = set(sb.design())
     runs: dict[sb.Key, dict] = {}
     other, not_ended = [], []
+    started: dict[sb.Key, list[str]] = {}
     for entry in entries:
         key = (entry["seed"], entry["order"])
         lr = entry["lr"]
@@ -148,12 +153,23 @@ def select(entries: list[dict], eta0: float) -> dict[str, Any]:
             continue
         if not entry["ended"]:
             not_ended.append(entry["run_id"])
+            started.setdefault(key, []).append(entry["run_id"])
             continue
         if key in runs:
             refuse(f"two ended runs of s{key[0]}/{key[1]}: {runs[key]['run_id']}, "
                    f"{entry['run_id']}")  # fmt: skip
         runs[key] = entry
-    return {"runs": runs, "other": other, "not_ended": not_ended}
+    stubs = {key: ids for key, ids in started.items() if key not in runs}
+    return {"runs": runs, "other": other, "not_ended": not_ended, "stubs": stubs}
+
+
+def stub_run(key: sb.Key, run_ids: list[str]) -> dict[str, Any]:
+    """A run that started and did not end: its records do not read (a technical gap)."""
+    seed, order = key
+    return {"run_id": run_ids[-1], "root": None, "seed": seed, "order": order,
+            "records": f"{run_ids[-1]}: started, not ended (no terminal record)", "stop": None,
+            "steps": None, "row": None, "labels": "labels: the run did not end",
+            "receipt_sha256": None}  # fmt: skip
 
 
 def read_run(reader: cli.Reader, labels: cli.Labels, entry: Mapping[str, Any],
@@ -195,7 +211,8 @@ def record_of(args: argparse.Namespace) -> dict[str, Any]:
     selection = select(entries, eta0)
     labels = cli.Labels(reader, cli.prompt_sets(reader))
     runs = {key: read_run(reader, labels, entry, key) for key, entry in selection["runs"].items()}
-    result = sb.analysis(runs, reference, eta0)
+    runs |= {key: stub_run(key, ids) for key, ids in selection["stubs"].items()}
+    result = sb.analysis(runs, reference, eta0, unaccounted=bool(unreadable))
     return sa.finite_tree({
         "kind": KIND, "version": VERSION,
         "written_utc": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -206,6 +223,7 @@ def record_of(args: argparse.Namespace) -> dict[str, Any]:
         "selection": {"keyed": {f"s{s}/{o}": e["run_id"]
                                 for (s, o), e in selection["runs"].items()},
                       "other": selection["other"], "not_ended": selection["not_ended"],
+                      "stubs": {f"s{s}/{o}": ids for (s, o), ids in selection["stubs"].items()},
                       "unreadable": unreadable, "pilot": pilot},
         **result,
     })  # fmt: skip

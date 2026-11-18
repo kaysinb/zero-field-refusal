@@ -114,13 +114,16 @@ def run_state(run: Run | None) -> str:
     return "stopped" if run.get("stop") in INSTABILITY and valid else "technical"
 
 
-def not_run(runs: Mapping[Key, Run], seed: int, order: str) -> bool:
-    """An edit without a run whose stream-order run stopped (module docstring)."""
-    return (order != "stream" and runs.get((seed, order)) is None
+def not_run(runs: Mapping[Key, Run], seed: int, order: str, unaccounted: bool = False) -> bool:
+    """An edit without a run whose stream-order run stopped (module docstring). A run that started
+    and did not end is passed in as a run whose records do not read (a technical gap), never as
+    absent; with ``unaccounted`` (a run directory of the roots that could not be keyed) no edit is
+    known to be not run, and none is."""
+    return (not unaccounted and order != "stream" and runs.get((seed, order)) is None
             and run_state(runs.get((seed, "stream"))) == "stopped")  # fmt: skip
 
 
-def deltas(runs: Mapping[Key, Run]) -> dict[str, Any]:
+def deltas(runs: Mapping[Key, Run], unaccounted: bool = False) -> dict[str, Any]:
     """Per edited order of the design: its state, Δh, ΔK_harmful and ΔK_benign against the stream
     order, or why absent."""
     out: dict[str, Any] = {}
@@ -129,7 +132,7 @@ def deltas(runs: Mapping[Key, Run]) -> dict[str, Any]:
             continue
         key = f"s{seed}/{order}"
         run_o, run_s = runs.get((seed, order)), runs.get((seed, "stream"))
-        if not_run(runs, seed, order):
+        if not_run(runs, seed, order, unaccounted):
             out[key] = {"seed": seed, "order": order, "state": "not_run", "dh": None,
                         "why": "not run: its stream-order run stopped"}  # fmt: skip
             continue
@@ -284,9 +287,11 @@ def outcome(stats: Mapping[str, Any], intervals: Mapping[str, Any], noise: float
     return {**base, "outcome": name, "strength": "clear" if clear else "leaning"}
 
 
-def analysis(runs: Mapping[Key, Run], reference: Mapping[str, Any], eta0: float) -> dict[str, Any]:
-    """Every quantity of the record (module docstring)."""
-    entries = list(deltas(runs).values())
+def analysis(runs: Mapping[Key, Run], reference: Mapping[str, Any], eta0: float,
+             unaccounted: bool = False) -> dict[str, Any]:  # fmt: skip
+    """Every quantity of the record (module docstring); ``unaccounted``: the roots hold a run
+    directory that could not be keyed, so no edit counts as not run (``not_run``)."""
+    entries = list(deltas(runs, unaccounted).values())
     usable = [e for e in entries if e["state"] == "ok"]
     stats = statistics_of(usable, beta0.SEEDS)
     intervals = bootstrap(usable)
@@ -298,7 +303,7 @@ def analysis(runs: Mapping[Key, Run], reference: Mapping[str, Any], eta0: float)
     technical = sorted(
         f"s{s}/{o}"
         for s, o in design()
-        if run_state(runs.get((s, o))) == "technical" and not not_run(runs, s, o)
+        if run_state(runs.get((s, o))) == "technical" and not not_run(runs, s, o, unaccounted)
     )
     stopped = sorted(f"s{e['seed']}/{e['order']}" for e in entries if e["state"] == "stopped")
     skipped = sorted(f"s{e['seed']}/{e['order']}" for e in entries if e["state"] == "not_run")

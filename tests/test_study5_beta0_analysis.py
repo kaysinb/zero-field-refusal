@@ -160,3 +160,73 @@ def test_eta0_on_a_grid_rate_keys_the_main_runs_not_the_pilots(tmp_path, patched
         f"s5-b0-pilot-1.3e-05-s{s}" for s in beta0.PILOT_SEEDS]  # fmt: skip
     assert record["selection"]["keyed"]["s50000/stream"] == "s5-b0-stream-1.3e-05-s50000"
     assert record["result"]["outcome"] == "(i)" and record["result"]["technical"] == []
+
+
+# ------------------------------------------------------------------ the addendum: edits not run
+
+
+def stopped_world(tmp_path: Path) -> tuple[Path, Path, float]:
+    """The design with 50005's stream-order run stopped at update 8 (a gradient spike, no
+    step-25 evaluation, no labels) and none of its edits run."""
+    rate = rate_record(tmp_path / "rate" / "rate.json")
+    eta0 = json.loads(rate.read_text())["choice"]["eta0"]
+    root = tmp_path / "runs"
+    for seed, order in sb.design():
+        if seed == 50005 and order != "stream":
+            continue
+        run_dir = write_run(root, seed, order, eta0)
+        if seed == 50005:
+            dump(run_dir / "terminal.json", {"steps": 8, "stop": {"reason": "gradient_spike"},
+                                             "evaluations": []})  # fmt: skip
+            (run_dir / "evaluations.jsonl").unlink()
+            for part in ("judge", "responses"):
+                for f in sorted((run_dir / part).iterdir()):
+                    f.unlink()
+                (run_dir / part).rmdir()
+    return root, rate, eta0
+
+
+def run_script(tmp_path: Path, root: Path, rate: Path, name: str) -> dict:
+    out = tmp_path / name
+    argv = ["--runs", str(root), "--rate", str(rate), "--reference", str(REFERENCE_FILE),
+            "--out", str(out)]  # fmt: skip
+    assert call(argv) == (0, "")
+    return json.loads(out.read_text())
+
+
+def test_edits_never_run_after_a_stopped_stream_order_run_are_not_run(tmp_path, patched):
+    root, rate, _ = stopped_world(tmp_path)
+    record = run_script(tmp_path, root, rate, "record.json")
+    result = record["result"]
+    edits = sorted(f"s50005/{o}" for o in beta0.orders_of(50005) if o != "stream")
+    assert result["technical"] == [] and result["not_run"] == edits
+    assert result["stopped_stream"] == ["s50005/stream"] and result["conditional"] is True
+    assert result["outcome"] == "(i)" and result["seeds_per_class"] == {"F": 5, "E": 5, "L": 5}
+    assert record["selection"]["stubs"] == {} and record["selection"]["not_ended"] == []
+
+
+def test_an_edit_started_and_not_ended_is_a_technical_gap_not_not_run(tmp_path, patched):
+    root, rate, eta0 = stopped_world(tmp_path)
+    run_dir = write_run(root, 50005, "early-0", eta0)
+    (run_dir / "terminal.json").unlink()  # the run started and never ended
+    record = run_script(tmp_path, root, rate, "record.json")
+    result = record["result"]
+    assert result["outcome"] == "withheld" and result["technical"] == ["s50005/early-0"]
+    assert "s50005/early-0" not in result["not_run"] and len(result["not_run"]) == 4
+    assert record["selection"]["stubs"] == {"s50005/early-0": [run_dir.name]}
+    assert record["deltas"]["s50005/early-0"]["state"] == "technical"
+
+
+@pytest.mark.parametrize("broken", ["no config", "config unreadable"])
+def test_a_run_directory_that_cannot_be_keyed_leaves_no_edit_not_run(tmp_path, patched, broken):
+    root, rate, eta0 = stopped_world(tmp_path)
+    run_dir = write_run(root, 50005, "late-1", eta0)
+    if broken == "no config":
+        (run_dir / "config.yaml").unlink()
+    else:
+        (run_dir / "config.yaml").write_text("{: not yaml")
+    record = run_script(tmp_path, root, rate, "record.json")
+    result = record["result"]
+    assert result["not_run"] == [] and result["outcome"] == "withheld"
+    assert len(result["technical"]) == 5  # the five edits of 50005, none known to be not run
+    assert [u["run_id"] for u in record["selection"]["unreadable"]] == [run_dir.name]
