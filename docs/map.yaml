@@ -457,6 +457,7 @@ topics:
   - src/zero_field_refusal/analysis/study5_refdir.py
   - docs/study5-refdir-registration.md
   - docs/study5-refdir-prompts.json
+  - docs/study5-refdir-code-identity.json
   - tests/test_refdir.py
   - tests/test_study5_refdir*.py
 - id: study3_simulation
