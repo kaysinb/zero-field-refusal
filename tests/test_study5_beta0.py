@@ -330,3 +330,122 @@ def test_only_an_instability_stop_with_a_valid_step_count_is_scientific(stop, st
     else:
         assert result["outcome"] == "(i)" and result["conditional"] is True
         assert result["stopped"] == ["s50001/early-0"]
+
+
+# ------------------------------------------------------------------ the addendum of 2026-11-18
+
+
+def _stopped_stream(runs: dict, seed: int, *, drop_edits: bool = True) -> dict:
+    """``seed``'s stream-order run stopped by a gradient spike at update 8; its edits not run."""
+    runs = dict(runs)
+    runs[(seed, "stream")] = runs[(seed, "stream")] | {"stop": "gradient_spike", "steps": 8}
+    if drop_edits:
+        for order in beta0.orders_of(seed):
+            if order != "stream":
+                del runs[(seed, order)]
+    return runs
+
+
+def test_edits_not_run_after_a_stopped_stream_order_run_are_a_structural_exclusion():
+    runs = _stopped_stream(_runs(_scenario(12.0, 11.0, 1.0)), 50005)
+    record = sb.analysis(runs, REFERENCE, 1.73e-05)
+    result = record["result"]
+    edits = [f"s50005/{o}" for o in beta0.orders_of(50005) if o != "stream"]
+    assert result["technical"] == [] and result["stopped"] == []
+    assert result["not_run"] == sorted(edits) and result["stopped_stream"] == ["s50005/stream"]
+    assert result["conditional"] is True
+    assert result["seeds_per_class"] == {"F": 5, "E": 5, "L": 5}
+    assert result["outcome"] == "(i)" and result["strength"] == "clear"
+    assert all(record["deltas"][k]["state"] == "not_run" for k in edits)
+    assert record["missing"] == sorted(edits, key=record["design"].index)
+    # the seed stays in the design and the bootstrap population: resamples drawn over six seeds
+    usable = [e for e in record["deltas"].values() if e["state"] == "ok"]
+    assert record["intervals"] == sb.bootstrap(usable)
+    assert record["h_bar0"] == pytest.approx(12.0, abs=0.1)
+
+
+def test_not_run_needs_a_scientifically_stopped_stream_order_run():
+    base = _runs(_scenario(12.0, 11.0, 1.0))
+    runs = {k: v for k, v in base.items() if k[0] != 50005}  # stream-order run missing too
+    result = sb.analysis(runs, REFERENCE, 1.73e-05)["result"]
+    assert result["outcome"] == "withheld" and "s50005/stream" in result["technical"]
+    runs = dict(base)
+    runs[(50005, "stream")] = runs[(50005, "stream")] | {"stop": "interrupted", "steps": 8}
+    for order in beta0.orders_of(50005)[1:]:
+        del runs[(50005, order)]
+    result = sb.analysis(runs, REFERENCE, 1.73e-05)["result"]
+    assert result["outcome"] == "withheld" and result["not_run"] == []
+    # an edit missing while its stream-order run is ok stays a technical gap
+    runs = dict(base)
+    del runs[(50002, "late-1")]
+    result = sb.analysis(runs, REFERENCE, 1.73e-05)["result"]
+    assert result["outcome"] == "withheld" and result["technical"] == ["s50002/late-1"]
+    # an edit that did run after a stopped stream-order run is stopped, as before
+    runs = _stopped_stream(base, 50005, drop_edits=False)
+    result = sb.analysis(runs, REFERENCE, 1.73e-05)["result"]
+    assert result["not_run"] == [] and len(result["stopped"]) == 5 and result["conditional"]
+
+
+def test_the_common_survivors_comparison():
+    runs = _stopped_stream(_runs(_scenario(12.0, 11.0, 1.0)), 50005)
+    runs[(50001, "late-0")] = runs[(50001, "late-0")] | {"stop": "k_above_max", "steps": 22}
+    record = sb.analysis(runs, REFERENCE, 1.73e-05)
+    common = record["descriptive"]["common_survivors"]
+    assert common["seeds"] == [50000, 50002, 50003, 50004]
+    usable = [e for e in record["deltas"].values() if e["state"] == "ok"]
+    stats = sb.statistics_of(usable, common["seeds"])
+    assert (common["E"], common["L"], common["D"]) == (stats["E"], stats["L"], stats["D"])
+    assert common["per_class"]["L"]["stopped"] == ["s50001/late-0"]
+    assert len(common["per_class"]["E"]["not_run"]) == 2 and common["per_class"]["L"]["seeds"] == 5
+    assert common["per_class"]["F"] == {"seeds": 5, "stopped": [], "not_run": ["s50005/reorder"]}
+
+
+def _gate_rows(**changes) -> list[dict]:
+    rows = [{"seed": s, "outcome": "done", "steps": 25, "stop": "steps", "complete": True,
+             "K": TARGETS[s]} for s in beta0.SEEDS]  # fmt: skip
+    for seed, change in changes.items():
+        rows[beta0.SEEDS.index(int(seed[1:]))] |= change
+    return rows
+
+
+STOP = {"outcome": "done", "steps": 8, "stop": "gradient_spike", "complete": False, "K": None}
+TARGETS = {int(s): k for s, k in json.loads(
+    (REPO_ROOT / beta0.TARGETS_FILE).read_text())["k_benign"].items()}  # fmt: skip
+
+
+@pytest.mark.parametrize(("changes", "passed", "seeds", "why"), [
+    ({}, True, list(beta0.SEEDS), None),
+    ({"s50005": STOP}, True, [50000, 50001, 50002, 50003, 50004], None),
+    ({"s50005": STOP | {"outcome": "diverged", "stop": "nonfinite_loss"}}, True, None, None),
+    ({"s50005": STOP | {"steps": 25}}, True, None, None),  # an instability at update 25
+    ({"s50004": STOP, "s50005": STOP}, False, None, "fewer than 5"),
+    ({"s50005": STOP | {"stop": "interrupted"}}, False, None, "without a scientific stop"),
+    ({"s50005": STOP | {"outcome": "conflict"}}, False, None, "without a scientific stop"),
+    ({"s50005": STOP | {"outcome": "technical"}}, False, None, "without a scientific stop"),
+    ({"s50005": STOP | {"steps": None}}, False, None, "without a scientific stop"),
+    ({"s50005": STOP | {"steps": 0}}, False, None, "without a scientific stop"),
+    ({"s50005": STOP | {"steps": 8.0}}, False, None, "without a scientific stop"),
+    ({"s50005": {"complete": True, "K": None}}, False, None, "without a scientific stop"),
+])  # fmt: skip
+def test_the_amended_gate(changes, passed, seeds, why):
+    gate = sb.amended_gate(_gate_rows(**changes), TARGETS)
+    assert gate["passed"] is passed
+    if seeds is not None:
+        assert gate["seeds"] == seeds
+    if why is not None:
+        assert why in gate["why"]
+    registered = beta0.drift_gate(_gate_rows(**changes), TARGETS)
+    assert registered["passed"] is (not changes)  # the registered rule needs all six
+
+
+def test_the_amended_gate_keeps_the_registered_bounds_over_the_survivors():
+    rows = _gate_rows(s50005=STOP)
+    for row in rows[:5]:
+        row["K"] = TARGETS[row["seed"]] * 1.26
+    gate = sb.amended_gate(rows, TARGETS)
+    assert gate["passed"] is False and gate["ratio"] == pytest.approx(1.26)
+    for row in rows[:5]:
+        row["K"] = TARGETS[row["seed"]] * 0.8
+    assert sb.amended_gate(rows, TARGETS)["passed"] is True  # inclusive
+    with pytest.raises(ValueError, match="six"):
+        sb.amended_gate(rows[:5], TARGETS)

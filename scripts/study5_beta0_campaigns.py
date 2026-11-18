@@ -1,12 +1,14 @@
 """Study 5's run without momentum on one Pod (docs/study5-beta0-registration.md): one detached
-driver of two plans in order, built and run by ``scripts/study5_campaigns.py``'s machinery (its
+driver of three plans in order, built and run by ``scripts/study5_campaigns.py``'s machinery (its
 ``Builder``, ``execute``, deadlines, archives, receipts, restarts and close), with the dose Pods'
 engineering block (``scripts/study5_dose_campaigns.py``).
 
     python scripts/study5_beta0_campaigns.py run --out DIR --archive-id beta0-...
         --checkpoints DIR [--dry-run [--rate FILE]]
 
-The two plans' campaign folders are DIR-pilot and DIR-main, siblings.
+    python scripts/study5_beta0_campaigns.py run ... --dry-run --rate FILE --gate FILE
+
+The three plans' campaign folders are DIR-pilot, DIR-main and DIR-orders, siblings.
 
 **The pilot plan** (``pilot_plan``):
 
@@ -22,19 +24,30 @@ The two plans' campaign folders are DIR-pilot and DIR-main, siblings.
 **The main plan** (``main_plan``), built from that rate record (``check-rate`` first: its sha256 is
 the one the plan was built from, and its choice is the rule's on its table):
 
-- ``stream``: the six stream-order runs at η₀, then ``gate``: ``beta0.drift_gate`` on their K_benign
-  at step 25 against the committed targets; a failed gate stops the plan before any other order.
-- ``orders``: first ``check-gate``, run at every start (``always``) and stopping on failure: the
-  verdict recomputed from the stream-order runs' launcher journal and run directories, never taken
-  from an existing ``gate.json`` (which must agree with it); then per seed one launcher campaign of
-  its other orders at η₀ (``beta0.orders_of``: the
-  reorder and the shuffles, an identity permutation not run), archived as its seed group ends.
+- ``stream``: the six stream-order runs at η₀; ``gate`` writes ``gate.json``, the registered
+  rule's verdict (``beta0.drift_gate``), kept as written; ``gate-amended`` writes
+  ``gate-amended.json``, the verdict of the addendum of 2026-11-18
+  (``analysis.study5_beta0.amended_gate``: at least five runs with a value, every other one a
+  scientific stop, the geometric mean in ``beta0.GATE``) with the registered verdict recomputed
+  beside it; a failed amended gate stops the plan before any other order.
+
+**The orders plan** (``orders_plan``), built from ``gate-amended.json`` (the seeds with a value):
+
+- ``check-gate`` first, run at every start (``always``) and stopping on failure: both verdicts
+  recomputed from the stream-order runs' launcher journal and run directories, never taken from the
+  records, which must agree with them (``gate.json`` with the registered one, ``gate-amended.json``
+  with the amended one); the amended gate passed; the plan's seeds its seeds with a value.
+- per seed with a value, one launcher campaign of its other orders at η₀ (``beta0.orders_of``: the
+  reorder and the shuffles, an identity permutation not run), archived as its seed group ends. A
+  seed whose stream-order run stopped runs no other order (its edits are ``not_run`` in the
+  analysis).
 
 No checkpoint is saved and no run is labeled here: the judge runs on its own Pod after the runs are
 restored, as for the dose experiment. A failed run is recorded and the plan goes on; every archive,
-the engineering check, the table, the rate and the gate stop it. ``run`` executes the pilot plan
-and, only when it completed, the main plan; started again with the same arguments it skips what is
-done (``scripts/study5_campaigns.py``, "Resumable").
+the engineering check, the table, the rate and the amended gate stop it. ``run`` executes the pilot
+plan, only when it completed the main plan, and only when that completed the orders plan; started
+again with the same arguments it skips what is done (``scripts/study5_campaigns.py``,
+"Resumable").
 """
 
 from __future__ import annotations
@@ -51,6 +64,7 @@ import study5_campaigns as c  # noqa: E402  (the driver's machinery)
 import study5_dose_campaigns as d  # noqa: E402  (the engineering block)
 
 from zero_field_refusal import beta0, code_identity  # noqa: E402
+from zero_field_refusal.analysis import study5_beta0 as sb  # noqa: E402
 from zero_field_refusal.paths import data_root, runs_root  # noqa: E402
 from zero_field_refusal.tracking import git_state  # noqa: E402
 
@@ -59,9 +73,10 @@ POD = "beta0"
 IDENTITY = "docs/study5-beta0-code-identity.json"
 REGISTRATION = "docs/study5-beta0-registration.md"
 RUN = c.F_RUN  # minutes of a main run; a K-only pilot run takes less
-TABLE, RATE, GATE = "pilot-table.json", "rate.json", "gate.json"
+TABLE, RATE, GATE, AMENDED = "pilot-table.json", "rate.json", "gate.json", "gate-amended.json"
 TABLE_KIND, RATE_KIND, GATE_KIND = ("study5-beta0-pilot-table", "study5-beta0-rate",
                                     "study5-beta0-gate")  # fmt: skip
+AMENDED_KIND = "study5-beta0-gate-amended"
 c.PREFIXES[POD] = "beta0-"
 
 
@@ -126,25 +141,62 @@ def main_plan(*, out: Path, runs: Path, data: Path, checkpoints: Path, archive_i
     eta0 = float(read_rate(rate_path, repo)["choice"]["eta0"])
     b = builder(archive_id, out, runs, data, checkpoints)
 
-    b.begin()  # the rate this plan was built from; the six stream-order runs; the drift gate
+    b.begin()  # the rate this plan was built from; the six stream-order runs; the drift gates
     b.step("stream/check-rate", (SELF, "check-rate", "--rate", rate_path, "--sha256",
            c.sha256_of(Path(rate_path))), on_fail="stop")  # fmt: skip
     cells = [beta0.cell(s, "stream", eta0) for s in beta0.SEEDS]
     _, campaign = b.launch("stream", "stream", cells, minutes=len(cells) * RUN)
-    gate = b.record(GATE)
-    argv = [SELF, "gate", "--runs", b.runs, "--campaign", campaign, "--out", gate]
+    gate, amended = b.record(GATE), b.record(AMENDED)
+    runs_argv = []
     for seed in beta0.SEEDS:
-        argv += ["--run", seed, c.label(beta0.cell(seed, "stream", eta0))]
-    b.step("stream/gate", argv, on_fail="stop", outputs=(str(gate),))
-    b.runs_archive("stream/archive", paths=(b.rel(gate),), campaign=campaign)
+        runs_argv += ["--run", seed, c.label(beta0.cell(seed, "stream", eta0))]
+    b.step("stream/gate", [SELF, "gate", "--runs", b.runs, "--campaign", campaign, "--out", gate,
+                           *runs_argv], on_fail="stop", outputs=(str(gate),))  # fmt: skip
+    b.step("stream/gate-amended", [SELF, "gate-amended", "--runs", b.runs, "--campaign", campaign,
+                                   "--out", amended, *runs_argv],
+           on_fail="stop", outputs=(str(amended),))  # fmt: skip
+    b.runs_archive("stream/archive", paths=(b.rel(gate), b.rel(amended)), campaign=campaign)
     b.end("stream")
+    b.close(records=(b.rel(b.records),))
+    return b.plan(commit, gpu_code, None, c.surrogate_spec(c.SURROGATE, repo))
 
-    b.begin()  # the gate's verdict again, from the runs, at every start; then per seed its orders
-    argv = [SELF, "check-gate", "--runs", b.runs, "--campaign", campaign, "--gate", gate]
+
+def stream_campaign(archive_id: str) -> str:
+    """The launcher campaign of the main plan's stream-order runs (``Builder.launcher``)."""
+    return f"study5-{archive_id}-stream"
+
+
+def read_amended(path: Path) -> dict[str, Any]:
+    """An amended gate record that passed."""
+    record = json.loads(Path(path).read_text(encoding="utf-8"))
+    if record.get("kind") != AMENDED_KIND:
+        raise c.StepError(f"{Path(path).name}: not an amended gate record")
+    if (record.get("gate") or {}).get("passed") is not True:
+        raise c.StepError(f"{Path(path).name}: the amended gate did not pass")
+    return record
+
+
+def orders_plan(*, out: Path, runs: Path, data: Path, checkpoints: Path, archive_id: str,
+                rate_path: Path, gate_path: Path, commit: str, gpu_code: str,
+                repo: Path = c.REPO) -> c.Plan:  # fmt: skip
+    """The orders plan (module docstring), from the rate record and the amended gate record."""
+    eta0 = float(read_rate(rate_path, repo)["choice"]["eta0"])
+    seeds = [int(s) for s in read_amended(gate_path)["gate"]["seeds"]]
+    b = builder(archive_id, out, runs, data, checkpoints)
+    campaign = stream_campaign(archive_id)
+    gate, amended = b.record(GATE), b.record(AMENDED)
+    if Path(amended) != Path(gate_path):
+        raise c.StepError(f"{Path(gate_path).name}: not this archive's amended gate record")
+
+    b.begin()  # both verdicts again, from the runs, at every start; then per seed its orders
+    argv = [SELF, "check-gate", "--runs", b.runs, "--campaign", campaign, "--gate", gate,
+            "--amended", amended]  # fmt: skip
     for seed in beta0.SEEDS:
         argv += ["--run", seed, c.label(beta0.cell(seed, "stream", eta0))]
+    for seed in seeds:
+        argv += ["--seed", seed]
     b.step("orders/check-gate", argv, on_fail="stop", always=True)
-    for seed in beta0.SEEDS:
+    for seed in seeds:
         group = f"s{seed}"
         orders = [o for o in beta0.orders_of(seed) if o != "stream"]
         cells = [beta0.cell(seed, o, eta0) for o in orders]
@@ -227,28 +279,56 @@ def cmd_check_rate(args) -> int:
     return 0
 
 
-def cmd_check_gate(args) -> int:
-    """The drift gate's verdict recomputed from the runs; an existing gate record must agree."""
-    rows = [{"seed": int(seed), **k_row(args.runs, args.campaign, label)}
+def gate_rows(args) -> list[dict[str, Any]]:
+    return [{"seed": int(seed), **k_row(args.runs, args.campaign, label)}
             for seed, label in args.run]  # fmt: skip
-    gate = beta0.drift_gate(rows, targets())
-    if args.gate.is_file():
-        stored = json.loads(args.gate.read_text(encoding="utf-8")).get("gate")
-        if stored != gate:
-            raise c.StepError(f"{args.gate.name}: its verdict is not the one the runs give")
-    print(f"check-gate passed {gate['passed']} ratio {gate['ratio']} missing {gate['missing']}")
-    return 0 if gate["passed"] else c.ERROR
+
+
+def cmd_check_gate(args) -> int:
+    """Both verdicts recomputed from the runs; each record must agree with its verdict; the
+    amended gate passed; the plan's seeds are its seeds with a value."""
+    rows = gate_rows(args)
+    registered, amended = beta0.drift_gate(rows, targets()), sb.amended_gate(rows, targets())
+    for path, verdict, kind in ((args.gate, registered, GATE_KIND),
+                                (args.amended, amended, AMENDED_KIND)):  # fmt: skip
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        if stored.get("kind") != kind or stored.get("gate") != verdict:
+            raise c.StepError(f"{path.name}: its verdict is not the one the runs give")
+    if json.loads(args.amended.read_text(encoding="utf-8")).get("registered") != registered:
+        raise c.StepError(f"{args.amended.name}: its registered verdict is not the runs'")
+    seeds = sorted(int(s) for s in args.seed)
+    if seeds != amended["seeds"]:
+        raise c.StepError(f"the plan's seeds {seeds} are not the amended gate's {amended['seeds']}")
+    print(f"check-gate registered passed {registered['passed']} amended passed "
+          f"{amended['passed']} ratio {amended['ratio']} seeds {amended['seeds']} stopped "
+          f"{amended['stopped']}")  # fmt: skip
+    return 0 if amended["passed"] else c.ERROR
 
 
 def cmd_gate(args) -> int:
-    rows = [{"seed": int(seed), **k_row(args.runs, args.campaign, label)}
-            for seed, label in args.run]  # fmt: skip
+    """The registered rule's verdict, written as it was; under the addendum of 2026-11-18 the
+    amended gate (``gate-amended``) decides whether the plan goes on."""
+    rows = gate_rows(args)
     gate = beta0.drift_gate(rows, targets())
     record = {"kind": GATE_KIND, "campaign": args.campaign, "rows": rows, "gate": gate,
               "created_utc": c._now()}  # fmt: skip
     c.write_json(args.out, record)
     print(f"gate passed {gate['passed']} ratio {gate['ratio']} missing {gate['missing']} "
           f"gate {args.out.name} sha256 {c.sha256_of(args.out)}")  # fmt: skip
+    return 0
+
+
+def cmd_gate_amended(args) -> int:
+    rows = gate_rows(args)
+    gate = sb.amended_gate(rows, targets())
+    record = {"kind": AMENDED_KIND, "campaign": args.campaign, "rows": rows, "gate": gate,
+              "registered": beta0.drift_gate(rows, targets()),
+              "rule": "docs/study5-beta0-registration.md, addendum of 2026-11-18",
+              "created_utc": c._now()}  # fmt: skip
+    c.write_json(args.out, record)
+    print(f"gate-amended passed {gate['passed']} ratio {gate['ratio']} seeds {gate['seeds']} "
+          f"stopped {gate['stopped']} technical {gate['technical']} gate {args.out.name} "
+          f"sha256 {c.sha256_of(args.out)}")  # fmt: skip
     return 0 if gate["passed"] else c.ERROR
 
 
@@ -303,21 +383,29 @@ def cmd_run(args) -> int:
     except Exception:  # no commit: the preflight refuses
         gpu_code = "unknown"
     out = args.out.absolute()
-    pilot_out, main_out = (out.with_name(f"{out.name}-{part}") for part in ("pilot", "main"))
+    pilot_out, main_out, orders_out = (out.with_name(f"{out.name}-{part}")
+                                       for part in ("pilot", "main", "orders"))  # fmt: skip
     where = {"runs": runs_root(), "data": data_root(), "checkpoints": args.checkpoints,
              "archive_id": args.archive_id, "commit": commit, "gpu_code": gpu_code}  # fmt: skip
     pilot = pilot_plan(**where, out=pilot_out)
-    rate = pilot.runs / "study5_records" / args.archive_id / RATE
+    records = pilot.runs / "study5_records" / args.archive_id
+    rate, amended = records / RATE, records / AMENDED
     if args.dry_run:
         c.show(pilot)
         if args.rate is not None:
             c.show(main_plan(**where, out=main_out, rate_path=args.rate))
+            if args.gate is not None:
+                c.show(orders_plan(**where, out=orders_out, rate_path=args.rate,
+                                   gate_path=args.gate))  # fmt: skip
         return c.COMPLETED
     c.install_sigterm()
     code = start(pilot)
     if code != c.COMPLETED:
         return code
-    return start(main_plan(**where, out=main_out, rate_path=rate))
+    code = start(main_plan(**where, out=main_out, rate_path=rate))
+    if code != c.COMPLETED:
+        return code
+    return start(orders_plan(**where, out=orders_out, rate_path=rate, gate_path=amended))
 
 
 def parser_of() -> argparse.ArgumentParser:
@@ -329,6 +417,7 @@ def parser_of() -> argparse.ArgumentParser:
     p.add_argument("--checkpoints", type=Path, required=True)  # unused: no run saves one
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--rate", type=Path)  # the dry run's main plan, from a rate record
+    p.add_argument("--gate", type=Path)  # the dry run's orders plan, from an amended gate record
     p = sub.add_parser("table")
     p.add_argument("--runs", type=Path, required=True)
     p.add_argument("--campaign", required=True)
@@ -345,17 +434,21 @@ def parser_of() -> argparse.ArgumentParser:
     p.add_argument("--runs", type=Path, required=True)
     p.add_argument("--campaign", required=True)
     p.add_argument("--gate", type=Path, required=True)
+    p.add_argument("--amended", type=Path, required=True)
     p.add_argument("--run", nargs=2, action="append", required=True)  # SEED LABEL
-    p = sub.add_parser("gate")
-    p.add_argument("--runs", type=Path, required=True)
-    p.add_argument("--campaign", required=True)
-    p.add_argument("--run", nargs=2, action="append", required=True)  # SEED LABEL
-    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--seed", action="append", required=True)  # the plan's seeds
+    for name in ("gate", "gate-amended"):
+        p = sub.add_parser(name)
+        p.add_argument("--runs", type=Path, required=True)
+        p.add_argument("--campaign", required=True)
+        p.add_argument("--run", nargs=2, action="append", required=True)  # SEED LABEL
+        p.add_argument("--out", type=Path, required=True)
     return parser
 
 
 COMMANDS = {"run": cmd_run, "table": cmd_table, "rate": cmd_rate, "check-rate": cmd_check_rate,
-            "gate": cmd_gate, "check-gate": cmd_check_gate}  # fmt: skip
+            "gate": cmd_gate, "gate-amended": cmd_gate_amended,
+            "check-gate": cmd_check_gate}  # fmt: skip
 
 
 def main(argv: list[str] | None = None) -> int:

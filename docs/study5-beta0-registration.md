@@ -3,6 +3,9 @@
 Status: `registered` (2026-11-18), before any run of the experiment. The rules below are fixed before
 the pilot.
 
+The addendum of 2026-11-18 at the end amends the drift gate after it failed; the text above it is
+kept as registered.
+
 ## Question
 
 Under frozen Adam (β₁ = 0.9 with bias correction, the first moment starting at zero), the gradient
@@ -150,3 +153,57 @@ missing or invalid number of updates. An edit takes the worse state of its run a
 - Removing momentum also changes how the gradients are filtered over time and how stable the
   trajectory is. An order effect that disappears at β₁ = 0 is therefore ambiguous, while one that
   persists rules out that the position weights are necessary for it.
+
+## Addendum of 2026-11-18 (07:45 UTC): the drift gate after a scientific stop
+
+Written after the registered drift gate failed and before any edit ran.
+
+**All that was seen.**
+- The pilot fixed η₀ = 1.73·10⁻⁵ (`rate.json`, sha256
+  7e8603b0e57a019869482ddbe42ff50adee2c49042406bd5e64124ab567c3c1f). One pilot run, 50001 at
+  2.6·10⁻⁵ (the grid's top rate, above both seeds' brackets), stopped at update 4 on the
+  gradient-spike criterion; it takes no part in the rate.
+- The six stream-order runs at η₀ ran from 06:51 to 07:29 UTC. Five ended all 25 updates, with
+  K_benign / target 0.963 (50000), 1.070 (50001), 1.098 (50002), 1.010 (50003) and 1.032 (50004).
+  The run of 50005 stopped at update 8 on the gradient-spike criterion and has no K_benign at
+  step 25.
+- The registered gate needs all six values and failed (`gate.json`, sha256
+  1e941bc19b312b3f7a7b2689d1df5272f261ea59c98a351a4e1b7274a5ab01eb: passed false, missing 50005).
+  The record is kept as written, and the experiment stopped before any other order.
+- No edit (reorder or shuffle) has run. No label of any run of this experiment has been computed
+  or read, and no harm measure of these runs is known.
+
+**Why.** The analysis already treats an instability stop as a scientific outcome: a stopped edit
+leaves the statistics, the outcome is read as conditional, and a clear outcome needs five seeds per
+class. The gate, which only guards the drift match, ended the whole experiment on one such stop.
+The amendment is prospective for the remaining runs but informed by the drift and stability data
+above, so it does not give the experiment back the status of the original registration. The drift
+match it certifies concerns the five surviving streams, and selection by stability may correlate
+with harm or with order sensitivity even though no label has been read.
+
+**The amendment.**
+- *Gate.* The six stream-order runs at η₀ pass when at least five give a value (as a pilot run
+  does), every run without a value ended in a scientific stop (launcher end `done` or `diverged`,
+  one of the protocol's instability reasons, a whole number of updates from 1 to 25), and the
+  geometric mean of K_benign / target over the runs with a value lies in [0.8, 1.25]. A technical
+  gap never passes. η₀ = 1.73·10⁻⁵ and the bounds are unchanged
+  (`analysis.study5_beta0.amended_gate`). The campaign writes `gate-amended.json` beside
+  `gate.json`, with the registered verdict recomputed in it, and checks both records against the
+  runs at every start.
+- *Orders.* Only the seeds with a value run their other orders: a third plan of the campaign, built
+  from `gate-amended.json` (`scripts/study5_beta0_campaigns.py`).
+- *50005.* It stays in the accounting. Its stream-order run is a scientific stop, and its edits are
+  `not_run`: not attempted because their stream-order run stopped. That is a structural exclusion,
+  neither a technical gap nor an invented stopped run. Those edits enter no statistic, and the
+  outcome is conditional, with the stopped stream-order run and the edits not run listed. 50005
+  stays in the bootstrap population of six seeds; a resample contributes nothing for it.
+- *Unchanged.* The outcome rules, the five seeds per class that a clear outcome needs, and the
+  treatment of later stops (an edit's own or its stream-order run's) and of technical gaps.
+- *Supplementary*, fixed here before any edit ran, with no reading rule: the common survivors, the
+  seeds whose every early and late edit has Δh, with E, L and D over them alone; and per class the
+  seeds that contribute and the edits stopped or not run.
+
+**How the stops are reported.** As facts: one of the six stream-order trajectories triggered the
+registered gradient-spike criterion at update 8 at the pilot-calibrated rate; separately, one pilot
+run at the grid's top rate stopped at update 4. Neither locates a boundary of stability or gives a
+probability of failure.

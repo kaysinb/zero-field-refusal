@@ -1,6 +1,7 @@
-"""Study 5's run without momentum on one Pod (scripts/study5_beta0_campaigns.py): the two plans as
+"""Study 5's run without momentum on one Pod (scripts/study5_beta0_campaigns.py): the three plans as
 data, the pilot table, the rate and gate steps and their records, the main plan built from the
-rate record."""
+rate record, the orders plan built from the amended gate record (the addendum of 2026-11-18) and
+the restart after the registered gate failed on a scientific stop."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import pytest
 from test_study5_campaigns import COMMIT, GPU, campaign_runs, script_module, steps
 
 from zero_field_refusal import beta0
+from zero_field_refusal.analysis import study5_beta0 as sb
 from zero_field_refusal.config import config_hash
 from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.protocol import load_run_config
@@ -57,6 +59,35 @@ def main(where, rows=None):
     return m.main_plan(out=out, archive_id="beta0-t", rate_path=rate, **where)
 
 
+def gate_rows(stopped=(), factor=1.0) -> list[dict]:
+    rows = []
+    for s in beta0.SEEDS:
+        if s in stopped:
+            rows.append({"seed": s, "outcome": "done", "steps": 8, "stop": "gradient_spike",
+                         "complete": False, "K": None})  # fmt: skip
+        else:
+            rows.append({"seed": s, "outcome": "done", "steps": 25, "stop": "steps",
+                         "complete": True, "K": TARGETS[s] * factor})  # fmt: skip
+    return rows
+
+
+def amended_record(where, stopped=(), factor=1.0) -> Path:
+    rows = gate_rows(stopped, factor)
+    path = where["runs"] / "study5_records" / "beta0-t" / m.AMENDED
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"kind": m.AMENDED_KIND, "gate": sb.amended_gate(rows, TARGETS),
+                                "registered": beta0.drift_gate(rows, TARGETS)}))  # fmt: skip
+    return path
+
+
+def orders(where, stopped=(50005,), rows=None):
+    main(where, rows)  # writes the rate record
+    rate = where["runs"] / "study5_records" / "beta0-t" / m.RATE
+    out = where["runs"] / "campaigns" / "study5-beta0-orders"
+    return m.orders_plan(out=out, archive_id="beta0-t", rate_path=rate,
+                         gate_path=amended_record(where, stopped), **where)  # fmt: skip
+
+
 def test_the_pilot_plan(where, tmp_path):
     plan = pilot(where)
     assert [b.name for b in plan.blocks] == ["engineering", "fetch", "pilot", "close"]
@@ -77,22 +108,58 @@ def test_the_pilot_plan(where, tmp_path):
         assert next(s for s in steps(plan) if s.name == step).on_fail == "stop"
 
 
-def test_the_main_plan_from_its_rate(where, tmp_path):
-    plan = main(where)
+def _checked_runs(plan, tmp_path) -> list:
     eta0 = beta0.rate_choice(table_rows(), TARGETS)["eta0"]
-    assert [b.name for b in plan.blocks] == ["stream", "orders", "close"]
-    names = [s.name for s in steps(plan, "stream")]
-    assert names[1] == "stream/check-rate"
-    assert names.index("stream/launch") < names.index("stream/gate") < names.index("stream/archive")
-    assert next(s for s in steps(plan) if s.name == "stream/gate").on_fail == "stop"
-    total = 0
+    out = []
     for name in plan.campaigns:
         for run in campaign_runs(plan, tmp_path, name):
             cfg = load_run_config(beta0.CONFIG, [*run.overrides, f"seed={run.seed}"])
             assert config_hash(cfg) == run.config_hash and cfg.optimizer.lr == eta0
             assert cfg.optimizer.beta1 == 0.0 and not cfg.eval.get("k_only", False)
-            total += 1
-    assert total == 35
+            out.append(run)
+    return out
+
+
+def test_the_main_plan_from_its_rate(where, tmp_path):
+    plan = main(where)
+    assert [b.name for b in plan.blocks] == ["stream", "close"]
+    names = [s.name for s in steps(plan, "stream")]
+    assert names[1] == "stream/check-rate"
+    assert (names.index("stream/launch") < names.index("stream/gate")
+            < names.index("stream/gate-amended") < names.index("stream/archive"))  # fmt: skip
+    for name in ("stream/gate", "stream/gate-amended"):
+        assert next(s for s in steps(plan) if s.name == name).on_fail == "stop"
+    archive = next(s for s in steps(plan) if s.name == "stream/archive")
+    assert all(any(f.endswith(n) for f in archive.argv) for n in (m.GATE, m.AMENDED))
+    runs = _checked_runs(plan, tmp_path)
+    assert len(runs) == 6 and {r.seed for r in runs} == set(beta0.SEEDS)
+
+
+@pytest.mark.parametrize(("stopped", "total"), [((), 29), ((50005,), 24), ((50003,), 25)])
+def test_the_orders_plan_runs_the_seeds_with_a_value(where, tmp_path, stopped, total):
+    plan = orders(where, stopped)
+    assert [b.name for b in plan.blocks] == ["orders", "close"]
+    runs = _checked_runs(plan, tmp_path)
+    assert len(runs) == total and not {r.seed for r in runs} & set(stopped)
+    groups = [s.name for s in steps(plan, "orders") if s.name.endswith("/archive")]
+    assert groups == [f"orders/s{s}/archive" for s in beta0.SEEDS if s not in stopped]
+    check = next(s for s in steps(plan) if s.name == "orders/check-gate")
+    seeds = [int(check.argv[i + 1]) for i, a in enumerate(check.argv) if a == "--seed"]
+    assert seeds == [s for s in beta0.SEEDS if s not in stopped]
+
+
+def test_the_orders_plan_needs_a_passed_amended_gate_of_its_archive(where):
+    main(where)
+    rate = where["runs"] / "study5_records" / "beta0-t" / m.RATE
+    out = where["runs"] / "campaigns" / "o"
+    failed = amended_record(where, stopped=(50004, 50005))
+    with pytest.raises(camp.StepError, match="did not pass"):
+        m.orders_plan(out=out, archive_id="beta0-t", rate_path=rate, gate_path=failed, **where)
+    other = where["runs"] / "elsewhere" / m.AMENDED
+    other.parent.mkdir(parents=True)
+    other.write_text(amended_record(where).read_text())
+    with pytest.raises(camp.StepError, match="archive"):
+        m.orders_plan(out=out, archive_id="beta0-t", rate_path=rate, gate_path=other, **where)
 
 
 def test_the_main_plan_refuses_a_rate_that_is_not_the_rules(where):
@@ -153,16 +220,39 @@ def test_the_rate_step_fails_without_a_bracket(tmp_path):
     assert m.main(["rate", "--table", str(table), "--out", str(tmp_path / "r.json")]) == 1
 
 
-@pytest.mark.parametrize(("factor", "code"), [(1.0, 0), (1.3, 1), (0.75, 1)])
-def test_the_gate_step(tmp_path, factor, code):
+def _stream_runs(runs: Path, campaign: str, labels, *, stopped=(), factor=1.0,
+                 stop="gradient_spike", outcome="done") -> None:  # fmt: skip
+    for seed, label in zip(beta0.SEEDS, labels, strict=True):
+        if seed in stopped:
+            _run_dir(runs, campaign, label, f"r{seed}", steps=8, stop=stop, k=None,
+                     outcome=outcome)  # fmt: skip
+        else:
+            _run_dir(runs, campaign, label, f"r{seed}", k=TARGETS[seed] * factor)
+
+
+@pytest.mark.parametrize(("factor", "stopped", "registered", "amended"), [
+    (1.0, (), True, True),
+    (1.3, (), False, False),
+    (0.75, (), False, False),
+    (1.0, (50005,), False, True),
+    (1.0, (50004, 50005), False, False),
+])  # fmt: skip
+def test_the_gate_steps(tmp_path, factor, stopped, registered, amended):
+    """``gate`` writes the registered verdict and no longer stops; ``gate-amended`` decides."""
     runs = tmp_path / "runs"
-    argv = ["gate", "--runs", str(runs), "--campaign", "c", "--out", str(tmp_path / "g.json")]
-    for seed in beta0.SEEDS:
-        _run_dir(runs, "c", f"s/{seed}", f"r{seed}", k=TARGETS[seed] * factor)
-        argv += ["--run", str(seed), f"s/{seed}"]
-    assert m.main(argv) == code
-    gate = json.loads((tmp_path / "g.json").read_text())["gate"]
-    assert gate["passed"] is (code == 0)
+    labels = [f"s/{seed}" for seed in beta0.SEEDS]
+    _stream_runs(runs, "c", labels, stopped=stopped, factor=factor)
+    argv = ["--runs", str(runs), "--campaign", "c"]
+    for seed, label in zip(beta0.SEEDS, labels, strict=True):
+        argv += ["--run", str(seed), label]
+    assert m.main(["gate", *argv, "--out", str(tmp_path / "g.json")]) == 0
+    gate = json.loads((tmp_path / "g.json").read_text())
+    assert gate["kind"] == m.GATE_KIND and gate["gate"]["passed"] is registered
+    code = m.main(["gate-amended", *argv, "--out", str(tmp_path / "a.json")])
+    assert code == (0 if amended else 1)
+    record = json.loads((tmp_path / "a.json").read_text())
+    assert record["kind"] == m.AMENDED_KIND and record["gate"]["passed"] is amended
+    assert record["registered"] == gate["gate"] and "addendum" in record["rule"]
 
 
 def test_run_refuses_another_archive_id(tmp_path):
@@ -171,18 +261,20 @@ def test_run_refuses_another_archive_id(tmp_path):
 
 
 def test_the_orders_start_with_a_gate_check_run_at_every_start(where):
-    plan = main(where)
-    orders = steps(plan, "orders")
-    check = orders[1]
+    plan = orders(where)
+    orders_ = steps(plan, "orders")
+    check = orders_[1]
     assert check.name == "orders/check-gate" and check.always and check.on_fail == "stop"
-    assert check.outputs == () and orders[0].kind == "deadline"
-    assert all("launch" not in s.name for s in orders[:2])
+    assert check.outputs == () and orders_[0].kind == "deadline"
+    assert all("launch" not in s.name for s in orders_[:2])
 
 
-def test_a_failed_gate_restored_into_a_new_attempt_stops(where, tmp_path, monkeypatch):
-    """A new attempt with the failed gate.json restored: the gate step keeps the record (its output
-    exists), but the gate check, run at every start, recomputes the verdict from the runs and
-    fails; with the runs absent it fails too. A passing gate's check goes on."""
+def test_the_restart_after_the_registered_gate_failed_on_a_scientific_stop(where, tmp_path):
+    """The registered gate failed on 50005's gradient spike and its gate.json is restored into a
+    new attempt: the gate step keeps it as written (its output exists), the amended gate step
+    writes gate-amended.json and passes, and the orders plan built from it runs five seeds; its
+    check, run at every start, recomputes both verdicts from the runs. A forged record, other
+    seeds or a stop turned technical fail it."""
     import os
     import sys
 
@@ -190,46 +282,73 @@ def test_a_failed_gate_restored_into_a_new_attempt_stops(where, tmp_path, monkey
     eta0 = beta0.rate_choice(table_rows(), TARGETS)["eta0"]
     runs = where["runs"]
     (stream,) = [n for n in plan.campaigns if n.endswith("-stream")]
-    for seed in beta0.SEEDS:
-        label = camp.label(beta0.cell(seed, "stream", eta0))
-        _run_dir(runs, stream, label, f"r{seed}", k=TARGETS[seed] * 1.3)
+    assert stream == m.stream_campaign("beta0-t")
+    labels = [camp.label(beta0.cell(seed, "stream", eta0)) for seed in beta0.SEEDS]
+    _stream_runs(runs, stream, labels, stopped=(50005,))
     gate_step = next(s for s in steps(plan) if s.name == "stream/gate")
-    check_step = next(s for s in steps(plan) if s.name == "orders/check-gate")
-    Path(gate_step.outputs[0]).parent.mkdir(parents=True, exist_ok=True)
-    rows = [{"seed": s, "outcome": "done", "complete": True, "K": TARGETS[s] * 1.3}
-            for s in beta0.SEEDS]  # fmt: skip
-    Path(gate_step.outputs[0]).write_text(json.dumps(
-        {"kind": m.GATE_KIND, "gate": beta0.drift_gate(rows, TARGETS)}))  # fmt: skip
+    amended_step = next(s for s in steps(plan) if s.name == "stream/gate-amended")
+    gate_path = Path(gate_step.outputs[0])
+    gate_path.parent.mkdir(parents=True, exist_ok=True)
+    original = {"kind": m.GATE_KIND, "rows": gate_rows((50005,)),
+                "gate": beta0.drift_gate(gate_rows((50005,)), TARGETS)}  # fmt: skip
+    assert original["gate"]["passed"] is False
+    gate_path.write_text(json.dumps(original))
+    written = gate_path.read_bytes()
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
 
-    def run(step, status):
-        return camp.run_step(step, status, plan=plan, journal=tmp_path / "journal.jsonl",
+    def run(step, status, plan_=plan):
+        return camp.run_step(step, status, plan=plan_, journal=tmp_path / "journal.jsonl",
                              logs=tmp_path / "logs", python=[sys.executable], cwd=REPO_ROOT,
                              env=env)  # fmt: skip
 
-    status: dict[str, str] = {}
     (tmp_path / "logs").mkdir()
-    assert run(gate_step, status) == "kept"
-    assert run(check_step, status) == "failed"
-    # the record forged to passing: the runs still decide
-    record = json.loads(Path(gate_step.outputs[0]).read_text())
-    record["gate"] |= {"passed": True}
-    Path(gate_step.outputs[0]).write_text(json.dumps(record))
-    assert run(check_step, {"orders/check-gate": "done"}) == "failed"
+    assert run(gate_step, {}) == "kept" and gate_path.read_bytes() == written
+    assert run(amended_step, {}) == "done"
+    amended_path = Path(amended_step.outputs[0])
+    amended = json.loads(amended_path.read_text())["gate"]
+    assert amended["passed"] is True and amended["stopped"] == [50005]
+    rate = runs / "study5_records" / "beta0-t" / m.RATE
+    later = m.orders_plan(out=runs / "campaigns" / "study5-beta0-orders", archive_id="beta0-t",
+                          rate_path=rate, gate_path=amended_path, **where)  # fmt: skip
+    check = next(s for s in steps(later) if s.name == "orders/check-gate")
+    assert run(check, {}, later) == "done"
+    # the amended record forged: the runs still decide
+    record = json.loads(amended_path.read_text())
+    forged = json.loads(json.dumps(record))
+    forged["gate"]["seeds"] = list(beta0.SEEDS)
+    amended_path.write_text(json.dumps(forged))
+    assert run(check, {"orders/check-gate": "done"}, later) == "failed"
+    amended_path.write_text(json.dumps(record))
+    # the registered record changed after the fact
+    gate_path.write_text(json.dumps(original | {"gate": original["gate"] | {"passed": True}}))
+    assert run(check, {"orders/check-gate": "done"}, later) == "failed"
+    gate_path.write_bytes(written)
+    assert run(check, {"orders/check-gate": "done"}, later) == "done"
+    # the stopped run's record turned technical (an interruption): the amended gate fails
+    terminal = runs / "study5" / "r50005" / "terminal.json"
+    terminal.write_text(json.dumps({"steps": 8, "stop": {"reason": "interrupted"}}))
+    assert run(check, {"orders/check-gate": "done"}, later) == "failed"
 
 
-def test_check_gate_needs_the_runs_and_agrees_with_them(tmp_path):
+def test_check_gate_needs_the_runs_both_records_and_the_plans_seeds(tmp_path):
     runs = tmp_path / "runs"
-    gate = tmp_path / "g.json"
-    argv = ["check-gate", "--runs", str(runs), "--campaign", "c", "--gate", str(gate)]
-    for seed in beta0.SEEDS:
-        argv += ["--run", str(seed), f"s/{seed}"]
-    assert m.main(argv) == 1  # no runs: no end
-    for seed in beta0.SEEDS:
-        _run_dir(runs, "c", f"s/{seed}", f"r{seed}", k=TARGETS[seed])
-    assert m.main(argv) == 0  # no record yet: the runs alone
-    gate.write_text(json.dumps({"gate": {"passed": False}}))
-    assert m.main(argv) == 1  # a record that disagrees with the runs
+    gate, amended = tmp_path / "g.json", tmp_path / "a.json"
+    labels = [f"s/{seed}" for seed in beta0.SEEDS]
+    argv = ["check-gate", "--runs", str(runs), "--campaign", "c", "--gate", str(gate),
+            "--amended", str(amended)]  # fmt: skip
+    for seed, label in zip(beta0.SEEDS, labels, strict=True):
+        argv += ["--run", str(seed), label]
+    five = [a for s in beta0.SEEDS[:5] for a in ("--seed", str(s))]
+    assert m.main([*argv, *five]) == 1  # no runs: no end
+    _stream_runs(runs, "c", labels, stopped=(50005,))
+    assert m.main([*argv, *five]) == 1  # no records
+    rows = gate_rows((50005,))
+    gate.write_text(json.dumps({"kind": m.GATE_KIND, "gate": beta0.drift_gate(rows, TARGETS)}))
+    amended.write_text(json.dumps({"kind": m.AMENDED_KIND, "gate": sb.amended_gate(rows, TARGETS),
+                                   "registered": beta0.drift_gate(rows, TARGETS)}))  # fmt: skip
+    assert m.main([*argv, *five]) == 0
+    assert m.main([*argv, *five, "--seed", "50005"]) == 1  # a seed without a value
+    assert m.main([*argv, *five[:-2]]) == 1  # a seed with a value left out
 
 
 def test_a_conflict_end_gives_no_k(tmp_path):

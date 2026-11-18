@@ -235,7 +235,8 @@ def report(record: Mapping[str, Any], digest: str) -> None:
     )
     seeds = r.get("seeds_per_class") or {}
     print(f"conditional {r.get('conditional')} technical {len(r.get('technical') or [])} stopped "
-          f"{len(r.get('stopped') or [])} seeds F {seeds.get('F')} E {seeds.get('E')} "
+          f"{len(r.get('stopped') or [])} not_run {len(r.get('not_run') or [])} stopped_stream "
+          f"{len(r.get('stopped_stream') or [])} seeds F {seeds.get('F')} E {seeds.get('E')} "
           f"L {seeds.get('L')} pilot_runs {len(record['selection']['pilot'])}")  # fmt: skip
     print(f"record sha256 {digest}")
 

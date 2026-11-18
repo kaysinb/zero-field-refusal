@@ -23,7 +23,10 @@ for one of the protocol's instability reasons (``study3_records.INSTABILITY``) a
 of updates from 1 to 25, the 25th included (a scientific outcome, never rerun); ``technical``
 otherwise (no run; records or labels that do not read; any other stop reason, an interruption
 among them; a missing or invalid number of updates). An edit's state is the worse of its run's
-and its stream order's (technical over stopped over ok).
+and its stream order's (technical over stopped over ok). Under the addendum of 2026-11-18 an edit
+without a run whose stream-order run is ``stopped`` is ``not_run``: it was not attempted because
+its baseline stopped (a structural exclusion, never a technical gap, never an invented stopped
+run); its seed stays in the bootstrap population.
 
 **The outcome** (``outcome``), on the point estimates, with F the reference's F and h̄ its h̄. T is
 F/2, multiplied by h̄₀/h̄ when that ratio lies outside [0.5, 2]. The regions are mutually exclusive
@@ -43,9 +46,22 @@ F, E and L for (i) and (iii)) has edits with Δh from at least ``MIN_SEEDS_CLEAR
 - *Technical gaps*: any edit or stream-order run of the design in the state ``technical`` withholds
   the outcome (``withheld``); the statistics are still reported, with the seeds that contribute to
   each class.
-- *Scientific stops*: edits in the state ``stopped`` enter no statistic; the outcome is read on the
-  rest and marked ``conditional``, with the stopped edits listed.
+- *Scientific stops*: edits in the state ``stopped`` or ``not_run`` enter no statistic; the
+  outcome is read on the rest and marked ``conditional``, with the stopped edits, the edits not
+  run and the stopped stream-order runs listed.
 - Without F₀, E₀ or L₀ (no edit with Δh in a class) the outcome is ``undetermined``.
+
+**The amended drift gate** (``amended_gate``, the addendum of 2026-11-18; ``beta0.drift_gate``
+keeps the registered rule, recorded beside it): the six stream-order runs at η₀ pass when at least
+``GATE_MIN_VALUES`` of them give a value (as a pilot run does), every one without a value ended in
+a scientific stop (``gate_stop``: launcher end ``done`` or ``diverged``, an instability reason of
+``INSTABILITY`` and a whole number of updates from 1 to 25), and the geometric mean of K_benign /
+target over the runs with a value lies in ``beta0.GATE``. A run without a value and without such a
+stop (a technical gap) fails the gate.
+
+**Common survivors** (supplementary, fixed by the addendum before any edit ran): the seeds whose
+every early and late edit has Δh; E, L and D over them alone, with the seeds and, per class, the
+seeds that contribute and the edits stopped or not run.
 """
 
 from __future__ import annotations
@@ -69,7 +85,9 @@ DENOMINATOR = 521
 SCALE_BOUNDS = (0.5, 2.0)
 CLASSES = {"F": "reorder", "E": "early", "L": "late"}
 MIN_SEEDS_CLEAR = 5  # a clear outcome rests on at least five of the six seeds in each class
-STATE_RANK = {"ok": 0, "stopped": 1, "technical": 2}
+STATE_RANK = {"ok": 0, "not_run": 1, "stopped": 1, "technical": 2}
+GATE_MIN_VALUES = 5  # the addendum of 2026-11-18: at least five of the six stream-order runs
+SCIENTIFIC_ENDS = ("done", "diverged")  # launcher ends of a run that stopped as an outcome
 
 
 def class_of(order: str) -> str | None:
@@ -96,6 +114,12 @@ def run_state(run: Run | None) -> str:
     return "stopped" if run.get("stop") in INSTABILITY and valid else "technical"
 
 
+def not_run(runs: Mapping[Key, Run], seed: int, order: str) -> bool:
+    """An edit without a run whose stream-order run stopped (module docstring)."""
+    return (order != "stream" and runs.get((seed, order)) is None
+            and run_state(runs.get((seed, "stream"))) == "stopped")  # fmt: skip
+
+
 def deltas(runs: Mapping[Key, Run]) -> dict[str, Any]:
     """Per edited order of the design: its state, Δh, ΔK_harmful and ΔK_benign against the stream
     order, or why absent."""
@@ -105,6 +129,10 @@ def deltas(runs: Mapping[Key, Run]) -> dict[str, Any]:
             continue
         key = f"s{seed}/{order}"
         run_o, run_s = runs.get((seed, order)), runs.get((seed, "stream"))
+        if not_run(runs, seed, order):
+            out[key] = {"seed": seed, "order": order, "state": "not_run", "dh": None,
+                        "why": "not run: its stream-order run stopped"}  # fmt: skip
+            continue
         state = max(run_state(run_o), run_state(run_s), key=STATE_RANK.__getitem__)
         if state != "ok":
             h_o = sd.harm(run_o)
@@ -137,6 +165,56 @@ def statistics_of(entries: Sequence[Mapping[str, Any]], seeds: Sequence[int]) ->
     f, e, late = (_class_mean(entries, tag, seeds) for tag in ("F", "E", "L"))
     d = e - late if e is not None and late is not None else None
     return {"F": f, "E": e, "L": late, "D": d}
+
+
+def common_survivors(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The supplementary comparison on the common survivors (module docstring)."""
+    seeds = [s for s in beta0.SEEDS
+             if all(_number(e.get("dh")) for e in entries
+                    if e["seed"] == s and class_of(e["order"]) in ("E", "L"))]  # fmt: skip
+    usable = [e for e in entries if e["state"] == "ok"]
+    stats = statistics_of(usable, seeds)
+    per_class = {
+        tag: {"seeds": len({e["seed"] for e in usable if class_of(e["order"]) == tag}),
+              "stopped": sorted(f"s{e['seed']}/{e['order']}" for e in entries
+                                if class_of(e["order"]) == tag and e["state"] == "stopped"),
+              "not_run": sorted(f"s{e['seed']}/{e['order']}" for e in entries
+                                if class_of(e["order"]) == tag and e["state"] == "not_run")}
+        for tag in CLASSES
+    }  # fmt: skip
+    return {"seeds": seeds, "E": stats["E"], "L": stats["L"], "D": stats["D"],
+            "per_class": per_class}  # fmt: skip
+
+
+def gate_stop(row: Mapping[str, Any]) -> bool:
+    """A stream-order run at η₀ that ended in a scientific stop (module docstring, "The amended
+    drift gate"); ``row`` as the campaign's gate rows: ``outcome``, ``stop``, ``steps``."""
+    steps = row.get("steps")
+    valid = isinstance(steps, int) and not isinstance(steps, bool) and 1 <= steps <= beta0.STEPS
+    return row.get("outcome") in SCIENTIFIC_ENDS and row.get("stop") in INSTABILITY and valid
+
+
+def amended_gate(rows: Sequence[Mapping[str, Any]], targets: Mapping[int, float]) -> dict[str, Any]:
+    """The amended drift gate (module docstring) on the six stream-order runs at η₀."""
+    by_seed = {int(r["seed"]): r for r in rows}
+    if sorted(by_seed) != list(beta0.SEEDS) or len(rows) != len(beta0.SEEDS):
+        raise ValueError(f"the six stream-order runs are expected, got {sorted(by_seed)}")
+    found = {s: beta0._value(r) for s, r in by_seed.items()}
+    missing = sorted(s for s, k in found.items() if k is None)
+    stopped = [s for s in missing if gate_stop(by_seed[s])]
+    technical = [s for s in missing if s not in stopped]
+    seeds = sorted(s for s, k in found.items() if k is not None)
+    base = {"missing": missing, "stopped": stopped, "technical": technical, "seeds": seeds}
+    if technical:
+        why = "a stream-order run without a value and without a scientific stop"
+        return {"passed": False, "ratio": None, **base, "why": why}
+    if len(seeds) < GATE_MIN_VALUES:
+        return {"passed": False, "ratio": None, **base,
+                "why": f"fewer than {GATE_MIN_VALUES} stream-order runs with a value"}  # fmt: skip
+    ratio = math.exp(sum(math.log(found[s] / float(targets[s])) for s in seeds) / len(seeds))
+    passed = beta0.GATE[0] <= ratio <= beta0.GATE[1]
+    return {"passed": passed, "ratio": ratio, **base,
+            "why": None if passed else f"ratio {ratio:.4f} outside {beta0.GATE}"}  # fmt: skip
 
 
 def label_noise(h_bar_pp: float) -> float:
@@ -218,9 +296,15 @@ def analysis(runs: Mapping[Key, Run], reference: Mapping[str, Any], eta0: float)
     h_bar0 = sum(hs) / len(hs) if hs else None
     noise = label_noise(h_bar0) if h_bar0 is not None else None
     technical = sorted(
-        f"s{s}/{o}" for s, o in design() if run_state(runs.get((s, o))) == "technical"
+        f"s{s}/{o}"
+        for s, o in design()
+        if run_state(runs.get((s, o))) == "technical" and not not_run(runs, s, o)
     )
     stopped = sorted(f"s{e['seed']}/{e['order']}" for e in entries if e["state"] == "stopped")
+    skipped = sorted(f"s{e['seed']}/{e['order']}" for e in entries if e["state"] == "not_run")
+    stopped_stream = sorted(
+        f"s{s}/stream" for s in beta0.SEEDS if run_state(runs.get((s, "stream"))) == "stopped"
+    )
     if technical:
         result: dict[str, Any] = {"outcome": "withheld", "strength": None,
                                   "why": "technical gaps"}  # fmt: skip
@@ -228,8 +312,9 @@ def analysis(runs: Mapping[Key, Run], reference: Mapping[str, Any], eta0: float)
         result = {"outcome": "undetermined", "strength": None}
     else:
         result = outcome(stats, intervals, noise, reference, h_bar0, seeds)
-    result |= {"conditional": bool(stopped) and not technical, "technical": technical,
-               "stopped": stopped, "seeds_per_class": seeds}  # fmt: skip
+    result |= {"conditional": bool(stopped or skipped or stopped_stream) and not technical,
+               "technical": technical, "stopped": stopped, "not_run": skipped,
+               "stopped_stream": stopped_stream, "seeds_per_class": seeds}  # fmt: skip
     paired = {}
     for e in usable:
         ref = reference["seeds"][str(e["seed"])]["edits"].get(e["order"])
@@ -259,6 +344,7 @@ def analysis(runs: Mapping[Key, Run], reference: Mapping[str, Any], eta0: float)
                 t: _class_mean(usable, t, beta0.SEEDS, "dK_benign") for t in CLASSES
             },
             "paired": paired,
+            "common_survivors": common_survivors(entries),
             "mmlu_stream": {
                 str(s): ((runs.get((s, "stream")) or {}).get("row") or {}).get("benchmark_accuracy")
                 for s in beta0.SEEDS
