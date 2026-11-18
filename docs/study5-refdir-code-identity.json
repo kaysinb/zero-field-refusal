@@ -1,9 +1,9 @@
 {
  "what": "The GPU code of study 5's refusal-direction analysis (docs/study5-refdir-registration.md): the identity of its GPU paths at the commit named.",
  "rule": "zero_field_refusal.code_identity.gpu_code_identity",
- "commit": "a6b02d1a7e9a59be4c5ea2101e147244b1c9e4e5",
+ "commit": "bf8640778933dd706566f61c97e8364a8c270e39",
  "files": 170,
- "gpu_code_sha256": "34b692eeff79d0bcfe8a82d17f5526effad4730403b95e207d7bd4b61b029080",
+ "gpu_code_sha256": "c4b3ab201dddbe81ce7f00497b9b95e461a16bb1f2f8465a7966b02597d7adba",
  "engineering_check": "The paths changed since the run without momentum's record add a module and a script that run forward passes of θ₀ only (src/zero_field_refusal/refdir.py, scripts/study5_refdir.py) and add the analysis script's name to the list of scripts outside the GPU code (src/zero_field_refusal/code_identity.py); no other path a training run executes changed, and no training run executes the new module, so no training run is repeated. The refusal score on batches of equal length equals the training path's surrogate (tests/test_refdir.py), and the hooks, the selection rule and the projections are tested on a tiny model (tests/test_refdir.py, tests/test_study5_refdir_script.py). A later GPU change needs a new record.",
  "changed_from": {
   "record": "docs/study5-beta0-code-identity.json",
